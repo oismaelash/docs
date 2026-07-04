@@ -1,0 +1,185 @@
+---
+title: "Receive WhatsApp Messages and Events via Webhooks"
+sidebarTitle: "Receive Messages"
+description: "Set up a webhook endpoint to receive inbound WhatsApp messages and delivery events from Pilot Status in real time, with Node.js and Python examples."
+---
+
+Pilot Status delivers inbound WhatsApp messages and message status updates to your application by making an HTTP `POST` request to a URL you control — this is called a webhook. Every time a user sends you a message, or when a message you sent changes status (delivered, read, or failed), Pilot Status calls your endpoint with a JSON payload describing the event. This guide walks you through setting up a webhook endpoint, registering it with Pilot Status, and handling the events your application receives.
+
+<Warning>
+  Your webhook endpoint must be publicly accessible (not localhost) to receive events from Pilot Status. During development, use a tunneling tool such as [ngrok](https://ngrok.com) or [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) to expose your local server.
+</Warning>
+
+## Steps
+
+<Steps>
+
+### Create a webhook endpoint
+
+Your endpoint must accept `POST` requests and return an HTTP `200` response as quickly as possible. Pilot Status considers any non-`2xx` response or a timeout a delivery failure and will retry. The example below creates a minimal Express.js server:
+
+```javascript Node.js (Express)
+const express = require('express');
+const app = express();
+app.use(express.json());
+
+app.post('/webhook', (req, res) => {
+  const event = req.body;
+  console.log('Event:', event.event, event.message?.text);
+  res.sendStatus(200); // Always respond 200 quickly
+});
+
+app.listen(3000, () => console.log('Webhook server running on port 3000'));
+```
+
+Here's the same minimal handler in Python using Flask:
+
+```python Python (Flask)
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.post('/webhook')
+def webhook():
+    event = request.get_json()
+    print('Event:', event.get('event'), event.get('message', {}).get('text'))
+    return '', 200
+
+if __name__ == '__main__':
+    app.run(port=3000)
+```
+
+### Register your webhook URL
+
+Once your server is running at a public URL, register it with Pilot Status so the platform knows where to send events:
+
+1. Open the [Pilot Status Dashboard](https://pilotstatus.com.br).
+2. Navigate to **Settings → Webhooks**.
+3. Click **Add URL** and enter your endpoint (e.g., `https://your-app.com/webhook`).
+4. Select the event types you want to receive and click **Save**.
+
+Alternatively, register via the API:
+
+```bash curl
+curl -X POST https://api.pilotstatus.com.br/v1/webhooks/configure \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://your-app.com/webhook",
+    "events": ["message.received", "message.delivered", "message.read", "message.failed"]
+  }'
+```
+
+### Handle event types
+
+Use the `event` field in the payload to route each event to the appropriate handler in your application:
+
+```javascript Node.js
+app.post('/webhook', (req, res) => {
+  res.sendStatus(200); // Respond immediately before processing
+
+  const { event, message, number_id } = req.body;
+
+  switch (event) {
+    case 'message.received':
+      console.log(`New message from ${message.from}: ${message.text}`);
+      // Trigger your reply logic here
+      break;
+
+    case 'message.delivered':
+      console.log(`Message ${message.id} delivered to ${message.to}`);
+      // Update your database record
+      break;
+
+    case 'message.read':
+      console.log(`Message ${message.id} read by ${message.to}`);
+      // Show a "read" indicator in your UI
+      break;
+
+    case 'message.failed':
+      console.error(`Message ${message.id} failed: ${message.error}`);
+      // Log and alert or schedule a retry
+      break;
+
+    default:
+      console.log('Unhandled event type:', event);
+  }
+});
+```
+
+</Steps>
+
+## Inbound message payload
+
+When a user sends you a WhatsApp message, Pilot Status delivers a `message.received` event to your webhook. Here is a complete example payload:
+
+```json
+{
+  "event": "message.received",
+  "number_id": "num_abc123",
+  "timestamp": "2024-01-15T09:41:00Z",
+  "message": {
+    "id": "msg_inbound_001",
+    "from": "5511999999999",
+    "to": "5511888888888",
+    "type": "text",
+    "text": "Hi! I'd like to check my order status.",
+    "timestamp": "2024-01-15T09:41:00Z"
+  },
+  "contact": {
+    "name": "Maria Silva",
+    "phone": "5511999999999"
+  }
+}
+```
+
+For button replies (from interactive messages), the `message` object includes a `button_reply` field:
+
+```json
+{
+  "event": "message.received",
+  "number_id": "num_abc123",
+  "message": {
+    "id": "msg_inbound_002",
+    "from": "5511999999999",
+    "type": "button_reply",
+    "button_reply": {
+      "id": "confirm_yes",
+      "title": "✅ Yes, confirm"
+    }
+  }
+}
+```
+
+## Responding to messages
+
+After receiving a `message.received` event, call the Pilot Status send API to reply. The `number_id` and sender's `from` address are both available in the webhook payload, so you don't need to hardcode them. The example below shows a simple echo bot:
+
+```javascript Node.js
+const PILOT_API_KEY = process.env.PILOT_API_KEY;
+
+app.post('/webhook', async (req, res) => {
+  res.sendStatus(200); // Respond before any async work
+
+  const { event, message, number_id } = req.body;
+  if (event !== 'message.received' || message.type !== 'text') return;
+
+  // Echo the user's message back to them
+  await fetch('https://api.pilotstatus.com.br/v1/messages/text', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${PILOT_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      number_id,
+      to: message.from,
+      text: `You said: "${message.text}"`
+    })
+  });
+});
+```
+
+<Tip>
+  For production workloads, process webhooks asynchronously — respond `200` immediately, then push the event to a queue (e.g., Redis, SQS, or BullMQ) for background processing. This keeps your webhook handler fast and prevents timeouts if your AI or database calls take longer than expected.
+</Tip>

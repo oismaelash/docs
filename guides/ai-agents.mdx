@@ -1,0 +1,137 @@
+---
+title: "Build AI Agents on WhatsApp with Pilot Status"
+sidebarTitle: "AI Agents"
+description: "Connect LLMs and AI workflows to WhatsApp using Pilot Status webhooks, MCP server, and REST API. Build chatbots that respond in real time, 24/7."
+---
+
+WhatsApp is where your users already are — and Pilot Status gives your AI agents a direct line into those conversations. By combining Pilot Status webhooks (which deliver inbound messages to your server in real time) with the REST API (which sends replies), you can wire any large language model or AI workflow into WhatsApp without managing phone infrastructure. The result is a 24/7 AI assistant that lives inside the app your customers use every day.
+
+## How it works
+
+The flow from user message to AI reply happens entirely over HTTP and completes in milliseconds:
+
+1. **User sends a WhatsApp message** to your connected number.
+2. **Pilot Status fires a webhook** — a `POST` request with the message payload — to your server URL.
+3. **Your server passes the message** to your LLM or AI workflow.
+4. **Your LLM generates a reply** and returns it to your server.
+5. **Your server calls the Pilot Status API** to send the reply back to the user on WhatsApp.
+
+Your application is the glue between Pilot Status and your AI — you control the prompt, the model, the memory, and the logic.
+
+## Basic AI echo flow
+
+The example below shows a complete Node.js webhook handler that receives a WhatsApp message, sends it to OpenAI, and delivers the response back to the user. It responds `200` to Pilot Status immediately — before any async work — to avoid webhook timeouts.
+
+```javascript Node.js
+import express from 'express';
+import OpenAI from 'openai';
+
+const app = express();
+app.use(express.json());
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+app.post('/webhook', async (req, res) => {
+  res.sendStatus(200); // Respond immediately
+
+  const { event, message, number_id } = req.body;
+  if (event !== 'message.received') return;
+  if (message.type !== 'text') return; // Handle only text for now
+
+  // Call your LLM
+  const reply = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: message.text }]
+  });
+
+  // Reply on WhatsApp
+  await fetch('https://api.pilotstatus.com.br/v1/messages/text', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.PILOT_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      number_id,
+      to: message.from,
+      text: reply.choices[0].message.content
+    })
+  });
+});
+
+app.listen(3000, () => console.log('AI agent running on port 3000'));
+```
+
+To add conversation memory, store previous messages in a database keyed by `message.from` (the user's phone number) and pass the history as the `messages` array to your LLM on each turn.
+
+<Tip>
+  Always respond `200` to the webhook immediately, then process the AI response asynchronously. If your handler takes too long to respond, Pilot Status will retry the webhook delivery, causing your agent to reply twice.
+</Tip>
+
+## MCP Server
+
+Pilot Status provides a **Model Context Protocol (MCP) server** so AI agents can call WhatsApp as a native tool — no manual HTTP wiring required. With the MCP server, LLM runtimes can discover and invoke WhatsApp actions (send message, read conversation history, list connected numbers) the same way they call any other tool.
+
+The MCP integration is well-suited for:
+
+- **Claude Desktop** — add Pilot Status as a local MCP server and let Claude send WhatsApp messages directly from a conversation.
+- **Cursor and AI coding assistants** — trigger WhatsApp notifications as part of automated workflows.
+- **Custom LLM implementations** — any runtime that supports the Model Context Protocol can connect to Pilot Status without building a custom HTTP integration.
+
+To get your MCP credentials and connection details, visit your [Pilot Status Dashboard](https://pilotstatus.com.br) or contact support. The MCP server endpoint and authentication token are available under **Settings → Integrations → MCP**.
+
+## Interactive responses
+
+AI agents aren't limited to plain text replies. You can send WhatsApp **quick-reply buttons** to guide users through multi-step conversations — for example, presenting a menu of options after the user asks a question, or confirming an action before your agent proceeds.
+
+```javascript Node.js
+// After receiving a message, send an interactive reply
+await fetch('https://api.pilotstatus.com.br/v1/messages/interactive', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${process.env.PILOT_API_KEY}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    number_id,
+    to: message.from,
+    interactive: {
+      type: 'button',
+      body: { text: 'What would you like to do next?' },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'check_order',   title: '📦 Check my order' } },
+          { type: 'reply', reply: { id: 'talk_to_human', title: '👤 Talk to a person' } },
+          { type: 'reply', reply: { id: 'end_chat',      title: '✅ I\'m all set' } }
+        ]
+      }
+    }
+  })
+});
+```
+
+When the user taps a button, Pilot Status delivers a `message.received` event with `message.type: "button_reply"` and the button `id` you defined — making it straightforward to branch your agent's logic. See the [Send Messages guide](/guides/send-messages) for the full interactive message reference.
+
+## Supported AI integrations
+
+Pilot Status works with any tool or framework that can make HTTP requests. Popular integrations include:
+
+<CardGroup cols={2}>
+
+<Card title="n8n" icon="diagram-project">
+  Use the **HTTP Request** node to call `/v1/messages/text` and the **Webhook** node to receive inbound messages. Build no-code AI workflows by chaining the HTTP node with n8n's built-in AI nodes.
+</Card>
+
+<Card title="GPT Maker" icon="robot">
+  Connect your GPT Maker bot to Pilot Status via the HTTP action. Point the action at the Pilot Status REST API to send replies and media from within your GPT Maker flow.
+</Card>
+
+<Card title="LangChain" icon="link">
+  Wrap the Pilot Status REST API as a LangChain **HTTP tool** or custom tool. Your LangChain agent can then decide when to send WhatsApp messages as part of a larger reasoning chain.
+</Card>
+
+<Card title="Any REST client" icon="plug">
+  If your LLM framework can make HTTP `POST` requests, it can integrate with Pilot Status. Use the API key in the `Authorization: Bearer` header — no SDK required.
+</Card>
+
+</CardGroup>

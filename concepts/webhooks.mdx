@@ -1,0 +1,89 @@
+---
+title: "Real-Time Webhooks: Message Events from Pilot Status"
+sidebarTitle: "Webhooks"
+description: "Pilot Status sends webhooks to your URL within milliseconds of message events. Learn the event types, payload structure, and how to verify and handle them."
+---
+
+Webhooks are how Pilot Status notifies your application the moment something happens on a connected number. Instead of polling the API for new messages or status updates, you provide an HTTPS endpoint and Pilot Status delivers a structured JSON payload to it within milliseconds of each event — a new inbound message, a delivery receipt, a read notification, or a connection change. This makes webhooks the foundation of any real-time integration, from chatbots and AI agents to customer support platforms and order notification systems.
+
+## Event Types
+
+Pilot Status emits the following events to your webhook endpoint:
+
+| Event | Description |
+|---|---|
+| `message.received` | A new inbound message arrived on your number |
+| `message.sent` | Your outbound message was accepted and sent |
+| `message.delivered` | The message was delivered to the recipient's device |
+| `message.read` | The recipient opened and read the message |
+| `message.failed` | Delivery failed — the payload includes the failure reason |
+| `number.connected` | A number successfully established its WhatsApp connection |
+| `number.disconnected` | A number lost its WhatsApp connection |
+
+## Payload Structure
+
+Every webhook payload follows the same envelope structure: an `event` name, an ISO 8601 `timestamp`, the `number_id` that triggered the event, and an event-specific data object.
+
+Here is an example payload for a `message.received` event:
+
+```json
+{
+  "event": "message.received",
+  "timestamp": "2024-01-15T09:41:00Z",
+  "number_id": "num_abc123",
+  "message": {
+    "id": "msg_xyz789",
+    "from": "5511999999999",
+    "type": "text",
+    "text": "Hello!",
+    "timestamp": "2024-01-15T09:41:00Z"
+  }
+}
+```
+
+The `message.id` field is stable and unique across all events for a given message. A single outbound message may generate `message.sent`, `message.delivered`, and `message.read` events in sequence — each carrying the same `message.id` so you can correlate them in your system.
+
+## Configuring Webhooks
+
+<Tabs>
+  <Tab title="Dashboard">
+    Go to **Dashboard → Logs & Analytics → Webhooks** and enter your endpoint URL. You can configure a global webhook URL that receives all events, or set per-number URLs if different numbers need to route to different services.
+  </Tab>
+  <Tab title="API">
+    Use the webhook configuration endpoint to register or update your URL programmatically:
+
+    ```bash
+    POST /api/webhooks/configure
+    ```
+
+    ```json
+    {
+      "number_id": "num_abc123",
+      "url": "https://your-app.com/webhooks/whatsapp",
+      "events": ["message.received", "message.delivered", "message.read"]
+    }
+    ```
+
+    Omit the `events` array to subscribe to all event types for that number.
+  </Tab>
+</Tabs>
+
+## Best Practices
+
+Follow these guidelines to build a reliable webhook handler.
+
+<Accordion title="Respond with HTTP 200 quickly">
+  Your endpoint must return an HTTP `200` response within **5 seconds**. If your processing logic takes longer — for example, calling an AI model or writing to a database — acknowledge the webhook immediately and handle the work asynchronously in a background job or queue. Slow responses cause Pilot Status to treat the delivery as failed and trigger a retry.
+</Accordion>
+
+<Accordion title="Handle retries with exponential backoff">
+  If your endpoint does not return a `200`, Pilot Status retries the delivery automatically using exponential backoff. Design your handler to be robust to these retries — do not assume you will receive each event exactly once.
+</Accordion>
+
+<Accordion title="Deduplicate events using message ID">
+  Network conditions and retries mean your endpoint may occasionally receive the same event more than once. Use the `message.id` field as an idempotency key: record which IDs you have already processed and skip any duplicates. This keeps your application state consistent even under adverse conditions.
+</Accordion>
+
+<Tip>
+  For AI agents, subscribe to `message.received` and respond immediately — Pilot Status delivers events in milliseconds, so your agent can achieve near-instant response times for end users.
+</Tip>
