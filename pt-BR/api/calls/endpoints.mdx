@@ -10,28 +10,107 @@ mode: "wide"
 URL base: `https://pilotstatus.com.br/v1` Cabeçalhos: `Content-Type: application/json`, `x-api-key: <your_api_key>` (ou `x-api-key-id`).
 
 <Note>
-  Somente números da Meta Cloud API — veja a [visão geral](/pt-BR/api/calls/overview). Todos os endpoints exigem uma chave **com escopo de número**.
+  As chamadas funcionam em **dois provedores**: números **Meta Cloud API** e números **Pilot Status web** (QR/não oficial, também chamados **EVO\_GO**). Qualquer outro provedor (ex.: Evolution v2) retorna `400 FEATURE_NOT_SUPPORTED`. Todos os endpoints exigem uma chave **com escopo de número**. Veja a [visão geral](/pt-BR/api/calls/overview).
 </Note>
+
+<Warning>
+  **Meta exige SDP.** No provedor Meta a mídia flui pelo navegador via WebRTC — você fornece uma oferta SDP ao iniciar e uma resposta SDP ao atender. **O EVO\_GO não usa SDP:** a mídia é tratada no **servidor** (SRTP/Opus), então `sdpOffer`/`sdpAnswer` permanecem `null` e não há modelo de permissão BIC nem superfície de configurações de chamada.
+</Warning>
 
 ## Endpoints
 
-| Método | Endpoint | Descrição |
-| --- | --- | --- |
-| `POST` | `/v1/calls` | Inicia uma chamada iniciada pela empresa (BIC). |
-| `GET` | `/v1/calls` | Lista as chamadas do número (mais recentes primeiro; `limit` 1–100, `before` cursor ISO 8601). |
-| `GET` | `/v1/calls/{callId}` | Uma chamada; adicione `?includeSdp=1` para receber `sdpOffer`/`sdpAnswer`. |
-| `POST` | `/v1/calls/{callId}/pre-accept` | Resposta SDP antecipada OPCIONAL (reduz cortes no áudio; a chamada só conecta ao aceitar). |
-| `POST` | `/v1/calls/{callId}/accept` | Atende uma chamada recebida (UIC) com a resposta SDP do lado da empresa. |
-| `POST` | `/v1/calls/{callId}/reject` | Recusa uma chamada recebida (sem corpo). |
-| `POST` | `/v1/calls/{callId}/terminate` | Desliga uma chamada ativa (sem corpo). |
-| `GET` | `/v1/calls/settings` | Lê o objeto de configurações `calling` do número. |
-| `PUT` | `/v1/calls/settings` | Atualização parcial das configurações `calling`. |
-| `GET` | `/v1/calls/permissions?to=<phone>` | Verifica se a empresa pode ligar para `to`. |
-| `POST` | `/v1/calls/permissions/request` | Envia a solicitação interativa de permissão de chamada (dentro da janela de 24h). |
+Os provedores marcados são os que suportam cada endpoint. Chamar um endpoint em um provedor não suportado retorna `400 FEATURE_NOT_SUPPORTED`. Se um número EVO\_GO não estiver conectado, os endpoints retornam `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
+
+| Método | Endpoint | Provedores | Descrição |
+| --- | --- | --- | --- |
+| `POST` | `/v1/calls` | META, EVO\_GO | Inicia uma chamada iniciada pela empresa (BIC). |
+| `GET` | `/v1/calls` | META, EVO\_GO | Lista as chamadas do número (mais recentes primeiro; `limit` 1–100, `before` cursor ISO 8601). |
+| `GET` | `/v1/calls/{callId}` | META, EVO\_GO | Uma chamada; adicione `?includeSdp=1` para receber `sdpOffer`/`sdpAnswer` (Meta). |
+| `POST` | `/v1/calls/{callId}/accept` | META, EVO\_GO | Atende uma chamada recebida (UIC). No Meta, com resposta SDP; no EVO\_GO, sem SDP. |
+| `POST` | `/v1/calls/{callId}/reject` | META, EVO\_GO | Recusa uma chamada recebida (sem corpo). |
+| `POST` | `/v1/calls/{callId}/terminate` | META, EVO\_GO | Desliga uma chamada ativa (sem corpo). |
+| `POST` | `/v1/calls/{callId}/pre-accept` | **Somente META** | Resposta SDP antecipada OPCIONAL (reduz cortes no áudio; a chamada só conecta ao aceitar). |
+| `GET` | `/v1/calls/settings` | **Somente META** | Lê o objeto de configurações `calling` do número. |
+| `PUT` | `/v1/calls/settings` | **Somente META** | Atualização parcial das configurações `calling`. |
+| `GET` | `/v1/calls/permissions?to=<phone>` | **Somente META** | Verifica se a empresa pode ligar para `to`. |
+| `POST` | `/v1/calls/permissions/request` | **Somente META** | Envia a solicitação interativa de permissão de chamada (dentro da janela de 24h). |
+| `POST` | `/v1/calls/{callId}/play` | **Somente EVO\_GO** | Reproduz um arquivo de áudio na chamada (mídia no servidor). |
+| `POST` | `/v1/calls/{callId}/realtime-session` | **Somente EVO\_GO** | Abre uma sessão WebSocket full-duplex de áudio PCM16. |
 
 `{callId}` aceita **ou** o id de chamada do Pilot Status (`call_...`) **ou** o id de chamada da Meta (`wacid...`).
 
-## 1. Habilitar chamadas no número
+## 1. Iniciar uma chamada (BIC)
+
+<CodeGroup>
+
+```bash Meta (com SDP)
+curl -X POST "https://pilotstatus.com.br/v1/calls" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "to": "+5511999999999",
+    "sdp": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n...",
+    "sdpType": "offer",
+    "bizOpaqueCallbackData": "order-42"
+  }'
+```
+
+```bash EVO_GO (sem SDP)
+curl -X POST "https://pilotstatus.com.br/v1/calls" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "to": "+5511999999999" }'
+```
+
+</CodeGroup>
+
+```json
+HTTP 201
+{ "id": "call_01HZX...", "externalCallId": "wacid.ABGG...", "status": "INITIATED" }
+```
+
+- **Meta:** `sdp` é a **oferta** RFC 8866 produzida pelo SEU cliente WebRTC. O SDP do lado da empresa deve usar `a=setup:active`. Sem permissão, a Meta retorna 138006 → o endpoint expõe `code: "META_CALL_PERMISSION_REQUIRED"`.
+- **EVO\_GO:** não envie `sdp` — a mídia é tratada no servidor. Não há modelo de permissão BIC.
+- `bizOpaqueCallbackData` (opcional, Meta) é devolvido no webhook de encerramento.
+
+## 2. Atender uma chamada recebida (UIC)
+
+Quando um usuário liga para o seu número, você recebe o webhook **`call.ringing`**. Então:
+
+<CodeGroup>
+
+```bash Meta (com resposta SDP)
+# busca a chamada com a oferta SDP
+curl "https://pilotstatus.com.br/v1/calls/wacid.ABGG...?includeSdp=1" \
+  -H "x-api-key: ps_your_key_here"
+
+# atende (corpo: sua resposta SDP; sdpType usa "answer" como padrão)
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../accept" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "sdp": "v=0\r\n..." }'
+```
+
+```bash EVO_GO (sem SDP)
+curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../accept" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+</CodeGroup>
+
+```bash
+# recusa / desliga (sem corpo, ambos provedores)
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../reject" -H "x-api-key: ps_your_key_here"
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x-api-key: ps_your_key_here"
+```
+
+`accept`/`pre-accept`/`reject`/`terminate` respondem `{ "success": true, "id": "call_...", "status": "..." }`. O `pre-accept` (**somente Meta**) é opcional (resposta SDP antecipada para reduzir cortes); a chamada só conecta no `accept`.
+
+## 3. Habilitar chamadas e configurações (somente Meta)
+
+<Note>
+  As seções 3 e 4 aplicam-se **apenas a números Meta**. No EVO\_GO não há superfície de configurações de chamada nem modelo de permissão BIC — chamar esses endpoints retorna `400 FEATURE_NOT_SUPPORTED`.
+</Note>
 
 O Pilot Status tenta habilitar chamadas automaticamente quando um número Meta conecta. Leia/ajuste a qualquer momento:
 
@@ -50,7 +129,7 @@ curl -X PUT "https://pilotstatus.com.br/v1/calls/settings" \
 - Números com um limite de mensagens **abaixo de 2.000/dia ainda não podem habilitar chamadas** (erro 138015 da Meta).
 - Credenciais SIP nunca são solicitadas nem retornadas.
 
-## 2. Permissão de chamada (obrigatória antes de uma BIC)
+## 4. Permissão de chamada (somente Meta, obrigatória antes de uma BIC)
 
 ```bash
 # verificar
@@ -81,52 +160,39 @@ Resposta da verificação:
 
 A resposta do usuário chega como o evento de webhook **`call.permission_updated`** (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`). A Meta limita a taxa de solicitações de permissão (erro 138009) e o volume de BIC (100 chamadas/24h por número — erro 138012).
 
-## 3. Iniciar uma chamada (BIC)
+## 5. Reproduzir áudio na chamada (somente EVO\_GO)
+
+Nos números EVO\_GO a mídia é tratada no servidor, então você pode instruir o backend a **baixar um arquivo de áudio e reproduzi-lo** na chamada ativa. O backend busca a URL através de um guard de SSRF.
 
 ```bash
-curl -X POST "https://pilotstatus.com.br/v1/calls" \
+curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../play" \
   -H "Content-Type: application/json" \
   -H "x-api-key: ps_your_key_here" \
-  -d '{
-    "to": "+5511999999999",
-    "sdp": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n...",
-    "sdpType": "offer",
-    "bizOpaqueCallbackData": "order-42"
-  }'
+  -d '{ "url": "https://example.com/audio.ogg" }'
+```
+
+<Warning>
+  Endpoint **somente EVO\_GO** — em um número Meta retorna `400 FEATURE_NOT_SUPPORTED`.
+</Warning>
+
+## 6. Sessão de áudio em tempo real (somente EVO\_GO)
+
+Abre uma sessão WebSocket **full-duplex de áudio PCM16** para transmitir áudio de/para a chamada ao vivo.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../realtime-session" \
+  -H "x-api-key: ps_your_key_here"
 ```
 
 ```json
-HTTP 201
-{ "id": "call_01HZX...", "externalCallId": "wacid.ABGG...", "status": "INITIATED" }
+{ "wsUrl": "wss://<public-evolution-go-host>/...", "token": "...", "expiresIn": 120 }
 ```
 
-- `sdp` é a **oferta** RFC 8866 produzida pelo SEU cliente WebRTC. O SDP do lado da empresa deve usar `a=setup:active`.
-- `bizOpaqueCallbackData` (opcional) é devolvido no webhook de encerramento.
-- Sem permissão, a Meta retorna 138006 → o endpoint expõe `code: "META_CALL_PERMISSION_REQUIRED"`.
+<Note>
+  A `wsUrl` retornada aponta para o **host público do Evolution GO** — conecte-se **diretamente** a ela (não é feito proxy). O token é de **uso único** com TTL de ~2 minutos. A camada HTTP não faz upgrade de WebSocket. Endpoint **somente EVO\_GO** (Meta → `400 FEATURE_NOT_SUPPORTED`).
+</Note>
 
-## 4. Atender uma chamada recebida (UIC)
-
-Quando um usuário liga para o seu número, você recebe o webhook **`call.ringing`** (e o envelope nativo `calls` carregando a oferta SDP do usuário). Então:
-
-```bash
-# busca a chamada com a oferta SDP
-curl "https://pilotstatus.com.br/v1/calls/wacid.ABGG...?includeSdp=1" \
-  -H "x-api-key: ps_your_key_here"
-
-# atende (corpo: sua resposta SDP; sdpType usa "answer" como padrão)
-curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../accept" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: ps_your_key_here" \
-  -d '{ "sdp": "v=0\r\n..." }'
-
-# ou recusa / desliga (sem corpo)
-curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../reject" -H "x-api-key: ps_your_key_here"
-curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x-api-key: ps_your_key_here"
-```
-
-`accept`/`pre-accept`/`reject`/`terminate` respondem `{ "success": true, "id": "call_...", "status": "..." }`. O `pre-accept` é opcional (resposta SDP antecipada para reduzir cortes); a chamada só conecta no `accept`.
-
-## 5. Objeto de chamada (DTO)
+## 7. Objeto de chamada (DTO)
 
 ```json
 {
@@ -151,12 +217,27 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x
 
 - `status`: `INITIATED` | `RINGING` | `ACCEPTED` | `REJECTED` | `COMPLETED` | `FAILED` | `MISSED`.
 - `direction`: `INBOUND` (UIC) | `OUTBOUND` (BIC).
-- Os SDPs (`sdpOffer`/`sdpAnswer`) aparecem apenas com `?includeSdp=1` em `GET /v1/calls/{callId}` — nunca na listagem.
+- Os SDPs (`sdpOffer`/`sdpAnswer`) aparecem apenas com `?includeSdp=1` em `GET /v1/calls/{callId}` — nunca na listagem. No EVO\_GO permanecem `null` (mídia no servidor).
 - `durationSeconds` é definido apenas quando a chamada foi atendida.
+
+## Webhooks
+
+Estes eventos disparam para **ambos os provedores** (META e EVO\_GO):
+
+<Card title="Eventos de chamada" icon="phone">
+  `call.ringing` · `call.connected` · `call.ended` (com `duration` quando atendida) · `call.missed` · `call.permission_updated`
+</Card>
+
+## Faturamento
+
+- **Meta:** as BIC são cobradas pela Meta na WABA (por minuto, pulsos de 6s, apenas quando atendida). As UIC são gratuitas.
+- **EVO\_GO:** sem cobrança por minuto da Meta.
+- O Pilot Status não cobra nada pelas chamadas em nenhum dos provedores.
 
 ## Erros comuns
 
-- `400 FEATURE_NOT_SUPPORTED` — o número da chave não é um número da Meta Cloud API.
+- `400 FEATURE_NOT_SUPPORTED` — o número da chave não suporta o endpoint (ex.: provedor Evolution v2, ou um endpoint exclusivo de um provedor chamado no outro).
+- `409 WHATSAPP_INSTANCE_NOT_CONNECTED` — número EVO\_GO não conectado.
 - `400 NUMBER_NOT_FOUND` — a chave não está vinculada a um número.
 - `400` — validação do corpo, `INVALID_LIMIT`, `INVALID_BEFORE`, `MISSING_TO`.
 - `401` — `x-api-key` / `x-api-key-id` ausente/inválido.

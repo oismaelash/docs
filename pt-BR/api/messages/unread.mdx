@@ -4,7 +4,7 @@ description: "Recupere todas as mensagens recebidas que ainda não foram lidas p
 mode: "wide"
 ---
 
-Recupere todas as mensagens recebidas que ainda não foram lidas (`readAt IS NULL`) para o número conectado. Cada item inclui a contagem de não lidas no nível da conversa.
+Recupere as mensagens recebidas que contam como não lidas para o número conectado. O estado de não lida **não** é derivado de um campo `readAt` por mensagem (o `readAt` por mensagem não é mantido para mensagens recebidas). Em vez disso, ele é derivado do `unreadCount` de cada conversa — o mesmo contador exibido no painel — e o `total` da resposta é a **soma do `unreadCount` entre as conversas não lidas**. Cada item inclui essa contagem de não lidas no nível da conversa.
 
 ## Endpoint
 
@@ -28,13 +28,13 @@ Não há filtro de intervalo de datas neste endpoint; ele retorna todas as mensa
 
 ## Efeito do modo PII
 
-A resposta depende do **modo PII** configurado para o número (definido via `PATCH /api/whatsapp-numbers/[id]`):
+A resposta depende do **modo PII** configurado para o número (definido via `PATCH /api/whatsapp-numbers/[id]`). Este endpoint usa **redigir-e-mostrar** (redact-and-show): ele **não** aplica um filtro rígido por data de retenção — os envelopes das mensagens continuam sendo retornados, mas `content`, `from`, `media` e `fromName`/remetente são anulados e `redacted: true` é definido nas linhas cobertas pela política de PII.
 
 | Modo PII | Efeito |
 | --- | --- |
-| `STORE_INDEFINITE` (padrão) | Todas as mensagens não lidas são retornadas. |
-| `STORE_X_DAYS` | Somente mensagens não lidas criadas nos últimos N dias são retornadas (mensagens fora da janela de retenção já foram excluídas permanentemente pelo job diário). |
-| `RELAY_ONLY` | Retorna uma lista **vazia** (`messages: []`, `total: 0`) e inclui um campo `notice: "PII_RELAY_ONLY"`. Nenhum dado de mensagem é armazenado para esse número. |
+| `STORE_INDEFINITE` (padrão) | Todas as mensagens não lidas são retornadas na íntegra, `redacted: false`. |
+| `STORE_X_DAYS` | Os envelopes continuam sendo retornados, mas as linhas **fora** da janela de retenção são redigidas (`content`/`from`/`media`/remetente anulados, `redacted: true`); as linhas dentro da janela são retornadas na íntegra. |
+| `RELAY_ONLY` | O redigir-e-mostrar se aplica a **todas** as linhas (`redacted: true`) e a resposta adiciona um campo `notice: "PII_RELAY_ONLY"`. Na prática, números `RELAY_ONLY` não armazenam nada, então a lista costuma ficar **vazia** (`messages: []`, `total: 0`). |
 
 ## Exemplo
 
@@ -57,6 +57,7 @@ curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
       "content": "Hi, I need help with my order.",
       "from": "+5511999999999",
       "fromName": "John Doe",
+      "redacted": false,
       "readAt": null,
       "createdAt": "2026-06-27T10:15:00.000Z"
     },
@@ -76,6 +77,7 @@ curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
       },
       "from": "+5511999999999",
       "fromName": "John Doe",
+      "redacted": false,
       "readAt": null,
       "createdAt": "2026-06-27T10:16:00.000Z"
     }
@@ -144,8 +146,12 @@ curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
   - `media.fileName` — Nome do arquivo da mídia quando conhecido (pode ser `null`).
 </ResponseField>
 
+<ResponseField name="redacted" type="boolean">
+  `true` quando `content`, `media` e os campos do remetente foram anulados pela política de PII do número (veja [Efeito do modo PII](#efeito-do-modo-pii)); `false` (ou ausente) quando a linha é retornada na íntegra.
+</ResponseField>
+
 <ResponseField name="readAt" type="null" required>
-  `null` para mensagens não lidas (sempre null para resultados deste endpoint).
+  Sempre `null` — o `readAt` por mensagem não é mantido para mensagens recebidas; o estado de não lida é rastreado no nível da conversa via `conversationUnreadCount`.
 </ResponseField>
 
 <ResponseField name="createdAt" type="string" required>

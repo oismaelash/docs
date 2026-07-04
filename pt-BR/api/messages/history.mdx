@@ -41,13 +41,13 @@ Os resultados são ordenados por `providerTimestamp` de forma decrescente (mais 
 
 ## Efeito do modo PII
 
-A resposta depende do **modo PII** configurado para o número (definido via `PATCH /api/whatsapp-numbers/[id]`):
+A resposta depende do **modo PII** configurado para o número (definido via `PATCH /api/whatsapp-numbers/[id]`). Os limites da query vêm exclusivamente dos seus `startDate`/`endDate` — a janela PII **não** é aplicada à query. Em vez disso, as linhas que ficam fora da janela de retenção ainda são retornadas, porém **redigidas**: a linha está presente (indexada pelo seu `providerTimestamp`) com `redacted: true` e com `text`, `media`, `participantName` e `participantPhone` nulos.
 
 | Modo PII | Efeito |
 | --- | --- |
-| `STORE_INDEFINITE` (padrão) | Todas as mensagens são retornadas (sujeitas aos filtros de data). |
-| `STORE_X_DAYS` | Apenas mensagens dos últimos N dias são retornadas. O limite inferior efetivo é `max(startDate, now − piiRetentionDays)`. Mensagens fora da janela de retenção foram excluídas permanentemente pela rotina diária. |
-| `RELAY_ONLY` | Retorna uma lista **vazia** (`messages: []`, `total: 0`) e inclui um campo `notice: "PII_RELAY_ONLY"`. Nenhum dado de mensagem é armazenado para este número. |
+| `STORE_INDEFINITE` (padrão) | Todas as mensagens são retornadas na íntegra (sujeitas aos filtros de data). |
+| `STORE_X_DAYS` | Mensagens dos últimos N dias são retornadas na íntegra. Mensagens mais antigas que `piiRetentionDays` são retornadas **redigidas** (`redacted: true`, com `text`/`media`/`participantName`/`participantPhone` nulos), indexadas pelo `providerTimestamp`. |
+| `RELAY_ONLY` | Toda mensagem é retornada **redigida** (`redacted: true`, com conteúdo/mídia/contraparte nulos) e a resposta inclui um campo `notice: "PII_RELAY_ONLY"`. |
 
 ## Exemplo
 
@@ -91,11 +91,33 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
 
 ```json RELAY_ONLY (200)
 {
-  "messages": [],
-  "total": 0,
+  "messages": [
+    {
+      "id": "cm_01HZX...",
+      "conversationId": "conv_01HZX...",
+      "direction": "INBOUND",
+      "providerKind": "PILOT_STATUS",
+      "externalMessageId": "wamid.HBg...",
+      "status": "DELIVERED",
+      "messageType": "text",
+      "origin": null,
+      "text": null,
+      "participantName": null,
+      "participantPhone": null,
+      "repliedToExternalId": null,
+      "media": null,
+      "redacted": true,
+      "sentAt": null,
+      "deliveredAt": "2026-06-27T10:00:01.000Z",
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T10:00:00.000Z",
+      "createdAt": "2026-06-27T10:00:00.500Z"
+    }
+  ],
+  "total": 1,
   "page": 1,
   "pageSize": 30,
-  "totalPages": 0,
+  "totalPages": 1,
   "notice": "PII_RELAY_ONLY"
 }
 ```
@@ -160,6 +182,10 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
   - `media.url` — URL de download direto quando disponível. Mídia recebida da **META** é espelhada no S3 (portanto mensagens META geralmente carregam tanto `id` **quanto** `url`); o **Evolution** fornece seu próprio link. Melhor esforço — pode ser `null`.
   - `media.mimeType` — Tipo MIME da mídia quando conhecido (pode ser `null`).
   - `media.fileName` — Nome do arquivo de mídia quando conhecido (pode ser `null`).
+</ResponseField>
+
+<ResponseField name="redacted" type="boolean">
+  `true` quando a linha fica fora da janela de retenção de PII do número (ou o número está em `RELAY_ONLY`). Linhas redigidas mantêm seu `id`, `providerTimestamp` e os metadados de entrega, mas `text`, `media`, `participantName` e `participantPhone` são `null`.
 </ResponseField>
 
 <ResponseField name="sentAt" type="string | null">

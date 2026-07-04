@@ -1,0 +1,185 @@
+---
+title: "Fazer e Receber Chamadas de Voz no WhatsApp"
+sidebarTitle: "Chamadas de Voz"
+description: "Faça chamadas iniciadas pela empresa, atenda chamadas do usuário, solicite permissões de chamada e use o softphone integrado do painel com o WhatsApp Business Calling."
+mode: "wide"
+---
+
+O WhatsApp Business Calling permite fazer e receber **chamadas de voz** com seus clientes pelo WhatsApp. O Pilot Status cuida da sinalização; o áudio flui conforme o provedor do número — direto navegador↔WhatsApp (Meta) ou no servidor (Pilot Status web).
+
+<Note>
+  Chamadas de voz funcionam em **dois tipos de provedor**: números **Meta Cloud API** e números **Pilot Status web** (não oficiais, conectados por QR — internamente `EVO_GO`). Qualquer outro provedor (ex.: Evolution v2) retorna `400 FEATURE_NOT_SUPPORTED`. Em um número Pilot Status web ainda **não conectado**, os endpoints de chamada retornam `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
+</Note>
+
+## Os dois provedores em resumo
+
+|  | **Meta Cloud API** | **Pilot Status web** (`EVO_GO`) |
+| --- | --- | --- |
+| SDP em `POST /v1/calls` e `/accept` | **Obrigatório** (`sdp` de oferta/resposta, WebRTC) | **Nenhum** — `sdpOffer`/`sdpAnswer` ficam `null` |
+| Fluxo de mídia | Navegador↔WhatsApp (WebRTC) | **No servidor** (SRTP/Opus) |
+| Softphone no painel `/chat` | Sim | Não |
+| Permissão de chamada e configurações | Sim | Não se aplica |
+| Controle de áudio | Seu cliente WebRTC | `/play` e `/realtime-session` |
+| Cobrança Meta por minuto (BIC) | Sim, na sua WABA | Não há |
+
+O Pilot Status **não cobra** nada pelas chamadas. Em números Meta, os minutos de BIC são cobrados pela **Meta diretamente na sua WABA**; em números Pilot Status web não há cobrança Meta por minuto.
+
+## Endpoints comuns aos dois provedores
+
+Estes endpoints funcionam tanto em Meta quanto em Pilot Status web:
+
+- `POST /v1/calls` — fazer uma chamada iniciada pela empresa (BIC)
+- `GET /v1/calls` — listar chamadas
+- `GET /v1/calls/{callId}` — detalhes de uma chamada
+- `POST /v1/calls/{callId}/accept` — atender
+- `POST /v1/calls/{callId}/reject` — recusar
+- `POST /v1/calls/{callId}/terminate` — encerrar
+
+## Os dois tipos de chamada
+
+| Tipo | Quem inicia | Cobrança |
+| --- | --- | --- |
+| **BIC** — Chamada Iniciada pela Empresa | Você liga para o cliente | Meta: cobrada na sua WABA (por minuto, pulsos de 6s, só quando atendida). Pilot Status web: sem cobrança Meta |
+| **UIC** — Chamada Iniciada pelo Usuário | O cliente liga para você | **Gratuita** |
+
+---
+
+# Números Meta Cloud API
+
+## Caminho mais fácil: o softphone do painel
+
+Em um número Meta, a página **/chat** do painel tem um **softphone** de navegador integrado — atenda, faça, rejeite e encerre chamadas do WhatsApp sem escrever código WebRTC. É a forma mais rápida de testar chamadas. Use a API abaixo quando quiser construir sua própria experiência de chamada.
+
+## Requisitos (Meta)
+
+1. Um número **Meta Cloud API** conectado.
+2. Chamadas **habilitadas** no número: `PUT /v1/calls/settings` com `{ "status": "ENABLED" }`. Números em um tier de mensagens abaixo de **2.000/dia não podem habilitar chamadas** (erro Meta `138015`).
+3. Para chamadas iniciadas pela empresa, uma **permissão de chamada** válida do usuário (veja abaixo).
+
+## Passo 1 — Obter permissão para ligar (só BIC)
+
+Você só pode iniciar uma chamada iniciada pela empresa após o usuário conceder uma **permissão de chamada**. Solicite-a dentro da janela de atendimento de 24 horas:
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/calls/permissions/request \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_seu_token_aqui" \
+  -d '{ "to": "+5511999999999", "text": "Podemos ligar sobre seu pedido?" }'
+```
+
+A resposta do usuário chega como um webhook `call.permission_updated`. Consulte a permissão atual a qualquer momento:
+
+```bash
+curl "https://pilotstatus.com.br/v1/calls/permissions?to=+5511999999999" \
+  -H "x-api-key: ps_seu_token_aqui"
+```
+
+Retorna `no_permission`, `temporary` ou `permanent` mais os limites por ação. Sem permissão, `POST /v1/calls` retorna `META_CALL_PERMISSION_REQUIRED`.
+
+## Passo 2 — Fazer uma chamada (BIC)
+
+Seu cliente WebRTC produz uma oferta SDP; passe-a ao Pilot Status, que a retransmite ao WhatsApp. O áudio então flui navegador↔WhatsApp diretamente.
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/calls \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_seu_token_aqui" \
+  -d '{ "to": "+5511999999999", "sdp": "<oferta SDP RFC 8866>", "sdpType": "offer" }'
+```
+
+```json
+HTTP 201
+{ "id": "call_abc", "externalCallId": "wacid.HBg...", "status": "RINGING" }
+```
+
+## Passo 3 — Receber uma chamada (UIC)
+
+Quando um cliente liga para você, dispara um webhook `call.ringing`. Atenda com sua resposta SDP:
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/calls/call_abc/accept \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_seu_token_aqui" \
+  -d '{ "sdp": "<resposta SDP RFC 8866>" }'
+```
+
+- `POST /v1/calls/{callId}/pre-accept` — resposta antecipada opcional que reduz o corte de áudio; a chamada ainda conecta apenas no `accept`. **Somente Meta.**
+- `POST /v1/calls/{callId}/reject` — recusar (sem corpo).
+- `POST /v1/calls/{callId}/terminate` — encerrar uma chamada ativa (sem corpo).
+
+<Note>
+  Os endpoints **exclusivos da Meta** — `POST /v1/calls/{callId}/pre-accept`, `GET`/`PUT /v1/calls/settings`, `GET /v1/calls/permissions` e `POST /v1/calls/permissions/request` — retornam `400 FEATURE_NOT_SUPPORTED` em números Pilot Status web.
+</Note>
+
+---
+
+# Números Pilot Status web (`EVO_GO`)
+
+Em números **Pilot Status web** (não oficiais, conectados por QR), as chamadas funcionam de forma diferente: **não há SDP** e **não há WebRTC no navegador**. O áudio flui **no servidor** (SRTP/Opus), e não existe modelo de permissão nem tela de configurações de chamada.
+
+## Fazer e atender (sem SDP)
+
+Envie `POST /v1/calls` **sem** `sdp`; para atender uma chamada recebida, chame `/accept` **sem** corpo. Os campos `sdpOffer`/`sdpAnswer` permanecem `null`.
+
+```bash
+# Fazer uma chamada de um número Pilot Status web
+curl -X POST https://pilotstatus.com.br/v1/calls \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_seu_token_aqui" \
+  -d '{ "to": "+5511999999999" }'
+```
+
+```bash
+# Atender uma chamada recebida (sem corpo)
+curl -X POST https://pilotstatus.com.br/v1/calls/call_abc/accept \
+  -H "x-api-key: ps_seu_token_aqui"
+```
+
+Recusar e encerrar são iguais aos da Meta: `POST /v1/calls/{callId}/reject` e `POST /v1/calls/{callId}/terminate`.
+
+## Controlar o áudio da chamada
+
+Como a mídia é tratada no servidor, você controla o áudio com dois endpoints **exclusivos do Pilot Status web** (retornam `400 FEATURE_NOT_SUPPORTED` em números Meta):
+
+<CodeGroup>
+
+```bash Tocar um arquivo de áudio
+# O backend baixa seu arquivo (com proteção SSRF) e o toca na chamada
+curl -X POST https://pilotstatus.com.br/v1/calls/call_abc/play \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_seu_token_aqui" \
+  -d '{ "url": "https://exemplo.com/mensagem.ogg" }'
+```
+
+```bash Sessão de áudio em tempo real
+# Abre um WebSocket full-duplex de PCM16
+curl -X POST https://pilotstatus.com.br/v1/calls/call_abc/realtime-session \
+  -H "x-api-key: ps_seu_token_aqui"
+```
+
+</CodeGroup>
+
+<Warning>
+  O `wsUrl` retornado por `/realtime-session` aponta para o **host público do Evolution GO** (não é proxeado pelo Pilot Status). O token é de **uso único** com TTL de aproximadamente **2 minutos** — conecte-se **diretamente** ao WebSocket assim que receber a resposta.
+</Warning>
+
+## Requisitos (Pilot Status web)
+
+1. Um número **Pilot Status web** (`EVO_GO`) **conectado**. Se não estiver conectado, os endpoints de chamada retornam `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
+2. Não há permissão de chamada nem configurações a habilitar — basta fazer ou atender a chamada.
+
+## Acompanhe o progresso com webhooks
+
+Assine estes eventos no seu webhook — eles disparam para **ambos** os provedores (Meta e Pilot Status web): `call.ringing`, `call.connected`, `call.ended` (inclui `duration` em segundos quando atendida), `call.missed` e `call.permission_updated`. Em números Meta, o envelope nativo `calls` da Meta também é entregue para sinalização WebRTC personalizada.
+
+## Próximos passos
+
+<CardGroup cols={2}>
+  <Card title="Referência da API de Chamadas" icon="phone" href="/pt-BR/api/calls/endpoints">
+    Todos os endpoints /v1/calls, parâmetros e configurações.
+  </Card>
+
+  <Card title="Visão geral de Chamadas" icon="circle-info" href="/pt-BR/api/calls/overview">
+    Modelo de sinalização, detalhes de cobrança e limites por provedor.
+  </Card>
+</CardGroup>

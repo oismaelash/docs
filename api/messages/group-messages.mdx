@@ -42,13 +42,15 @@ Results are ordered by `createdAt` descending (newest first).
 
 ## PII mode effect
 
-The response depends on the **PII mode** configured for the number (set via `PATCH /api/whatsapp-numbers/[id]`):
+The response depends on the **PII mode** configured for the number (set via `PATCH /api/whatsapp-numbers/[id]`).
+
+The query lower and upper bounds come **only** from the caller's `startDate` / `endDate` — PII mode never narrows the queried date range. Instead, rows that fall outside the number's PII retention window are still returned, but **redacted**: their `content`, `media`, and participant/peer fields are set to `null` and the row carries `redacted: true`.
 
 | PII mode | Effect |
 | --- | --- |
-| `STORE_INDEFINITE` (default) | All group messages returned (subject to date filters). |
-| `STORE_X_DAYS` | Only messages within the last N days are returned. The effective lower bound is `max(startDate, now − piiRetentionDays)`. Messages outside the retention window have been hard-deleted by the daily job. |
-| `RELAY_ONLY` | Returns an **empty** list (`messages: []`, `total: 0`) and includes a `notice: "PII_RELAY_ONLY"` field. No message data is stored for this number. |
+| `STORE_INDEFINITE` (default) | All group messages returned in full (subject to `startDate` / `endDate`). |
+| `STORE_X_DAYS` | All matching rows are returned. Rows older than the retention window are redacted (`content`, `media`, and participant fields `null`, `redacted: true`); rows within the window are returned in full. |
+| `RELAY_ONLY` | All matching rows are returned but **every** row is redacted (`content`, `media`, and participant fields `null`, `redacted: true`), and the response includes a `notice: "PII_RELAY_ONLY"` field. |
 
 ## Example
 
@@ -114,11 +116,26 @@ curl "https://pilotstatus.com.br/v1/messages/group?startDate=2026-06-01T00:00:00
 
 ```json RELAY_ONLY (200)
 {
-  "messages": [],
-  "total": 0,
+  "messages": [
+    {
+      "id": "cmm04obm46zz0qv4ycjp8x6r2",
+      "conversationId": "conv_grp_789",
+      "direction": "INBOUND",
+      "type": "text",
+      "content": null,
+      "media": null,
+      "from": null,
+      "participantName": null,
+      "groupId": "120363123456789012@g.us",
+      "groupName": "Sales Team",
+      "redacted": true,
+      "createdAt": "2026-06-27T09:30:00.000Z"
+    }
+  ],
+  "total": 87,
   "page": 1,
   "pageSize": 30,
-  "totalPages": 0,
+  "totalPages": 3,
   "notice": "PII_RELAY_ONLY"
 }
 ```
@@ -171,6 +188,10 @@ curl "https://pilotstatus.com.br/v1/messages/group?startDate=2026-06-01T00:00:00
   - `media.url` — Direct download URL when available. **META** inbound media is mirrored to S3 (so META messages usually carry both `id` **and** `url`); **Evolution** provides its own link. Best-effort — may be `null`.
   - `media.mimeType` — Media MIME type when known (may be `null`).
   - `media.fileName` — Media file name when known (may be `null`).
+</ResponseField>
+
+<ResponseField name="redacted" type="boolean">
+  `true` when the row falls outside the number's PII retention window (or on every row for `RELAY_ONLY`). Redacted rows still appear in the list, but `content`, `media`, and participant/peer fields are `null`.
 </ResponseField>
 
 <ResponseField name="createdAt" type="string" required>

@@ -4,7 +4,7 @@ description: "Retrieve all inbound messages that have not been read yet for the 
 mode: "wide"
 ---
 
-Retrieve all inbound messages that have not been read yet (`readAt IS NULL`) for the connected number. Each item includes the conversation-level unread count.
+Retrieve the inbound messages that count as unread for the connected number. Unread is **not** derived from a per-message `readAt` flag (per-message `readAt` is not maintained for inbound messages). Instead, it is derived from each conversation's `unreadCount` — the same counter shown in the dashboard — and the response `total` is the **sum of `unreadCount` across the unread conversations**. Each item includes that conversation-level unread count.
 
 ## Endpoint
 
@@ -28,13 +28,13 @@ There is no date-range filter on this endpoint; it returns all currently unread 
 
 ## PII mode effect
 
-The response depends on the **PII mode** configured for the number (set via `PATCH /api/whatsapp-numbers/[id]`):
+The response depends on the **PII mode** configured for the number (set via `PATCH /api/whatsapp-numbers/[id]`). This endpoint uses **redact-and-show**: it does **not** apply a hard retention date filter — message envelopes are still returned, but `content`, `from`, `media`, and `fromName`/sender are nulled and `redacted: true` is set for rows the PII policy covers.
 
 | PII mode | Effect |
 | --- | --- |
-| `STORE_INDEFINITE` (default) | All unread messages returned. |
-| `STORE_X_DAYS` | Only unread messages created within the last N days are returned (messages outside the retention window have already been hard-deleted by the daily job). |
-| `RELAY_ONLY` | Returns an **empty** list (`messages: []`, `total: 0`) and includes a `notice: "PII_RELAY_ONLY"` field. No message data is stored for this number. |
+| `STORE_INDEFINITE` (default) | All unread messages returned in full, `redacted: false`. |
+| `STORE_X_DAYS` | Envelopes are still returned, but rows **outside** the retention window are redacted (`content`/`from`/`media`/sender nulled, `redacted: true`); rows inside the window are returned in full. |
+| `RELAY_ONLY` | Redact-and-show applies to **all** rows (`redacted: true`) and the response adds a `notice: "PII_RELAY_ONLY"` field. In practice `RELAY_ONLY` numbers store nothing, so the list is usually **empty** (`messages: []`, `total: 0`). |
 
 ## Example
 
@@ -57,6 +57,7 @@ curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
       "content": "Hi, I need help with my order.",
       "from": "+5511999999999",
       "fromName": "John Doe",
+      "redacted": false,
       "readAt": null,
       "createdAt": "2026-06-27T10:15:00.000Z"
     },
@@ -76,6 +77,7 @@ curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
       },
       "from": "+5511999999999",
       "fromName": "John Doe",
+      "redacted": false,
       "readAt": null,
       "createdAt": "2026-06-27T10:16:00.000Z"
     }
@@ -144,8 +146,12 @@ curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
   - `media.fileName` — Media file name when known (may be `null`).
 </ResponseField>
 
+<ResponseField name="redacted" type="boolean">
+  `true` when `content`, `media`, and the sender fields were nulled by the number's PII policy (see [PII mode effect](#pii-mode-effect)); `false` (or absent) when the row is returned in full.
+</ResponseField>
+
 <ResponseField name="readAt" type="null" required>
-  `null` for unread messages (always null for results from this endpoint).
+  Always `null` — per-message `readAt` is not maintained for inbound messages; unread state is tracked at the conversation level via `conversationUnreadCount`.
 </ResponseField>
 
 <ResponseField name="createdAt" type="string" required>

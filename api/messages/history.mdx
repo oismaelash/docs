@@ -40,13 +40,13 @@ Results are ordered by `providerTimestamp` descending (newest first). The endpoi
 
 ## PII mode effect
 
-The response depends on the **PII mode** configured for the number (set via `PATCH /api/whatsapp-numbers/[id]`):
+The response depends on the **PII mode** configured for the number (set via `PATCH /api/whatsapp-numbers/[id]`). The query bounds come solely from your `startDate`/`endDate` — the PII window is **not** applied to the query. Instead, rows that fall outside the retention window are still returned, but **redacted**: the row is present (keyed on its `providerTimestamp`) with `redacted: true` and its `text`, `media`, `participantName`, and `participantPhone` nulled.
 
 | PII mode | Effect |
 | --- | --- |
-| `STORE_INDEFINITE` (default) | All messages returned (subject to date filters). |
-| `STORE_X_DAYS` | Only messages within the last N days are returned. The effective lower bound is `max(startDate, now − piiRetentionDays)`. Messages outside the retention window have been hard-deleted by the daily job. |
-| `RELAY_ONLY` | Returns an **empty** list (`messages: []`, `total: 0`) and includes a `notice: "PII_RELAY_ONLY"` field. No message data is stored for this number. |
+| `STORE_INDEFINITE` (default) | All messages returned in full (subject to date filters). |
+| `STORE_X_DAYS` | Messages within the last N days are returned in full. Messages older than `piiRetentionDays` are returned **redacted** (`redacted: true`, with `text`/`media`/`participantName`/`participantPhone` nulled), keyed on `providerTimestamp`. |
+| `RELAY_ONLY` | Every message is returned **redacted** (`redacted: true`, content/media/peer nulled) and the response includes a `notice: "PII_RELAY_ONLY"` field. |
 
 ## Example
 
@@ -90,11 +90,33 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
 
 ```json RELAY_ONLY (200)
 {
-  "messages": [],
-  "total": 0,
+  "messages": [
+    {
+      "id": "cm_01HZX...",
+      "conversationId": "conv_01HZX...",
+      "direction": "INBOUND",
+      "providerKind": "PILOT_STATUS",
+      "externalMessageId": "wamid.HBg...",
+      "status": "DELIVERED",
+      "messageType": "text",
+      "origin": null,
+      "text": null,
+      "participantName": null,
+      "participantPhone": null,
+      "repliedToExternalId": null,
+      "media": null,
+      "redacted": true,
+      "sentAt": null,
+      "deliveredAt": "2026-06-27T10:00:01.000Z",
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T10:00:00.000Z",
+      "createdAt": "2026-06-27T10:00:00.500Z"
+    }
+  ],
+  "total": 1,
   "page": 1,
   "pageSize": 30,
-  "totalPages": 0,
+  "totalPages": 1,
   "notice": "PII_RELAY_ONLY"
 }
 ```
@@ -159,6 +181,10 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
   - `media.url` — Direct download URL when available. **META** inbound media is mirrored to S3 (so META messages usually carry both `id` **and** `url`); **Evolution** provides its own link. Best-effort — may be `null`.
   - `media.mimeType` — Media MIME type when known (may be `null`).
   - `media.fileName` — Media file name when known (may be `null`).
+</ResponseField>
+
+<ResponseField name="redacted" type="boolean">
+  `true` when the row falls outside the number's PII retention window (or the number is `RELAY_ONLY`). Redacted rows keep their `id`, `providerTimestamp`, and delivery metadata, but `text`, `media`, `participantName`, and `participantPhone` are `null`.
 </ResponseField>
 
 <ResponseField name="sentAt" type="string | null">

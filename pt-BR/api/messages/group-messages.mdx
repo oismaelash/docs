@@ -42,13 +42,15 @@ Os resultados são ordenados por `createdAt` de forma decrescente (mais recentes
 
 ## Efeito do modo PII
 
-A resposta depende do **modo PII** configurado para o número (definido via `PATCH /api/whatsapp-numbers/[id]`):
+A resposta depende do **modo PII** configurado para o número (definido via `PATCH /api/whatsapp-numbers/[id]`).
+
+Os limites inferior e superior da consulta vêm **apenas** dos `startDate` / `endDate` informados pelo chamador — o modo PII nunca restringe o intervalo de datas consultado. Em vez disso, as linhas que ficam fora da janela de retenção de PII do número ainda são retornadas, mas **redigidas**: seus campos `content`, `media` e de participante/peer são definidos como `null` e a linha carrega `redacted: true`.
 
 | Modo PII | Efeito |
 | --- | --- |
-| `STORE_INDEFINITE` (padrão) | Todas as mensagens de grupo são retornadas (sujeito aos filtros de data). |
-| `STORE_X_DAYS` | Apenas mensagens dos últimos N dias são retornadas. O limite inferior efetivo é `max(startDate, now − piiRetentionDays)`. Mensagens fora da janela de retenção foram permanentemente excluídas pelo job diário. |
-| `RELAY_ONLY` | Retorna uma lista **vazia** (`messages: []`, `total: 0`) e inclui um campo `notice: "PII_RELAY_ONLY"`. Nenhum dado de mensagem é armazenado para este número. |
+| `STORE_INDEFINITE` (padrão) | Todas as mensagens de grupo são retornadas por completo (sujeito a `startDate` / `endDate`). |
+| `STORE_X_DAYS` | Todas as linhas correspondentes são retornadas. Linhas mais antigas que a janela de retenção são redigidas (campos `content`, `media` e de participante como `null`, `redacted: true`); linhas dentro da janela são retornadas por completo. |
+| `RELAY_ONLY` | Todas as linhas correspondentes são retornadas, mas **todas** as linhas são redigidas (campos `content`, `media` e de participante como `null`, `redacted: true`), e a resposta inclui um campo `notice: "PII_RELAY_ONLY"`. |
 
 ## Exemplo
 
@@ -114,11 +116,26 @@ curl "https://pilotstatus.com.br/v1/messages/group?startDate=2026-06-01T00:00:00
 
 ```json RELAY_ONLY (200)
 {
-  "messages": [],
-  "total": 0,
+  "messages": [
+    {
+      "id": "cmm04obm46zz0qv4ycjp8x6r2",
+      "conversationId": "conv_grp_789",
+      "direction": "INBOUND",
+      "type": "text",
+      "content": null,
+      "media": null,
+      "from": null,
+      "participantName": null,
+      "groupId": "120363123456789012@g.us",
+      "groupName": "Sales Team",
+      "redacted": true,
+      "createdAt": "2026-06-27T09:30:00.000Z"
+    }
+  ],
+  "total": 87,
   "page": 1,
   "pageSize": 30,
-  "totalPages": 0,
+  "totalPages": 3,
   "notice": "PII_RELAY_ONLY"
 }
 ```
@@ -171,6 +188,10 @@ curl "https://pilotstatus.com.br/v1/messages/group?startDate=2026-06-01T00:00:00
   - `media.url` — URL de download direto quando disponível. Mídia inbound da **META** é espelhada no S3 (então mensagens META geralmente carregam tanto `id` **quanto** `url`); o **Evolution** fornece seu próprio link. É best-effort — pode ser `null`.
   - `media.mimeType` — Tipo MIME da mídia quando conhecido (pode ser `null`).
   - `media.fileName` — Nome do arquivo da mídia quando conhecido (pode ser `null`).
+</ResponseField>
+
+<ResponseField name="redacted" type="boolean">
+  `true` quando a linha fica fora da janela de retenção de PII do número (ou em todas as linhas no caso de `RELAY_ONLY`). Linhas redigidas ainda aparecem na lista, mas os campos `content`, `media` e de participante/peer ficam `null`.
 </ResponseField>
 
 <ResponseField name="createdAt" type="string" required>
