@@ -1,0 +1,99 @@
+---
+title: "MCP Server"
+sidebarTitle: "MCP Server"
+description: "Connect AI agents to WhatsApp via the hosted Pilot Status MCP server: OAuth or x-api-key auth, 54 tools over the public /v1 API, per-number grants."
+---
+
+Pilot Status ships an official **Model Context Protocol (MCP)** server that exposes the public `/v1` API as MCP tools. AI agents and LLM clients can use it to send messages, query conversations, manage numbers, templates, webhooks, groups, and voice calls — directly from the model context.
+
+## Hosted connector
+
+The server speaks the **streamable HTTP** transport and runs as a hosted connector at:
+
+```text
+https://mcp.pilotstatus.com.br/mcp
+```
+
+Add it as a **Custom Connector** in claude.ai (Settings → Connectors → Add custom connector). claude.ai runs the OAuth 2.1 login (Pilot Status SSO) — no API key is shared with the client. During the consent step you approve access for the **whole tenant** or grant only **specific numbers**; a per-number grant restricts every tool to those numbers.
+
+Any MCP client that supports custom OAuth connectors can connect the same way. Clients configured by file can instead send a `ps_*` key in the `x-api-key` header:
+
+```json
+{
+  "mcpServers": {
+    "pilot-status": {
+      "type": "http",
+      "url": "https://mcp.pilotstatus.com.br/mcp",
+      "headers": { "x-api-key": "ps_your_key_here" }
+    }
+  }
+}
+```
+
+## Authentication
+
+| Method | How |
+| --- | --- |
+| OAuth 2.1 | `Authorization: Bearer <token>` — handled automatically by the hosted Claude connector |
+| API key | `x-api-key` header with a `ps_*` key |
+
+Use a **number-scoped** key for tools that operate on a specific number (messaging, conversations, groups); **tenant-scoped** keys are required for tenant tools such as `api_keys_list` and `numbers_list`.
+
+## Self-hosted
+
+The server is published as `@pilot-status/mcp-server` on npm and can be run locally:
+
+```bash
+npx @pilot-status/mcp-server
+```
+
+Supply your `ps_*` API key via the `x-api-key` header (HTTP mode) or environment configuration, depending on your MCP client.
+
+## Available tools (54)
+
+| Area | Tools |
+| --- | --- |
+| Messaging | `messages_send`, `message_get`, `messages_cancel`, `messages_group`, `messages_unread`, `conversations_list` |
+| Webhooks | `webhooks_list`, `webhook_get`, `webhooks_create`, `webhooks_update`, `webhooks_delete`, `webhook_events` |
+| Groups | `groups_list`, `groups_create`, `group_info`, `group_participants_add`/`remove`/`promote`/`demote`, `group_invite`, `group_pin` |
+| Channels | `newsletters_list` |
+| Numbers | `numbers_list`, `numbers_get`, `numbers_create`, `numbers_status`, `numbers_connect`, `numbers_delete`, `numbers_remote_pairing`, `numbers_check` |
+| Templates | `templates_list`, `templates_get`, `templates_create`, `templates_update`, `templates_delete` |
+| Voice calls (Meta only) | `call_initiate`, `calls_list`, `call_get`, `call_accept`, `call_reject`, `call_terminate`, `call_settings_get`/`update`, `call_permission_get`/`request` |
+| Account | `api_keys_list`, `api_keys_regenerate_number`, `subscription_extra_numbers_get`/`add`, `billing_checkout`, `branding_get`/`upsert`, `analytics_dashboard`, `media_get` |
+
+Notes:
+
+- `templates_create`/`templates_update` require the `examples` object (one real sample per variable; missing → `400 TEMPLATE_EXAMPLES_REQUIRED`) and accept media headers by **URL only** — base64 is REST-only.
+- `messages_send` supports the three send modes: `templateId`, `text`, or direct media (`media` \+ `mediaType`; audio is delivered as a voice note).
+- Inbound media: on META numbers feed `media.id` to `media_get`; on Evolution numbers use `media.url` directly.
+- Token-based routes (remote-pairing public endpoints, embed session minting) are excluded from the tool list because they use a different auth flow.
+
+## Example tool call
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "id": 2,
+  "params": {
+    "name": "messages_send",
+    "arguments": {
+      "templateId": "onboarding-test",
+      "destinationNumber": "+5511999999999",
+      "variables": { "name": "John" }
+    }
+  }
+}
+```
+
+## Common errors
+
+- `401` — missing or invalid API key.
+- `403` — tenant-scoped key on a number-scoped tool (or vice versa), or a tool outside a per-number grant.
+- `400` — invalid tool arguments (validated against the underlying API schema).
+
+## Related
+
+- [AI Agents guide](/guides/ai-agents)
+- [Using AI/LLMs with Pilot Status](/trust/llms)

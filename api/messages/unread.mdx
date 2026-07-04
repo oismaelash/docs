@@ -1,0 +1,158 @@
+---
+title: "GET /v1/messages/unread — Unread Messages"
+description: "Retrieve all inbound messages that have not been read yet for the connected number."
+---
+
+Retrieve all inbound messages that have not been read yet (`readAt IS NULL`) for the connected number. Each item includes the conversation-level unread count.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/messages/unread`
+
+<Note>
+  Requires a **number-scoped** API key (`ps_*`) in the `x-api-key` header. Tenant-scoped keys return `403`.
+</Note>
+
+## Query parameters
+
+<ParamField query="page" default="1" type="integer">
+  Page number (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Results per page (1–100).
+</ParamField>
+
+There is no date-range filter on this endpoint; it returns all currently unread inbound messages.
+
+## PII mode effect
+
+The response depends on the **PII mode** configured for the number (set via `PATCH /api/whatsapp-numbers/[id]`):
+
+| PII mode | Effect |
+| --- | --- |
+| `STORE_INDEFINITE` (default) | All unread messages returned. |
+| `STORE_X_DAYS` | Only unread messages created within the last N days are returned (messages outside the retention window have already been hard-deleted by the daily job). |
+| `RELAY_ONLY` | Returns an **empty** list (`messages: []`, `total: 0`) and includes a `notice: "PII_RELAY_ONLY"` field. No message data is stored for this number. |
+
+## Example
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "messages": [
+    {
+      "id": "cmm04obm46zz0qv4ycjp8x6r2",
+      "conversationId": "conv_abc123",
+      "conversationUnreadCount": 3,
+      "direction": "INBOUND",
+      "type": "text",
+      "content": "Hi, I need help with my order.",
+      "from": "+5511999999999",
+      "fromName": "John Doe",
+      "readAt": null,
+      "createdAt": "2026-06-27T10:15:00.000Z"
+    },
+    {
+      "id": "cmm04xyzabcde1234567890ab",
+      "conversationId": "conv_abc123",
+      "conversationUnreadCount": 3,
+      "direction": "INBOUND",
+      "type": "image",
+      "content": null,
+      "media": {
+        "provider": "META",
+        "id": "845849791681505",
+        "url": "https://pilot-status.s3.us-east-1.amazonaws.com/public/tenants/<tenantId>/chat-media/….jpg",
+        "mimeType": "image/jpeg",
+        "fileName": null
+      },
+      "from": "+5511999999999",
+      "fromName": "John Doe",
+      "readAt": null,
+      "createdAt": "2026-06-27T10:16:00.000Z"
+    }
+  ],
+  "total": 12,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1
+}
+```
+
+```json RELAY_ONLY (200)
+{
+  "messages": [],
+  "total": 0,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 0,
+  "notice": "PII_RELAY_ONLY"
+}
+```
+
+</CodeGroup>
+
+## Message object fields
+
+<ResponseField name="id" type="string" required>
+  Pilot Status internal message ID.
+</ResponseField>
+
+<ResponseField name="conversationId" type="string" required>
+  ID of the parent conversation.
+</ResponseField>
+
+<ResponseField name="conversationUnreadCount" type="integer" required>
+  Total unread message count for that conversation.
+</ResponseField>
+
+<ResponseField name="direction" type="string" required>
+  Always `"INBOUND"` for this endpoint.
+</ResponseField>
+
+<ResponseField name="type" type="string" required>
+  `text`, `image`, `audio`, `video`, `document`, `location`, `contacts`, `sticker`, or `reaction`.
+</ResponseField>
+
+<ResponseField name="content" type="string | null">
+  Message text or caption when available.
+</ResponseField>
+
+<ResponseField name="from" type="string" required>
+  Sender in E.164 format.
+</ResponseField>
+
+<ResponseField name="fromName" type="string | null">
+  Sender display name (resolved from the conversation) when available.
+</ResponseField>
+
+<ResponseField name="media" type="object | null">
+  Media descriptor `{ provider, id, url, mimeType, fileName }` when the message carries media; `null` for text.
+
+  - `media.provider` — `"META"`, `"EVO"`, or `"EVO_GO"` — the provider that delivered the media.
+  - `media.id` — **Meta** media id. Set on `META` numbers — pass it to `GET /v1/media/{mediaId}` to download the bytes; `null` on Evolution.
+  - `media.url` — Direct download URL when available. **META** inbound media is mirrored to S3 (so META messages usually carry both `id` **and** `url`); **Evolution** provides its own link. Best-effort — may be `null`.
+  - `media.mimeType` — Media MIME type when known (may be `null`).
+  - `media.fileName` — Media file name when known (may be `null`).
+</ResponseField>
+
+<ResponseField name="readAt" type="null" required>
+  `null` for unread messages (always null for results from this endpoint).
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 — when the message was received.
+</ResponseField>
+
+## Common errors
+
+- `400 NUMBER_NOT_FOUND` — the API key is not bound to a WhatsApp number.
+- `401` — missing or invalid `x-api-key` header.
+- `403` — tenant-scoped key used (number-scoped key required).

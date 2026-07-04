@@ -1,0 +1,132 @@
+---
+title: "GET /v1/conversations — List Conversations"
+description: "List conversations for the connected number, ordered by the most recent message activity."
+---
+
+List conversations for the connected number, ordered by the most recent message activity.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/conversations`
+
+<Note>
+  Requires a **number-scoped** API key (`ps_*`) in the `x-api-key` header. Tenant-scoped keys return `403`.
+</Note>
+
+## Query parameters
+
+<ParamField query="startDate" type="string">
+  ISO 8601 datetime. Filter conversations whose last message is **on or after** this date.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  ISO 8601 datetime. Filter conversations whose last message is **on or before** this date.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Page number (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Results per page (1–100).
+</ParamField>
+
+Both `startDate` and `endDate` are optional individually. When supplied, each must be a valid ISO 8601 string and `startDate` must not be later than `endDate`; otherwise `400 INVALID_DATE_RANGE` is returned.
+
+## PII mode effect
+
+The response depends on the **PII mode** configured for the number (set via `PATCH /api/whatsapp-numbers/[id]`):
+
+| PII mode | Effect |
+| --- | --- |
+| `STORE_INDEFINITE` (default) | All conversations returned (subject to date filters). |
+| `STORE_X_DAYS` | Only conversations with activity within the last N days are returned. The effective lower bound is `max(startDate, now − piiRetentionDays)`. |
+| `RELAY_ONLY` | Returns an **empty** list (`conversations: []`, `total: 0`) and includes a `notice: "PII_RELAY_ONLY"` field. No conversation data is stored for this number. |
+
+## Example
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/conversations?startDate=2026-06-01T00:00:00Z&page=1&pageSize=20" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "conversations": [
+    {
+      "id": "conv_abc123",
+      "from": "+5511999999999",
+      "fromName": "John Doe",
+      "type": "DIRECT",
+      "lastMessageAt": "2026-06-27T10:15:00.000Z",
+      "unreadCount": 2,
+      "createdAt": "2026-06-01T09:00:00.000Z"
+    },
+    {
+      "id": "conv_def456",
+      "from": null,
+      "fromName": "Team Chat",
+      "type": "GROUP",
+      "lastMessageAt": "2026-06-27T09:45:00.000Z",
+      "unreadCount": 0,
+      "createdAt": "2026-06-10T14:00:00.000Z"
+    }
+  ],
+  "total": 45,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 3
+}
+```
+
+```json RELAY_ONLY (200)
+{
+  "conversations": [],
+  "total": 0,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 0,
+  "notice": "PII_RELAY_ONLY"
+}
+```
+
+</CodeGroup>
+
+## Conversation object fields
+
+<ResponseField name="id" type="string" required>
+  Pilot Status conversation ID.
+</ResponseField>
+
+<ResponseField name="type" type="string" required>
+  `"DIRECT"`, `"GROUP"` or `"NEWSLETTER"`.
+</ResponseField>
+
+<ResponseField name="from" type="string | null">
+  Sender phone in E.164 (with `+`) for individuals; `null` for groups/newsletters and lid-only peers.
+</ResponseField>
+
+<ResponseField name="fromName" type="string | null">
+  Contact or group display name when available (resolved from the conversation).
+</ResponseField>
+
+<ResponseField name="lastMessageAt" type="string" required>
+  ISO 8601 — timestamp of the last message activity.
+</ResponseField>
+
+<ResponseField name="unreadCount" type="integer" required>
+  Number of inbound messages not yet read.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 — when the conversation was first created.
+</ResponseField>
+
+## Common errors
+
+- `400 INVALID_DATE_RANGE` — `startDate` or `endDate` is not a valid ISO 8601 string, or `startDate > endDate`.
+- `400 NUMBER_NOT_FOUND` — the API key is not bound to a WhatsApp number.
+- `401` — missing or invalid `x-api-key` header.
+- `403` — tenant-scoped key used (number-scoped key required).

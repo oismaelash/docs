@@ -4,98 +4,84 @@ sidebarTitle: "Configure"
 description: "Register and manage webhook URLs via the Pilot Status API or dashboard. Subscribe to specific events or receive all events on a single endpoint."
 ---
 
-Pilot Status delivers webhook events to any HTTPS endpoint you register. You can register endpoints through the dashboard for a quick setup or through the API when you need to automate webhook management as part of your deployment pipeline. Both methods support filtering by event type and scoping by number.
+# Configure webhooks
 
----
+Manage the full webhook lifecycle via the public API — or use the dashboard **Webhooks** page (`/webhooks`). A webhook is configured **per number**; once configured, events are delivered automatically (no API-key linking is required).
 
-## Configure via Dashboard
+For payloads and the full event list, see the [event reference](/api/webhooks/events).
 
-The dashboard is the fastest way to register a webhook endpoint without writing any code.
+## Endpoints
 
-1. Open the **Pilot Status Dashboard** and navigate to **Settings**.
-2. Select **Webhooks** from the settings menu.
-3. Click **Add Endpoint**.
-4. Enter your HTTPS endpoint URL in the **URL** field.
-5. Select the events you want to receive, or leave all events selected to receive everything.
-6. Click **Save**.
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/v1/webhooks` | List the webhooks visible to the key's scope. |
+| `POST` | `/v1/webhooks` | Create a webhook subscribed to **one** number. |
+| `GET` | `/v1/webhooks/{id}` | Fetch one webhook. |
+| `PATCH` | `/v1/webhooks/{id}` | Update `name`, `url`, `active`, `events`. |
+| `DELETE` | `/v1/webhooks/{id}` | Permanently delete the webhook. |
+| `GET` | `/v1/webhooks/{id}/logs` | Recent delivery attempts (`limit` 1–50, `event` filter). |
 
-Your endpoint will start receiving events immediately after saving.
+## Number scoping
 
----
+A webhook belongs to a single WhatsApp number.
 
-## POST /v1/webhooks
+- With a **number-scoped** key the number comes from the key itself; a `whatsappNumberId` in the body must match it (else **400 `NUMBER_MISMATCH`**).
+- With a **tenant-scoped** key, pass the target number via the `whatsappNumberId` body field or the `x-whatsapp-number-id` header — omitting both returns **400 `NUMBER_REQUIRED`**; a number outside your tenant returns **404 `NUMBER_NOT_FOUND`**.
+- `GET /v1/webhooks` lists only the webhooks visible to the key's scope (a number-scoped key sees only its own number's webhooks). A webhook outside the key's scope returns **404 `WEBHOOK_NOT_FOUND`**.
 
-Use this endpoint to register a webhook programmatically. Pilot Status will begin delivering events to your URL as soon as the request succeeds.
+## Examples
 
-**Endpoint:** `POST https://api.pilotstatus.com.br/v1/webhooks`
+<CodeGroup>
 
-<ParamField body="url" type="string" required>
-  Your HTTPS endpoint URL. Pilot Status will POST event payloads to this address. Must use `https://` — HTTP URLs are rejected.
-</ParamField>
-
-<ParamField body="events" type="array of strings">
-  List of event type strings to subscribe to, e.g. `["message.received", "message.delivered"]`. Omit this field to subscribe to all events. See the [Events reference](/api/webhooks/events) for the full list of available event types.
-</ParamField>
-
-<ParamField body="number_id" type="string">
-  Scope this webhook to a single number by providing its ID. Omit to receive events from all numbers on your account.
-</ParamField>
-
-```bash
-curl -X POST https://api.pilotstatus.com.br/v1/webhooks \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+```bash Create
+curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+  -H "x-api-key: ps_your_token_here" \
   -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://yourapp.com/webhook",
-    "events": ["message.received", "message.delivered"]
-  }'
+  -d '{ "url": "https://example.com/hooks/in", "name": "My hook", "events": ["message.received", "message.sent"] }'
 ```
 
----
-
-## GET /v1/webhooks
-
-Retrieve a list of all webhook endpoints registered on your account, including their IDs, subscribed events, and current status.
-
-```bash
-curl https://api.pilotstatus.com.br/v1/webhooks \
-  -H "Authorization: Bearer YOUR_API_KEY"
+```bash Pause (keep it, stop delivering)
+curl -X PATCH "https://pilotstatus.com.br/v1/webhooks/wh_abc" \
+  -H "x-api-key: ps_your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "active": false }'
 ```
 
-The response returns an array of webhook objects. Each object includes the webhook `id` you need for update and delete operations.
-
----
-
-## DELETE /v1/webhooks/{id}
-
-Remove a registered webhook endpoint by its ID. Pilot Status will stop delivering events to that URL immediately.
-
-```bash
-curl -X DELETE https://api.pilotstatus.com.br/v1/webhooks/wh_abc123 \
-  -H "Authorization: Bearer YOUR_API_KEY"
+```bash Delete
+curl -X DELETE "https://pilotstatus.com.br/v1/webhooks/wh_abc" \
+  -H "x-api-key: ps_your_token_here"
 ```
 
-Replace `wh_abc123` with the ID returned when you created the webhook or retrieved from `GET /v1/webhooks`.
+```bash Delivery logs
+curl "https://pilotstatus.com.br/v1/webhooks/wh_abc/logs?limit=20&event=message.received" \
+  -H "x-api-key: ps_your_token_here"
+```
 
----
+</CodeGroup>
 
-## Retry behavior
-
-When your endpoint returns a non-2xx HTTP response — or does not respond within the timeout window — Pilot Status automatically retries delivery using exponential backoff:
-
-| Attempt | Delay after previous failure |
-|---------|------------------------------|
-| 1st retry | 10 seconds |
-| 2nd retry | 30 seconds |
-| 3rd retry | 2 minutes |
-| 4th retry | 10 minutes |
-
-After **5 consecutive failures**, Pilot Status marks the webhook as **failing** and surfaces an alert in your dashboard. The webhook remains registered and will resume delivery once your endpoint recovers.
-
-<Info>
-  To manually re-enable a failing webhook after fixing your endpoint, open the Webhooks section of your dashboard and click **Re-enable** next to the affected endpoint.
-</Info>
+## Event gating
 
 <Warning>
-  Webhook URLs must use HTTPS. HTTP endpoints are not accepted for security reasons.
+  An **empty (or omitted) `events` list dispatches NOTHING** — there is no implicit "subscribe to all". Use `"*"` to subscribe to every event.
 </Warning>
+
+- On `PATCH`, **`events` replaces the whole subscription list** (it is not a merge).
+- Events the number's provider cannot emit are silently dropped.
+
+## Rules and errors
+
+| Rule | Error |
+| --- | --- |
+| Create without a number (tenant-scoped key, no `whatsappNumberId` / header) | **400 `NUMBER_REQUIRED`** |
+| `whatsappNumberId` differs from a number-scoped key's number | **400 `NUMBER_MISMATCH`** |
+| `whatsappNumberId` on `PATCH` (the number cannot be changed after creation — delete and recreate) | **400 `NUMBER_RESCOPE_NOT_SUPPORTED`** |
+| Number outside your tenant | **404 `NUMBER_NOT_FOUND`** |
+| Webhook not visible to the key's scope | **404 `WEBHOOK_NOT_FOUND`** |
+
+<Note>
+  **The signing `secret` is never returned** by any of these endpoints.
+</Note>
+
+## Dashboard
+
+Everything above is also available in the dashboard at **`/webhooks`**: create/edit webhooks per number, pick events, pause/resume, and inspect delivery logs. The New/Edit Webhook UI includes the notice that `message.read` only fires when the recipient has WhatsApp read receipts enabled.

@@ -1,0 +1,188 @@
+---
+title: "GET /v1/messages/history — Message History"
+description: "Retrieve the full stored message history (direct and group conversations) for the connected number."
+---
+
+Retrieve the **full stored message history** (direct and group conversations) for the connected number.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/messages/history`
+
+<Note>
+  Requires a **number-scoped** API key (`ps_*`) in the `x-api-key` header. Tenant-scoped keys return `403`. You may also identify the key with `x-api-key-id: <api_key_id>`.
+
+  **All providers supported:** this endpoint works for numbers connected via **Evolution Go**, **Evolution v2**, and **Meta Cloud API**.
+</Note>
+
+## Query parameters
+
+<ParamField query="startDate" type="string">
+  ISO 8601 datetime. Filter messages with `providerTimestamp` **on or after** this date.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  ISO 8601 datetime. Filter messages with `providerTimestamp` **on or before** this date.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Page number (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Results per page (1–100).
+</ParamField>
+
+Both `startDate` and `endDate` are optional individually. When supplied, each must be a valid ISO 8601 string and `startDate` must not be later than `endDate`; otherwise `400 INVALID_DATE_RANGE` is returned.
+
+Results are ordered by `providerTimestamp` descending (newest first). The endpoint returns up to roughly **one month** of stored history, counted from the number's connection date.
+
+## PII mode effect
+
+The response depends on the **PII mode** configured for the number (set via `PATCH /api/whatsapp-numbers/[id]`):
+
+| PII mode | Effect |
+| --- | --- |
+| `STORE_INDEFINITE` (default) | All messages returned (subject to date filters). |
+| `STORE_X_DAYS` | Only messages within the last N days are returned. The effective lower bound is `max(startDate, now − piiRetentionDays)`. Messages outside the retention window have been hard-deleted by the daily job. |
+| `RELAY_ONLY` | Returns an **empty** list (`messages: []`, `total: 0`) and includes a `notice: "PII_RELAY_ONLY"` field. No message data is stored for this number. |
+
+## Example
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:00Z&endDate=2026-06-30T23:59:59Z&page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "messages": [
+    {
+      "id": "cm_01HZX...",
+      "conversationId": "conv_01HZX...",
+      "direction": "INBOUND",
+      "providerKind": "PILOT_STATUS",
+      "externalMessageId": "wamid.HBg...",
+      "status": "DELIVERED",
+      "messageType": "text",
+      "origin": null,
+      "text": "Olá, ainda está disponível?",
+      "participantName": "Ana",
+      "participantPhone": "+5511988887777",
+      "repliedToExternalId": null,
+      "media": null,
+      "sentAt": null,
+      "deliveredAt": "2026-06-27T10:00:01.000Z",
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T10:00:00.000Z",
+      "createdAt": "2026-06-27T10:00:00.500Z"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1
+}
+```
+
+```json RELAY_ONLY (200)
+{
+  "messages": [],
+  "total": 0,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 0,
+  "notice": "PII_RELAY_ONLY"
+}
+```
+
+</CodeGroup>
+
+## Message object (`ChatMessageDTO`) fields
+
+<ResponseField name="id" type="string" required>
+  Pilot Status internal message ID.
+</ResponseField>
+
+<ResponseField name="conversationId" type="string" required>
+  ID of the parent conversation (direct or group).
+</ResponseField>
+
+<ResponseField name="direction" type="string" required>
+  `"INBOUND"` (received) or `"OUTBOUND"` (sent).
+</ResponseField>
+
+<ResponseField name="providerKind" type="string" required>
+  Provider that handled the message (`PILOT_STATUS`, `META`, …).
+</ResponseField>
+
+<ResponseField name="externalMessageId" type="string | null">
+  Provider message id (e.g. Meta `wamid`) when available.
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Message status (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `FAILED`, …).
+</ResponseField>
+
+<ResponseField name="messageType" type="string" required>
+  `text`, `image`, `audio`, `video`, `document`, `location`, `contacts`, `sticker`, or `reaction`.
+</ResponseField>
+
+<ResponseField name="origin" type="string | null">
+  Origin of an outbound message (e.g. `APP`, `API`) when available.
+</ResponseField>
+
+<ResponseField name="text" type="string | null">
+  Message text or caption when available.
+</ResponseField>
+
+<ResponseField name="participantName" type="string | null">
+  WhatsApp display name of the counterpart/sender when available.
+</ResponseField>
+
+<ResponseField name="participantPhone" type="string | null">
+  Counterpart/sender in E.164 format when available.
+</ResponseField>
+
+<ResponseField name="repliedToExternalId" type="string | null">
+  `externalMessageId` of the message this one replies to, when available.
+</ResponseField>
+
+<ResponseField name="media" type="object | null">
+  Media descriptor `{ provider, id, url, mimeType, fileName }` when the message carries media; `null` otherwise.
+
+  - `media.provider` — `"META"`, `"EVO"`, or `"EVO_GO"` — the provider that delivered the media.
+  - `media.id` — **Meta** media id. Set on `META` numbers — pass it to `GET /v1/media/{mediaId}` to download the bytes; `null` on Evolution.
+  - `media.url` — Direct download URL when available. **META** inbound media is mirrored to S3 (so META messages usually carry both `id` **and** `url`); **Evolution** provides its own link. Best-effort — may be `null`.
+  - `media.mimeType` — Media MIME type when known (may be `null`).
+  - `media.fileName` — Media file name when known (may be `null`).
+</ResponseField>
+
+<ResponseField name="sentAt" type="string | null">
+  ISO 8601 — when the message was sent.
+</ResponseField>
+
+<ResponseField name="deliveredAt" type="string | null">
+  ISO 8601 — when the message was delivered.
+</ResponseField>
+
+<ResponseField name="readAt" type="string | null">
+  ISO 8601 — when the message was read (only when read receipts are enabled).
+</ResponseField>
+
+<ResponseField name="providerTimestamp" type="string" required>
+  ISO 8601 — provider's timestamp for the message (sort key).
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 — when the record was created in Pilot Status.
+</ResponseField>
+
+## Common errors
+
+- `400 INVALID_DATE_RANGE` — `startDate` or `endDate` is not a valid ISO 8601 string, or `startDate > endDate`.
+- `400 NUMBER_NOT_FOUND` — the API key is not bound to a WhatsApp number.
+- `401` — missing or invalid `x-api-key` header.
+- `403` — tenant-scoped key used (number-scoped key required).

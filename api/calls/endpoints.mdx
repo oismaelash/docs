@@ -1,0 +1,164 @@
+---
+title: "Calls API Reference"
+sidebarTitle: "API reference"
+description: "All /v1/calls endpoints — start, answer, reject and terminate calls, calling settings, and call permissions."
+---
+
+# Calls API reference
+
+Base URL: `https://pilotstatus.com.br/v1` Headers: `Content-Type: application/json`, `x-api-key: <your_api_key>` (or `x-api-key-id`).
+
+<Note>
+  Meta Cloud API numbers only — see the [overview](/api/calls/overview). All endpoints require a **number-scoped** key.
+</Note>
+
+## Endpoints
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/v1/calls` | Start a business-initiated call (BIC). |
+| `GET` | `/v1/calls` | List the number's calls (newest first; `limit` 1–100, `before` ISO 8601 cursor). |
+| `GET` | `/v1/calls/{callId}` | One call; add `?includeSdp=1` to receive `sdpOffer`/`sdpAnswer`. |
+| `POST` | `/v1/calls/{callId}/pre-accept` | OPTIONAL early SDP answer (reduces audio clipping; call connects only on accept). |
+| `POST` | `/v1/calls/{callId}/accept` | Answer an inbound (UIC) call with the business-side SDP answer. |
+| `POST` | `/v1/calls/{callId}/reject` | Decline an incoming call (no body). |
+| `POST` | `/v1/calls/{callId}/terminate` | Hang up an active call (no body). |
+| `GET` | `/v1/calls/settings` | Read the number's `calling` settings object. |
+| `PUT` | `/v1/calls/settings` | Partial update of the `calling` settings. |
+| `GET` | `/v1/calls/permissions?to=<phone>` | Probe whether the business may call `to`. |
+| `POST` | `/v1/calls/permissions/request` | Send the interactive call-permission request (inside the 24h window). |
+
+`{callId}` accepts **either** the Pilot Status call id (`call_...`) **or** the Meta call id (`wacid...`).
+
+## 1. Enable calling on the number
+
+Pilot Status tries to enable calling automatically when a Meta number connects. Read/adjust anytime:
+
+```bash
+curl "https://pilotstatus.com.br/v1/calls/settings" \
+  -H "x-api-key: ps_your_key_here"
+
+curl -X PUT "https://pilotstatus.com.br/v1/calls/settings" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "status": "ENABLED", "call_icon_visibility": "DEFAULT" }'
+```
+
+- `PUT` is **partial**: send only `status`, `call_icon_visibility`, `callback_permission_status`, `call_hours`, `voicemail` (the `sip` object is rejected).
+- A posted `call_hours` **replaces** the stored object entirely (Meta semantics).
+- Numbers with a messaging limit **below 2,000/day cannot enable calling** yet (Meta error 138015).
+- SIP credentials are never requested nor returned.
+
+## 2. Call permission (required before a BIC)
+
+```bash
+# probe
+curl "https://pilotstatus.com.br/v1/calls/permissions?to=%2B5511999999999" \
+  -H "x-api-key: ps_your_key_here"
+
+# request (inside the 24h service window)
+curl -X POST "https://pilotstatus.com.br/v1/calls/permissions/request" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "to": "+5511999999999", "text": "May we call you about your order?" }'
+```
+
+Probe response:
+
+```json
+{
+  "permission": { "status": "temporary", "expiration_time": 1768550400 },
+  "actions": [
+    {
+      "action_name": "start_call",
+      "can_perform_action": true,
+      "limits": [{ "time_period": "PT24H", "max_allowed": 1, "current_usage": 0 }]
+    }
+  ]
+}
+```
+
+The user's answer arrives as the **`call.permission_updated`** webhook event (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`). Meta rate-limits permission requests (error 138009) and BIC volume (100 calls/24h per number — error 138012).
+
+## 3. Start a call (BIC)
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/calls" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "to": "+5511999999999",
+    "sdp": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n...",
+    "sdpType": "offer",
+    "bizOpaqueCallbackData": "order-42"
+  }'
+```
+
+```json
+HTTP 201
+{ "id": "call_01HZX...", "externalCallId": "wacid.ABGG...", "status": "INITIATED" }
+```
+
+- `sdp` is the RFC 8866 **offer** produced by YOUR WebRTC client. The business-side SDP must use `a=setup:active`.
+- `bizOpaqueCallbackData` (optional) is echoed back on the terminate webhook.
+- Without permission, Meta returns 138006 → the endpoint surfaces `code: "META_CALL_PERMISSION_REQUIRED"`.
+
+## 4. Answer an inbound call (UIC)
+
+When a user calls your number you receive the **`call.ringing`** webhook (and the native `calls` envelope carrying the user's SDP offer). Then:
+
+```bash
+# fetch the call with the SDP offer
+curl "https://pilotstatus.com.br/v1/calls/wacid.ABGG...?includeSdp=1" \
+  -H "x-api-key: ps_your_key_here"
+
+# answer (body: your SDP answer; sdpType defaults to "answer")
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../accept" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "sdp": "v=0\r\n..." }'
+
+# or decline / hang up (no body)
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../reject" -H "x-api-key: ps_your_key_here"
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x-api-key: ps_your_key_here"
+```
+
+`accept`/`pre-accept`/`reject`/`terminate` respond `{ "success": true, "id": "call_...", "status": "..." }`. `pre-accept` is optional (early SDP answer to reduce clipping); the call connects only on `accept`.
+
+## 5. Call object (DTO)
+
+```json
+{
+  "id": "call_01HZX...",
+  "externalCallId": "wacid.ABGG...",
+  "direction": "INBOUND",
+  "status": "COMPLETED",
+  "peerNumber": "5511999999999",
+  "fromNumber": "5511999999999",
+  "conversationId": "conv_abc",
+  "bizOpaqueCallbackData": null,
+  "startedAt": "2026-07-03T15:00:00.000Z",
+  "connectedAt": "2026-07-03T15:00:05.000Z",
+  "endedAt": "2026-07-03T15:02:05.000Z",
+  "durationSeconds": 120,
+  "errorCode": null,
+  "errorMessage": null,
+  "createdAt": "2026-07-03T15:00:00.000Z",
+  "updatedAt": "2026-07-03T15:02:05.000Z"
+}
+```
+
+- `status`: `INITIATED` | `RINGING` | `ACCEPTED` | `REJECTED` | `COMPLETED` | `FAILED` | `MISSED`.
+- `direction`: `INBOUND` (UIC) | `OUTBOUND` (BIC).
+- SDPs (`sdpOffer`/`sdpAnswer`) appear only with `?includeSdp=1` on `GET /v1/calls/{callId}` — never on the list.
+- `durationSeconds` is set only when the call was answered.
+
+## Common errors
+
+- `400 FEATURE_NOT_SUPPORTED` — the key's number is not a Meta Cloud API number.
+- `400 NUMBER_NOT_FOUND` — the key is not bound to a number.
+- `400` — body validation, `INVALID_LIMIT`, `INVALID_BEFORE`, `MISSING_TO`.
+- `401` — missing/invalid `x-api-key` / `x-api-key-id`.
+- `403` — tenant-scoped key (calls endpoints are number-scoped).
+- `404 CALL_NOT_FOUND` — the callId/wacid does not belong to the key's number.
+- Meta calling errors are forwarded with a mapped `code` — e.g. `META_CALL_PERMISSION_REQUIRED` (138006), permission-request limit (138009), BIC limit 100 calls/24h (138012), calling not enabled (138000), messaging tier too low to enable (138015).

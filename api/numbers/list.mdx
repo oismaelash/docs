@@ -1,68 +1,93 @@
 ---
-title: "GET /numbers — List Your Connected WhatsApp Numbers"
-sidebarTitle: "List Numbers"
+title: "GET /v1/numbers — List & Detail"
+sidebarTitle: "List & get numbers"
 description: "GET /v1/numbers — Returns all WhatsApp numbers connected to your Pilot Status project, including their status, type, and unique identifiers."
 ---
 
-The List Numbers endpoint returns every WhatsApp number currently connected to your Pilot Status project. Use this endpoint to discover available `number_id` values for sending messages, to audit your connected numbers, or to check whether a particular number is active before initiating a send.
+# List and inspect numbers
 
-`GET https://api.pilotstatus.com.br/v1/numbers`
+List every WhatsApp number in your account, or fetch the full detail of one number — including health and, for Meta numbers, live data from the Meta Graph.
 
-This endpoint takes no request parameters.
+<Note>
+  Use a **tenant-scoped** API key to manage numbers across your account. A number-scoped key can also call these endpoints. Authenticate with the `x-api-key: ps_...` header.
+</Note>
 
-## Example
+## GET /v1/numbers — List all numbers
 
-```bash cURL
-curl --request GET \
-  --url https://api.pilotstatus.com.br/v1/numbers \
-  --header 'Authorization: Bearer YOUR_API_KEY'
+Lists all WhatsApp instances for the API key's **tenant** as a JSON array.
+
+- Does **not** return session credentials.
+- Each number exposes its flat connection `state` and an `isFullyConnected` flag.
+- The list does **not** force a mass refresh of connection state — use `GET /v1/numbers/{id}/status` per number when you need a live check.
+- Each item's `apiKeys` entries include only `name`, `keyPrefix`, and `keyLast4` (no API key `id`).
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers" \
+  -H "x-api-key: ps_your_token_here"
 ```
 
-## Response
+## GET /v1/numbers/{id} — Full detail of one number
 
-A successful request returns `200 OK` with a `numbers` array. Each element contains the following fields.
+Returns the flat `state`/`isFullyConnected`, a `health` block (`qualityRating`, `messagingLimitTier`, `metaStatus`, `sendable`), and — for **Meta** numbers — a nested camelCase `meta` block with `phone`, `profile`, and `waba` info pulled from the Meta Graph. For non-Meta numbers `meta` is `null`.
 
-<ResponseField name="id" type="string">
-  The unique number identifier. Pass this value as `number_id` in all message-sending endpoints.
-</ResponseField>
+<ParamField query="refresh" type="string">
+  Add `?refresh=1` to force a live Meta Graph fetch and persist the snapshot. By default the response is cached (last `meta` snapshot).
+</ParamField>
 
-<ResponseField name="phone_number" type="string">
-  The WhatsApp phone number including the country code, without a leading `+` (e.g., `5511999999999`).
-</ResponseField>
+Secrets (access tokens, app secret, provider config) are **never** returned. Returns `404` if the id is not in the caller's tenant.
 
-<ResponseField name="display_name" type="string">
-  The friendly name assigned to this number in your Pilot Status dashboard.
-</ResponseField>
+```bash
+# 1) list to get the id
+curl "https://pilotstatus.com.br/v1/numbers" \
+  -H "x-api-key: ps_your_token_here"
 
-<ResponseField name="connection_type" type="string">
-  How the number is connected. `"official"` indicates a WhatsApp Business API (cloud API) connection; `"unofficial"` indicates a linked-device connection.
-</ResponseField>
+# 2) fetch full detail of one number (add ?refresh=1 to pull live from the Meta Graph)
+curl "https://pilotstatus.com.br/v1/numbers/wa_abc?refresh=1" \
+  -H "x-api-key: ps_your_token_here"
+```
 
-<ResponseField name="status" type="string">
-  Current connection state. `"connected"` means the number is ready to send and receive messages; `"disconnected"` means it requires reconnection.
-</ResponseField>
-
-<ResponseField name="created_at" type="string">
-  ISO 8601 timestamp of when the number was first connected to your project (e.g., `"2024-01-01T00:00:00Z"`).
-</ResponseField>
-
-### Example response
+Response (Meta number):
 
 ```json
 {
-  "numbers": [
-    {
-      "id": "num_abc123",
-      "phone_number": "5511999999999",
-      "display_name": "Customer Support",
-      "connection_type": "unofficial",
-      "status": "connected",
-      "created_at": "2024-01-01T00:00:00Z"
+  "id": "wa_abc",
+  "number": "5511999999999",
+  "name": "My WhatsApp",
+  "provider": "META",
+  "state": "OPEN",
+  "isFullyConnected": true,
+  "createdAt": "2026-02-24T15:00:00.000Z",
+  "updatedAt": "2026-06-30T09:18:33.000Z",
+  "health": {
+    "qualityRating": "GREEN",
+    "messagingLimitTier": "TIER_2K",
+    "metaStatus": "CONNECTED",
+    "sendable": true
+  },
+  "meta": {
+    "fetchedAt": "2026-06-30T09:18:33.000Z",
+    "phone": {
+      "displayPhoneNumber": "+55 11 99999-9999",
+      "verifiedName": "Acme LTDA",
+      "qualityRating": "GREEN",
+      "messagingLimitTier": "TIER_2K",
+      "isPinEnabled": true
+    },
+    "profile": {
+      "about": "8h-18h",
+      "email": "contato@acme.com",
+      "websites": ["https://acme.com"],
+      "vertical": "RETAIL"
+    },
+    "waba": {
+      "id": "1029384756",
+      "name": "Acme WABA",
+      "currency": "BRL",
+      "businessVerificationStatus": "verified",
+      "country": "BR"
     }
-  ]
+  }
 }
 ```
 
-<Tip>
-  Cache number IDs in your application — they don't change as long as the number remains connected. Calling this endpoint on every message send adds unnecessary latency and is not recommended for high-throughput use cases.
-</Tip>
+For a non-Meta (unofficial / QR) number the same call returns `"provider": "PILOT_STATUS"` and `"meta": null`.

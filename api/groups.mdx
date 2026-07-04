@@ -1,0 +1,82 @@
+---
+title: "WhatsApp Groups API"
+description: "Send to, list, create, and manage WhatsApp groups, including participants, invites, and pinned messages."
+---
+
+WhatsApp groups work for **both** unofficial (QR-paired) numbers **and** official **Meta Cloud API** numbers, provided the Meta number is an **approved Official Business Account (OBA)** with groups enabled.
+
+<Warning>
+  When a Meta Cloud API number is not an eligible OBA, the group endpoints return **`400 META_GROUPS_NOT_ELIGIBLE`**.
+</Warning>
+
+## Group id model
+
+A group is identified everywhere by its **JID ending in `@g.us`**. For Meta Cloud API numbers the group is represented as a **pseudo-JID** `<META_GROUP_ID>@g.us` — you use it exactly like any other group JID (the opaque Meta group id ↔ `@g.us` conversion happens internally at the Meta HTTP boundary). Newsletters/channels (`@newsletter`) remain **unsupported for Meta numbers**.
+
+## Sending to a group
+
+On `POST /v1/messages/send`, pass **`groupId`** (JID ending in `@g.us`) **instead of** `destinationNumber` or `newsletterId`. **Exactly one** destination per request.
+
+- The same template/category rules apply as for phone numbers.
+
+## `GET /v1/groups`
+
+Returns `{ "groups": [ { "id": "…@g.us", "name": "…" } ] }` for the **same WhatsApp instance** as `POST /v1/messages/send` for that API key (the number bound to the key).
+
+- Listing uses the **same connection** as sending (same instance resolution as `POST /v1/messages/send`).
+- The session must be **connected** (`OPEN`); otherwise **409** with `WHATSAPP_INSTANCE_NOT_CONNECTED`.
+- Works for unofficial numbers and eligible Meta Cloud API numbers.
+
+## Group management endpoints
+
+All require a **number-scoped** API key (`ps_*`) in the `x-api-key` header. `{groupId}` is the JID (`…@g.us`), path-encoded. On Meta numbers that are not an eligible OBA these return `400 META_GROUPS_NOT_ELIGIBLE`.
+
+| Method & path | Body | Description |
+| --- | --- | --- |
+| `POST /v1/groups` | `{ subject, participants? }` | Create a group. `participants` are phone numbers in E.164 digits. Returns the created group `{ id, subject, participants: [...] }`. |
+| `GET /v1/groups/{groupId}` | — | Group info: subject and participants with their roles. |
+| `POST /v1/groups/{groupId}/participants` | `{ participants: [...] }` | Add participants. |
+| `DELETE /v1/groups/{groupId}/participants` | `{ participants: [...] }` | Remove participants. |
+| `POST /v1/groups/{groupId}/participants/promote` | `{ participants: [...] }` | Promote participants to admin. |
+| `POST /v1/groups/{groupId}/participants/demote` | `{ participants: [...] }` | Demote admins to regular participants. |
+| `POST /v1/groups/{groupId}/invite` | `{ reset? }` | Get the group invite link. `reset: true` revokes the current link and issues a new one. Returns `{ link }`. |
+| `POST /v1/groups/{groupId}/pin` | `{ messageId, action }` | Pin/unpin a group message (`action`: `"pin"` or `"unpin"`). **Not supported on Evolution v2.** |
+
+## Example (create a group)
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://pilotstatus.com.br/v1/groups \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_number_scoped_key" \
+  -d '{ "subject": "Sales Team", "participants": ["5511999999999", "5511888888888"] }'
+```
+
+```json Response (201)
+{
+  "id": "120363123456789012@g.us",
+  "subject": "Sales Team",
+  "participants": [
+    { "wa_id": "5511999999999", "role": "admin" },
+    { "wa_id": "5511888888888" }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Obtaining `groupId`
+
+- **`message.group` webhook**: payload includes `groupId` (and `groupName` when available).
+- **`GET /v1/groups`**: returns the group ids for the number bound to the key.
+
+## Common errors (stable API codes)
+
+- `400 META_GROUPS_NOT_ELIGIBLE` — the Meta Cloud API number is not an approved Official Business Account (or groups are not enabled for it).
+- `409 WHATSAPP_INSTANCE_NOT_CONNECTED` — the session is not `OPEN`.
+- `WHATSAPP_UPSTREAM_ERROR`, `WHATSAPP_INVALID_JSON`, `LINKED_WHATSAPP_INSTANCE_NOT_FOUND`; other stable codes may appear depending on instance configuration.
+
+## Variables in buttons
+
+Every `{{placeholder}}` in the stored template JSON (body **and** button labels) is validated on send and appears in `latestVersion.variables` after you **save a new template version** in the dashboard.
