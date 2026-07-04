@@ -5,43 +5,82 @@ description: "Receive and make WhatsApp voice calls through the Pilot Status API
 mode: "wide"
 ---
 
-# WhatsApp Business Calling — overview
+WhatsApp Business Calling lets you place and receive **voice calls** with your customers over WhatsApp, through the `/v1/calls*` API.
 
-Receive and make WhatsApp **voice calls** through the public API. Two directions:
+## Supported providers
 
-- **UIC** (user-initiated call) — the customer calls your WhatsApp number. Free.
-- **BIC** (business-initiated call) — your system calls the customer. Requires a prior **call permission** granted by the user.
+Calling works on **two** provider types — and behaves differently on each:
+
+| Provider | What it is | Media model |
+| --- | --- | --- |
+| **META** (Meta Cloud API) | Official WhatsApp Business number | **Signaling-only** — Pilot Status relays SDP (RFC 8866); audio flows **browser ↔ WhatsApp** directly over WebRTC |
+| **EVO\_GO** (Pilot Status web / unofficial) | A number connected via QR (non-official) | **Server-side media** — no SDP; audio is handled on the server (SRTP/Opus). You push audio or open a realtime stream via dedicated endpoints |
 
 <Warning>
-  **Meta Cloud API numbers only.** On unofficial (QR-paired) numbers every calls endpoint returns `400` with `code: "FEATURE_NOT_SUPPORTED"`. All calls endpoints require a **number-scoped** API key (`x-api-key: ps_...`).
+  Any other provider (Evolution v2, etc.) returns `400 FEATURE_NOT_SUPPORTED`. The error message: _"Calling is only supported for Meta Cloud API and Pilot Status (web) numbers."_ An EVO\_GO number that is not connected returns `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
 </Warning>
 
-## Signaling-only architecture
+"Pilot Status (web) numbers" **are** the EVO\_GO numbers — there is no separate unofficial calling provider.
 
-Pilot Status is **signaling-only**: the API relays SDPs (RFC 8866); **audio flows directly between your browser/WebRTC client and WhatsApp** — it never passes through Pilot Status servers.
+## Call types
 
-Your side of the integration:
+| Type | Who starts it | Billing |
+| --- | --- | --- |
+| **BIC** — Business-Initiated Call | You call the customer | On META, billed by **Meta directly on your WABA** (per minute, 6-second pulses, only when answered). On EVO\_GO there is no Meta per-minute charge. |
+| **UIC** — User-Initiated Call | The customer calls you | Free |
 
-1. Your WebRTC client produces an SDP **offer** (BIC) or SDP **answer** (UIC).
-2. You exchange those SDPs through the [Calls API](/api/calls/endpoints) (`POST /v1/calls`, `accept`, `pre-accept`, …).
-3. Once connected, audio streams peer-to-peer between the client and WhatsApp.
+Pilot Status **does not charge** anything for calls.
 
-## Dashboard softphone — no WebRTC code needed
+## Capability support by provider
 
-In the dashboard (`/chat`) you can **answer and place calls straight from the browser** with no WebRTC implementation of your own. Use the API only if you want calling inside your own product.
+| Capability | Endpoint | META | EVO\_GO |
+| --- | --- | :-: | :-: |
+| Place a call (BIC) | `POST /v1/calls` | ✅ SDP offer **required** | ✅ **no SDP** |
+| List calls | `GET /v1/calls` | ✅ | ✅ |
+| Get one call | `GET /v1/calls/{callId}` | ✅ | ✅ |
+| Accept (UIC) | `POST /v1/calls/{callId}/accept` | ✅ SDP answer **required** | ✅ **no SDP** |
+| Pre-accept | `POST /v1/calls/{callId}/pre-accept` | ✅ | ❌ |
+| Reject | `POST /v1/calls/{callId}/reject` | ✅ | ✅ |
+| Terminate / hang up | `POST /v1/calls/{callId}/terminate` | ✅ | ✅ |
+| Play an audio file into the call | `POST /v1/calls/{callId}/play` | ❌ | ✅ **EVO\_GO-only** |
+| Realtime media session (PCM16 WS) | `POST /v1/calls/{callId}/realtime-session` | ❌ | ✅ **EVO\_GO-only** |
+| Get / update calling settings | `GET`·`PUT /v1/calls/settings` | ✅ | ❌ |
+| Get call permissions | `GET /v1/calls/permissions` | ✅ | ❌ |
+| Request call permission | `POST /v1/calls/permissions/request` | ✅ | ❌ |
 
-## Billing
+A capability that a provider doesn't support returns `400 FEATURE_NOT_SUPPORTED`.
 
-<Note>
-  - **BIC** calls are billed by **Meta directly on the WABA** — per minute, in **6-second pulses**, and **only when the call is answered**.
-  - **UIC** calls are **free**.
-  - **Pilot Status does not charge anything for calls.**
-</Note>
+## How each provider handles media
 
-## Webhook events
+### META — signaling only
 
-Subscribe your webhook to `call.ringing`, `call.connected`, `call.ended`, `call.missed`, `call.permission_updated` — or `"*"`. The normalized `call.*` payloads are **flat** (no `data` wrapper); Meta's **native `calls` envelope** (raw `entry[].changes[].value` with the SDPs) is also available for custom WebRTC signaling. See the [event reference](/api/webhooks/events).
+Pilot Status relays the SDP; audio flows **browser ↔ WhatsApp** directly. Your WebRTC client produces the SDP offer/answer. There is nothing server-side to play into, so `play` and `realtime-session` do not apply. The dashboard **/chat** page includes a built-in browser **softphone** on Meta numbers.
+
+### EVO\_GO — server-side media (no SDP)
+
+`POST /v1/calls` and `/accept` take **no `sdp`** — the call connects and audio is processed on the server. You then drive audio with the two EVO\_GO-only endpoints:
+
+- `POST /v1/calls/{callId}/play` — the backend downloads your audio file (through an SSRF guard) and plays it into the call.
+- `POST /v1/calls/{callId}/realtime-session` — opens a full-duplex **PCM16 WebSocket** session. The returned `wsUrl` is on the public Evolution GO host and its token is single-use with a short (~2 min) TTL; connect to it directly (it is not proxied through the API).
+
+EVO\_GO numbers need no BIC **permission** grant and have no calling **settings** surface (those are Meta concepts).
+
+## Migration / compatibility layer
+
+If you already integrate with Evolution GO, the compatibility layer proxies the GO `/call/*` endpoints (start, answer, reject, hangup, list, get, media/play, media/realtime/session) — point your base URL at `/api/layer/evolution-go/` and your existing GO calling code keeps working. The realtime WebSocket (`/call/media/realtime/ws/*`) is reached **directly** on the public GO host (the HTTP layer does not upgrade WebSockets); GO frontend/manager routes are not proxied.
+
+## Follow call progress with webhooks
+
+Subscribe to `call.ringing`, `call.connected`, `call.ended` (includes `duration` in seconds when answered), `call.missed`, and `call.permission_updated`. Normalized `call.*` events fire for both META and EVO\_GO (Pilot Status web) numbers.
 
 ## Next steps
 
-- [Calls API reference](/api/calls/endpoints) — all endpoints, settings, and call permissions.
+<CardGroup cols={2}>
+  <Card title="Calls API Reference" icon="phone" href="/api/calls/endpoints">
+    Every endpoint, parameters, and per-provider behavior.
+  </Card>
+
+  <Card title="Voice Calls Guide" icon="book-open" href="/guides/voice-calls">
+    Step-by-step: place a call, answer, permissions, softphone.
+  </Card>
+</CardGroup>

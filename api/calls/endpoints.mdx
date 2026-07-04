@@ -10,28 +10,38 @@ mode: "wide"
 Base URL: `https://pilotstatus.com.br/v1` Headers: `Content-Type: application/json`, `x-api-key: <your_api_key>` (or `x-api-key-id`).
 
 <Note>
-  Meta Cloud API numbers only — see the [overview](/api/calls/overview). All endpoints require a **number-scoped** key.
+  Calling works on **two** provider kinds: **META** (Meta Cloud API numbers) and **EVO\_GO** (Pilot Status web / unofficial QR numbers). Any other provider returns `400 FEATURE_NOT_SUPPORTED`. All endpoints require a **number-scoped** key. See the [overview](/api/calls/overview).
 </Note>
+
+<Warning>
+  **SDP handling differs by provider.** META is WebRTC: you supply an SDP **offer** on `POST /v1/calls` and an SDP **answer** on `accept` — media flows browser ↔ WhatsApp. EVO\_GO takes **no SDP** (`sdpOffer`/`sdpAnswer` stay `null`); media is handled **server-side** (SRTP/Opus) and you drive audio with the EVO\_GO-only `/play` and `/realtime-session` endpoints.
+</Warning>
 
 ## Endpoints
 
-| Method | Endpoint | Description |
-| --- | --- | --- |
-| `POST` | `/v1/calls` | Start a business-initiated call (BIC). |
-| `GET` | `/v1/calls` | List the number's calls (newest first; `limit` 1–100, `before` ISO 8601 cursor). |
-| `GET` | `/v1/calls/{callId}` | One call; add `?includeSdp=1` to receive `sdpOffer`/`sdpAnswer`. |
-| `POST` | `/v1/calls/{callId}/pre-accept` | OPTIONAL early SDP answer (reduces audio clipping; call connects only on accept). |
-| `POST` | `/v1/calls/{callId}/accept` | Answer an inbound (UIC) call with the business-side SDP answer. |
-| `POST` | `/v1/calls/{callId}/reject` | Decline an incoming call (no body). |
-| `POST` | `/v1/calls/{callId}/terminate` | Hang up an active call (no body). |
-| `GET` | `/v1/calls/settings` | Read the number's `calling` settings object. |
-| `PUT` | `/v1/calls/settings` | Partial update of the `calling` settings. |
-| `GET` | `/v1/calls/permissions?to=<phone>` | Probe whether the business may call `to`. |
-| `POST` | `/v1/calls/permissions/request` | Send the interactive call-permission request (inside the 24h window). |
+| Method | Endpoint | Providers | Description |
+| --- | --- | --- | --- |
+| `POST` | `/v1/calls` | META, EVO\_GO | Start a business-initiated call (BIC). META needs an SDP offer; EVO\_GO takes no SDP. |
+| `GET` | `/v1/calls` | META, EVO\_GO | List the number's calls (newest first; `limit` 1–100, `before` ISO 8601 cursor). |
+| `GET` | `/v1/calls/{callId}` | META, EVO\_GO | One call; add `?includeSdp=1` for `sdpOffer`/`sdpAnswer` (META only; `null` on EVO\_GO). |
+| `POST` | `/v1/calls/{callId}/accept` | META, EVO\_GO | Answer an inbound (UIC) call. META supplies the SDP answer; EVO\_GO takes no body. |
+| `POST` | `/v1/calls/{callId}/reject` | META, EVO\_GO | Decline an incoming call (no body). |
+| `POST` | `/v1/calls/{callId}/terminate` | META, EVO\_GO | Hang up an active call (no body). |
+| `POST` | `/v1/calls/{callId}/pre-accept` | **META only** | OPTIONAL early SDP answer (reduces audio clipping; call connects only on accept). |
+| `GET` | `/v1/calls/settings` | **META only** | Read the number's `calling` settings object. |
+| `PUT` | `/v1/calls/settings` | **META only** | Partial update of the `calling` settings. |
+| `GET` | `/v1/calls/permissions?to=<phone>` | **META only** | Probe whether the business may call `to`. |
+| `POST` | `/v1/calls/permissions/request` | **META only** | Send the interactive call-permission request (inside the 24h window). |
+| `POST` | `/v1/calls/{callId}/play` | **EVO\_GO only** | Play an audio file into an active call (server downloads it). |
+| `POST` | `/v1/calls/{callId}/realtime-session` | **EVO\_GO only** | Open a full-duplex PCM16 audio WebSocket for the call. |
 
-`{callId}` accepts **either** the Pilot Status call id (`call_...`) **or** the Meta call id (`wacid...`).
+`{callId}` accepts **either** the Pilot Status call id (`call_...`) **or** the provider call id (Meta `wacid...` on META).
 
-## 1. Enable calling on the number
+<Note>
+  Endpoints marked **META only** return `400 FEATURE_NOT_SUPPORTED` on EVO\_GO numbers, and endpoints marked **EVO\_GO only** return `400 FEATURE_NOT_SUPPORTED` on META numbers. EVO\_GO has no BIC permission model and no calling-settings surface. An EVO\_GO number that is not connected returns `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
+</Note>
+
+## 1. Enable calling on the number <sub>(META only)</sub>
 
 Pilot Status tries to enable calling automatically when a Meta number connects. Read/adjust anytime:
 
@@ -50,7 +60,11 @@ curl -X PUT "https://pilotstatus.com.br/v1/calls/settings" \
 - Numbers with a messaging limit **below 2,000/day cannot enable calling** yet (Meta error 138015).
 - SIP credentials are never requested nor returned.
 
-## 2. Call permission (required before a BIC)
+<Note>
+  EVO\_GO numbers have no calling-settings surface — this endpoint returns `400 FEATURE_NOT_SUPPORTED`. Calling is available whenever the EVO\_GO instance is connected.
+</Note>
+
+## 2. Call permission (required before a BIC) <sub>(META only)</sub>
 
 ```bash
 # probe
@@ -81,9 +95,15 @@ Probe response:
 
 The user's answer arrives as the **`call.permission_updated`** webhook event (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`). Meta rate-limits permission requests (error 138009) and BIC volume (100 calls/24h per number — error 138012).
 
+<Note>
+  EVO\_GO has no BIC permission model — the permissions endpoints return `400 FEATURE_NOT_SUPPORTED`. Place BIC calls directly.
+</Note>
+
 ## 3. Start a call (BIC)
 
-```bash
+<CodeGroup>
+
+```bash META (SDP offer)
 curl -X POST "https://pilotstatus.com.br/v1/calls" \
   -H "Content-Type: application/json" \
   -H "x-api-key: ps_your_key_here" \
@@ -95,20 +115,34 @@ curl -X POST "https://pilotstatus.com.br/v1/calls" \
   }'
 ```
 
+```bash EVO_GO (no SDP)
+curl -X POST "https://pilotstatus.com.br/v1/calls" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "to": "+5511999999999",
+    "bizOpaqueCallbackData": "order-42"
+  }'
+```
+
+</CodeGroup>
+
 ```json
 HTTP 201
 { "id": "call_01HZX...", "externalCallId": "wacid.ABGG...", "status": "INITIATED" }
 ```
 
-- `sdp` is the RFC 8866 **offer** produced by YOUR WebRTC client. The business-side SDP must use `a=setup:active`.
+- **META:** `sdp` is the RFC 8866 **offer** produced by YOUR WebRTC client. The business-side SDP must use `a=setup:active`. Without permission, Meta returns 138006 → the endpoint surfaces `code: "META_CALL_PERMISSION_REQUIRED"`.
+- **EVO\_GO:** omit `sdp`/`sdpType` — media is server-side. Drive audio afterwards with `/play` or `/realtime-session`.
 - `bizOpaqueCallbackData` (optional) is echoed back on the terminate webhook.
-- Without permission, Meta returns 138006 → the endpoint surfaces `code: "META_CALL_PERMISSION_REQUIRED"`.
 
 ## 4. Answer an inbound call (UIC)
 
-When a user calls your number you receive the **`call.ringing`** webhook (and the native `calls` envelope carrying the user's SDP offer). Then:
+When a user calls your number you receive the **`call.ringing`** webhook. Then:
 
-```bash
+<CodeGroup>
+
+```bash META (SDP answer)
 # fetch the call with the SDP offer
 curl "https://pilotstatus.com.br/v1/calls/wacid.ABGG...?includeSdp=1" \
   -H "x-api-key: ps_your_key_here"
@@ -118,15 +152,67 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../accept" \
   -H "Content-Type: application/json" \
   -H "x-api-key: ps_your_key_here" \
   -d '{ "sdp": "v=0\r\n..." }'
+```
 
-# or decline / hang up (no body)
+```bash EVO_GO (no SDP)
+curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../accept" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+</CodeGroup>
+
+```bash
+# decline / hang up (no body — both providers)
 curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../reject" -H "x-api-key: ps_your_key_here"
 curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x-api-key: ps_your_key_here"
 ```
 
-`accept`/`pre-accept`/`reject`/`terminate` respond `{ "success": true, "id": "call_...", "status": "..." }`. `pre-accept` is optional (early SDP answer to reduce clipping); the call connects only on `accept`.
+`accept`/`pre-accept`/`reject`/`terminate` respond `{ "success": true, "id": "call_...", "status": "..." }`. On META, `pre-accept` is optional (early SDP answer to reduce clipping) — the call connects only on `accept`; on EVO\_GO `accept` takes no body and `pre-accept` is unavailable.
 
-## 5. Call object (DTO)
+## 5. Play audio into a call <sub>(EVO\_GO only)</sub>
+
+Play a pre-recorded audio file into an active EVO\_GO call. The backend downloads the file (behind an SSRF guard) and streams it server-side into the call.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../play" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "audioUrl": "https://example.com/greeting.ogg" }'
+```
+
+```json
+{ "success": true, "id": "call_01HZX...", "status": "ACCEPTED" }
+```
+
+<Note>
+  Returns `400 FEATURE_NOT_SUPPORTED` on META numbers (use the WebRTC media stream instead).
+</Note>
+
+## 6. Realtime audio session <sub>(EVO\_GO only)</sub>
+
+Open a full-duplex PCM16 audio WebSocket for an active EVO\_GO call — ideal for streaming a live agent or a realtime voice model.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../realtime-session" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json
+{
+  "wsUrl": "wss://evolution-go.pilotstatus.com.br/call/media/realtime/ws?token=...",
+  "expiresInSeconds": 120
+}
+```
+
+<Warning>
+  The returned `wsUrl` lives on the **public Evolution GO host** — connect to it **directly**, not through the API base URL. The token is **single-use** with a short TTL (~2 minutes). The HTTP layer does not upgrade WebSocket connections, so the realtime socket is not proxied through `/v1`.
+</Warning>
+
+<Note>
+  Returns `400 FEATURE_NOT_SUPPORTED` on META numbers.
+</Note>
+
+## 7. Call object (DTO)
 
 ```json
 {
@@ -151,15 +237,26 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x
 
 - `status`: `INITIATED` | `RINGING` | `ACCEPTED` | `REJECTED` | `COMPLETED` | `FAILED` | `MISSED`.
 - `direction`: `INBOUND` (UIC) | `OUTBOUND` (BIC).
-- SDPs (`sdpOffer`/`sdpAnswer`) appear only with `?includeSdp=1` on `GET /v1/calls/{callId}` — never on the list.
+- SDPs (`sdpOffer`/`sdpAnswer`) appear only with `?includeSdp=1` on `GET /v1/calls/{callId}` and only on META — on EVO\_GO they are always `null`.
 - `durationSeconds` is set only when the call was answered.
+
+## Webhooks
+
+The following events fire for **both META and EVO\_GO** numbers: `call.ringing`, `call.connected`, `call.ended` (carries `durationSeconds` when the call was answered), `call.missed`, and `call.permission_updated`.
+
+## Billing
+
+- **META:** business-initiated calls (BIC) are billed by Meta on the WABA — per minute, in 6-second pulses, only while the call is answered. User-initiated calls (UIC) are free.
+- **EVO\_GO:** no Meta per-minute charge.
+- Pilot Status charges nothing for calling on either provider.
 
 ## Common errors
 
-- `400 FEATURE_NOT_SUPPORTED` — the key's number is not a Meta Cloud API number.
+- `400 FEATURE_NOT_SUPPORTED` — the key's number does not support this endpoint (wrong provider, e.g. a Meta-only endpoint on EVO\_GO or vice-versa, or a provider that is neither META nor EVO\_GO).
 - `400 NUMBER_NOT_FOUND` — the key is not bound to a number.
 - `400` — body validation, `INVALID_LIMIT`, `INVALID_BEFORE`, `MISSING_TO`.
 - `401` — missing/invalid `x-api-key` / `x-api-key-id`.
 - `403` — tenant-scoped key (calls endpoints are number-scoped).
 - `404 CALL_NOT_FOUND` — the callId/wacid does not belong to the key's number.
+- `409 WHATSAPP_INSTANCE_NOT_CONNECTED` — the EVO\_GO number is not connected.
 - Meta calling errors are forwarded with a mapped `code` — e.g. `META_CALL_PERMISSION_REQUIRED` (138006), permission-request limit (138009), BIC limit 100 calls/24h (138012), calling not enabled (138000), messaging tier too low to enable (138015).
