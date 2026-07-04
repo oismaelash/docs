@@ -1,0 +1,74 @@
+---
+title: "Números extras e On Demand"
+sidebarTitle: "Números extras"
+description: "Compre números extras de WhatsApp via /v1/subscription/extra-numbers — visualize o custo, a conversão Free → On Demand e o pagamento por cartão salvo ou URL de checkout."
+---
+
+# Números extras e On Demand
+
+Compre um número extra de WhatsApp pela API pública com uma chave **de escopo do tenant**. A precificação segue o modelo **On Demand**: você paga um **preço mensal por número conectado** (definido por tenant pela equipe da Pilot Status) e obtém **mensagens ilimitadas** em cada número.
+
+<Note>
+  Chaves de escopo de número recebem **403** — use a chave de escopo do tenant (painel **Profile → API**).
+</Note>
+
+## GET /v1/subscription/extra-numbers — Prévia (dry-run)
+
+```bash
+curl "https://pilotstatus.com.br/v1/subscription/extra-numbers?quantity=1" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+Retorna o custo e se a compra converte o plano:
+
+```json
+{
+  "requiresConversion": true,
+  "fromPlan": "FREE",
+  "toPlan": "ON_DEMAND",
+  "currentNumbers": 1,
+  "requested": 1,
+  "billedQuantity": 2,
+  "unitPriceBRL": 29.9,
+  "monthlyTotalBRL": 59.8,
+  "messagesBecomeUnlimited": true,
+  "hasSavedCard": false,
+  "explanation": { "pt": "…", "en": "…" }
+}
+```
+
+## POST /v1/subscription/extra-numbers — Comprar
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/subscription/extra-numbers" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -d '{ "quantity": 1, "confirm": true }'
+```
+
+Comportamento:
+
+- **Conversão Free → On Demand.** Se você está no plano **Free**, comprar um número extra move você para o On Demand: seu número atual (antes gratuito, limitado a 200 mensagens) se torna um número **pago e ilimitado** **e** o novo número também é cobrado. Portanto, comprar 1 extra estando no Free cobra você por **2** números. Como isso altera o que você paga, o `POST` retorna **409 `CONFIRMATION_REQUIRED`** (com a prévia) a menos que você envie `confirm: true`.
+- **Já no On Demand / pago.** Comprar incrementa sua contagem de números; as mensagens permanecem ilimitadas.
+- **Pagamento.** Se houver um cartão salvo (painel **Plans → Cartão**), ele é cobrado imediatamente e o slot é desbloqueado. Caso contrário, a resposta é `{ "success": true, "charged": false, "checkoutUrl": "https://…" }` — abra-a para pagar; após o pagamento, o slot é desbloqueado (webhook) e você pode criar o número com `POST /v1/numbers`.
+- **Somente Stripe.** A cobrança On Demand é baseada em cartão (sem PIX).
+
+<Note>
+  Salve um cartão primeiro (para que as compras via API sejam cobradas instantaneamente) no painel em **Plans → Cartão**.
+</Note>
+
+## POST /v1/billing/checkout — Recarga de carteira / adicionar um cartão
+
+Gera uma URL de checkout hospedada para ações de cobrança:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -d '{ "purpose": "wallet_topup" }'
+```
+
+- `purpose: "wallet_topup"` — recarrega a carteira pré-paga.
+- `purpose: "add_card"` — salva um cartão para futuras cobranças On Demand.
+
+A resposta contém uma `checkoutUrl` para abrir no navegador.

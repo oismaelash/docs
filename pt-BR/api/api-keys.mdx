@@ -1,0 +1,82 @@
+---
+title: "Chaves de API — Listar, Regenerar, Rotacionar"
+sidebarTitle: "Chaves de API"
+description: "Liste as chaves de API por número, regenere a chave de um número e rotacione sua própria chave via /v1/api-keys."
+---
+
+# Chaves de API — listar, regenerar, rotacionar
+
+Toda requisição à API do Pilot Status exige uma chave de API em um destes cabeçalhos:
+
+- `x-api-key`: a chave bruta (`ps_...`)
+- `x-api-key-id`: o ID da chave de API (o backend o resolve internamente)
+
+Todas as chaves usam o prefixo `ps_`.
+
+## Escopos de chave
+
+| Escopo | Vinculada a | Onde encontrar |
+| --- | --- | --- |
+| **Escopo de número** (padrão) | Um número de WhatsApp — todos os endpoints de ação/dados desse número (envio, status, grupos, templates, mídia, chamadas…) | Painel → página **API Keys** (uma chave padrão por número; **Regenerar**) |
+| **Escopo de tenant** (singleton) | O tenant (sem número) — gerenciamento no nível da conta: `/v1/numbers/*`, `/v1/remote-pairing/*`, `/v1/api-keys`, `/v1/branding`, `/v1/webhooks/*`, `/v1/subscription/*`. Não pode enviar mensagens. | Painel → **Perfil** → aba **API** |
+
+Não existem **sub-chaves** (sem pai/filho). No painel, as chaves são **regeneradas**, não criadas: cada número de WhatsApp tem uma chave padrão com escopo de número, e a chave com escopo de tenant é um singleton.
+
+Uma chave com escopo de tenant em um endpoint de ação por número recebe **403 `TENANT_SCOPE_NOT_ALLOWED`**; uma chave com escopo de número em um endpoint exclusivo de tenant recebe **403 `NUMBER_SCOPE_NOT_ALLOWED`**.
+
+## GET /v1/api-keys — Listar chaves (somente escopo de tenant)
+
+Uma chave com escopo de número recebe **403 `NUMBER_SCOPE_NOT_ALLOWED`**. Retorna um **array plano e enxuto — um item por número** — com `numberId`, `number`, `displayName`, `keyId`, `keyLast4`, além do valor real utilizável (`key`, `revealable: true`). Chaves legadas retornam com `key: null` e `revealable: false` — regenere aquele número para obter um valor utilizável.
+
+```bash
+curl "https://pilotstatus.com.br/v1/api-keys" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json
+[
+  { "numberId": "wn_1", "number": "5511999999999", "displayName": "Suporte", "keyId": "k_aaa", "keyLast4": "wxyz", "key": "ps_4f1c...real...wxyz", "revealable": true },
+  { "numberId": "wn_2", "number": "5511888888888", "displayName": "Vendas",  "keyId": "k_bbb", "keyLast4": "abcd", "key": null, "revealable": false }
+]
+```
+
+## POST /v1/api-keys — Regenerar a chave de um número (somente escopo de tenant)
+
+Envie o número alvo em `whatsappNumberId`: sua chave padrão anterior é **rotacionada/invalidada** e a nova `key` bruta é retornada **uma única vez**. Não há "criar outra chave" — cada número tem exatamente uma chave padrão. Número desconhecido → **404 `NUMBER_NOT_FOUND`**.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/api-keys" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -d '{ "whatsappNumberId": "wn_1" }'
+```
+
+```json
+{
+  "numberId": "wn_1",
+  "keyId": "k_new",
+  "keyPrefix": "ps_",
+  "keyLast4": "wxyz",
+  "key": "ps_...newreal...",
+  "createdAt": "2026-06-28T15:00:00.000Z"
+}
+```
+
+<Warning>
+  A regeneração **rotaciona** a única chave padrão do número escolhido — a chave anterior para de funcionar imediatamente. A chave bruta completa é exibida apenas uma vez na resposta: guarde-a agora.
+</Warning>
+
+## POST /v1/api-keys/regenerate — Rotacionar a própria chave do chamador
+
+Rotaciona a chave do **próprio escopo da chave que faz a chamada** (funciona para ambos os escopos): a chave atual é invalidada e a nova chave bruta é retornada **uma única vez** na resposta.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/api-keys/regenerate" \
+  -H "x-api-key: ps_current_key"
+```
+
+## Boas práticas de segurança
+
+- Use as chaves de API somente no **backend** (nunca no navegador).
+- Armazene as chaves em variáveis de ambiente / um gerenciador de segredos.
+- Trate as respostas que contêm chaves brutas como sensíveis (não as registre em logs).

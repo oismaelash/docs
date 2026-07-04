@@ -1,0 +1,87 @@
+---
+title: "Configurar Webhooks no Pilot Status — API e Painel"
+sidebarTitle: "Configurar"
+description: "Registre e gerencie URLs de webhook via a API do Pilot Status ou pelo painel. Assine eventos específicos ou receba todos os eventos em um único endpoint."
+---
+
+# Configurar webhooks
+
+Gerencie todo o ciclo de vida do webhook via API pública — ou use a página **Webhooks** do painel (`/webhooks`). Um webhook é configurado **por número**; uma vez configurado, os eventos são entregues automaticamente (não é necessário vincular chave de API).
+
+Para payloads e a lista completa de eventos, consulte a [referência de eventos](/pt-BR/api/webhooks/events).
+
+## Endpoints
+
+| Método | Endpoint | Descrição |
+| --- | --- | --- |
+| `GET` | `/v1/webhooks` | Lista os webhooks visíveis no escopo da chave. |
+| `POST` | `/v1/webhooks` | Cria um webhook assinado em **um** número. |
+| `GET` | `/v1/webhooks/{id}` | Busca um webhook. |
+| `PATCH` | `/v1/webhooks/{id}` | Atualiza `name`, `url`, `active`, `events`. |
+| `DELETE` | `/v1/webhooks/{id}` | Exclui permanentemente o webhook. |
+| `GET` | `/v1/webhooks/{id}/logs` | Tentativas de entrega recentes (`limit` 1–50, filtro `event`). |
+
+## Escopo por número
+
+Um webhook pertence a um único número do WhatsApp.
+
+- Com uma chave **com escopo de número**, o número vem da própria chave; um `whatsappNumberId` no corpo deve corresponder a ele (caso contrário, **400 `NUMBER_MISMATCH`**).
+- Com uma chave **com escopo de tenant**, informe o número de destino pelo campo `whatsappNumberId` do corpo ou pelo cabeçalho `x-whatsapp-number-id` — omitir ambos retorna **400 `NUMBER_REQUIRED`**; um número fora do seu tenant retorna **404 `NUMBER_NOT_FOUND`**.
+- `GET /v1/webhooks` lista apenas os webhooks visíveis no escopo da chave (uma chave com escopo de número vê apenas os webhooks do seu próprio número). Um webhook fora do escopo da chave retorna **404 `WEBHOOK_NOT_FOUND`**.
+
+## Exemplos
+
+<CodeGroup>
+
+```bash Create
+curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+  -H "x-api-key: ps_your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://example.com/hooks/in", "name": "My hook", "events": ["message.received", "message.sent"] }'
+```
+
+```bash Pause (keep it, stop delivering)
+curl -X PATCH "https://pilotstatus.com.br/v1/webhooks/wh_abc" \
+  -H "x-api-key: ps_your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "active": false }'
+```
+
+```bash Delete
+curl -X DELETE "https://pilotstatus.com.br/v1/webhooks/wh_abc" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+```bash Delivery logs
+curl "https://pilotstatus.com.br/v1/webhooks/wh_abc/logs?limit=20&event=message.received" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+</CodeGroup>
+
+## Controle de eventos
+
+<Warning>
+  Uma **lista `events` vazia (ou omitida) NÃO dispara NADA** — não existe "assinar todos" implícito. Use `"*"` para assinar todos os eventos.
+</Warning>
+
+- No `PATCH`, **`events` substitui toda a lista de assinatura** (não é uma mesclagem).
+- Eventos que o provedor do número não consegue emitir são descartados silenciosamente.
+
+## Regras e erros
+
+| Regra | Erro |
+| --- | --- |
+| Criar sem um número (chave com escopo de tenant, sem `whatsappNumberId` / cabeçalho) | **400 `NUMBER_REQUIRED`** |
+| `whatsappNumberId` difere do número de uma chave com escopo de número | **400 `NUMBER_MISMATCH`** |
+| `whatsappNumberId` no `PATCH` (o número não pode ser alterado após a criação — exclua e recrie) | **400 `NUMBER_RESCOPE_NOT_SUPPORTED`** |
+| Número fora do seu tenant | **404 `NUMBER_NOT_FOUND`** |
+| Webhook não visível no escopo da chave | **404 `WEBHOOK_NOT_FOUND`** |
+
+<Note>
+  **O `secret` de assinatura nunca é retornado** por nenhum desses endpoints.
+</Note>
+
+## Painel
+
+Tudo acima também está disponível no painel em **`/webhooks`**: crie/edite webhooks por número, escolha eventos, pause/retome e inspecione os logs de entrega. A interface de Novo/Editar Webhook inclui o aviso de que `message.read` só dispara quando o destinatário tem os recibos de leitura do WhatsApp ativados.

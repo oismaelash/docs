@@ -1,0 +1,59 @@
+---
+title: "Webhooks em Tempo Real: Eventos de Mensagens do Pilot Status"
+sidebarTitle: "Webhooks"
+description: "O Pilot Status envia webhooks para a sua URL em milissegundos após eventos de mensagens. Conheça os tipos de evento, a estrutura do payload e como verificá-los e tratá-los."
+---
+
+Webhooks entregam eventos em tempo real para a sua URL como requisições `POST` em JSON. Você configura webhooks por número na página **Webhooks** no painel ou via `POST /v1/webhooks` — consulte o [guia Receber Mensagens](/pt-BR/guides/receive-messages) para a configuração e a [referência de Eventos](/pt-BR/api/webhooks/events) para os schemas completos de payload.
+
+## Visão geral dos eventos
+
+| Grupo | Eventos |
+| --- | --- |
+| Status de saída | `message.sent`, `message.delivered`, `message.read`, `message.failed` |
+| Entrada | `message.received`, `message.reply`, `message.group`, `message.newsletter` |
+| Ciclo de vida do número | `number.created`, `number.connected`, `number.disconnected`, `number.removed` |
+| Chamadas de voz (apenas Meta) | `call.ringing`, `call.connected`, `call.ended`, `call.missed`, `call.permission_updated`, `calls` (envelope bruto da Meta) |
+
+Um webhook só dispara para eventos na sua lista `events`. Uma **lista vazia não dispara nada**; use `"*"` para assinar todos os eventos.
+
+## Schema do payload (v3)
+
+Todo evento `message.*` / `number.*` chega como:
+
+```json
+{
+  "event": "message.sent",
+  "data": { }
+}
+```
+
+Todos os campos de `data` são **camelCase**. Números de telefone estão sempre em **E.164 com `+`** (sem sufixo de dispositivo, sem `@s.whatsapp.net`/`@lid`). Timestamps estão em **ISO 8601** em um único campo `createdAt`. Eventos `call.*` normalizados são planos (sem o wrapper `data`).
+
+## Correlação com a resposta 202
+
+`POST /v1/messages/send` responde `HTTP 202` com `id` e `correlationId`. Use-os para vincular os webhooks ao seu envio:
+
+| Campo do `202` | Equivalente no webhook |
+| --- | --- |
+| `id` | `id` em `message.sent` / `delivered` / `read` / `failed` (mesmo valor) |
+| `correlationId` | Repete-se em eventos de status de saída e em `message.reply` / `message.received` quando correlacionado |
+| _(não presente no 202)_ | `messageId` do WhatsApp — aparece primeiro em `message.sent` |
+
+Em `message.reply`, `quotedMessageId` é igual ao `messageId` do seu `message.sent` original, e `contentReplied` carrega o texto citado.
+
+<Note>
+  O evento `message.read` (e o status **Read** nos logs) só ocorre quando o destinatário tem os **recibos de leitura do WhatsApp** ativados. Caso contrário, o ciclo de vida para em `message.delivered`.
+</Note>
+
+## Notas sobre a entrega
+
+- `number.disconnected` é emitido após uma verificação de saúde confirmar a desconexão — não a cada breve oscilação de conexão.
+- Com a retenção de dados desativada ([modos de PII](/pt-BR/trust/data-retention)), campos condicionais como `content` podem estar vazios; IDs e timestamps sempre existem.
+- Eventos que o provedor do número não consegue emitir são silenciosamente descartados de uma assinatura.
+
+## Relacionados
+
+- [Guia Receber Mensagens](/pt-BR/guides/receive-messages)
+- [Referência de Eventos de Webhook](/pt-BR/api/webhooks/events)
+- [Configurar Webhooks](/pt-BR/api/webhooks/configure)

@@ -1,0 +1,189 @@
+---
+title: "GET /v1/messages/history — Histórico de Mensagens"
+sidebarTitle: "Histórico de Mensagens"
+description: "Recupere todo o histórico de mensagens armazenado (conversas diretas e em grupo) do número conectado."
+---
+
+Recupere **todo o histórico de mensagens armazenado** (conversas diretas e em grupo) do número conectado.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/messages/history`
+
+<Note>
+  Requer uma chave de API **com escopo de número** (`ps_*`) no cabeçalho `x-api-key`. Chaves com escopo de tenant retornam `403`. Você também pode identificar a chave com `x-api-key-id: <api_key_id>`.
+
+  **Todos os provedores suportados:** este endpoint funciona para números conectados via **Evolution Go**, **Evolution v2** e **Meta Cloud API**.
+</Note>
+
+## Parâmetros de query
+
+<ParamField query="startDate" type="string">
+  Data/hora ISO 8601. Filtra mensagens com `providerTimestamp` **em ou após** esta data.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Data/hora ISO 8601. Filtra mensagens com `providerTimestamp` **em ou antes** desta data.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Número da página (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Resultados por página (1–100).
+</ParamField>
+
+Tanto `startDate` quanto `endDate` são opcionais individualmente. Quando fornecidos, cada um deve ser uma string ISO 8601 válida e `startDate` não pode ser posterior a `endDate`; caso contrário, `400 INVALID_DATE_RANGE` é retornado.
+
+Os resultados são ordenados por `providerTimestamp` de forma decrescente (mais recentes primeiro). O endpoint retorna até aproximadamente **um mês** de histórico armazenado, contado a partir da data de conexão do número.
+
+## Efeito do modo PII
+
+A resposta depende do **modo PII** configurado para o número (definido via `PATCH /api/whatsapp-numbers/[id]`):
+
+| Modo PII | Efeito |
+| --- | --- |
+| `STORE_INDEFINITE` (padrão) | Todas as mensagens são retornadas (sujeitas aos filtros de data). |
+| `STORE_X_DAYS` | Apenas mensagens dos últimos N dias são retornadas. O limite inferior efetivo é `max(startDate, now − piiRetentionDays)`. Mensagens fora da janela de retenção foram excluídas permanentemente pela rotina diária. |
+| `RELAY_ONLY` | Retorna uma lista **vazia** (`messages: []`, `total: 0`) e inclui um campo `notice: "PII_RELAY_ONLY"`. Nenhum dado de mensagem é armazenado para este número. |
+
+## Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:00Z&endDate=2026-06-30T23:59:59Z&page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "messages": [
+    {
+      "id": "cm_01HZX...",
+      "conversationId": "conv_01HZX...",
+      "direction": "INBOUND",
+      "providerKind": "PILOT_STATUS",
+      "externalMessageId": "wamid.HBg...",
+      "status": "DELIVERED",
+      "messageType": "text",
+      "origin": null,
+      "text": "Olá, ainda está disponível?",
+      "participantName": "Ana",
+      "participantPhone": "+5511988887777",
+      "repliedToExternalId": null,
+      "media": null,
+      "sentAt": null,
+      "deliveredAt": "2026-06-27T10:00:01.000Z",
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T10:00:00.000Z",
+      "createdAt": "2026-06-27T10:00:00.500Z"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1
+}
+```
+
+```json RELAY_ONLY (200)
+{
+  "messages": [],
+  "total": 0,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 0,
+  "notice": "PII_RELAY_ONLY"
+}
+```
+
+</CodeGroup>
+
+## Campos do objeto de mensagem (`ChatMessageDTO`)
+
+<ResponseField name="id" type="string" required>
+  ID interno da mensagem no Pilot Status.
+</ResponseField>
+
+<ResponseField name="conversationId" type="string" required>
+  ID da conversa pai (direta ou em grupo).
+</ResponseField>
+
+<ResponseField name="direction" type="string" required>
+  `"INBOUND"` (recebida) ou `"OUTBOUND"` (enviada).
+</ResponseField>
+
+<ResponseField name="providerKind" type="string" required>
+  Provedor que processou a mensagem (`PILOT_STATUS`, `META`, …).
+</ResponseField>
+
+<ResponseField name="externalMessageId" type="string | null">
+  ID da mensagem no provedor (ex.: `wamid` da Meta) quando disponível.
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Status da mensagem (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `FAILED`, …).
+</ResponseField>
+
+<ResponseField name="messageType" type="string" required>
+  `text`, `image`, `audio`, `video`, `document`, `location`, `contacts`, `sticker` ou `reaction`.
+</ResponseField>
+
+<ResponseField name="origin" type="string | null">
+  Origem de uma mensagem enviada (ex.: `APP`, `API`) quando disponível.
+</ResponseField>
+
+<ResponseField name="text" type="string | null">
+  Texto ou legenda da mensagem quando disponível.
+</ResponseField>
+
+<ResponseField name="participantName" type="string | null">
+  Nome de exibição do WhatsApp da contraparte/remetente quando disponível.
+</ResponseField>
+
+<ResponseField name="participantPhone" type="string | null">
+  Contraparte/remetente no formato E.164 quando disponível.
+</ResponseField>
+
+<ResponseField name="repliedToExternalId" type="string | null">
+  `externalMessageId` da mensagem à qual esta responde, quando disponível.
+</ResponseField>
+
+<ResponseField name="media" type="object | null">
+  Descritor de mídia `{ provider, id, url, mimeType, fileName }` quando a mensagem carrega mídia; `null` caso contrário.
+
+  - `media.provider` — `"META"`, `"EVO"` ou `"EVO_GO"` — o provedor que entregou a mídia.
+  - `media.id` — ID de mídia da **Meta**. Definido em números `META` — passe-o para `GET /v1/media/{mediaId}` para baixar os bytes; `null` no Evolution.
+  - `media.url` — URL de download direto quando disponível. Mídia recebida da **META** é espelhada no S3 (portanto mensagens META geralmente carregam tanto `id` **quanto** `url`); o **Evolution** fornece seu próprio link. Melhor esforço — pode ser `null`.
+  - `media.mimeType` — Tipo MIME da mídia quando conhecido (pode ser `null`).
+  - `media.fileName` — Nome do arquivo de mídia quando conhecido (pode ser `null`).
+</ResponseField>
+
+<ResponseField name="sentAt" type="string | null">
+  ISO 8601 — quando a mensagem foi enviada.
+</ResponseField>
+
+<ResponseField name="deliveredAt" type="string | null">
+  ISO 8601 — quando a mensagem foi entregue.
+</ResponseField>
+
+<ResponseField name="readAt" type="string | null">
+  ISO 8601 — quando a mensagem foi lida (apenas quando as confirmações de leitura estão habilitadas).
+</ResponseField>
+
+<ResponseField name="providerTimestamp" type="string" required>
+  ISO 8601 — timestamp do provedor para a mensagem (chave de ordenação).
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 — quando o registro foi criado no Pilot Status.
+</ResponseField>
+
+## Erros comuns
+
+- `400 INVALID_DATE_RANGE` — `startDate` ou `endDate` não é uma string ISO 8601 válida, ou `startDate > endDate`.
+- `400 NUMBER_NOT_FOUND` — a chave de API não está vinculada a um número de WhatsApp.
+- `401` — cabeçalho `x-api-key` ausente ou inválido.
+- `403` — chave com escopo de tenant utilizada (é necessária uma chave com escopo de número).

@@ -1,0 +1,128 @@
+---
+title: "Receba mensagens do WhatsApp e eventos de entrega via webhooks"
+sidebarTitle: "Receber mensagens"
+description: "Configure um endpoint de webhook para receber mensagens recebidas do WhatsApp e eventos de entrega do Pilot Status em tempo real, com exemplos em Node.js e Python."
+---
+
+Para receber mensagens recebidas do WhatsApp e eventos de entrega em tempo real, registre um webhook: um endpoint HTTPS no seu sistema que o Pilot Status chama com um `POST` JSON para cada evento.
+
+## Criar um webhook
+
+<Tabs>
+  <Tab title="Dashboard">
+    Acesse a página **Webhooks** (`/webhooks`) no dashboard, clique em **New Webhook**, informe sua URL e escolha os eventos desejados. Os webhooks têm escopo por número.
+  </Tab>
+  <Tab title="API">
+    ```bash
+    curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+      -H "x-api-key: ps_your_key_here" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "url": "https://example.com/hooks/whatsapp",
+        "name": "My hook",
+        "events": ["message.received", "message.sent", "message.delivered"]
+      }'
+    ```
+
+    O CRUD completo está disponível: `GET /v1/webhooks`, `GET`/`PATCH`/`DELETE /v1/webhooks/{id}` e `GET /v1/webhooks/{id}/logs` para as tentativas de entrega recentes. Com uma chave de **escopo de número**, o webhook é associado ao número dessa chave; com uma chave de **escopo de tenant**, passe `whatsappNumberId` no corpo (ou o header `x-whatsapp-number-id`).
+  </Tab>
+</Tabs>
+
+<Warning>
+  O controle de eventos é explícito: uma **lista `events` vazia não dispara nada** — não existe uma inscrição implícita em "todos". Use `"*"` para receber todos os eventos. No `PATCH`, `events` **substitui** a lista inteira (sem merge), e o número do webhook não pode ser alterado após a criação.
+</Warning>
+
+Para pausar as entregas sem excluir, faça um `PATCH` com `{ "active": false }`. O `secret` de assinatura nunca é retornado por nenhum endpoint.
+
+## Exemplo de payload — `message.received`
+
+```json
+{
+  "event": "message.received",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Hi",
+    "participantName": "WhatsApp name",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+Para mensagens de mídia, `mediaLink`, `mediaType`, `mediaCaption` e `mediaFilename` aparecem quando o provedor os expõe (por exemplo, Meta Cloud API). Consulte a [Referência de eventos](/pt-BR/api/webhooks/events) para todos os eventos e campos.
+
+## Exemplos de receptor
+
+Retorne `200` rapidamente e processe o evento de forma assíncrona; deduplique por `data.id`, já que as retentativas podem entregar um evento mais de uma vez.
+
+<CodeGroup>
+
+```javascript Node.js (Express)
+import express from "express";
+
+const app = express();
+app.use(express.json());
+
+app.post("/hooks/whatsapp", (req, res) => {
+  const { event, data } = req.body;
+
+  // Acknowledge immediately, process async
+  res.sendStatus(200);
+
+  if (event === "message.received") {
+    console.log(`Message from ${data.from}: ${data.content}`);
+    // enqueue reply, run your bot, etc.
+  }
+});
+
+app.listen(3000);
+```
+
+```python Python (Flask)
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.post("/hooks/whatsapp")
+def whatsapp_hook():
+    payload = request.get_json()
+    event = payload.get("event")
+    data = payload.get("data", {})
+
+    if event == "message.received":
+        print(f"Message from {data.get('from')}: {data.get('content')}")
+        # enqueue reply, run your bot, etc.
+
+    return "", 200
+
+if __name__ == "__main__":
+    app.run(port=3000)
+```
+
+</CodeGroup>
+
+## Respondendo a uma mensagem recebida
+
+Responda com `POST /v1/messages/send` usando o número do remetente como destino:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "text": "Thanks, we got your message!", "destinationNumber": "+5511999999999" }'
+```
+
+<Note>
+  `message.reply` é disparado quando um contato cita uma das suas mensagens — use `quotedMessageId` para relacioná-lo ao `messageId` do seu `message.sent` original. `message.read` só é disparado quando o destinatário tem as confirmações de leitura habilitadas.
+</Note>
+
+## Relacionados
+
+- [Conceito de webhooks](/pt-BR/concepts/webhooks)
+- [Referência de eventos de webhook](/pt-BR/api/webhooks/events)
+- [Enviar mensagens](/pt-BR/guides/send-messages)

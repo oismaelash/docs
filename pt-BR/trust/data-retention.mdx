@@ -1,0 +1,61 @@
+---
+title: "Retenção de dados e modos de PII"
+sidebarTitle: "Retenção de dados"
+description: "Controle por quanto tempo o Pilot Status armazena o conteúdo das mensagens por número: STORE_INDEFINITE, STORE_X_DAYS ou RELAY_ONLY — webhooks e Chatwoot continuam funcionando independentemente."
+---
+
+O Pilot Status permite controlar por quanto tempo dados sensíveis (PII) são armazenados. Existem duas camadas independentes:
+
+1. **Retenção no nível da chave de API** — por quanto tempo os logs de mensagens enviadas mantêm PII.
+2. **Modo de PII por número** — se as mensagens de chat recebidas/enviadas e as conversas são armazenadas ou não.
+
+## Retenção no nível da chave de API
+
+Configurada por chave de API na página **API Keys** (`/api-keys`):
+
+- `retentionDays > 0` — a PII nos logs de mensagens enviadas é mantida por até N dias.
+- `retentionDays = 0` — a PII não é persistida.
+
+Mesmo com a retenção desativada, os eventos de webhook ainda são entregues — campos sensíveis (por exemplo, `destinationNumber`, `content`) podem ficar vazios, mas IDs, timestamps, status e metadados de rastreamento permanecem.
+
+## Modo de PII por número
+
+Cada número de WhatsApp é configurado de forma independente com um dos três modos (definido nas configurações do número no painel):
+
+| Modo | Comportamento |
+| --- | --- |
+| `STORE_INDEFINITE` | **(Padrão)** Todas as mensagens de chat recebidas e enviadas e as conversas são armazenadas indefinidamente. |
+| `STORE_X_DAYS` | As mensagens e conversas são armazenadas apenas pelos últimos N dias (`piiRetentionDays`, inteiro obrigatório \> 0). Um job diário exclui permanentemente registros de chat mais antigos que o limite e redige a PII de entradas de log de envio mais antigas. |
+| `RELAY_ONLY` | **Nada é armazenado.** As mensagens recebidas ainda são retransmitidas — os webhooks disparam e a integração com o Chatwoot continua funcionando — mas nenhuma conversa ou registro de chat é criado e a mídia recebida não é re-hospedada. As linhas de log de envio são mantidas apenas para faturamento/status, com payload `null` e `destinationNumber` em branco. |
+
+### Efeito no painel
+
+| Superfície | `STORE_INDEFINITE` | `STORE_X_DAYS` | `RELAY_ONLY` |
+| --- | --- | --- | --- |
+| `/chat` | Histórico completo | Últimos N dias | Vazio \+ banner "As mensagens não são armazenadas para este número" |
+| `/logs` | Histórico completo | Últimos N dias | Vazio \+ banner |
+
+### Efeito nos endpoints de leitura v1
+
+`GET /v1/conversations`, `GET /v1/messages/unread` e `GET /v1/messages/group` aplicam a mesma restrição:
+
+| Modo | Comportamento |
+| --- | --- |
+| `STORE_INDEFINITE` | Resultados normais. |
+| `STORE_X_DAYS` | Apenas registros dentro da janela — para consultas por intervalo de datas, o limite inferior efetivo é `max(startDate, now − piiRetentionDays)`. |
+| `RELAY_ONLY` | Lista vazia com `{ "total": 0, "notice": "PII_RELAY_ONLY" }`. |
+
+## O encaminhamento está sempre ativo
+
+Independentemente do modo de PII, estes sempre funcionam:
+
+- **Webhooks** de saída (eventos de entrega e eventos recebidos)
+- A **integração com o Chatwoot** (receber e responder)
+- **Envio** de mensagens
+
+Apenas o **armazenamento e a releitura** são afetados.
+
+## Relacionados
+
+- [Webhooks](/pt-BR/concepts/webhooks)
+- [Integração com o Chatwoot](/pt-BR/integrations/chatwoot)

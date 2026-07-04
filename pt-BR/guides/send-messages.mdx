@@ -1,0 +1,150 @@
+---
+title: "Enviar mensagens de WhatsApp via API | Pilot Status"
+sidebarTitle: "Enviar mensagens"
+description: "Como enviar mensagens de WhatsApp com template, texto livre e mídia usando POST /v1/messages/send com autenticação x-api-key."
+---
+
+# Guia de envio de mensagens
+
+Este guia mostra como enviar mensagens de WhatsApp pela API do Pilot Status. Todos os envios passam por um **único endpoint**:
+
+```text
+POST https://pilotstatus.com.br/v1/messages/send
+```
+
+A autenticação usa o cabeçalho `x-api-key: ps_...` (ou `x-api-key-id`) com uma chave **com escopo de número** — veja [Autenticação da API](/pt-BR/api/authentication). Não há autenticação por Bearer-token.
+
+O endpoint tem três modos mutuamente exclusivos: **envio de template** (`templateId`), **texto livre** (`text`) e **mídia direta** (`media` \+ `mediaType`). Referência completa: [POST /v1/messages/send](/pt-BR/api/messages/send).
+
+## Pré-requisitos
+
+1. Um número de WhatsApp conectado (painel `/numbers`).
+2. Uma chave de API para esse número (painel `/api-keys`).
+3. Para envios de template: um template criado em `/templates` (números Meta exigem aprovação da Meta).
+
+## 1. Enviar uma mensagem de template
+
+O modo mais confiável — funciona a qualquer momento, inclusive fora da janela de 24h em números Meta.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "onboarding-test",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John", "order_id": "123" }
+  }'
+```
+
+```javascript Node.js (fetch)
+const res = await fetch("https://pilotstatus.com.br/v1/messages/send", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.PILOT_STATUS_API_KEY, // ps_...
+  },
+  body: JSON.stringify({
+    templateId: "onboarding-test",
+    destinationNumber: "+5511999999999",
+    variables: { name: "John", order_id: "123" },
+  }),
+});
+
+const data = await res.json(); // 202 => { id, correlationId, status: "QUEUED", ... }
+console.log(data.id); // persist this to track delivery
+```
+
+</CodeGroup>
+
+## 2. Enviar texto livre
+
+Envie texto simples com o campo `text` (sem `templateId`).
+
+<Warning>
+  Em números **Meta**, mensagens de texto livre só funcionam dentro da **janela de conversa de 24h** do WhatsApp (ou seja, após o destinatário ter enviado mensagem para você nas últimas 24 horas). Fora da janela, o envio falha de forma assíncrona com `META_OUTSIDE_24H_WINDOW` no webhook `message.failed` — use um template aprovado em vez disso.
+</Warning>
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "text": "Hi! Your delivery has been confirmed for tomorrow.",
+    "destinationNumber": "+5511999999999"
+  }'
+```
+
+```javascript Node.js (fetch)
+await fetch("https://pilotstatus.com.br/v1/messages/send", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.PILOT_STATUS_API_KEY,
+  },
+  body: JSON.stringify({
+    text: "Hi! Your delivery has been confirmed for tomorrow.",
+    destinationNumber: "+5511999999999",
+  }),
+});
+```
+
+</CodeGroup>
+
+Você pode adicionar até 3 `buttons` (e, com botões, um `header`/`footer`) às mensagens de texto livre — veja a [referência de envio](/pt-BR/api/messages/send).
+
+## 3. Enviar mídia direta
+
+Envie uma imagem, vídeo, documento ou áudio isoladamente — forneça `media` \+ `mediaType`, sem `templateId` e sem `text`. Um `caption` opcional é permitido para imagem/vídeo/documento (não para áudio). `mediaType: "audio"` é entregue como uma nota de voz do WhatsApp (PTT).
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/voice.ogg",
+    "mediaType": "audio"
+  }'
+```
+
+```javascript Node.js (fetch)
+await fetch("https://pilotstatus.com.br/v1/messages/send", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.PILOT_STATUS_API_KEY,
+  },
+  body: JSON.stringify({
+    destinationNumber: "+5511999999999",
+    media: "https://cdn.example.com/report.pdf",
+    mediaType: "document",
+    caption: "Your monthly report",
+  }),
+});
+```
+
+</CodeGroup>
+
+<Note>
+  Envios de mídia exigem uma assinatura paga ativa (caso contrário, **402** `SUBSCRIPTION_REQUIRED_FOR_MEDIA`). URIs de dados Base64 são aceitos na Meta Cloud API e no Evolution v2; números **Evolution GO** exigem uma URL http(s) pública.
+</Note>
+
+## 4. Acompanhar a entrega
+
+A resposta `202` retorna um `id`. Persista-o e:
+
+- Consulte [`GET /v1/messages/{id}`](/pt-BR/api/messages/status) para `QUEUED` → `SENT` → `DELIVERED` → `READ` (ou `FAILED` / `CANCELED`), ou
+- Consuma webhooks — o `id` da resposta corresponde ao `internalMessageId` em `message.sent`, `message.delivered`, `message.read` e `message.failed`.
+
+## Próximos passos
+
+- Referência completa de campos e códigos de erro: [POST /v1/messages/send](/pt-BR/api/messages/send)
+- Agendamento com `deliverAt` e cancelamento: [DELETE /v1/messages/cancel](/pt-BR/api/messages/cancel)
+- Diagnóstico de falhas: [Códigos de erro de log](/pt-BR/api/messages/log-error-codes)

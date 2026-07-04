@@ -1,0 +1,100 @@
+---
+title: "Autenticação da API com x-api-key | Pilot Status"
+sidebarTitle: "Autenticação"
+description: "Autentique-se com o cabeçalho x-api-key ou x-api-key-id, o prefixo de chave ps_, chaves com escopo de número vs. escopo de tenant e rotação de chaves."
+---
+
+# Autenticação da API
+
+Toda requisição à API do Pilot Status exige uma chave de API em um destes cabeçalhos:
+
+- `x-api-key`: a chave bruta (`ps_*`)
+- `x-api-key-id`: o ID da chave de API (o backend resolve internamente)
+
+<Warning>
+  Não há autenticação por Bearer token. Nunca envie `Authorization: Bearer` — use sempre o cabeçalho `x-api-key` (ou `x-api-key-id`).
+</Warning>
+
+## Prefixo da chave
+
+Todas as chaves brutas usam o prefixo `ps_`.
+
+## Onde encontrar uma chave de API
+
+- Chave com **escopo de número**: painel `/api-keys` — cada número de WhatsApp tem **uma chave padrão** que você pode **Regenerar** (não há subchaves / não há relação pai-filho).
+- Chave com **escopo de tenant**: painel, aba **Perfil → API** — um singleton que você gera/regenera.
+
+<Note>
+  A chave de API bruta é exibida apenas uma vez quando gerada/regenerada. Guarde-a com segurança.
+</Note>
+
+## Escopo da chave (número vs. tenant)
+
+Toda chave de API tem um **escopo** que determina quais endpoints ela pode chamar. Ambos os escopos autenticam da mesma forma (`x-api-key: ps_*` ou `x-api-key-id`).
+
+| Escopo | Vinculada a | Pode chamar | Onde encontrar |
+| --- | --- | --- | --- |
+| **Escopo de número** (padrão) | Um número de WhatsApp | Todos os endpoints de ação/dados desse número — `POST /v1/messages/send`, status de mensagem, cancelamento, grupos, newsletters, templates, analytics, mídia | Painel → página **API Keys** (uma chave padrão por número; **Regenerar**) |
+| **Escopo de tenant** (singleton) | O tenant (sem número) | Apenas gerenciamento do ciclo de vida de números: `/v1/numbers/*` (create, list, get, delete, connect, status) e `/v1/remote-pairing/*` | Painel → **Perfil** → aba **API** |
+
+### Chave com escopo de número
+
+O tipo de chave padrão. Ela é vinculada a um único número de WhatsApp e é usada para todas as operações de ação e dados desse número (envio de mensagens, consultas de status, grupos, newsletters, templates, analytics, mídia). Ela rastreia toda ação executada para esse número.
+
+### Chave com escopo de tenant
+
+Uma chave com escopo de tenant é um **singleton por tenant** **sem número associado**. Ela é destinada a plataformas SaaS que conectam e gerenciam múltiplos números (incluindo os números de seus clientes) via API pública.
+
+- Ela pode chamar **apenas** os endpoints em `/v1/numbers/*` e `/v1/remote-pairing/*`.
+- Ela **não pode** enviar mensagens e **não pode** emitir outras chaves de API.
+- Ela é gerada/regenerada no painel, na aba **Perfil → API**.
+
+Se uma chave com escopo de tenant for usada em um endpoint de ação/dados por número (ex.: `POST /v1/messages/send`), a API responde com **HTTP 403**:
+
+```json
+{
+  "error": "This endpoint requires a number-scoped API key",
+  "code": "TENANT_SCOPE_NOT_ALLOWED"
+}
+```
+
+## Regenerar / rotacionar chaves
+
+Regenere a chave padrão de um número pela página **API Keys** do painel, ou via API:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/api-keys/regenerate" \
+  -H "x-api-key: ps_your_current_key"
+```
+
+Regenerar invalida a chave anterior imediatamente; a nova chave bruta é retornada apenas uma vez.
+
+## Exemplos de requisições
+
+<CodeGroup>
+
+```bash x-api-key
+curl "https://pilotstatus.com.br/v1/messages/msg_abc" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```bash x-api-key-id
+curl "https://pilotstatus.com.br/v1/messages/msg_abc" \
+  -H "x-api-key-id: ck_xxx"
+```
+
+</CodeGroup>
+
+## Erros comuns
+
+- `401` — cabeçalho `x-api-key` / `x-api-key-id` ausente ou inválido.
+- `403` — chave válida, mas operação bloqueada (ex.: uma chave com escopo de tenant chamando um endpoint de ação por número → `code: "TENANT_SCOPE_NOT_ALLOWED"`, ou uma chave com escopo de número chamando um endpoint exclusivo de tenant → `code: "NUMBER_SCOPE_NOT_ALLOWED"`).
+
+## Boas práticas de segurança
+
+<Warning>
+  Use chaves de API apenas no **backend** — nunca as exponha em código de frontend, aplicativos móveis ou JavaScript no lado do cliente.
+</Warning>
+
+- Armazene a chave em variáveis de ambiente / um gerenciador de segredos.
+- Trate a resposta de criação/regeneração como sensível (não registre a chave completa em logs).
