@@ -1,0 +1,61 @@
+---
+title: "Data Retention & PII Modes"
+sidebarTitle: "Data Retention"
+description: "Control how long Pilot Status stores message content per number: STORE_INDEFINITE, STORE_X_DAYS, or RELAY_ONLY — webhooks and Chatwoot keep working regardless."
+---
+
+Pilot Status lets you control how long sensitive data (PII) is stored. There are two independent layers:
+
+1. **API-key-level retention** — how long outbound message logs keep PII.
+2. **Per-number PII mode** — whether inbound/outbound chat messages and conversations are stored at all.
+
+## API-key-level retention
+
+Configured per API key on the **API Keys** page (`/api-keys`):
+
+- `retentionDays > 0` — PII in outbound message logs is kept for up to N days.
+- `retentionDays = 0` — PII is not persisted.
+
+Even with retention off, webhook events are still delivered — sensitive fields (e.g. `destinationNumber`, `content`) may be empty, but IDs, timestamps, status, and tracking metadata remain.
+
+## Per-number PII mode
+
+Each WhatsApp number is configured independently with one of three modes (set on the number's settings in the dashboard):
+
+| Mode | Behavior |
+| --- | --- |
+| `STORE_INDEFINITE` | **(Default)** All inbound and outbound chat messages and conversations are stored indefinitely. |
+| `STORE_X_DAYS` | Messages and conversations are stored only for the last N days (`piiRetentionDays`, required integer \> 0). A daily job hard-deletes chat records older than the cutoff and redacts PII from older send-log entries. |
+| `RELAY_ONLY` | **Nothing is stored.** Inbound messages are still relayed — webhooks fire and the Chatwoot integration keeps working — but no conversation or chat record is created and inbound media is not re-hosted. Outbound log rows are kept for billing/status only, with `null` payload and blank `destinationNumber`. |
+
+### Effect on the dashboard
+
+| Surface | `STORE_INDEFINITE` | `STORE_X_DAYS` | `RELAY_ONLY` |
+| --- | --- | --- | --- |
+| `/chat` | Full history | Last N days | Empty \+ "Messages are not stored for this number" banner |
+| `/logs` | Full history | Last N days | Empty \+ banner |
+
+### Effect on v1 read endpoints
+
+`GET /v1/conversations`, `GET /v1/messages/unread`, and `GET /v1/messages/group` apply the same gate:
+
+| Mode | Behavior |
+| --- | --- |
+| `STORE_INDEFINITE` | Normal results. |
+| `STORE_X_DAYS` | Only records within the window — for date-range queries the effective lower bound is `max(startDate, now − piiRetentionDays)`. |
+| `RELAY_ONLY` | Empty list with `{ "total": 0, "notice": "PII_RELAY_ONLY" }`. |
+
+## Forwarding is always active
+
+Regardless of PII mode, these always work:
+
+- Outbound **webhooks** (delivery events and inbound events)
+- The **Chatwoot integration** (receiving and replying)
+- **Sending** messages
+
+Only **storage and read-back** are affected.
+
+## Related
+
+- [Webhooks](/concepts/webhooks)
+- [Chatwoot integration](/integrations/chatwoot)

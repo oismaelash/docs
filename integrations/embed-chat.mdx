@@ -1,0 +1,85 @@
+---
+title: "Embed the Chat Inbox"
+sidebarTitle: "Embed Chat"
+description: "Embed the white-label WhatsApp inbox in your own SaaS via iframe and the @pilot-status/embed SDK, with short-lived scoped session tokens."
+---
+
+Embed the Pilot Status **WhatsApp inbox (Chat)** in your own SaaS, white-label, via a hosted iframe plus the `@pilot-status/embed` SDK.
+
+## Shared prerequisites (Chat \+ Connect)
+
+1. **Tenant API key** (`ps_`, tenant-scoped) — generated in **Profile → API**. It **never** leaves your backend. (A number-scoped key can only embed its own number.)
+2. **SDK** — `<script src="https://embed.pilotstatus.com.br/embed.js">` or `npm i @pilot-status/embed`; call `PilotStatus.init()`.
+3. **`allowedOrigins`** — when minting the Chat token, list the exact origins (`scheme://host[:port]`, 1–20) allowed to embed.
+4. **Token per surface** — Chat uses `POST /v1/embed/sessions` (`surface: "chat"`, a short-lived JWT kept in memory). Connect uses `POST /v1/numbers/remote-pairing` (a pairing token in the URL — see [Embed the Connect Page](/integrations/embed-connect)).
+5. **Renewal** — Chat token TTL is 15 min with a sliding refresh window; on full expiry the SDK calls `onSessionExpired`.
+
+## Chat flow
+
+<Steps>
+  <Step title="One-time setup">
+    Your backend lists numbers with `GET /v1/numbers` (`x-api-key`) and stores the map `customer → [whatsappNumberIds]`.
+  </Step>
+  <Step title="Mint a token on each page load">
+    Your frontend asks your backend for a token; the backend calls:
+
+    ```bash
+    curl -X POST "https://pilotstatus.com.br/v1/embed/sessions" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "surface": "chat",
+        "whatsappNumberIds": ["wn_abc123"],
+        "allowedOrigins": ["https://app.yoursaas.com"],
+        "ttlSeconds": 900
+      }'
+    ```
+
+    Response `201`: `{ token, surface, whatsappNumberIds, allowedOrigins, expiresAt }`. The backend forwards **only the JWT** to the frontend.
+  </Step>
+  <Step title="Mount the inbox">
+    ```html
+    <script src="https://embed.pilotstatus.com.br/embed.js"></script>
+    <div id="inbox"></div>
+    <script>
+      PilotStatus.init();
+      const { token } = await fetch("/api/my-saas/embed-token").then(r => r.json());
+      const chat = PilotStatus.chat.mount("#inbox", {
+        token, locale: "en", theme: "light",
+        onUnreadCount: (n) => {},
+        onConversationOpened: (id) => {},
+        onSessionExpired: async () => {
+          const { token: t } = await fetch("/api/my-saas/embed-token").then(r => r.json());
+          chat.destroy();
+          PilotStatus.chat.mount("#inbox", { token: t, locale: "en" });
+        },
+      });
+      // chat.setTheme("dark"); chat.setLocale("pt"); chat.destroy();
+    </script>
+    ```
+  </Step>
+</Steps>
+
+## postMessage protocol (parent ↔ iframe)
+
+Envelope: `{ source: "pilot-status-embed", v: 1, type, payload }`. Messages without that `source` are ignored; the origin is validated on **both** sides.
+
+| Step | Who | Message |
+| --- | --- | --- |
+| A | SDK (parent) | creates `<iframe src="chat.pilotstatus.com.br/?parentOrigin=<origin>">` (sandbox `allow-scripts allow-same-origin allow-forms allow-popups`) |
+| B | iframe → parent | `ready` (SDK validates `origin === chat.pilotstatus.com.br`) |
+| C | SDK → iframe | `init{ token, locale, theme }` (iframe validates `origin === parentOrigin`) |
+| D | iframe | keeps the token **in memory** only — never in URL/localStorage |
+| E | iframe → parent | `resize{height}`, `chat:unread-count{count}`, `chat:conversation-opened{conversationId}`, `session-expired` |
+| — | SDK → iframe | `set-theme{theme}`, `set-locale{locale}` at runtime |
+
+## Security model
+
+- `x-api-key` lives **only** on your backend; the browser only ever handles the short-lived JWT.
+- The JWT is **hard-scoped** to its `whatsappNumberIds` — the chat routes re-check on every request (defense in depth).
+- Token in memory only, ~15 min TTL with sliding refresh; `allowedOrigins` pins who may embed; postMessage origin is validated on both sides.
+
+## Related
+
+- [Embed the Connect Page](/integrations/embed-connect)
+- [Live Chat dashboard](/dashboard/live-chat)

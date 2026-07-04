@@ -1,0 +1,78 @@
+---
+title: "POST /v1/numbers/remote-pairing — Hosted Pairing Link"
+sidebarTitle: "Remote pairing (hosted link)"
+description: "Generate a hosted pairing link your end customer opens to connect their WhatsApp number — with optional WhatsApp delivery, white-label branding, and Meta Embedded Signup."
+---
+
+# Remote pairing — hosted pairing link
+
+For SaaS platforms that manage numbers for end customers, Remote Pairing lets you generate a **pairing link** instead of displaying the QR code yourself. Your customer opens the link, scans the QR (or runs Meta Embedded Signup), and the number connects to your account.
+
+## POST /v1/numbers/remote-pairing
+
+Same body as `POST /v1/numbers`, plus pairing-specific options:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_token_here" \
+  -d '{
+    "name": "Customer João",
+    "number": "+5511999999999",
+    "linkToApiKey": true,
+    "sendViaWhatsApp": false
+  }'
+```
+
+Response `201`:
+
+```json
+{
+  "instance": { "id": "wa_abc", "instanceName": "PS-tenant-xxx", "number": "5511999999999", "name": "Customer João", "state": "CLOSE" },
+  "remotePairingUrl": "https://pilotstatus.com/connect/abc123-def456-...",
+  "maskedNumber": "+551199****9999",
+  "messageSent": false
+}
+```
+
+Differences from `POST /v1/numbers`:
+
+- The instance is created in `CLOSE` state (disconnected) — **no QR code** is returned.
+- `remotePairingUrl` is the public link to send to the end customer.
+- When the end customer opens the URL and connects, the `number.connected` webhook fires normally.
+
+## Automatic send via WhatsApp
+
+With `sendViaWhatsApp: true`, Pilot Status attempts to send a template message to the destination number containing the pairing link. Requires a template named `pilot_status_remote_pairing` (OTP category) created in the dashboard. If sending fails, the instance and URL are still created, but `messageSent` returns `false` with a `messageError`.
+
+## Per-link branding (white-label)
+
+The body also accepts an optional `branding` object to override the connect page's logo/colors/title for **just this link** (snapshotted onto the token). It overrides the tenant's saved branding. See [Connect page branding](/api/branding).
+
+## Meta numbers: `metaFlow`
+
+For **official Meta Cloud API** numbers the pairing link can run Meta flows instead of QR pairing:
+
+- `metaFlow: "embedded"` — the hosted page runs **Meta Embedded Signup** so your customer connects their own WABA without leaving the link.
+- `metaFlow: "credentials"` — the hosted page collects the customer's existing WABA credentials.
+
+<Note>
+  Remote pairing with `metaFlow` is the **hosted** option. If you already hold the WABA credentials server-side, use `POST /v1/numbers/meta` (direct BYO-WABA) instead — no link and no end-customer interaction needed.
+</Note>
+
+## Public token endpoints (no authentication)
+
+The pairing page uses these token-based endpoints — you can also call them to build your own connect UI:
+
+| Method | Endpoint | Returns |
+| --- | --- | --- |
+| `GET` | `/v1/remote-pairing/{token}` | `{ valid, name, maskedNumber, state, branding }` |
+| `POST` | `/v1/remote-pairing/{token}/connect` | `{ qrcodeBase64, pairingCode }` |
+| `GET` | `/v1/remote-pairing/{token}/status` | `{ state, isFullyConnected }` |
+| `GET` | `/v1/connect/{token}/branding` | `{ branding }` (also used by the Meta Embedded Signup flow) |
+
+Notes:
+
+- The token expires after **24 hours** or upon **successful connection** (single-use).
+- `POST .../connect` only works when the state is not `OPEN`.
+- The same connection state shown in the dashboard and the webhooks (`number.created`, `number.connected`) apply.

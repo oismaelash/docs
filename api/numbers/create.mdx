@@ -1,0 +1,82 @@
+---
+title: "POST /v1/numbers — Create a Number"
+sidebarTitle: "Create & connect"
+description: "Create a WhatsApp number via the API — QR code / pairing code for unofficial numbers, provider META flows, regenerate QR, and delete."
+---
+
+# Create, connect and delete numbers
+
+Create a WhatsApp number via the public API, connect it (QR code or pairing code), and delete it when no longer needed.
+
+<Note>
+  Use a **tenant-scoped** API key (recommended for SaaS platforms managing multiple numbers). A number-scoped key also works, with the `linkToApiKey` behavior described below. Authenticate with `x-api-key: ps_...`.
+</Note>
+
+## POST /v1/numbers — Create a number
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_token_here" \
+  -d '{
+    "name": "My WhatsApp",
+    "number": "+5511999999999",
+    "linkToApiKey": true
+  }'
+```
+
+<ParamField body="name" type="string" required>
+  Display name for the number.
+</ParamField>
+
+<ParamField body="number" type="string" required>
+  The phone number in E.164 format (e.g. `+5511999999999`).
+</ParamField>
+
+<ParamField body="linkToApiKey" default="true" type="boolean">
+  Affects **number-scoped keys only**. When you create a number with a number-scoped key and `linkToApiKey` is true, that key is re-pointed to the new number so sends route to it. With a **tenant-scoped** key the parameter is a no-op — a tenant-scoped key is never linked (`linkedApiKeyId: null`).
+</ParamField>
+
+The response includes `qrcodeBase64` and `pairingCode` (WhatsApp letter pairing code; may be `null` if the provider does not return one). Show the QR code to the person who owns the phone, or let them type the pairing code.
+
+<Warning>
+  Call these endpoints only from your **backend** — never expose your `ps_` key in the browser.
+</Warning>
+
+### Meta (official Cloud API) numbers
+
+`POST /v1/numbers` creates an **unofficial (QR-paired)** number. For official Meta Cloud API numbers, use one of the Meta flows instead:
+
+- `POST /v1/numbers/meta` — direct BYO-WABA: bring your own WABA credentials, or
+- Hosted Meta Embedded Signup via a [remote pairing link](/api/numbers/remote-pairing) with `metaFlow`.
+
+## GET /v1/numbers/{id}/connect — Regenerate the QR code
+
+Generates a **new QR code and pairing code** when the instance is not `OPEN`.
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/wa_abc/connect" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+- Response includes fresh `qrcodeBase64` and `pairingCode`.
+- If the number is already connected (`OPEN`), the endpoint returns **409** — there is nothing to pair.
+- Not applicable to **Meta** numbers (they do not use QR pairing).
+- Reflects the same connection state as the Numbers page in the dashboard.
+
+## DELETE /v1/numbers/{id} — Remove a number
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wa_abc" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+Removes the Pilot Status record and attempts to end or remove the associated WhatsApp session when applicable (HTTP 404 from cleanup steps is ignored).
+
+## Related webhooks
+
+- `number.created` — fires when the instance is created.
+- `number.connected` — fires when the customer completes the QR / pairing connection (state `OPEN`).
+- `number.removed` — fires on deletion.
+
+See the [webhook event reference](/api/webhooks/events).

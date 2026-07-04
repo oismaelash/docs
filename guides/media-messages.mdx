@@ -1,131 +1,95 @@
 ---
 title: "Send Images, Videos, and Files via the WhatsApp API"
 sidebarTitle: "Media Messages"
-description: "Send images, audio, video, documents, and stickers over WhatsApp using the Pilot Status media message endpoint. Supports URL and base64 uploads."
+description: "Send images, audio, video, documents over WhatsApp using POST /v1/messages/send with media + mediaType. Supports public URLs and base64 (per provider)."
 ---
 
-Pilot Status lets you send rich media — images, videos, audio clips, documents, and stickers — through the same REST API you use for text messages. You provide either a publicly accessible URL or a base64-encoded string, and Pilot Status downloads and forwards the media to WhatsApp on your behalf. This guide covers each media type, supported formats, size limits, and how to attach captions to your media messages.
+Send images, videos, documents, and audio over WhatsApp with the same endpoint used for everything else: `POST /v1/messages/send`. There is no separate media endpoint — media is one of the three mutually exclusive send modes:
+
+1. **Template send** — `templateId` (\+ optional `media` override)
+2. **Free-form text send** — `text`
+3. **Direct media send** — `media` \+ `mediaType`, no `templateId` and no `text`
 
 <Note>
-  Media URLs must be publicly accessible. Pilot Status downloads and forwards them to WhatsApp — URLs behind authentication, VPNs, or private networks will fail to deliver.
+  Sending media requires an active paid subscription. Without one the API returns `402` with code `SUBSCRIPTION_REQUIRED_FOR_MEDIA`.
 </Note>
 
-## Send a media message
+## Direct media send
 
-Use the `/v1/messages/media` endpoint for all media types. Set the `type` field to match the kind of media you're sending, and provide the file via `url`.
+Provide `media` \+ `mediaType` without `templateId` or `text`. In this mode `buttons`, `header`, `footer`, and `variables` are **not allowed**. An optional `caption` is allowed for `image`, `video`, and `document` — but **not** for `audio`.
 
-<Tabs>
+<CodeGroup>
 
-<Tab title="Image">
-
-```bash curl
-curl -X POST https://api.pilotstatus.com.br/v1/messages/media \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+```bash Image with caption
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
   -H "Content-Type: application/json" \
   -d '{
-    "number_id": "num_abc123",
-    "to": "5511999999999",
-    "type": "image",
-    "url": "https://example.com/invoice.png",
-    "caption": "Your invoice for January 📄"
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/photo.png",
+    "mediaType": "image",
+    "caption": "Check this out"
   }'
 ```
 
-</Tab>
-
-<Tab title="Video">
-
-```bash curl
-curl -X POST https://api.pilotstatus.com.br/v1/messages/media \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+```bash Voice note (audio)
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
   -H "Content-Type: application/json" \
   -d '{
-    "number_id": "num_abc123",
-    "to": "5511999999999",
-    "type": "video",
-    "url": "https://example.com/product-demo.mp4",
-    "caption": "Here is a quick walkthrough of your new plan 🎬"
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/voice.ogg",
+    "mediaType": "audio"
   }'
 ```
 
-</Tab>
-
-<Tab title="Audio">
-
-```bash curl
-curl -X POST https://api.pilotstatus.com.br/v1/messages/media \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+```bash Base64 image
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
   -H "Content-Type: application/json" \
   -d '{
-    "number_id": "num_abc123",
-    "to": "5511999999999",
-    "type": "audio",
-    "url": "https://example.com/voice-message.ogg"
+    "destinationNumber": "+5511999999999",
+    "media": "data:image/png;base64,iVBORw0...",
+    "mediaType": "image"
   }'
 ```
 
-<Note>
-  Audio messages do not support the `caption` field — WhatsApp renders them as voice notes without a text overlay.
-</Note>
+</CodeGroup>
 
-</Tab>
+## `media` and `mediaType` fields
 
-<Tab title="Document">
+- `media` — a **public http(s) URL** or a **base64 data URI** (`data:<mime>;base64,...`).
+- `mediaType` — `image`, `video`, `document`, or `audio`. Set it explicitly when the URL extension is not obvious (e.g. a PDF whose URL does not end in `.pdf`).
 
-```bash curl
-curl -X POST https://api.pilotstatus.com.br/v1/messages/media \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "number_id": "num_abc123",
-    "to": "5511999999999",
-    "type": "document",
-    "url": "https://example.com/contract.pdf",
-    "filename": "Service_Contract_Jan2024.pdf",
-    "caption": "Please review and sign the attached contract."
-  }'
+### Base64 vs. URL per provider
+
+| Provider | Public URL | Base64 data URI |
+| --- | --- | --- |
+| Meta Cloud API | ✓ | ✓ |
+| Evolution v2 | ✓ | ✓ |
+| Evolution GO | ✓ | ✗ — **URL only** |
+
+## Audio is a voice note (PTT)
+
+When `mediaType` is `audio`, the file is delivered as a WhatsApp **voice note (PTT)** on all providers. On Evolution v2 and Evolution GO the recipient briefly sees a **"recording audio" presence indicator** before delivery; Meta Cloud API has no outbound presence API, so no indicator appears on Meta sends.
+
+## Media with templates
+
+Add `media` (\+ `mediaType`) to a template send to attach or override media — it takes precedence over any media URL embedded in the template:
+
+```json
+{
+  "templateId": "promo-template",
+  "destinationNumber": "+5511999999999",
+  "variables": { "name": "John" },
+  "media": "https://example.com/promo.png",
+  "mediaType": "image"
+}
 ```
 
-Use the `filename` field to control the display name of the document in the WhatsApp chat. Without it, WhatsApp uses the last segment of the URL path.
+Note that `media`/`mediaType` cannot be combined with a free-form `text` send, and `buttons` are incompatible with `mediaType: "video"` or `"document"` (WhatsApp does not support buttons on video/PDF messages).
 
-</Tab>
+## Related
 
-</Tabs>
-
-## Supported formats and size limits
-
-WhatsApp enforces strict limits on media type and file size. Requests that exceed these limits are rejected before delivery.
-
-| Type | Supported formats | Max size |
-|------|-------------------|----------|
-| Image | JPG, PNG, WEBP | 5 MB |
-| Video | MP4, 3GP | 16 MB |
-| Audio | MP3, OGG, AAC | 16 MB |
-| Document | PDF, DOCX, XLSX, PPTX | 100 MB |
-
-<Warning>
-  Animated GIFs are not natively supported as the `image` type. Convert them to MP4 and send as `type: "video"` instead, or send as a sticker (unofficial connections only — see below).
-</Warning>
-
-## Media with captions
-
-The `caption` field lets you attach a text label beneath images, videos, and documents. Captions support plain text and emoji, and they appear inline in the chat beneath the media preview.
-
-```bash curl
-curl -X POST https://api.pilotstatus.com.br/v1/messages/media \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "number_id": "num_abc123",
-    "to": "5511999999999",
-    "type": "image",
-    "url": "https://example.com/promo-banner.jpg",
-    "caption": "🎉 Our biggest sale of the year — up to 50% off. Shop now!"
-  }'
-```
-
-Keep captions concise. WhatsApp truncates very long captions in the notification preview, though the full text is visible when the chat is opened.
-
-<Tip>
-  For unofficial (QR-code) connections, you can also send stickers by setting `type: "sticker"` and providing a `.webp` file URL. Stickers are not supported on the official Cloud API integration.
-</Tip>
+- [Send Messages](/guides/send-messages)
+- [Templates](/concepts/templates)

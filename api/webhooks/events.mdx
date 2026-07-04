@@ -4,180 +4,414 @@ sidebarTitle: "Events"
 description: "Reference for all Pilot Status webhook events: message received, sent, delivered, read, failed, and number connection events with payload schemas."
 ---
 
-Pilot Status fires a webhook to your configured endpoint for every event that occurs on your numbers — including inbound messages, delivery receipts, read receipts, failures, and number connection changes. Each request is an HTTP POST with a JSON body sent in milliseconds of the event occurring.
+# Webhook event reference
 
-## Common payload fields
+Webhooks deliver real-time events to your system's URL. This page documents every event, its payload, and how to correlate events with your API calls. To create and manage webhooks, see [Configure webhooks](/api/webhooks/configure).
 
-Every webhook payload includes the following top-level fields, regardless of event type.
+## Payload format
 
-<ParamField body="event" type="string" required>
-  The event type identifier. Possible values: `message.received`, `message.sent`, `message.delivered`, `message.read`, `message.failed`, `number.connected`, `number.disconnected`.
-</ParamField>
-
-<ParamField body="timestamp" type="string" required>
-  ISO 8601 timestamp of when the event occurred, e.g. `2024-01-15T09:41:00Z`.
-</ParamField>
-
-<ParamField body="number_id" type="string" required>
-  The ID of the number that triggered the event. Use this to identify which of your connected numbers the event belongs to.
-</ParamField>
-
----
-
-## message.received
-
-Pilot Status fires `message.received` when an inbound message arrives on one of your numbers. The `message` object contains the full details of the incoming message.
-
-<Expandable title="message object fields">
-  <ResponseField name="message.id" type="string">
-    Unique identifier for the message.
-  </ResponseField>
-  <ResponseField name="message.from" type="string">
-    The sender's phone number in E.164 format (without the `+` prefix).
-  </ResponseField>
-  <ResponseField name="message.type" type="string">
-    The message content type. One of: `text`, `image`, `video`, `audio`, `document`, `button_reply`, `location`, `sticker`.
-  </ResponseField>
-  <ResponseField name="message.text" type="string">
-    The message text body. Present when `type` is `text`.
-  </ResponseField>
-  <ResponseField name="message.timestamp" type="string">
-    ISO 8601 timestamp of when the message was sent by the contact.
-  </ResponseField>
-</Expandable>
-
-```json
-{
-  "event": "message.received",
-  "timestamp": "2024-01-15T09:41:00Z",
-  "number_id": "num_abc123",
-  "message": {
-    "id": "msg_xyz789",
-    "from": "5511999999999",
-    "type": "text",
-    "text": "Hello!",
-    "timestamp": "2024-01-15T09:41:00Z"
-  }
-}
-```
-
----
-
-## message.sent
-
-Pilot Status fires `message.sent` when an outbound message has been successfully submitted to WhatsApp for delivery. This event confirms that Pilot Status accepted and handed off the message — delivery to the recipient's device is confirmed separately by `message.delivered`.
-
-<Expandable title="Payload fields">
-  <ResponseField name="message_id" type="string">
-    The ID of the message that was sent.
-  </ResponseField>
-  <ResponseField name="to" type="string">
-    The recipient's phone number in E.164 format (without the `+` prefix).
-  </ResponseField>
-</Expandable>
+Every event arrives as JSON:
 
 ```json
 {
   "event": "message.sent",
-  "timestamp": "2024-01-15T09:41:01Z",
-  "number_id": "num_abc123",
-  "message_id": "msg_xyz789",
-  "to": "5511999999999"
+  "data": {}
 }
 ```
 
----
+**Schema v3 (camelCase).** All `data` fields are camelCase. Phone numbers are always **E.164 with `+`** (no device suffix, no `@s.whatsapp.net` / `@lid`). Timestamps are always **ISO 8601** in the single `createdAt` field (the time the event happened).
 
-## message.delivered and message.read
+## Available events
 
-Pilot Status fires `message.delivered` when the recipient's device confirms delivery, and `message.read` when the recipient opens the message. Both events share the same payload shape.
+**Outbound (delivery/status):** `message.sent`, `message.delivered`, `message.read`, `message.failed`
 
-<Expandable title="Payload fields">
-  <ResponseField name="message_id" type="string">
-    The ID of the message that was delivered or read.
-  </ResponseField>
-  <ResponseField name="to" type="string">
-    The recipient's phone number in E.164 format (without the `+` prefix).
-  </ResponseField>
-</Expandable>
+**Inbound (received messages):**
+
+- `message.reply` — correlated reply
+- `message.received` — message received on the connected number
+- `message.group` — message received in a group
+- `message.newsletter` — message received in a channel (`@newsletter`)
+
+**Number lifecycle:**
+
+- `number.created` — instance created in Pilot Status
+- `number.connected` — connected to WhatsApp (OPEN state)
+- `number.disconnected` — disconnect confirmed after periodic health check (does not reflect every brief connectivity fluctuation)
+- `number.removed` — instance removed
+- `number.health_*` — number health transitions
+
+**Voice calls** (WhatsApp Business Calling — **Meta Cloud API numbers only**, see [Voice Calls](/api/calls/overview)):
+
+- `call.ringing` — call ringing (inbound UIC or outbound BIC transition)
+- `call.connected` — call answered/connected
+- `call.ended` — call finished (`status`: `COMPLETED` | `FAILED` | `REJECTED`; `duration` seconds when answered)
+- `call.missed` — inbound call ended without being answered
+- `call.permission_updated` — reply to a call-permission request (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`)
+- `calls` — Meta's **native** `calls` envelope (raw `entry[].changes[].value`, carrying SDPs) for custom WebRTC signaling
+
+## Identifiers and correlation
+
+Every message event carries two distinct IDs:
+
+- `messageId` — WhatsApp/provider message ID (e.g. `key.id`). May be `null` for failures that happen before the provider returns an ID.
+- `id` — Pilot Status internal message ID. Same value as the `id` in the `HTTP 202` of `POST /v1/messages/send`.
+- `numberId` — the **public** ID of the number (instance) that handled the event — the same `id` exposed by `GET /v1/numbers`.
+- `correlationId` — present when the event correlates to a prior send (same value as the `202` `correlationId`).
+- `quotedMessageId` — on `message.reply`, the `messageId` of the quoted original message (equals the `messageId` of the original `message.sent`).
+
+### Correlation with `POST /v1/messages/send`
+
+After an accepted send, the API returns **HTTP 202** with **`id`** and **`correlationId`**:
+
+| `202` field | Webhook equivalent |
+| --- | --- |
+| **`id`** | **`id`** on `message.sent` / `message.delivered` / `message.read` / `message.failed` (same value). |
+| **`correlationId`** | May repeat on outbound status events and on **`message.reply`** / **`message.received`** when correlated to the send. |
+| _(not in `202`)_ | WhatsApp **`messageId`** — only appears from `message.sent` onward. |
+
+On **`message.reply`**: **`quotedMessageId`** = the **`messageId`** of the original **`message.sent`**; the reply's own **`messageId`** is the **new** inbound message. Use `quotedMessageId` (and `correlationId` when present) to match the reply to your prior send.
+
+## `message.*` payload
+
+### Common fields
+
+| Field | Presence | Description |
+| --- | --- | --- |
+| `event` | always | event name |
+| `from` | always | sender in E.164 |
+| `to` | always | recipient in E.164 |
+| `numberId` | always | public ID of the number that handled the message |
+| `messageId` | always | WhatsApp/provider message ID (`null` before the provider returns one) |
+| `id` | always | Pilot Status internal ID (= `id` from the `HTTP 202`) |
+| `type` | always | `text`, `image`, `audio`, `video`, `document`, `location`, `contacts`, `sticker` or `reaction` |
+| `fromMe` | always | boolean — `true` on outbound events, `false` on inbound |
+| `createdAt` | always | ISO 8601 — event time |
+| `content` | conditional | message text (or caption) |
+| `participantName` | conditional | sender's WhatsApp name (received / group / channel) |
+| `correlationId` | conditional | when correlated to a prior send |
+| `contentReplied` | conditional | text of the quoted message (`message.reply` only) |
+| `quotedMessageId` | conditional | `messageId` of the quoted message (`message.reply` only) |
+| `mediaLink` | conditional | media URL, when the provider exposes it |
+| `mediaType` | conditional | media type |
+| `mediaCaption` | conditional | media caption |
+| `mediaFilename` | conditional | media file name |
+| `groupName` | conditional | group name (`message.group` only) |
+| `groupId` | conditional | group JID (`message.group` only) |
+| `newsletterName` | conditional | channel name (`message.newsletter` only) |
+| `newsletterId` | conditional | channel JID (`message.newsletter` only) |
+| `error` | conditional | error message (`message.failed` only) |
+| `errorCode` | conditional | stable error code (`message.failed` only) |
+
+**`from`/`to` direction semantics:**
+
+- **Outbound** (`sent`/`delivered`/`read`/`failed`): `to` = destination number (E.164); `from` = own number (present when cheaply resolvable, otherwise omitted); `fromMe` = `true`.
+- **Inbound** (`received`/`reply`): `from` = contact/sender (E.164); `to` = own number (E.164); `fromMe` = `false`.
+- **Group / channel** (`group`/`newsletter`): `from` = participant (E.164); `to` = own number; plus `groupId`/`groupName` or `newsletterId`/`newsletterName`.
+
+### message.sent
+
+```json
+{
+  "event": "message.sent",
+  "data": {
+    "to": "+5511999999999",
+    "from": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "A52298BB1619CB5EC464BEFB8A3ACB94",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": true,
+    "content": "sent text",
+    "correlationId": "corr_123",
+    "createdAt": "2026-02-24T15:00:05.000Z"
+  }
+}
+```
+
+### message.delivered
 
 ```json
 {
   "event": "message.delivered",
-  "timestamp": "2024-01-15T09:41:05Z",
-  "number_id": "num_abc123",
-  "message_id": "msg_xyz789",
-  "to": "5511999999999"
+  "data": {
+    "to": "+5511999999999",
+    "from": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "A52298BB1619CB5EC464BEFB8A3ACB94",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": true,
+    "content": "sent text",
+    "createdAt": "2026-02-24T15:00:06.000Z"
+  }
 }
 ```
 
-Replace `"event": "message.delivered"` with `"event": "message.read"` for read receipts — all other fields remain identical.
+### message.read
 
----
+<Note>
+  `message.read` only fires when the recipient has **WhatsApp read receipts** enabled.
+</Note>
 
-## message.failed
+```json
+{
+  "event": "message.read",
+  "data": {
+    "to": "+5511999999999",
+    "from": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "A52298BB1619CB5EC464BEFB8A3ACB94",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": true,
+    "content": "sent text",
+    "createdAt": "2026-02-24T15:00:10.000Z"
+  }
+}
+```
 
-Pilot Status fires `message.failed` when a message could not be delivered. The payload includes an error code and a human-readable description so you can diagnose the issue programmatically.
+### message.failed
 
-<Expandable title="Payload fields">
-  <ResponseField name="message_id" type="string">
-    The ID of the message that failed to deliver.
-  </ResponseField>
-  <ResponseField name="to" type="string">
-    The intended recipient's phone number.
-  </ResponseField>
-  <ResponseField name="error_code" type="string">
-    A machine-readable error code identifying the failure reason, e.g. `invalid_number` or `rate_limit_exceeded`.
-  </ResponseField>
-  <ResponseField name="error_message" type="string">
-    A human-readable description of the error.
-  </ResponseField>
-</Expandable>
+Includes `error` and, when available, a stable `errorCode` (e.g. `DELIVER_NOT_CONFIRMED`).
 
 ```json
 {
   "event": "message.failed",
-  "timestamp": "2024-01-15T09:42:00Z",
-  "number_id": "num_abc123",
-  "message_id": "msg_xyz790",
-  "to": "5511888888888",
-  "error_code": "invalid_number",
-  "error_message": "The destination number is not registered on WhatsApp."
+  "data": {
+    "to": "+5511999999999",
+    "from": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": null,
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": true,
+    "content": "sent text",
+    "error": "Failed to send message via Pilot Status.",
+    "errorCode": "DELIVER_NOT_CONFIRMED",
+    "createdAt": "2026-02-24T15:00:05.000Z"
+  }
 }
 ```
 
----
+### message.received
 
-## number.connected and number.disconnected
+```json
+{
+  "event": "message.received",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Hi",
+    "participantName": "WhatsApp name",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
 
-Pilot Status fires `number.connected` when a number successfully connects to WhatsApp and `number.disconnected` when it goes offline. Use these events to monitor the health of your connected numbers and trigger alerts or reconnection flows.
+Media example (when the provider exposes the URL — e.g. Meta Cloud API). For providers without a public media URL, `mediaLink`/`mediaType`/`mediaCaption`/`mediaFilename` may be omitted.
 
-<Expandable title="Payload fields">
-  <ResponseField name="phone_number" type="string">
-    The phone number in E.164 format (without the `+` prefix) that changed connection state.
-  </ResponseField>
-</Expandable>
+```json
+{
+  "event": "message.received",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "image",
+    "fromMe": false,
+    "content": "Check this photo",
+    "mediaLink": "https://...",
+    "mediaType": "image",
+    "mediaCaption": "Check this photo",
+    "mediaFilename": "photo.jpg",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+### message.reply
+
+The contact's **new** text is in `content`; the **quoted** original message text is in `contentReplied`. Use `quotedMessageId` to match the `messageId` from your original outbound `message.sent`.
+
+```json
+{
+  "event": "message.reply",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_12345",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Yes, I confirm",
+    "contentReplied": "Hi! Do you confirm your appointment?",
+    "quotedMessageId": "msg_original_123",
+    "correlationId": "corr_123",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+### message.group
+
+```json
+{
+  "event": "message.group",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Message in the group",
+    "participantName": "WhatsApp name",
+    "groupId": "120363123456789012@g.us",
+    "groupName": "My Group",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+### message.newsletter
+
+```json
+{
+  "event": "message.newsletter",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Text in the channel",
+    "participantName": "WhatsApp name",
+    "newsletterId": "120363123456789012@newsletter",
+    "newsletterName": "My Channel",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+## `number.*` payload
+
+Fields for `number.created` / `number.connected` / `number.disconnected` / `number.removed` (and the `number.health_*` events):
+
+| Field | Presence | Description |
+| --- | --- | --- |
+| `event` | always | event name |
+| `numberId` | always | public number ID (same `id` as `GET /v1/numbers`) |
+| `phone` | always | number in E.164 with `+` |
+| `displayName` | always | display name of the number |
+| `createdAt` | always | ISO 8601 — event time |
+| `profileName` | conditional | WhatsApp profile name, when available |
+| `error` | conditional | error message (health / failure events) |
+| `errorCode` | conditional | stable error code, when present |
+
+### number.created
+
+```json
+{
+  "event": "number.created",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:00:05.000Z"
+  }
+}
+```
+
+### number.connected
 
 ```json
 {
   "event": "number.connected",
-  "timestamp": "2024-01-15T08:00:00Z",
-  "number_id": "num_abc123",
-  "phone_number": "5511999999999"
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "profileName": "Main Store Official",
+    "createdAt": "2026-02-24T15:00:05.000Z"
+  }
 }
 ```
+
+### number.disconnected
 
 ```json
 {
   "event": "number.disconnected",
-  "timestamp": "2024-01-15T10:30:00Z",
-  "number_id": "num_abc123",
-  "phone_number": "5511999999999"
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:10:00.000Z"
+  }
 }
 ```
 
----
+### number.removed
 
-<Tip>
-  Always respond with HTTP 200 immediately. If your handler takes more than 5 seconds, Pilot Status will retry.
-</Tip>
+```json
+{
+  "event": "number.removed",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:10:00.000Z"
+  }
+}
+```
+
+## `call.*` payload
+
+Unlike `message.*` / `number.*`, the normalized `call.*` events are **flat** (no `data` wrapper):
+
+```json
+{
+  "event": "call.ended",
+  "callId": "call_01HZX...",
+  "externalCallId": "wacid.ABGG...",
+  "direction": "OUTBOUND",
+  "status": "COMPLETED",
+  "from": "5511888888888",
+  "to": "5511999999999",
+  "timestamp": "2026-07-03T15:02:05.000Z",
+  "duration": 120
+}
+```
+
+| Field | Presence | Description |
+| --- | --- | --- |
+| `event` | always | `call.ringing` / `call.connected` / `call.ended` / `call.missed` / `call.permission_updated` |
+| `callId` | always (`null` on `call.permission_updated`) | Pilot Status call id (use with `GET /v1/calls/{callId}`) |
+| `externalCallId` | conditional | Meta call id (`wacid...`) — correlates with the native `calls` envelope |
+| `direction` | always (`null` on `call.permission_updated`) | `INBOUND` (user-initiated) or `OUTBOUND` (business-initiated) |
+| `status` | always | call status (`RINGING`/`ACCEPTED`/`COMPLETED`/`FAILED`/`MISSED`/`REJECTED`) or permission status (`NO_PERMISSION`/`TEMPORARY`/`PERMANENT`) |
+| `from` / `to` | always (nullable) | the two parties (digits) |
+| `timestamp` | always | ISO 8601 — event time |
+| `duration` | conditional | call duration in seconds (`call.ended`, only when answered) |
+
+See the [full calling flow](/api/calls/overview).
+
+## Important notes
+
+- **`message.newsletter`:** `newsletterName` is the channel display name when available; otherwise it may be omitted. The channel identifier is `newsletterId` (full `...@newsletter` JID). `participantName` is the message author in the channel.
+- **Media:** `mediaLink`/`mediaType`/`mediaCaption`/`mediaFilename` appear only when the provider exposes that data (e.g. Meta Cloud API). For providers without a public media URL, they are omitted.
+- `number.*` events are not correlated to `POST /v1/messages/send`; use them for provisioning/monitoring. `number.disconnected` is emitted after the health check confirms disconnect, not on every connection flap.
+- Customer webhook payloads do not include internal fields such as `lastMessageId`.
+- Delivery of sensitive fields can depend on retention configuration. With retention off, conditional fields such as `content` may be empty; IDs and timestamps still exist.
+- The `message.read` event (and **Read** status in the API/Logs) only occurs when the recipient has **WhatsApp read receipts** enabled.

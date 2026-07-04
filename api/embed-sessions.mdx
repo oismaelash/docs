@@ -1,0 +1,137 @@
+---
+title: "POST /v1/embed/sessions — Embed Tokens"
+sidebarTitle: "Embed sessions"
+description: "Mint short-lived embed tokens server-to-server to embed the white-label Chat and Connect microfrontends into your own SaaS."
+---
+
+# Embedding microfrontends — embed tokens
+
+Pilot Status lets a tenant **embed two microfrontends** into their own SaaS, **white-label**, via a hosted iframe \+ a tiny JS SDK. Your customers stay inside **your** product and see **your** brand.
+
+## The two surfaces
+
+| Surface | What it is | Served from |
+| --- | --- | --- |
+| **Chat** | A WhatsApp inbox (conversations, send/receive). | `https://chat.pilotstatus.com.br` |
+| **Connect** | Remote pairing — connect a WhatsApp number (QR / Meta Embedded Signup). | `https://connect.pilotstatus.com.br` |
+
+The iframe document is hosted on a Pilot subdomain, so its own `/api` calls are **same-origin** — there is **no CORS** for you to configure. The only calls you make are **server-to-server** to mint tokens.
+
+## POST /v1/embed/sessions — Mint a Chat embed token
+
+Mint embed tokens on **your backend**, never in the browser. Authenticated with your tenant's `ps_` API key (`x-api-key` header).
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/embed/sessions" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_api_key" \
+  -d '{
+    "surface": "chat",
+    "whatsappNumberIds": ["wa_abc"],
+    "allowedOrigins": ["https://app.tenant.com"],
+    "ttlSeconds": 900
+  }'
+```
+
+<ParamField body="surface" type="string" required>
+  `"chat"` or `"connect"` — which microfrontend the token is for.
+</ParamField>
+
+<ParamField body="whatsappNumberIds" type="string[]">
+  **Required for `surface: "chat"`** — the numbers the embed may act on. A **number-scoped** `ps_` key ignores this and is forced to its own number.
+</ParamField>
+
+<ParamField body="allowedOrigins" type="string[]" required>
+  Exact origins allowed to frame the embed (min 1), e.g. `["https://app.tenant.com"]`.
+</ParamField>
+
+<ParamField body="brandingOverride" type="object">
+  Optional per-session branding override (see White-label below).
+</ParamField>
+
+<ParamField body="ttlSeconds" type="number">
+  Token lifetime. Defaults: **chat 15 min**, **connect 30 min**.
+</ParamField>
+
+Response `201`:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9.<claims>.<sig>",
+  "surface": "chat",
+  "whatsappNumberIds": ["wa_abc"],
+  "allowedOrigins": ["https://app.tenant.com"],
+  "expiresAt": "2026-06-23T15:15:00.000Z"
+}
+```
+
+The `token` is short-lived. The SDK injects it into the iframe **in memory** — never in a URL.
+
+## POST /api/public/embed/refresh — Sliding refresh
+
+The iframe presents its current (still-valid) embed token as `Authorization: Bearer <token>` and receives a fresh one (sliding refresh). On **full** expiry the SDK calls `onSessionExpired` so you can re-mint via your backend.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/api/public/embed/refresh" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.<current-still-valid>.<sig>"
+```
+
+<Note>
+  **Connect uses a different token.** For the **Connect** surface, the iframe is authorized by the existing **remote-pairing token** (the one returned by `POST /v1/numbers/remote-pairing` as `remotePairingUrl` — see [Remote Pairing](/api/numbers/remote-pairing)). The `POST /v1/embed/sessions` token is for **Chat**.
+</Note>
+
+## JS SDK — @pilot-status/embed
+
+Available as an npm package and as a CDN script.
+
+```html
+<script src="https://pilotstatus.com.br/embed.js"></script>
+<script>
+  PilotStatus.init();
+
+  // Chat inbox — token from POST /v1/embed/sessions (surface "chat")
+  PilotStatus.chat.mount("#inbox", {
+    token: EMBED_TOKEN,
+    locale: "pt",
+    theme: "light",
+    onUnreadCount: (n) => {/* update a badge */},
+    onConversationOpened: (id) => {},
+    onSessionExpired: () => {/* re-mint via your backend */},
+  });
+
+  // Connect — token is the remote-pairing token from POST /v1/numbers/remote-pairing
+  PilotStatus.connect.open({
+    token: PAIRING_TOKEN,
+    onPaired: (d) => {},
+    onError: (e) => {},
+    onExpired: () => {},
+  });
+</script>
+```
+
+- `PilotStatus.chat.mount(selector, options)` — mounts the WhatsApp inbox iframe (defaults to `https://chat.pilotstatus.com.br`). Pass the **chat** embed token, plus optional `locale`, `theme`, and callbacks (`onUnreadCount`, `onConversationOpened`, `onSessionExpired`).
+- `PilotStatus.connect.open(options)` — opens the connect (remote-pairing) flow (defaults to `https://connect.pilotstatus.com.br`). Pass the **remote-pairing** token, plus `onPaired`, `onError`, `onExpired` callbacks.
+
+Or install from npm instead of the CDN script:
+
+```bash
+npm install @pilot-status/embed
+```
+
+```ts
+import { PilotStatus } from "@pilot-status/embed";
+
+PilotStatus.init();
+PilotStatus.chat.mount("#inbox", { token: EMBED_TOKEN });
+```
+
+## Security
+
+- **Mint tokens server-side.** Never expose your `ps_` key in the browser — only your backend calls `POST /v1/embed/sessions` (and `POST /v1/numbers/remote-pairing`).
+- **Tokens are short-lived** (chat 15 min / connect 30 min by default) and refresh on a sliding window.
+- **`allowedOrigins`** binds which sites may frame the embed (exact origins, min 1).
+- An embed token is **hard-scoped** to its `whatsappNumberIds` — it can only act on those numbers.
+
+## White-label
+
+The embed reuses the tenant's existing branding configured in the dashboard **Branding/Marca** tab — logo, primary/background colors, company name, and the "hide Pilot Status" toggle (see [Connect page branding](/api/branding)). You can additionally pass an optional `brandingOverride` object on `POST /v1/embed/sessions` to override branding for **just that session**.

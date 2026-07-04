@@ -1,111 +1,81 @@
 ---
-title: "Pilot Status REST API: Base URL, Errors, and Rate Limits"
+title: "Pilot Status API Overview"
 sidebarTitle: "Overview"
-description: "The Pilot Status REST API lets you send and receive WhatsApp messages programmatically. Base URL, versioning, request format, and error codes explained."
+description: "Base URL, x-api-key authentication, key scopes, and common HTTP errors for the Pilot Status WhatsApp API."
 ---
 
-The Pilot Status REST API gives you programmatic access to WhatsApp messaging infrastructure. You can send text messages, media, and interactive content, manage connected numbers, and configure webhooks — all through standard HTTP requests and JSON payloads. This page covers everything you need to start making requests: the base URL, request format, authentication, error handling, and rate limits.
+# Pilot Status API Overview
+
+Pilot Status is a platform for sending WhatsApp messages (transactional and marketing/bulk) with template control, versioning, and operational visibility via dashboard, API, and webhooks.
 
 ## Base URL
 
-All API requests are made to the following base URL. Every endpoint in this reference is relative to it.
-
+```text
+https://pilotstatus.com.br/v1
 ```
-https://api.pilotstatus.com.br/v1
-```
-
-<Info>
-  The API is versioned via the `/v1` path prefix. When breaking changes are introduced, a new version path will be released and announced in advance.
-</Info>
-
-## Request Format
-
-All requests to the Pilot Status API must be sent as JSON. Set the `Content-Type` header to `application/json` on every request that includes a body. All responses are also returned as JSON, including error responses.
-
-```bash
-curl https://api.pilotstatus.com.br/v1/messages/send \
-  -X POST \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{ "number_id": "your_number_id", "to": "5511999999999", "text": "Hello!" }'
-```
-
-<Note>
-  Phone numbers in the `to` field must include the country code **without** a leading `+`. For example, use `5511999999999` for a Brazilian number, not `+5511999999999`.
-</Note>
 
 ## Authentication
 
-Every request must include a valid API key passed as a Bearer token in the `Authorization` header. See the [Authentication](/api/authentication) page for full details on obtaining and rotating your key.
+Every request requires an API key sent in the `x-api-key` header (or `x-api-key-id` with the key ID). Keys use the `ps_` prefix.
 
-```
-Authorization: Bearer YOUR_API_KEY
-```
-
-## HTTP Status Codes
-
-The API uses standard HTTP status codes to indicate whether a request succeeded or failed. Your integration should handle each code appropriately.
-
-| Code | Meaning |
-|------|---------|
-| `200` | **Success** — The request completed successfully. |
-| `400` | **Bad Request** — One or more request parameters are invalid. |
-| `401` | **Unauthorized** — The API key is missing or invalid. |
-| `404` | **Not Found** — The requested resource does not exist. |
-| `422` | **Unprocessable Entity** — The request was well-formed but failed validation. |
-| `429` | **Too Many Requests** — You have exceeded the rate limit for this number. |
-| `500` | **Internal Server Error** — An unexpected error occurred on the server. |
-
-## Error Response Format
-
-When a request fails, the API returns a structured error object so you can identify the problem programmatically. Every error response follows this shape:
-
-```json
-{
-  "error": {
-    "code": "INVALID_NUMBER",
-    "message": "The phone number format is invalid. Use country code without +.",
-    "status": 400
-  }
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `code` | string | A machine-readable error code identifying the specific failure. |
-| `message` | string | A human-readable description of what went wrong. |
-| `status` | number | The HTTP status code associated with this error. |
-
-## Rate Limits
-
-Pilot Status enforces per-number rate limits to ensure reliable delivery across all connected WhatsApp numbers. If you exceed the allowed request rate, the API responds with `HTTP 429 Too Many Requests`.
-
-When you receive a `429` response, check the `Retry-After` header — it tells you how many seconds to wait before retrying. Implement exponential backoff to avoid hitting the limit repeatedly.
+<Warning>
+  The API does **not** use `Authorization: Bearer` tokens. Always authenticate with the `x-api-key: ps_...` header (or `x-api-key-id`).
+</Warning>
 
 ```bash
-# Example 429 response headers
-HTTP/1.1 429 Too Many Requests
-Retry-After: 5
-Content-Type: application/json
+curl "https://pilotstatus.com.br/v1/messages/msg_abc" \
+  -H "x-api-key: ps_your_key_here"
 ```
 
-<Tip>
-  Space out high-volume sends by queuing messages and respecting the `Retry-After` header. Exponential backoff — starting at the suggested delay and doubling on each failure — keeps your integration resilient under load.
-</Tip>
+### Key scopes
 
-## Quick Links
+| Scope | Bound to | Can call |
+| --- | --- | --- |
+| **Number-scoped** (default) | One WhatsApp number | All action/data endpoints for that number: `POST /v1/messages/send`, message status, cancel, groups, newsletters, templates, analytics, media |
+| **Tenant-scoped** (singleton) | The tenant (no number) | Only number lifecycle management: `/v1/numbers/*` and `/v1/remote-pairing/*` |
 
-<CardGroup cols={2}>
-  <Card title="Send Text Message" icon="message" href="/api/messages/send-text">
-    Send a plain-text WhatsApp message to any phone number using a connected number ID.
-  </Card>
-  <Card title="Send Media" icon="image" href="/api/messages/send-media">
-    Send images, audio, video, and documents with optional captions via WhatsApp.
-  </Card>
-  <Card title="Webhooks" icon="webhook" href="/api/webhooks/configure">
-    Configure webhook endpoints to receive real-time delivery status updates and inbound messages.
-  </Card>
-  <Card title="API Layer" icon="layer-group" href="/api/layer/overview">
-    Use the Evolution API-compatible layer endpoint to connect third-party tools to Pilot Status.
-  </Card>
-</CardGroup>
+See [API Authentication](/api/authentication) for details.
+
+## Core concepts
+
+- **Template**: a versioned message model referenced by `templateId` on API sends. For **Meta** numbers, templates are submitted to Meta for approval; for **non-official WhatsApp API (Evolution)** numbers, they are created locally without an approval step.
+- **Message**: a send attempt created by `POST /v1/messages/send`.
+- **Webhooks**: delivery events (sent/delivered/read/failed) and inbound messages (reply/received/group).
+- **Read receipts**: `READ` status, `readAt`, and the `message.read` webhook only occur when the recipient contact has WhatsApp read receipts enabled.
+
+## Typical integration flow
+
+<Steps>
+  <Step title="Create templates">
+    Create templates in the dashboard (`/templates`).
+  </Step>
+  <Step title="Connect WhatsApp">
+    Configure your WhatsApp number/instance in the dashboard (`/profile` and `/numbers`).
+  </Step>
+  <Step title="Create an API key">
+    Create an API key on the `/api-keys` page.
+  </Step>
+  <Step title="Send messages">
+    Send messages with [`POST /v1/messages/send`](/api/messages/send).
+  </Step>
+  <Step title="Track delivery">
+    Query status with [`GET /v1/messages/{messageId}`](/api/messages/status) and/or consume events via webhooks.
+  </Step>
+</Steps>
+
+## Common HTTP errors
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Invalid payload (e.g., phone not in E.164, missing required fields) |
+| `401` | Missing or invalid `x-api-key` / `x-api-key-id` header |
+| `402` | Paid subscription required (e.g., `SUBSCRIPTION_REQUIRED_FOR_MEDIA`) |
+| `403` | Valid key, but operation blocked (e.g., wrong key scope) |
+| `404` | Resource not found within the key's scope |
+| `429` | Rate limit exceeded |
+
+## Warnings (WhatsApp / anti-spam)
+
+<Warning>
+  High-volume and unsolicited sending can trigger WhatsApp anti-spam mechanisms (rate limits, blocks, and bans). You are responsible for opt-in/consent and compliance with applicable laws and WhatsApp policies.
+</Warning>

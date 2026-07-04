@@ -1,0 +1,266 @@
+---
+title: "POST /v1/messages/send — Send a WhatsApp Message"
+sidebarTitle: "Send a Message"
+description: "Send template, free-form text, or direct media WhatsApp messages through a single endpoint."
+---
+
+# Send a WhatsApp Message
+
+```text
+POST https://pilotstatus.com.br/v1/messages/send
+```
+
+This is the **only** send endpoint. It supports three **mutually exclusive** top-level modes:
+
+1. **Template send** — `templateId` (\+ optional `variables`)
+2. **Free-form text send** — `text`
+3. **Direct media send** — `media` \+ `mediaType` (no `templateId`, no `text`)
+
+<Note>
+  Exactly one mode must be used per request. There are no separate `/messages/text`, `/messages/media`, or `/messages/interactive` endpoints.
+</Note>
+
+## Headers
+
+- `Content-Type: application/json`
+- `x-api-key: ps_...` (or `x-api-key-id: <api_key_id>`) — a **number-scoped** key
+
+## Destination (exactly one)
+
+<ParamField body="destinationNumber" type="string">
+  Destination phone in **E.164** with a leading `+` (e.g., `+5511999999999`).
+</ParamField>
+
+<ParamField body="groupId" type="string">
+  WhatsApp group JID ending in `@g.us`.
+</ParamField>
+
+<ParamField body="newsletterId" type="string">
+  WhatsApp channel JID ending in `@newsletter`.
+</ParamField>
+
+## Mode fields
+
+<ParamField body="templateId" type="string">
+  Template from the dashboard `/templates`. Mutually exclusive with `text` and direct-media mode.
+</ParamField>
+
+<ParamField body="variables" type="object">
+  Key→value map for template variables. Missing required variables produce `MISSING_TEMPLATE_VARIABLES`.
+</ParamField>
+
+<ParamField body="text" type="string">
+  Body of a free-form message. Required if `templateId` is not sent (and not doing a direct media send).
+</ParamField>
+
+<ParamField body="media" type="string">
+  A public http(s) URL **or** a base64 data URI (e.g. `data:audio/ogg;base64,AAAA...`) to an image, video, document, or audio file. Base64 is accepted for **all** media types on Meta Cloud API and Evolution v2. On **Evolution GO** numbers, base64 is **not** accepted — use a public http(s) URL. Overrides any embedded `mediaUrl` in the template.
+</ParamField>
+
+<ParamField body="mediaType" type="string">
+  `image`, `video`, `document`, or `audio`. Set it explicitly when the URL extension is not obvious (e.g. PDFs whose URL does not end in `.pdf`). When `mediaType` is `audio`, the file is delivered as a WhatsApp **voice note (PTT)** on Meta Cloud API, Evolution v2, and Evolution GO. On Evolution v2 and Evolution GO a "recording audio" presence indicator is shown just before delivery; Meta Cloud API has no outbound presence API, so no indicator is shown for Meta audio sends.
+</ParamField>
+
+### Direct media send
+
+Send media on its own by providing `media` \+ `mediaType` **without** `templateId` and **without** `text`. In this mode `buttons`, `header`, `footer`, and `variables` are **not allowed**; an optional `caption` is allowed for `image`, `video`, and `document` but **not** for `audio`.
+
+<Note>
+  Sending with `media` requires an active paid subscription. Otherwise the API returns **402** with `code: SUBSCRIPTION_REQUIRED_FOR_MEDIA`.
+</Note>
+
+## Scheduling and delivery window
+
+<ParamField body="deliverAt" type="string">
+  ISO 8601 datetime to schedule the send.
+</ParamField>
+
+<ParamField body="deliverUntil" type="string">
+  ISO 8601 deadline for delivery. If it expires, the message fails (see [Log Error Codes](/api/messages/log-error-codes)).
+</ParamField>
+
+## Other fields
+
+<ParamField body="labels" type="string[]">
+  Tag the destination with Labels (tenant scope). Processed asynchronously. With API key `retentionDays = 0`, Labels are created but the phone/group linkage may not be persisted (PII).
+</ParamField>
+
+<ParamField body="marketingOptions" type="object">
+  For **MARKETING** templates only. `aiRewriteEnabled: true` enables automatic variation of the final message text to reduce repetitive patterns (anti-spam) while preserving intent. If variation cannot be applied, the original text is sent. MARKETING sends also receive an automatic variable queue delay (default **8–25 s**) to space out sending pace.
+</ParamField>
+
+<ParamField body="buttons" type="array">
+  Up to 3 buttons that **override** the template's buttons. Each button has `type` and `displayText` plus type-specific fields:
+
+  - `{ "type": "reply", "displayText": "Yes", "id": "yes" }` — quick reply
+  - `{ "type": "url", "displayText": "Site", "url": "https://example.com" }` — URL button
+  - `{ "type": "call", "displayText": "Call", "phoneNumber": "+5511999999999" }` — call button
+  - `{ "type": "copy", "displayText": "Code", "copyCode": "ABC123" }` — copy button
+
+  `buttons` is incompatible with `mediaType: "video"` or `mediaType: "document"` (WhatsApp does not support buttons with video/PDF).
+</ParamField>
+
+<ParamField body="header" type="object">
+  Header for a free-form interactive message. Requires `buttons`. Types: `{ "type": "text", "content": "Header title" }` (up to 60 chars), or `image` / `video` / `document` with a public URL as `content`.
+</ParamField>
+
+<ParamField body="footer" type="string">
+  Message footer (max 60 characters). Requires `buttons`.
+</ParamField>
+
+### Free-form restrictions
+
+- `media` and `mediaType` cannot be used with `text` (free-form).
+- `header` and `footer` are only supported when `buttons` is present (Meta Cloud API limitation).
+- On Meta numbers, free-form messages only work within the WhatsApp **24h conversation window**. Outside the window, a `META_OUTSIDE_24H_WINDOW` error is returned in the `message.failed` webhook — use an approved template instead.
+
+## Examples
+
+<CodeGroup>
+
+```bash Template send
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "onboarding-test",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John", "order_id": "123" }
+  }'
+```
+
+```bash Scheduled + labels
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "onboarding-test",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John" },
+    "labels": ["vip", "customers"],
+    "deliverAt": "2026-02-24T15:05:00.000Z"
+  }'
+```
+
+```bash Free-form text
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "text": "Hi! Your delivery has been confirmed for tomorrow.",
+    "destinationNumber": "+5511999999999"
+  }'
+```
+
+```bash Free-form with buttons
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "text": "Would you like to confirm your appointment?",
+    "destinationNumber": "+5511999999999",
+    "buttons": [
+      { "type": "reply", "displayText": "Confirm", "id": "confirm" },
+      { "type": "reply", "displayText": "Cancel", "id": "cancel" }
+    ]
+  }'
+```
+
+```bash Free-form header + footer
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "text": "Your reservation is confirmed!",
+    "destinationNumber": "+5511999999999",
+    "header": { "type": "image", "content": "https://example.com/reservation.png" },
+    "footer": "Example Hotel",
+    "buttons": [
+      { "type": "url", "displayText": "View details", "url": "https://example.com/reservation/123" }
+    ]
+  }'
+```
+
+```bash Direct media (voice note URL)
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/voice.ogg",
+    "mediaType": "audio"
+  }'
+```
+
+```bash Direct media (base64 image)
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "data:image/png;base64,iVBORw0...",
+    "mediaType": "image"
+  }'
+```
+
+```bash Template + media + buttons
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "confirm-template",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John" },
+    "media": "https://example.com/promo.png",
+    "mediaType": "image",
+    "buttons": [
+      { "type": "reply", "displayText": "Yes", "id": "confirm" },
+      { "type": "url", "displayText": "View offer", "url": "https://example.com/offer" }
+    ]
+  }'
+```
+
+</CodeGroup>
+
+## Response (202)
+
+```json
+{
+  "id": "msg_abc",
+  "correlationId": "corr_123",
+  "status": "QUEUED",
+  "createdAt": "2026-02-24T15:00:00.000Z",
+  "origin": "My WhatsApp"
+}
+```
+
+<ResponseField name="id" type="string">
+  Internal message ID. Persist this — it is the value to use with `GET /v1/messages/{id}` and it matches `internalMessageId` in webhooks.
+</ResponseField>
+
+<ResponseField name="correlationId" type="string">
+  Correlation identifier for the send request.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Always `QUEUED` on accept.
+</ResponseField>
+
+## Correlation with webhooks
+
+- The **`id`** field in the response is the same as **`internalMessageId`** in `message.sent`, `message.delivered`, `message.read`, and `message.failed`, and matches **`messageRepliedId`** in `message.reply` when the platform ties the reply to your send.
+- The WhatsApp **`messageId`** (wamid) is **not** in the `202` body; it first appears on the **`message.sent`** webhook (and repeats on status events for that message).
+- Persist **`id`** when you receive `202` and use [`GET /v1/messages/{id}`](/api/messages/status) with the same value.
+
+## Common errors
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Invalid payload (e.g., phone not in E.164, missing required fields, `MISSING_TEMPLATE_VARIABLES`) |
+| `401` | Missing/invalid API key header (`x-api-key` / `x-api-key-id`) |
+| `402` | Paid subscription required to send media (`code: SUBSCRIPTION_REQUIRED_FOR_MEDIA`) |
+| `403` | Operation blocked (e.g., free-form not supported by the provider: `code: FREE_FORM_NOT_SUPPORTED`; or a tenant-scoped key on a number-scoped endpoint) |
+| `404` | Template not found or without an approved version |
+| `429` | Rate limit |
+
+Asynchronous delivery failures (e.g. `META_OUTSIDE_24H_WINDOW`, `META_TEMPLATE_NOT_APPROVED`, `WHATSAPP_NOT_EXIST`) surface via the `message.failed` webhook and in Logs — see [Log Error Codes](/api/messages/log-error-codes).

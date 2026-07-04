@@ -1,0 +1,82 @@
+---
+title: "API Keys — List, Regenerate, Rotate"
+sidebarTitle: "API keys"
+description: "List per-number API keys, regenerate a number's key, and rotate your own key via /v1/api-keys."
+---
+
+# API keys — list, regenerate, rotate
+
+Every request to the Pilot Status API requires an API key in one of these headers:
+
+- `x-api-key`: the raw key (`ps_...`)
+- `x-api-key-id`: the API key ID (the backend resolves it internally)
+
+All keys use the `ps_` prefix.
+
+## Key scopes
+
+| Scope | Bound to | Where to find it |
+| --- | --- | --- |
+| **Number-scoped** (default) | One WhatsApp number — all action/data endpoints for that number (send, status, groups, templates, media, calls…) | Dashboard → **API Keys** page (one default key per number; **Regenerate**) |
+| **Tenant-scoped** (singleton) | The tenant (no number) — account-level management: `/v1/numbers/*`, `/v1/remote-pairing/*`, `/v1/api-keys`, `/v1/branding`, `/v1/webhooks/*`, `/v1/subscription/*`. Cannot send messages. | Dashboard → **Profile** → **API** tab |
+
+There are **no sub-keys** (no parent/child). In the dashboard, keys are **regenerated**, not created: each WhatsApp number has one default number-scoped key, and the tenant-scoped key is a singleton.
+
+A tenant-scoped key on a per-number action endpoint gets **403 `TENANT_SCOPE_NOT_ALLOWED`**; a number-scoped key on a tenant-only endpoint gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**.
+
+## GET /v1/api-keys — List keys (tenant-scoped only)
+
+A number-scoped key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. Returns a **lean flat array — one item per number** — with `numberId`, `number`, `displayName`, `keyId`, `keyLast4`, plus the real usable value (`key`, `revealable: true`). Legacy keys come back with `key: null` and `revealable: false` — regenerate that number to obtain a usable value.
+
+```bash
+curl "https://pilotstatus.com.br/v1/api-keys" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json
+[
+  { "numberId": "wn_1", "number": "5511999999999", "displayName": "Suporte", "keyId": "k_aaa", "keyLast4": "wxyz", "key": "ps_4f1c...real...wxyz", "revealable": true },
+  { "numberId": "wn_2", "number": "5511888888888", "displayName": "Vendas",  "keyId": "k_bbb", "keyLast4": "abcd", "key": null, "revealable": false }
+]
+```
+
+## POST /v1/api-keys — Regenerate one number's key (tenant-scoped only)
+
+Send the target number in `whatsappNumberId`: its previous default key is **rotated/invalidated** and the new raw `key` is returned **once**. There is no "create another key" — each number has exactly one default key. Unknown number → **404 `NUMBER_NOT_FOUND`**.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/api-keys" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -d '{ "whatsappNumberId": "wn_1" }'
+```
+
+```json
+{
+  "numberId": "wn_1",
+  "keyId": "k_new",
+  "keyPrefix": "ps_",
+  "keyLast4": "wxyz",
+  "key": "ps_...newreal...",
+  "createdAt": "2026-06-28T15:00:00.000Z"
+}
+```
+
+<Warning>
+  Regeneration **rotates** the chosen number's single default key — the previous key stops working immediately. The full raw key is shown only once in the response: store it now.
+</Warning>
+
+## POST /v1/api-keys/regenerate — Rotate the caller's own key
+
+Rotates the **calling key's own scope** key (works for both scopes): the current key is invalidated and the new raw key is returned **once** in the response.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/api-keys/regenerate" \
+  -H "x-api-key: ps_current_key"
+```
+
+## Security best practices
+
+- Use API keys only on the **backend** (never in the browser).
+- Store keys in environment variables / a secret manager.
+- Treat responses containing raw keys as sensitive (do not log them).

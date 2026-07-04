@@ -4,85 +4,115 @@ sidebarTitle: "Templates"
 description: "Create reusable message templates with dynamic variables in Pilot Status. Official API requires Meta approval; unofficial API supports free-form templates."
 ---
 
-Templates let you define reusable message structures once and personalize them at send time using dynamic variables. Instead of constructing message text from scratch in your code, you reference a named template and supply the values that fill in the blanks — Pilot Status handles the rest. For the Official API, templates must pass Meta's review process before you can use them in production. For the Unofficial API, you can create and send templates freely with no approval step.
+Templates define reusable message content. Create and manage them in the dashboard (`/templates`), via the REST API (`/v1/templates`), or through the MCP server (`templates_create` / `templates_update` / `templates_delete`). When sending, reference the template by `templateId` in `POST /v1/messages/send` and pass a `variables` object with matching keys.
 
-## Template Syntax
+## Categories
 
-Variables inside a template are written with double curly braces around the variable name. You can use any variable name that makes the template readable and maintainable.
+The category is set at creation time and **cannot be changed later**:
 
-```
-Hello {{name}}! Your order #{{order_id}} has been confirmed. Track it here: {{tracking_url}}
-```
+- **MARKETING** — promotional messages (most sensitive to WhatsApp policies).
+- **UTILITY** — transactional messages (account updates, alerts, reminders).
+- **OTP** — one-time / verification code messages.
 
-When you send this template, you supply a `variables` object that maps each placeholder to its runtime value. Pilot Status substitutes the values before delivering the message to the recipient.
+## Meta approval vs. local templates
 
-## Official API Templates
+- **Official (Meta) numbers:** when you save a template with a Meta number selected, the dashboard asks whether to **submit it to Meta for review** now or keep it as a draft and submit later. Once submitted, category, language, and approval status follow Meta's rules. A template is only sendable on a Meta number after it has an **approved** version.
+- **Unofficial numbers (Evolution):** templates are created locally and are **immediately usable** — there is no approval step.
 
-Because the Official API routes through Meta's infrastructure, every template must be submitted to Meta for review and approved before it can be sent to users. You assign each template a **category** at submission time, and Meta evaluates it accordingly.
+Templates returned by `GET /v1/templates` carry a `source` field (where the template came from), a `metaStatus` field (Meta review status, e.g. `PENDING`, `APPROVED`, `REJECTED`), and a `sendable` flag indicating whether it can be used for sends right now.
 
-<CardGroup cols={3}>
-  <Card title="OTP" icon="key">
-    One-time passwords and verification codes. Used for authentication flows, login confirmations, and account recovery.
-  </Card>
-  <Card title="Utility" icon="bell">
-    Transactional messages triggered by user actions or system events — order updates, shipping alerts, appointment reminders, and payment confirmations.
-  </Card>
-  <Card title="Marketing" icon="bullhorn">
-    Promotional content, offers, and announcements. Meta charges per-conversation fees for Marketing templates; rates vary by country.
-  </Card>
-</CardGroup>
+## Template structure
 
-To create a new Official API template, navigate to **Dashboard → Templates → New Template**. You will:
+Only **body** is required.
 
-1. Enter a template name (lowercase, underscores only — this is the name you reference in API calls).
-2. Select a category: **OTP**, **Utility**, or **Marketing**.
-3. Write the message body, inserting `{{variable_name}}` placeholders where dynamic content should appear.
-4. Optionally add buttons (see [Interactive Buttons](#interactive-buttons) below).
-5. Submit the template. Meta's review system typically returns a decision within a few minutes to a few hours.
+| Component | Required | What it is |
+| --- | --- | --- |
+| **Header** | optional | Text (≤60 chars, ≤1 variable) or one media item (`IMAGE` JPG/PNG, `VIDEO` MP4, `DOCUMENT` PDF). |
+| **Body** | **required** | Main text (≤1024 chars) with `{{variable}}` placeholders. |
+| **Footer** | optional | Static text ≤60 chars, no variables. |
+| **Buttons** | optional | Up to 10 buttons: `QUICK_REPLY` (≤10), `URL` (≤2), `PHONE_NUMBER` (≤1, E.164 with country code), `COPY_CODE` (≤1, alphanumeric ≤15 chars). |
 
-Once Meta approves the template, its status changes to **Active** in your dashboard and you can begin sending it immediately.
+Media header values: via REST pass `header.url` (public http(s) URL) **or** `header.base64` (data URI, re-hosted server-side automatically). Via MCP only `header.url` is accepted.
 
 <Note>
-  Official API template approval typically takes a few minutes to a few hours via Meta's review system.
+  There is no `LOCATION` header. Also not supported: `FLOW`, `CAROUSEL`, `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP autofill/one-tap/zero-tap, `VOICE_CALL` buttons, and the `NAMED` `parameter_format`.
 </Note>
 
-## Unofficial API Templates
+## Variable rules
 
-When you use the Unofficial API, there is no pre-approval process. You can create a template in the dashboard or define it inline in your API call and send it immediately — no waiting, no category selection, no Meta review. Variables work exactly the same way using the `{{variable_name}}` syntax.
+- Write variables as `{{name}}` in the body, text header, and dynamic URL buttons (e.g. `https://shop.com/promo/{{link}}` — one variable, at the **end** of the URL, never in the domain).
+- The body **must not start or end with a variable** — always include literal text at both ends.
+- When creating/updating via API or MCP, an `examples` object mapping **every** variable to a real sample value is **required**. Missing samples return `400 TEMPLATE_EXAMPLES_REQUIRED` with the missing keys in `details.missing`.
+- The copy-code value is the one exception: it goes on the button as `example` (e.g. `["PROMO10"]`), not in top-level `examples`.
+- **When sending**, every placeholder — including keys used only in buttons — must be supplied in `variables`, and each value must be a **non-empty string**.
 
-This makes the Unofficial API the fastest path for prototyping message flows, building internal tooling, or shipping features when you need flexibility before your Official API templates are approved.
+## Text formatting
 
-## Interactive Buttons
+WhatsApp formatting markers work in the body: `*bold*`, `_italic_`, `~strikethrough~`, ``monospace``. The **text header does not allow** formatting markers, emojis, or line breaks.
 
-Both Official and Unofficial API templates support interactive buttons that recipients can tap directly inside the WhatsApp chat. You can include up to **3 buttons** per message, choosing from two button types:
+## Templates API
 
-<Tabs>
-  <Tab title="Quick Reply">
-    Quick reply buttons display a tappable text label. When the recipient taps one, WhatsApp sends that label back as a reply message — your webhook receives it as a `message.received` event. Use quick replies to collect structured responses without asking the user to type.
+<CodeGroup>
 
-    **Examples**: "Confirm", "Cancel", "Yes, send me updates"
-  </Tab>
-  <Tab title="URL Button">
-    URL buttons open a web page when tapped. The URL can include template variables, letting you generate personalized deep links for each recipient.
-
-    **Example**: "Track order" → `https://example.com/track/{{order_id}}`
-  </Tab>
-</Tabs>
-
-Here is an example API request that sends a template with variables:
-
-```json
-{
-  "number_id": "num_abc123",
-  "to": "5511999999999",
-  "template": {
-    "name": "order_confirmation",
-    "variables": {
-      "name": "Ana",
-      "order_id": "1024"
-    }
-  }
-}
+```bash Create
+curl -X POST "https://pilotstatus.com.br/v1/templates" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "promo_coupon",
+    "category": "MARKETING",
+    "language": "pt_BR",
+    "body": {
+      "header": { "type": "IMAGE", "url": "https://cdn.example.com/banner.png" },
+      "body":   { "text": "Hi {{name}}! Use it and get {{discount}} off." },
+      "footer": { "text": "Limited-time offer" },
+      "buttons": [
+        { "type": "QUICK_REPLY",  "text": "I want it!" },
+        { "type": "URL",          "text": "Buy", "url": "https://shop.com/promo/{{link}}" },
+        { "type": "COPY_CODE",    "example": ["PROMO10"] }
+      ]
+    },
+    "examples": { "name": "Maria", "discount": "10%", "link": "abc123" }
+  }'
 ```
 
-Pilot Status looks up the `order_confirmation` template, substitutes `Ana` for `{{name}}` and `1024` for `{{order_id}}`, and delivers the final message to the recipient's WhatsApp.
+```bash Update
+curl -X PUT "https://pilotstatus.com.br/v1/templates/tmpl_123" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "body": { "body": { "text": "Hi {{name}}! New copy here." } }, "examples": { "name": "Maria" } }'
+```
+
+```bash Delete
+curl -X DELETE "https://pilotstatus.com.br/v1/templates/tmpl_123" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+</CodeGroup>
+
+A successful create returns `201`:
+
+```json
+{ "id": "tmpl_123", "name": "promo_coupon", "category": "MARKETING", "metaStatus": "PENDING" }
+```
+
+After publishing a version, `GET /v1/templates/{id}` returns all detected variable keys in `latestVersion.variables`.
+
+## Common submission and send errors
+
+| Situation | Fix | Meta code |
+| --- | --- | --- |
+| Body starts/ends with a variable | Add literal text at both ends | `2388299` |
+| URL button on a placeholder domain (example.com, yourdomain.com…) | Use your real business domain | `368/1346003` |
+| Call button phone without country code | Use E.164, e.g. `+5521999998888` | `192` |
+| Too many variables relative to fixed text | Add wording or drop variables | `2388293` |
+| Sending a template not yet approved by Meta | Wait for approval | `131053` |
+| Variables sent don't match the approved template | Send every expected key | `132000` |
+| Template paused by Meta for quality drop | Improve content, reduce reports | `132015` |
+
+A `404` when sending means the template does not exist for the key or — on a Meta number — it has no approved version yet.
+
+## Related
+
+- [Send Messages](/guides/send-messages)
+- [Media Messages](/guides/media-messages)

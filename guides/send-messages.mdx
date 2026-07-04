@@ -1,196 +1,150 @@
 ---
-title: "Send WhatsApp Messages Using the Pilot Status REST API"
+title: "Send WhatsApp Messages via API | Pilot Status"
 sidebarTitle: "Send Messages"
-description: "Learn how to send text, template, and interactive WhatsApp messages using the Pilot Status REST API with curl and Node.js examples."
+description: "How to send template, free-form text, and media WhatsApp messages with POST /v1/messages/send using x-api-key authentication."
 ---
 
-The Pilot Status REST API lets you send WhatsApp messages programmatically — no server setup, proxy management, or WhatsApp Business infrastructure required. You authenticate every request with your API key and specify which connected number to send from using its `number_id`. This guide walks you through sending text messages, approved templates, and interactive button messages.
+# Send Messages Guide
 
-## Send a text message
+This guide shows how to send WhatsApp messages via the Pilot Status API. All sends go through a **single endpoint**:
 
-To send a plain text message, make a `POST` request to `/v1/messages/text` with the recipient's phone number (including country code, without the `+` sign) and the message body.
+```text
+POST https://pilotstatus.com.br/v1/messages/send
+```
+
+Authentication uses the `x-api-key: ps_...` header (or `x-api-key-id`) with a **number-scoped** key — see [API Authentication](/api/authentication). There is no Bearer-token auth.
+
+The endpoint has three mutually exclusive modes: **template send** (`templateId`), **free-form text** (`text`), and **direct media** (`media` \+ `mediaType`). Full reference: [POST /v1/messages/send](/api/messages/send).
+
+## Prerequisites
+
+1. A connected WhatsApp number (dashboard `/numbers`).
+2. An API key for that number (dashboard `/api-keys`).
+3. For template sends: a template created in `/templates` (Meta numbers require Meta approval).
+
+## 1. Send a template message
+
+The most reliable mode — works at any time, including outside the 24h window on Meta numbers.
 
 <CodeGroup>
 
-```bash curl
-curl -X POST https://api.pilotstatus.com.br/v1/messages/text \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
   -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
   -d '{
-    "number_id": "num_abc123",
-    "to": "5511999999999",
-    "text": "Hello from Pilot Status! 👋"
+    "templateId": "onboarding-test",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John", "order_id": "123" }
   }'
 ```
 
 ```javascript Node.js (fetch)
-const response = await fetch('https://api.pilotstatus.com.br/v1/messages/text', {
-  method: 'POST',
+const res = await fetch("https://pilotstatus.com.br/v1/messages/send", {
+  method: "POST",
   headers: {
-    'Authorization': 'Bearer YOUR_API_KEY',
-    'Content-Type': 'application/json'
+    "Content-Type": "application/json",
+    "x-api-key": process.env.PILOT_STATUS_API_KEY, // ps_...
   },
   body: JSON.stringify({
-    number_id: 'num_abc123',
-    to: '5511999999999',
-    text: 'Hello from Pilot Status! 👋'
-  })
+    templateId: "onboarding-test",
+    destinationNumber: "+5511999999999",
+    variables: { name: "John", order_id: "123" },
+  }),
 });
 
-const data = await response.json();
-console.log(data);
+const data = await res.json(); // 202 => { id, correlationId, status: "QUEUED", ... }
+console.log(data.id); // persist this to track delivery
 ```
 
 </CodeGroup>
 
-A successful request returns the message ID and its initial status:
+## 2. Send free-form text
 
-```json
-{
-  "id": "msg_xyz789",
-  "status": "sent",
-  "to": "5511999999999",
-  "timestamp": "2024-01-15T09:41:00Z"
-}
-```
+Send plain text with the `text` field (no `templateId`).
 
-Save the `id` if you want to correlate delivery and read events from your webhook later.
-
-## Send a template message (official API)
-
-Template messages are required when you initiate a conversation with a user outside the 24-hour messaging window on the official WhatsApp Cloud API or Coexistence integration. Templates must be pre-approved by Meta before use.
+<Warning>
+  On **Meta** numbers, free-form messages only work within the WhatsApp **24h conversation window** (i.e. after the recipient messaged you in the last 24 hours). Outside the window, the send fails asynchronously with `META_OUTSIDE_24H_WINDOW` in the `message.failed` webhook — use an approved template instead.
+</Warning>
 
 <CodeGroup>
 
-```bash curl
-curl -X POST https://api.pilotstatus.com.br/v1/messages/template \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
   -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
   -d '{
-    "number_id": "num_abc123",
-    "to": "5511999999999",
-    "template": {
-      "name": "order_confirmation",
-      "language": "en_US",
-      "components": [
-        {
-          "type": "body",
-          "parameters": [
-            { "type": "text", "text": "Maria" },
-            { "type": "text", "text": "#ORD-4521" },
-            { "type": "text", "text": "January 15, 2024" }
-          ]
-        }
-      ]
-    }
+    "text": "Hi! Your delivery has been confirmed for tomorrow.",
+    "destinationNumber": "+5511999999999"
   }'
 ```
 
 ```javascript Node.js (fetch)
-const response = await fetch('https://api.pilotstatus.com.br/v1/messages/template', {
-  method: 'POST',
+await fetch("https://pilotstatus.com.br/v1/messages/send", {
+  method: "POST",
   headers: {
-    'Authorization': 'Bearer YOUR_API_KEY',
-    'Content-Type': 'application/json'
+    "Content-Type": "application/json",
+    "x-api-key": process.env.PILOT_STATUS_API_KEY,
   },
   body: JSON.stringify({
-    number_id: 'num_abc123',
-    to: '5511999999999',
-    template: {
-      name: 'order_confirmation',
-      language: 'en_US',
-      components: [
-        {
-          type: 'body',
-          parameters: [
-            { type: 'text', text: 'Maria' },
-            { type: 'text', text: '#ORD-4521' },
-            { type: 'text', text: 'January 15, 2024' }
-          ]
-        }
-      ]
-    }
-  })
+    text: "Hi! Your delivery has been confirmed for tomorrow.",
+    destinationNumber: "+5511999999999",
+  }),
 });
+```
 
-const data = await response.json();
-console.log(data);
+</CodeGroup>
+
+You can add up to 3 `buttons` (and, with buttons, a `header`/`footer`) to free-form messages — see the [send reference](/api/messages/send).
+
+## 3. Send direct media
+
+Send an image, video, document, or audio on its own — provide `media` \+ `mediaType`, with no `templateId` and no `text`. An optional `caption` is allowed for image/video/document (not audio). `mediaType: "audio"` is delivered as a WhatsApp voice note (PTT).
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/voice.ogg",
+    "mediaType": "audio"
+  }'
+```
+
+```javascript Node.js (fetch)
+await fetch("https://pilotstatus.com.br/v1/messages/send", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.PILOT_STATUS_API_KEY,
+  },
+  body: JSON.stringify({
+    destinationNumber: "+5511999999999",
+    media: "https://cdn.example.com/report.pdf",
+    mediaType: "document",
+    caption: "Your monthly report",
+  }),
+});
 ```
 
 </CodeGroup>
 
 <Note>
-  Template messages are only required for the official Cloud API and Coexistence integrations. Unofficial (QR-code) connections can send free-form messages at any time.
+  Media sends require an active paid subscription (otherwise **402** `SUBSCRIPTION_REQUIRED_FOR_MEDIA`). Base64 data URIs are accepted on Meta Cloud API and Evolution v2; **Evolution GO** numbers require a public http(s) URL.
 </Note>
 
-## Send an interactive message with buttons
+## 4. Track delivery
 
-Interactive messages let recipients tap a button instead of typing a reply — ideal for confirmations, menus, and chatbot flows. Use quick-reply buttons for up to three response options.
+The `202` response returns an `id`. Persist it and:
 
-<CodeGroup>
+- Poll [`GET /v1/messages/{id}`](/api/messages/status) for `QUEUED` → `SENT` → `DELIVERED` → `READ` (or `FAILED` / `CANCELED`), or
+- Consume webhooks — the response `id` matches `internalMessageId` in `message.sent`, `message.delivered`, `message.read`, and `message.failed`.
 
-```bash curl
-curl -X POST https://api.pilotstatus.com.br/v1/messages/interactive \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "number_id": "num_abc123",
-    "to": "5511999999999",
-    "body": "Your order #ORD-4521 is ready for pickup. Would you like to confirm collection?",
-    "buttons": [
-      { "type": "reply", "id": "confirm_yes",  "label": "✅ Yes, confirm" },
-      { "type": "reply", "id": "confirm_no",   "label": "❌ Not yet" },
-      { "type": "reply", "id": "confirm_help", "label": "💬 Contact support" }
-    ]
-  }'
-```
+## Next steps
 
-```javascript Node.js (fetch)
-const response = await fetch('https://api.pilotstatus.com.br/v1/messages/interactive', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer YOUR_API_KEY',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    number_id: 'num_abc123',
-    to: '5511999999999',
-    body: 'Your order #ORD-4521 is ready for pickup. Would you like to confirm collection?',
-    buttons: [
-      { type: 'reply', id: 'confirm_yes',  label: '✅ Yes, confirm' },
-      { type: 'reply', id: 'confirm_no',   label: '❌ Not yet' },
-      { type: 'reply', id: 'confirm_help', label: '💬 Contact support' }
-    ]
-  })
-});
-
-const data = await response.json();
-console.log(data);
-```
-
-</CodeGroup>
-
-When the user taps a button, Pilot Status fires a `message.received` webhook to your endpoint with the button `id` in the payload — use it to branch your conversation logic.
-
-<Tip>
-  Use webhooks to track when messages are delivered and read. See the [Receive Messages guide](/guides/receive-messages) to set up your webhook endpoint and handle delivery events.
-</Tip>
-
-## Rate limits and best practices
-
-Pilot Status enforces per-number rate limits to keep your account in good standing with WhatsApp. Keep the following in mind as you build:
-
-**Don't hardcode `number_id`** — store it in an environment variable or configuration file so you can rotate or swap numbers without a code deployment.
-
-**Handle errors gracefully** — the API returns standard HTTP status codes:
-
-| Status | Meaning | What to do |
-|--------|---------|------------|
-| `400` | Invalid phone number or malformed request | Validate the `to` field before sending; log and skip |
-| `401` | Missing or invalid API key | Check your `Authorization` header |
-| `429` | Rate limit exceeded | Back off and retry after the `Retry-After` header value |
-| `5xx` | Server error | Retry with exponential backoff |
-
-**Queue outbound messages** — if you're sending to many recipients, use a job queue rather than firing all requests in parallel. This prevents hitting the rate limit and makes retries easier to manage.
-
-**Use templates for cold outreach** — on the official API, always use Meta-approved templates when messaging users who haven't contacted you in the last 24 hours to avoid message rejection.
+- Full field reference and error codes: [POST /v1/messages/send](/api/messages/send)
+- Scheduling with `deliverAt` and canceling: [DELETE /v1/messages/cancel](/api/messages/cancel)
+- Failure diagnostics: [Log Error Codes](/api/messages/log-error-codes)

@@ -1,81 +1,100 @@
 ---
-title: "API Authentication with Bearer Tokens | Pilot Status"
+title: "API Authentication with x-api-key | Pilot Status"
 sidebarTitle: "Authentication"
-description: "Use your Pilot Status API key as a Bearer token in the Authorization header to authenticate all REST API requests. Learn how to get and rotate your key."
+description: "Authenticate with the x-api-key or x-api-key-id header, ps_ key prefix, number-scoped vs tenant-scoped keys, and key rotation."
 ---
 
-Every request you make to the Pilot Status API must be authenticated with an API key. You pass your key as a Bearer token in the `Authorization` header — there are no cookies, session tokens, or OAuth flows involved. This page walks you through generating your key, attaching it to requests, keeping it secure, and handling authentication errors.
+# API Authentication
 
-## Getting Your API Key
+Every request to the Pilot Status API requires an API key in one of these headers:
 
-You generate and manage API keys directly from the Pilot Status dashboard. Follow these steps to obtain your key:
-
-1. Log in to your Pilot Status dashboard at [pilotstatus.com.br](https://pilotstatus.com.br).
-2. Navigate to **Settings → API Keys**.
-3. Click **Generate Key** to create a new key, or copy your existing key if one is already present.
-4. Store the key securely — it will not be shown again after its initial creation.
+- `x-api-key`: the raw key (`ps_*`)
+- `x-api-key-id`: the API key ID (the backend resolves it internally)
 
 <Warning>
-  Never commit API keys to version control. Use a secrets manager or environment variables in production.
+  There is no Bearer-token authentication. Never send `Authorization: Bearer` — always use the `x-api-key` (or `x-api-key-id`) header.
 </Warning>
 
-## Using Your API Key
+## Key prefix
 
-Include your API key in the `Authorization` header of every request using the `Bearer` scheme. The header must be present on all calls — including `GET` requests that don't have a body.
+All raw keys use the `ps_` prefix.
 
-**cURL example:**
+## Where to find an API key
 
-```bash
-curl https://api.pilotstatus.com.br/v1/numbers \
-  -H "Authorization: Bearer YOUR_API_KEY"
-```
-
-**Node.js example:**
-
-```javascript
-const response = await fetch('https://api.pilotstatus.com.br/v1/numbers', {
-  headers: {
-    'Authorization': 'Bearer YOUR_API_KEY',
-    'Content-Type': 'application/json'
-  }
-});
-```
+- **Number-scoped** key: dashboard `/api-keys` — each WhatsApp number has **one default key** that you can **Regenerate** (there are no sub-keys / no parent-child).
+- **Tenant-scoped** key: dashboard **Profile → API** tab — a singleton you generate/regenerate.
 
 <Note>
-  Replace `YOUR_API_KEY` with the actual key you copied from the dashboard. The word `Bearer` followed by a single space must appear exactly as shown — omitting it or changing the casing will result in a `401` error.
+  The raw API key is shown only once when generated/regenerated. Store it securely.
 </Note>
 
-## Security Best Practices
+## Key scope (number vs tenant)
 
-Keeping your API key secure protects your WhatsApp numbers and message data. Follow these practices in every environment.
+Every API key has a **scope** that determines which endpoints it can call. Both scopes authenticate the same way (`x-api-key: ps_*` or `x-api-key-id`).
 
-- **Never expose your key in client-side code or public repositories.** API keys embedded in browser JavaScript or committed to a public repo can be harvested and abused.
-- **Use environment variables.** Reference your key as `process.env.PILOTSTATUS_API_KEY` in Node.js (or the equivalent in your language/framework) rather than hardcoding it in source files.
-- **Rotate keys periodically.** Visit **Dashboard → Settings → API Keys** to generate a fresh key on a regular schedule and update your services accordingly.
-- **Revoke compromised keys immediately.** If you suspect a key has been exposed, revoke it from the dashboard right away and generate a replacement before updating your integrations.
+| Scope | Bound to | Can call | Where to find it |
+| --- | --- | --- | --- |
+| **Number-scoped** (default) | One WhatsApp number | All action/data endpoints for that number — `POST /v1/messages/send`, message status, cancel, groups, newsletters, templates, analytics, media | Dashboard → **API Keys** page (one default key per number; **Regenerate**) |
+| **Tenant-scoped** (singleton) | The tenant (no number) | Only number lifecycle management: `/v1/numbers/*` (create, list, get, delete, connect, status) and `/v1/remote-pairing/*` | Dashboard → **Profile** → **API** tab |
 
-<Tip>
-  Store your API key in a dedicated secrets manager — such as AWS Secrets Manager, HashiCorp Vault, or your CI/CD platform's built-in secrets store — so it never touches your codebase directly.
-</Tip>
+### Number-scoped key
 
-## Authentication Errors
+The default key type. It is linked to a single WhatsApp number and is used for all of that number's action and data operations (sending messages, status lookups, groups, newsletters, templates, analytics, media). It tracks every action performed for that number.
 
-If the API cannot verify your identity, it returns `HTTP 401 Unauthorized` with a structured error body explaining the failure.
+### Tenant-scoped key
+
+A tenant-scoped key is a **singleton per tenant** with **no associated number**. It is intended for SaaS platforms that connect and manage multiple numbers (including their customers' numbers) via the public API.
+
+- It can call **only** the endpoints under `/v1/numbers/*` and `/v1/remote-pairing/*`.
+- It **cannot** send messages and **cannot** issue other API keys.
+- It is generated/regenerated in the dashboard under **Profile → API** tab.
+
+If a tenant-scoped key is used on a per-number action/data endpoint (e.g. `POST /v1/messages/send`), the API responds with **HTTP 403**:
 
 ```json
 {
-  "error": {
-    "code": "UNAUTHORIZED",
-    "message": "Invalid or missing API key.",
-    "status": 401
-  }
+  "error": "This endpoint requires a number-scoped API key",
+  "code": "TENANT_SCOPE_NOT_ALLOWED"
 }
 ```
 
-<Expandable title="Common causes of 401 errors">
-  - **Missing `Bearer ` prefix** — The `Authorization` header value must start with `Bearer ` (including the trailing space) followed by your key. Sending the key alone without this prefix will fail.
-  - **Expired or revoked key** — If you rotated or revoked your key in the dashboard, any requests using the old key will be rejected. Update your integration with the new key.
-  - **Wrong project key** — If you have multiple projects or workspaces in Pilot Status, make sure you are using the API key that belongs to the correct project.
-</Expandable>
+## Regenerate / rotate keys
 
-If you receive a `401` and your key looks correct, regenerate it from **Dashboard → Settings → API Keys** and redeploy your application with the updated value.
+Regenerate a number's default key from the dashboard **API Keys** page, or via the API:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/api-keys/regenerate" \
+  -H "x-api-key: ps_your_current_key"
+```
+
+Regenerating invalidates the previous key immediately; the new raw key is returned only once.
+
+## Example requests
+
+<CodeGroup>
+
+```bash x-api-key
+curl "https://pilotstatus.com.br/v1/messages/msg_abc" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```bash x-api-key-id
+curl "https://pilotstatus.com.br/v1/messages/msg_abc" \
+  -H "x-api-key-id: ck_xxx"
+```
+
+</CodeGroup>
+
+## Common errors
+
+- `401` — missing or invalid `x-api-key` / `x-api-key-id` header.
+- `403` — valid key, but operation blocked (e.g., a tenant-scoped key calling a per-number action endpoint → `code: "TENANT_SCOPE_NOT_ALLOWED"`, or a number-scoped key calling a tenant-only endpoint → `code: "NUMBER_SCOPE_NOT_ALLOWED"`).
+
+## Security best practices
+
+<Warning>
+  Use API keys only on the **backend** — never expose them in frontend code, mobile apps, or client-side JavaScript.
+</Warning>
+
+- Store the key in environment variables / a secret manager.
+- Treat the create/regenerate response as sensitive (do not log the full key).

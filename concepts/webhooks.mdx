@@ -4,87 +4,56 @@ sidebarTitle: "Webhooks"
 description: "Pilot Status sends webhooks to your URL within milliseconds of message events. Learn the event types, payload structure, and how to verify and handle them."
 ---
 
-Webhooks are how Pilot Status notifies your application the moment something happens on a connected number. Instead of polling the API for new messages or status updates, you provide an HTTPS endpoint and Pilot Status delivers a structured JSON payload to it within milliseconds of each event — a new inbound message, a delivery receipt, a read notification, or a connection change. This makes webhooks the foundation of any real-time integration, from chatbots and AI agents to customer support platforms and order notification systems.
+Webhooks deliver real-time events to your URL as JSON `POST` requests. You configure webhooks per number on the **Webhooks** page in the dashboard or via `POST /v1/webhooks` — see the [Receive Messages guide](/guides/receive-messages) for setup and the [Events reference](/api/webhooks/events) for full payload schemas.
 
-## Event Types
+## Events overview
 
-Pilot Status emits the following events to your webhook endpoint:
+| Group | Events |
+| --- | --- |
+| Outbound status | `message.sent`, `message.delivered`, `message.read`, `message.failed` |
+| Inbound | `message.received`, `message.reply`, `message.group`, `message.newsletter` |
+| Number lifecycle | `number.created`, `number.connected`, `number.disconnected`, `number.removed` |
+| Voice calls (Meta only) | `call.ringing`, `call.connected`, `call.ended`, `call.missed`, `call.permission_updated`, `calls` (raw Meta envelope) |
 
-| Event | Description |
-|---|---|
-| `message.received` | A new inbound message arrived on your number |
-| `message.sent` | Your outbound message was accepted and sent |
-| `message.delivered` | The message was delivered to the recipient's device |
-| `message.read` | The recipient opened and read the message |
-| `message.failed` | Delivery failed — the payload includes the failure reason |
-| `number.connected` | A number successfully established its WhatsApp connection |
-| `number.disconnected` | A number lost its WhatsApp connection |
+A webhook only fires for events in its `events` list. An **empty list dispatches nothing**; use `"*"` to subscribe to every event.
 
-## Payload Structure
+## Payload schema (v3)
 
-Every webhook payload follows the same envelope structure: an `event` name, an ISO 8601 `timestamp`, the `number_id` that triggered the event, and an event-specific data object.
-
-Here is an example payload for a `message.received` event:
+Every `message.*` / `number.*` event arrives as:
 
 ```json
 {
-  "event": "message.received",
-  "timestamp": "2024-01-15T09:41:00Z",
-  "number_id": "num_abc123",
-  "message": {
-    "id": "msg_xyz789",
-    "from": "5511999999999",
-    "type": "text",
-    "text": "Hello!",
-    "timestamp": "2024-01-15T09:41:00Z"
-  }
+  "event": "message.sent",
+  "data": { }
 }
 ```
 
-The `message.id` field is stable and unique across all events for a given message. A single outbound message may generate `message.sent`, `message.delivered`, and `message.read` events in sequence — each carrying the same `message.id` so you can correlate them in your system.
+All `data` fields are **camelCase**. Phone numbers are always **E.164 with `+`** (no device suffix, no `@s.whatsapp.net`/`@lid`). Timestamps are **ISO 8601** in a single `createdAt` field. Normalized `call.*` events are flat (no `data` wrapper).
 
-## Configuring Webhooks
+## Correlation with the 202 response
 
-<Tabs>
-  <Tab title="Dashboard">
-    Go to **Dashboard → Logs & Analytics → Webhooks** and enter your endpoint URL. You can configure a global webhook URL that receives all events, or set per-number URLs if different numbers need to route to different services.
-  </Tab>
-  <Tab title="API">
-    Use the webhook configuration endpoint to register or update your URL programmatically:
+`POST /v1/messages/send` responds `HTTP 202` with `id` and `correlationId`. Use these to tie webhooks back to your send:
 
-    ```bash
-    POST https://api.pilotstatus.com.br/v1/webhooks/configure
-    Authorization: Bearer YOUR_API_KEY
-    ```
+| `202` field | Webhook equivalent |
+| --- | --- |
+| `id` | `id` on `message.sent` / `delivered` / `read` / `failed` (same value) |
+| `correlationId` | Repeats on outbound status events and on `message.reply` / `message.received` when correlated |
+| _(not in the 202)_ | WhatsApp `messageId` — first appears on `message.sent` |
 
-    ```json
-    {
-      "number_id": "num_abc123",
-      "url": "https://your-app.com/webhooks/whatsapp",
-      "events": ["message.received", "message.delivered", "message.read"]
-    }
-    ```
+On `message.reply`, `quotedMessageId` equals the `messageId` of your original `message.sent`, and `contentReplied` carries the quoted text.
 
-    Omit the `events` array to subscribe to all event types for that number.
-  </Tab>
-</Tabs>
+<Note>
+  The `message.read` event (and **Read** status in logs) only occurs when the recipient has **WhatsApp read receipts** enabled. Otherwise the lifecycle stops at `message.delivered`.
+</Note>
 
-## Best Practices
+## Delivery notes
 
-Follow these guidelines to build a reliable webhook handler.
+- `number.disconnected` is emitted after a health check confirms the disconnect — not on every brief connection flap.
+- With data retention off ([PII modes](/trust/data-retention)), conditional fields such as `content` may be empty; IDs and timestamps always exist.
+- Events the number's provider cannot emit are silently dropped from a subscription.
 
-<Accordion title="Respond with HTTP 200 quickly">
-  Your endpoint must return an HTTP `200` response within **5 seconds**. If your processing logic takes longer — for example, calling an AI model or writing to a database — acknowledge the webhook immediately and handle the work asynchronously in a background job or queue. Slow responses cause Pilot Status to treat the delivery as failed and trigger a retry.
-</Accordion>
+## Related
 
-<Accordion title="Handle retries with exponential backoff">
-  If your endpoint does not return a `200`, Pilot Status retries the delivery automatically using exponential backoff. Design your handler to be robust to these retries — do not assume you will receive each event exactly once.
-</Accordion>
-
-<Accordion title="Deduplicate events using message ID">
-  Network conditions and retries mean your endpoint may occasionally receive the same event more than once. Use the `message.id` field as an idempotency key: record which IDs you have already processed and skip any duplicates. This keeps your application state consistent even under adverse conditions.
-</Accordion>
-
-<Tip>
-  For AI agents, subscribe to `message.received` and respond immediately — Pilot Status delivers events in milliseconds, so your agent can achieve near-instant response times for end users.
-</Tip>
+- [Receive Messages guide](/guides/receive-messages)
+- [Webhook Events reference](/api/webhooks/events)
+- [Configure Webhooks](/api/webhooks/configure)

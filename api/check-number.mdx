@@ -1,0 +1,114 @@
+---
+title: "Check if a Number Is on WhatsApp"
+description: "Check whether phone numbers are registered on WhatsApp using the connected number's session."
+---
+
+Check whether one or more phone numbers are registered on WhatsApp, using the connected number's own session. Useful to validate a list before sending, or to resolve the exact registered digits (jid local-part) that WhatsApp will actually deliver to.
+
+## Endpoint
+
+`POST https://pilotstatus.com.br/v1/numbers/check`
+
+## Availability (Evolution only)
+
+<Warning>
+  This lookup is only available for **non-official Evolution numbers** (`EVO_GO` / `EVO_V2`). The Meta Cloud API has **no** number-existence lookup, so a **Meta** number returns:
+
+  ```json
+  HTTP 400
+  { "error": "…", "code": "NOT_SUPPORTED_FOR_META" }
+  ```
+</Warning>
+
+## Required headers
+
+- `x-api-key: <your_number_scoped_key>` — must be a **number-scoped** key (`ps_*`). Tenant-scoped keys return `403`.
+- Alternatively, an **OAuth / tenant token** together with the `x-whatsapp-number-id: <numberId>` header (as used by the MCP server) selects the number to check against.
+
+## Request body
+
+Send **either** a list or a single number:
+
+<ParamField body="numbers" type="string[]">
+  Phone numbers to check (1–20 items). Each may be in any common format (E.164, with/without `+`, with separators).
+</ParamField>
+
+<ParamField body="number" type="string">
+  A single number — treated as `numbers: [number]`.
+</ParamField>
+
+An empty/invalid body (no numbers, more than 20, wrong types) returns **`400 VALIDATION_ERROR`**.
+
+```json
+{ "numbers": ["+5511967435133", "5511888888888"] }
+```
+
+```json
+{ "number": "+5511967435133" }
+```
+
+## Brazil (\+55) 9th-digit double-check
+
+Brazilian mobile numbers are ambiguous: the same line may be registered on WhatsApp **with or without** the extra `9` after the area code. To avoid false negatives, each `+55` mobile input is checked **both** with and without the 9th digit, and the input counts as existing if **any** variant is registered.
+
+The returned `number` is the **registered** digits of the matching variant — which may differ from what you sent.
+
+**Example:** sending `"+5511967435133"` (with the 9th digit) can resolve to the registered number `"551167435133"` (without it):
+
+```json
+{
+  "results": [
+    { "input": "+5511967435133", "exists": true, "number": "551167435133", "name": "Maria Souza" }
+  ]
+}
+```
+
+## Example
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/numbers/check" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "numbers": ["+5511967435133", "5511888888888"] }'
+```
+
+```json Response (200)
+{
+  "results": [
+    { "input": "+5511967435133", "exists": true,  "number": "551167435133", "name": "Maria Souza" },
+    { "input": "5511888888888",  "exists": false, "number": null,           "name": null }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Result object fields
+
+<ResponseField name="input" type="string" required>
+  The original string you sent, echoed back so you can correlate results.
+</ResponseField>
+
+<ResponseField name="exists" type="boolean" required>
+  `true` if **any** candidate variant of the input is registered on WhatsApp, else `false`.
+</ResponseField>
+
+<ResponseField name="number" type="string | null" required>
+  The **registered** WhatsApp digits (jid local-part) of the matching variant — `null` when not registered. For `+55` mobiles this may drop the 9th digit (see above).
+</ResponseField>
+
+<ResponseField name="name" type="string | null" required>
+  The public WhatsApp display name when the provider returns one, else `null`.
+</ResponseField>
+
+## Common errors (stable API codes)
+
+- `400 VALIDATION_ERROR` — missing/invalid body (no numbers, more than 20, or wrong types).
+- `400 NOT_SUPPORTED_FOR_META` — the number is a Meta Cloud API number (no existence lookup on Meta).
+- `409 WHATSAPP_INSTANCE_NOT_CONNECTED` — the session is not `OPEN`.
+- `503 EVOLUTION_API_KEY_MISSING` — the Evolution provider key is not configured for the instance.
+- `401` — missing or invalid `x-api-key` header.
+- `403` — tenant-scoped key used (number-scoped key required).
+- Upstream provider failures surface as `WHATSAPP_UPSTREAM_ERROR` / `WHATSAPP_INVALID_JSON` (same envelope as the group endpoints).

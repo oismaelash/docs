@@ -1,0 +1,206 @@
+---
+title: "Templates API — Create, Update, Delete"
+sidebarTitle: "Templates API"
+description: "Manage WhatsApp message templates programmatically: POST/PUT/DELETE /v1/templates, required examples, header media, buttons, and Meta approval/rejection errors."
+---
+
+Templates define reusable message content. Create and manage them in the dashboard (`/templates`) **or** via the public REST API (`/v1/templates`) and the MCP server (`templates_create` / `templates_update` / `templates_delete`). When sending, reference the template by `templateId` and pass a `variables` object with matching keys.
+
+<Note>
+  All requests use the `x-api-key: ps_...` header (or `x-api-key-id`). Base URL: `https://pilotstatus.com.br/v1`.
+</Note>
+
+## Category
+
+Set at creation time; **cannot be changed later**.
+
+- **MARKETING** — promotional messages (more sensitive to WhatsApp policies).
+- **UTILITY** — transactional messages (account updates, alerts, reminders).
+- **OTP** — one-time / verification code messages.
+
+## Template structure
+
+Only **body** is required.
+
+| Component | Required | What it is |
+| --- | --- | --- |
+| **Header** | optional | Text or one media item (image, video, PDF). |
+| **Body** | **required** | Main text with `{{variable}}` placeholders. |
+| **Footer** | optional | Short static line under the body. |
+| **Buttons** | optional | Up to 10 interactive buttons. |
+
+### Header
+
+| Type | Value | Notes |
+| --- | --- | --- |
+| `NONE` | — | Default. |
+| `TEXT` | `text` | Up to **60** chars, **0 or 1** variable. No line breaks/emojis/formatting. |
+| `IMAGE` | `url` or `base64` | JPG/PNG. |
+| `VIDEO` | `url` or `base64` | MP4. |
+| `DOCUMENT` | `url` or `base64` | PDF. |
+
+- **REST API**: pass either `header.url` (public http(s) URL) or `header.base64` (data URI) — base64 is re-hosted server-side automatically.
+- **MCP**: `header.url` **only** — base64 is not supported over MCP.
+
+<Note>
+  There is **no** `LOCATION` header.
+</Note>
+
+### Body
+
+- Up to **1024** characters.
+- Variables written as `{{nome}}` (named style).
+- The body **must not start or end with a variable**.
+- Emojis and multiple variables allowed.
+
+### Footer
+
+Static text up to **60** characters. **No variables.**
+
+### Buttons
+
+Up to **10** buttons total; quick-reply and CTA buttons can be mixed.
+
+| Type | Fields | Limit |
+| --- | --- | --- |
+| `QUICK_REPLY` | `text` | up to 10 |
+| `URL` | `text`, `url` (static or dynamic) | up to 2 |
+| `PHONE_NUMBER` | `text`, `phone_number` (E.164) | up to 1 |
+| `COPY_CODE` | `example` (code to copy) | up to 1 |
+
+- **Dynamic URL button**: URL **ends with a variable** (e.g. `https://loja.com/promo/{{link}}`) — one variable max, never in the domain. Sample value goes in `examples`.
+- **Copy-code**: value goes on the button as `example` (array, e.g. `["PROMO10"]`), alphanumeric only, up to **15** chars. Not for PIX keys or e-mails — put those in the body as a `{{variable}}` instead.
+- Buttons **are** allowed together with a video or document (PDF) header.
+
+## Variables & examples (required)
+
+When creating/updating via REST or MCP you **must** include an `examples` object mapping **every** variable used (body \+ header text \+ dynamic URL) to a real sample value. The copy-code value is the only exception (it lives on the button).
+
+```json
+400 { "code": "TEMPLATE_EXAMPLES_REQUIRED", "details": { "missing": ["desconto"] } }
+```
+
+After saving, `GET /v1/templates/{id}` returns all detected keys in `latestVersion.variables` — supply all of them in `variables` on send.
+
+## Character limits
+
+| Component | Limit | Rules |
+| --- | --- | --- |
+| Header (text) | 60 | No line breaks/emojis/formatting; at most 1 variable. |
+| Body | 1024 | Can't start or end with a variable. |
+| Footer | 60 | No variables. |
+| Button label | 25 | — |
+| Copy-code value | 15 | Alphanumeric only. |
+
+## Create via REST API
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://pilotstatus.com.br/v1/templates \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_token_here" \
+  -d '{
+  "name": "promo_cupom",
+  "category": "MARKETING",
+  "language": "pt_BR",
+  "body": {
+    "header": { "type": "IMAGE", "url": "https://cdn.exemplo.com/banner.png" },
+    "body":   { "text": "Oi {{nome}}! Use e ganhe {{desconto}} de desconto." },
+    "footer": { "text": "Promoção por tempo limitado" },
+    "buttons": [
+      { "type": "QUICK_REPLY",  "text": "Quero!" },
+      { "type": "URL",          "text": "Comprar", "url": "https://loja.com/promo/{{link}}" },
+      { "type": "PHONE_NUMBER", "text": "Falar",   "phone_number": "+5511999998888" },
+      { "type": "COPY_CODE",    "example": ["PROMO10"] }
+    ]
+  },
+  "examples": { "nome": "Maria", "desconto": "10%", "link": "abc123" }
+}'
+```
+
+```json Response 201
+{ "id": "tmpl_123", "name": "promo_cupom", "category": "MARKETING", "metaStatus": "PENDING" }
+```
+
+</CodeGroup>
+
+- `body` may be an **object** (recommended), a **JSON string**, or **plain text** (body-only templates).
+- Edit with `PUT /v1/templates/{id}` (same shape); remove with `DELETE /v1/templates/{id}` (also deletes from Meta for Meta templates; returns `{ deleted: true, id }`).
+- `GET /v1/templates` / `GET /v1/templates/{id}` return `source` (`META` | `PILOT_STATUS`), `metaStatus` (`APPROVED` | `PENDING` | `REJECTED` | `DISABLED` | `null`), `metaLanguage`, and `sendable` — on a Meta number only `META` templates with `metaStatus: "APPROVED"` are sendable.
+
+## Approval
+
+- **Meta numbers:** templates are submitted to Meta for review ("Submit to Meta" in `/templates`, or on save). Categories, language and status follow Meta's rules.
+- **Unofficial (Evolution) numbers:** templates are created locally and immediately usable — no approval step.
+
+## Not supported
+
+`FLOW`, `LOCATION` (header or button), `CAROUSEL`, `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP **autofill/one-tap/zero-tap**, `VOICE_CALL` buttons, and the `NAMED` `parameter_format`.
+
+## Submit & rejection errors
+
+Link/URL buttons accept a single variable that must be at the **end** of the URL and never in the domain; call buttons need the country code (e.g. `+55`).
+
+### Checked before submitting to Meta
+
+| Cause | Fix | Meta code |
+| --- | --- | --- |
+| Body starts/ends with a variable | Add literal text at the edges | `2388299` |
+| Button combination over limits | ≤10 total, ≤10 quick-reply, ≤2 URL, ≤1 call, ≤1 copy-code | `100` |
+| Call button without country code | Use E.164 (`+55 21 99999-8888`) | `192` |
+| Link button on placeholder domain (example.com…) | Use your real business URL | `368/1346003` |
+| Variable in the URL domain | Variable only at the end of the path | `100` |
+| More than one URL variable / not at end | One variable, at the end | `100` |
+| Copy-code with symbols/spaces or \>15 chars | Alphanumeric ≤15 | `100` |
+| Footer contains a variable | Remove it | `2388073` |
+| Text header with emoji/line break/formatting/2\+ variables | Plain text, ≤1 variable | `2388047` |
+| Field over character limit | Header 60, body 1024, footer 60, button 25 | `2388040` |
+
+### API-side validation
+
+| Cause | Fix | Meta code |
+| --- | --- | --- |
+| Too many variables vs fixed text | Add wording or reduce variables | `2388293` |
+
+### Meta rejected the submission
+
+| Cause | Fix | Meta code |
+| --- | --- | --- |
+| Media header but number missing Meta App ID | Set App ID in number settings | — |
+| Invalid parameter (Meta reason shown) | Review indicated field | `100` |
+| Content flagged abusive (usually button URL domain) | Review button links | `368/1346003` |
+| Display name not approved yet | Wait for Meta approval | `131008` |
+| URL button invalid link/variable | Check link and `{{…}}` | `100` |
+| Media upload to Meta failed | Header file reachable \+ valid format | — |
+| Header file too large / unsupported | Image ≤5MB JPEG/PNG, video ≤16MB MP4, PDF ≤10MB | `131002/131003` |
+| Number temporarily blocked (policy) | Resolve with Meta | `368` |
+| Token missing WhatsApp permissions | Reconnect number granting permissions | `10/200/3` |
+| Token invalid/expired | Update System Token | `190` |
+| WABA inaccessible/removed | Reconnect the number on Meta | `100/subcode 33` |
+
+### Rejected after review
+
+| Reason | Meta code |
+| --- | --- |
+| Threatening/abusive/policy-violating content | `ABUSIVE_CONTENT` |
+| Category doesn't match content | `INCORRECT_CATEGORY` |
+| Formatting: bad/adjacent variables, missing examples | `INVALID_FORMAT` |
+| Utility template with promotional content | — |
+| Looks like a scam (generic, fake urgency) | `SCAM` |
+| Selected language ≠ written text | — |
+
+### Blocks when sending (even approved)
+
+| Cause | Meta code |
+| --- | --- |
+| Business verification not completed | `141010` |
+| No payment method / outstanding invoice on WABA | `131042 / 141006` |
+| Template permanently disabled after repeated pauses | `132016` |
+| Template not approved yet | `131053` |
+| Variable count ≠ approved template | `132000` |
+| Template paused for quality drop | `132015` |
+
+## Common error when sending
+
+`404` — template without an approved version (doesn't exist for the key, or Meta template has no approved version yet).
