@@ -1,0 +1,126 @@
+---
+title: "Chamadas de Voz no Chatwoot"
+sidebarTitle: "Voz no Chatwoot"
+description: "Roteie o canal de voz nativo de WhatsApp do Chatwoot pelo Pilot Status: agentes atendem e fazem chamadas no Chatwoot enquanto seu token da Meta permanece no Pilot Status."
+icon: "phone"
+---
+
+O Chatwoot **v4.15\+** inclui um canal de voz nativo de WhatsApp. Este guia o roteia pelo Pilot Status para que os agentes atendam e façam chamadas **dentro do Chatwoot**, enquanto o token de acesso real da Meta nunca sai do Pilot Status — o Chatwoot fala com a Graph API através da camada de compatibilidade Meta do Pilot Status (`/api/layer/meta`) usando sua chave `ps_`, e os webhooks de chamada são re-entregues pelo Pilot Status.
+
+```text
+Chatwoot (navegador do agente) ──chamadas Graph (chave ps_)──▶ Pilot Status /api/layer/meta ──troca de token──▶ Meta
+        ▲                                                                                                        │
+        └──────────── webhook do Pilot Status (events: ["calls"]) ◀──────── webhook calls ──────────────────────┘
+
+Áudio: navegador do agente ◀── WebRTC ──▶ Meta  (nunca passa pelo Pilot Status nem pelo servidor do Chatwoot)
+```
+
+## Requisitos
+
+- **Chatwoot self-hosted ≥ v4.15** (o canal de voz é um recurso enterprise; o Chatwoot Cloud **não** é suportado — esta configuração precisa de uma variável de ambiente global).
+- Uma instalação do Chatwoot **dedicada**, ou uma em que **todas** as inboxes WhatsApp Cloud usem uma chave `ps_` do Pilot Status — o override de base URL abaixo é global.
+- Um **número Meta Cloud API (oficial)** no Pilot Status com **chamadas habilitadas** e tier de mensagens ≥ 2 mil. Números não oficiais (web) não são suportados pelo canal de voz do Chatwoot — use o [softphone do Pilot Status](/pt-BR/api/calls/overview) para eles.
+- A **chave `ps_` com escopo de número** (Perfil → API), mais o **Phone Number ID**, o **WABA ID** e o **Business Account ID** do número — todos copiáveis no card do número na página **Números**.
+
+## Passo 1 — Aponte o Chatwoot para a camada Meta do Pilot Status
+
+Adicione ao ambiente dos containers **Rails e Sidekiq** e reinicie:
+
+```env
+WHATSAPP_CLOUD_BASE_URL=https://pilotstatus.com.br/api/layer/meta
+```
+
+<Warning>
+  Esta variável é **global**: toda inbox `whatsapp_cloud` da instalação passará a chamar a camada do Pilot Status. Uma inbox configurada com um token real da Meta quebraria — use uma instalação dedicada ou migre todas as inboxes Cloud para chaves `ps_`.
+</Warning>
+
+## Passo 2 — Crie uma inbox WhatsApp Cloud manual
+
+No Chatwoot: **Settings → Inboxes → Add Inbox → WhatsApp → WhatsApp Cloud** (manual/API, **não** o Embedded Signup):
+
+| Campo | Valor |
+| --- | --- |
+| Phone number | O número em E.164 **com**`+` (ex.: `+15551234567`) |
+| Phone number ID | O Meta Phone ID do número |
+| Business Account ID | O WABA ID do número |
+| API key | A **chave `ps_`** do número |
+
+O Chatwoot valida as credenciais com uma requisição de sincronização de templates — ele autentica no estilo Graph (`?access_token=ps_…`), que a camada do Pilot Status aceita e remove antes de encaminhar (sua chave `ps_` nunca chega à Meta).
+
+<Note>
+  Após a criação, o Chatwoot tenta registrar seu webhook **diretamente no `graph.facebook.com`** (a URL é fixa no código upstream), recebe 401 e mostra um **banner de "reauthorization required"**. É apenas cosmético — o Passo 3 o limpa.
+</Note>
+
+## Passo 3 — Habilite a voz na conta e no canal
+
+O caminho de voz do Chatwoot exige três coisas: o recurso de conta `channel_voice`, a flag de canal `calling_enabled` e um provider `whatsapp_cloud`. O toggle da UI (**inbox → Calls → Enable Voice Calling**) não consegue definir a flag nesta configuração — ele também chama a URL fixa do Graph e falha com 401 **antes** de persistir. Habilite pelo console Rails:
+
+```ruby
+account = Account.first # ou Account.find(<id>)
+account.enable_features!('channel_voice')
+
+ch = Channel::Whatsapp.find_by(phone_number: '+15551234567')
+ch.provider_config = ch.provider_config.merge('calling_enabled' => true)
+ch.save!(validate: false)
+ch.reauthorized! # limpa o banner cosmético do Passo 2
+```
+
+<Accordion title="Sem acesso a shell? Rode de forma idempotente no boot (docker compose)">
+  Se você não consegue abrir um console no host (plataformas gerenciadas), rode o mesmo script a cada boot do serviço `rails` — ele é no-op depois de aplicado. Base64 evita problemas de aspas nos validadores de compose:
+
+  ```yaml
+  # 1. Gere o payload uma vez (substitua o número antes):
+  #    base64 -w0 <<'EOF'
+  #    begin
+  #      a = Account.first
+  #      a.enable_features!('channel_voice') if a
+  #      ch = Channel::Whatsapp.find_by(phone_number: '+15551234567')
+  #      if ch && ch.provider_config['calling_enabled'] != true
+  #        ch.provider_config = ch.provider_config.merge('calling_enabled' => true)
+  #        ch.save!(validate: false)
+  #        ch.reauthorized!
+  #      end
+  #      puts 'voice-setup ok'
+  #    rescue => e
+  #      puts 'voice-setup skipped: ' + e.message
+  #    end
+  #    EOF
+  # 2. Insira no command do serviço rails:
+  command: ["sh", "-c", "bundle exec rails db:chatwoot_prepare && (echo <BASE64_PAYLOAD> | base64 -d | bundle exec rails runner -) ; exec bundle exec rails s -p 3000 -b 0.0.0.0"]
+  ```
+
+  Procure por `voice-setup ok` (ou `voice-setup skipped: <motivo>`) nos logs do rails após o deploy.
+</Accordion>
+
+## Passo 4 — Entregue os webhooks de chamada a partir do Pilot Status
+
+Crie um webhook **com escopo do número** assinando apenas o evento `calls`, apontando para o endpoint de webhook da inbox (o telefone na URL deve corresponder exatamente ao `phone_number` do canal, incluindo o `+`):
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/webhooks \
+  -H "x-api-key: ps_…" -H "Content-Type: application/json" \
+  -d '{"name":"Chatwoot Voice (calls)","url":"https://chatwoot.seu-dominio.com/webhooks/whatsapp/+15551234567","events":["calls"]}'
+```
+
+- **Não defina um `secret`** — a verificação de assinatura é dispensada para inboxes manuais sem app secret, e é exatamente isso que faz a re-entrega do Pilot Status funcionar.
+- Assine **apenas** `["calls"]`. Adicionar `messages` duplicaria toda mensagem recebida se o número também usar o [espelhamento padrão do Chatwoot](/pt-BR/integrations/chatwoot).
+- O Pilot Status entrega o envelope da Meta na íntegra (`entry[].changes[]` de mudança única com `field: "calls"`), que é exatamente o formato que o job de eventos de WhatsApp do Chatwoot espera.
+
+## Passo 5 — Teste
+
+1. **Recebida (usuário liga para a empresa):** ligue para o número de um celular → um banner de chamada toca na inbox do Chatwoot → atenda no navegador → áudio bidirecional → desligue; a chamada fica registrada na conversa.
+2. **Realizada (agente liga para o usuário):** exige a **permissão de chamada** do usuário (a Meta bloqueia com o erro `138006` sem ela) e um **método de pagamento na WABA** (erro `131044` sem ele). Veja [Chamadas de Voz — permissões](/pt-BR/guides/voice-calls).
+
+## Limitações e observações
+
+- **Latência de sinalização** — a perna do webhook passa pela entrega do Pilot Status antes do Sidekiq do Chatwoot. A janela de toque da Meta é de ~30s; fique atento a toques atrasados sob carga.
+- **Caminho do áudio** — WebRTC entre o navegador do agente e a Meta diretamente. Redes corporativas que bloqueiam UDP conectam a chamada mas produzem silêncio; isso está fora do controle do Chatwoot e do Pilot Status.
+- **Respostas de permissão de chamada** são entregues no campo `messages`, não em `calls`, então o estado de permissão do Chatwoot não é atualizado automaticamente nesta configuração. Chamadas realizadas sem permissão falham com um `138006` legível.
+- **As configurações são compartilhadas** — tanto o Pilot Status (chamadas habilitadas por padrão) quanto o Chatwoot escrevem no mesmo objeto `/settings` da Meta; a última escrita vence.
+- O **softphone /chat do Pilot Status** continua funcionando em paralelo — mas apenas uma superfície deve **atender** uma determinada chamada.
+
+## Relacionado
+
+- [Integração de mensagens com o Chatwoot](/pt-BR/integrations/chatwoot)
+- [Visão geral de Chamadas de Voz](/pt-BR/api/calls/overview)
+- [Visão geral da API Layer](/pt-BR/api/layer/overview)

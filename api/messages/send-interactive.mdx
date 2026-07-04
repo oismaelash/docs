@@ -1,98 +1,58 @@
 ---
-title: "POST /messages/interactive — Send Buttons & CTAs"
+title: "Send Interactive Buttons — POST /v1/messages/send"
 sidebarTitle: "Send Interactive"
-description: "POST /v1/messages/interactive — Send WhatsApp messages with quick-reply buttons or URL call-to-action buttons. Up to 3 buttons per message."
+description: "Add reply, URL, call, and copy buttons to template or free-form text sends with POST /v1/messages/send, and receive button taps as normal inbound webhooks."
 ---
 
-The Send Interactive endpoint lets you attach tappable buttons to your WhatsApp messages, giving recipients structured ways to respond or take action. You can mix quick-reply buttons — which trigger a webhook when tapped — with URL buttons that open a link directly in the recipient's browser. Each message supports up to three buttons.
+# Send interactive buttons
 
-`POST https://api.pilotstatus.com.br/v1/messages/interactive`
+There is no separate `/messages/interactive` endpoint. Buttons are extra fields (`buttons`, `header`, `footer`) on the **single** send endpoint:
 
-## Request body
+```text
+POST https://pilotstatus.com.br/v1/messages/send
+```
 
-<ParamField body="number_id" type="string" required>
-  The ID of the connected WhatsApp number to send from. Retrieve available IDs from [GET /numbers](/api/numbers/list).
-</ParamField>
+## Where buttons are allowed
 
-<ParamField body="to" type="string" required>
-  Recipient phone number including the country code, without a leading `+` (e.g., `5511999999999`).
-</ParamField>
+- **Template sends** (`templateId`) — `buttons` override the template's own buttons, and can be combined with template media (including `video` / `document`; Meta Cloud API may reject some button \+ video/document combinations at delivery time).
+- **Free-form text sends** (`text`) — `buttons` alongside the text; `header` and `footer` require `buttons`.
+- **Not allowed** in plain direct-media mode (`media` \+ `mediaType` without `templateId`/`text`) — see [Send a Message](/api/messages/send).
 
-<ParamField body="body" type="string" required>
-  The main message text displayed above the buttons. WhatsApp formatting is supported.
-</ParamField>
+Up to **3** buttons per message. Types: `reply`, `url`, `call`, `copy`.
 
-<ParamField body="buttons" type="array" required>
-  An array of up to 3 button objects. Each button must include a `type` and `label`.
+## Example: template \+ buttons
 
-  <Expandable title="Button object fields">
-    <ParamField body="type" type="string" required>
-      Button behaviour. Use `"reply"` for a quick-reply button that sends a webhook, or `"url"` for a button that opens a link.
-    </ParamField>
-
-    <ParamField body="id" type="string" required>
-      A unique identifier for the button. For `reply` buttons, this value is returned in the webhook payload when the user taps the button. For `url` buttons, this field is still required but used for tracking purposes only.
-    </ParamField>
-
-    <ParamField body="label" type="string" required>
-      The button text shown to the recipient. Maximum 20 characters.
-    </ParamField>
-
-    <ParamField body="url" type="string">
-      Required when `type` is `"url"`. The fully qualified URL to open when the button is tapped.
-    </ParamField>
-  </Expandable>
-</ParamField>
-
-## Example
-
-```bash cURL
-curl --request POST \
-  --url https://api.pilotstatus.com.br/v1/messages/interactive \
-  --header 'Authorization: Bearer YOUR_API_KEY' \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "number_id": "num_abc123",
-    "to": "5511999999999",
-    "body": "Your order #1024 is ready! What would you like to do?",
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "confirm-template",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John" },
     "buttons": [
-      { "type": "reply", "id": "confirm", "label": "Confirm" },
-      { "type": "url", "id": "track", "label": "Track Order", "url": "https://example.com/track/1024" },
-      { "type": "reply", "id": "support", "label": "Talk to Support" }
+      { "type": "reply", "displayText": "Confirm", "id": "confirm" },
+      { "type": "url", "displayText": "View details", "url": "https://example.com/order/123" }
     ]
   }'
 ```
 
-## Response
+## Response (202)
 
-A successful request returns `200 OK` with the following fields.
+```json
+{
+  "id": "msg_abc",
+  "correlationId": "corr_123",
+  "status": "QUEUED"
+}
+```
 
-<ResponseField name="id" type="string">
-  Unique identifier for the sent message.
-</ResponseField>
+## How button replies arrive
 
-<ResponseField name="status" type="string">
-  Initial delivery status. Always `"sent"` on a successful response.
-</ResponseField>
+When the contact taps a **reply** button, you receive a **normal inbound webhook** — `message.reply` (or `message.received`) — whose `content` is the **button label** (e.g. `"Confirm"`), with `quotedMessageId` pointing at your original message.
 
-<ResponseField name="to" type="string">
-  The recipient phone number as provided in the request.
-</ResponseField>
+<Warning>
+  There is **no** `button_reply` event or message type and **no** `button_id` field — the `id` you set on a reply button is not echoed back. Match button taps by the label in `content` plus `quotedMessageId` (and `correlationId` when present).
+</Warning>
 
-<ResponseField name="timestamp" type="string">
-  ISO 8601 timestamp recording when the message was accepted for delivery (e.g., `"2024-01-15T09:45:00Z"`).
-</ResponseField>
-
-## Handling button replies
-
-When a recipient taps a `reply` button, Pilot Status sends a `message.received` webhook to your configured endpoint. The payload includes:
-
-- `message.type` set to `"button_reply"`
-- `message.button_id` matching the `id` you set on the button
-- `message.from` containing the sender's phone number
-
-Use `message.button_id` in your webhook handler to determine which option the user selected and branch your logic accordingly.
-
-<Tip>
-  Use unique, descriptive button IDs so you can identify which option the user selected in your webhook handler. For example, prefer `"confirm_order_1024"` over a generic `"yes"` — especially in high-volume flows where multiple conversations may be active simultaneously.
-</Tip>
+See the full payloads in [Webhook events](/api/webhooks/events) and the full parameter list (button object shapes, `header`/`footer` rules) in [Send a Message](/api/messages/send).

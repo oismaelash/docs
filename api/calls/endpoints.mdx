@@ -32,7 +32,7 @@ Base URL: `https://pilotstatus.com.br/v1` Headers: `Content-Type: application/js
 | `PUT` | `/v1/calls/settings` | **META only** | Partial update of the `calling` settings. |
 | `GET` | `/v1/calls/permissions?to=<phone>` | **META only** | Probe whether the business may call `to`. |
 | `POST` | `/v1/calls/permissions/request` | **META only** | Send the interactive call-permission request (inside the 24h window). |
-| `POST` | `/v1/calls/{callId}/play` | **Unofficial only** | Play an audio file into an active call (server downloads it). |
+| `POST` | `/v1/calls/{callId}/play` | **Unofficial only** | Play an audio file into an active call (server downloads it); optional `hangupAfterPlay`. |
 | `POST` | `/v1/calls/{callId}/realtime-session` | **Unofficial only** | Open a full-duplex PCM16 audio WebSocket for the call. |
 
 `{callId}` accepts **either** the Pilot Status call id (`call_...`) **or** the provider call id (Meta `wacid...` on META).
@@ -171,18 +171,25 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x
 
 ## 5. Play audio into a call <sub>(Unofficial only)</sub>
 
-Play a pre-recorded audio file into an active Unofficial call. The backend downloads the file (behind an SSRF guard) and streams it server-side into the call.
+Play a pre-recorded audio file into an active Unofficial call. The backend downloads the file (behind an SSRF guard) and streams it server-side into the call. When the call is not active yet, the audio is queued and starts as soon as the user answers.
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../play" \
   -H "Content-Type: application/json" \
   -H "x-api-key: ps_your_key_here" \
-  -d '{ "audioUrl": "https://example.com/greeting.ogg" }'
+  -d '{ "mediaUrl": "https://example.com/greeting.mp3", "hangupAfterPlay": true }'
 ```
 
 ```json
 { "success": true, "id": "call_01HZX...", "status": "ACCEPTED" }
 ```
+
+- `mediaUrl` — public http(s) URL of an `.mp3`, `.wav` or `.opus` file.
+- `hangupAfterPlay` (optional) — end the call automatically when playback finishes. Perfect for notification flows: `POST /v1/calls` \+ `play` with `hangupAfterPlay: true` is a complete "call, speak, hang up" bot with no client-side timer.
+
+<Tip>
+  Host the audio on **fast storage** (S3/CDN): the backend downloads the file before handing it to the media server, so playback can only start after that download completes. A slow file host adds seconds of silence at the start of the call.
+</Tip>
 
 <Note>
   Returns `400 FEATURE_NOT_SUPPORTED` on META numbers (use the WebRTC media stream instead).
@@ -242,7 +249,7 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../realtime-session
 
 ## Webhooks
 
-The following events fire for **both META and Unofficial** numbers: `call.ringing`, `call.connected`, `call.ended` (carries `durationSeconds` when the call was answered), `call.missed`, and `call.permission_updated`.
+`call.ringing`, `call.connected`, `call.ended` (carries `duration` in seconds when the call was answered), and `call.missed` fire for **both META and Unofficial** numbers. `call.permission_updated` is **META only** — Unofficial numbers have no call-permission model. (In the REST call object returned by `GET /v1/calls`, the equivalent field is `durationSeconds`.)
 
 ## Billing
 
@@ -259,4 +266,4 @@ The following events fire for **both META and Unofficial** numbers: `call.ringin
 - `403` — tenant-scoped key (calls endpoints are number-scoped).
 - `404 CALL_NOT_FOUND` — the callId/wacid does not belong to the key's number.
 - `409 WHATSAPP_INSTANCE_NOT_CONNECTED` — the Unofficial number is not connected.
-- Meta calling errors are forwarded with a mapped `code` — e.g. `META_CALL_PERMISSION_REQUIRED` (138006), permission-request limit (138009), BIC limit 100 calls/24h (138012), calling not enabled (138000), messaging tier too low to enable (138015).
+- Meta calling errors are forwarded with a mapped `code` — e.g. `META_CALL_PERMISSION_REQUIRED` (138006), permission-request limit (138009), BIC limit 100 calls/24h (138012), calling not enabled (138000), messaging tier too low to enable (138015), `META_CALLING_PAYMENT_REQUIRED` (131044 — the WABA has no payment method; business-initiated calls are billed by Meta, add a card under Payment settings in WhatsApp Manager).
