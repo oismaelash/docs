@@ -1,0 +1,118 @@
+---
+title: "Modelos de Mensagem Reutilizáveis e Variáveis no Pilot Status"
+sidebarTitle: "Modelos"
+description: "Crie modelos de mensagem reutilizáveis com variáveis dinâmicas no Pilot Status. A API oficial exige aprovação da Meta; a API não oficial suporta modelos de formato livre."
+---
+
+Modelos definem conteúdo de mensagem reutilizável. Crie e gerencie-os no painel (`/templates`), pela API REST (`/v1/templates`) ou pelo servidor MCP (`templates_create` / `templates_update` / `templates_delete`). Ao enviar, referencie o modelo pelo `templateId` em `POST /v1/messages/send` e passe um objeto `variables` com chaves correspondentes.
+
+## Categorias
+
+A categoria é definida no momento da criação e **não pode ser alterada depois**:
+
+- **MARKETING** — mensagens promocionais (as mais sensíveis às políticas do WhatsApp).
+- **UTILITY** — mensagens transacionais (atualizações de conta, alertas, lembretes).
+- **OTP** — mensagens de código único / de verificação.
+
+## Aprovação da Meta vs. modelos locais
+
+- **Números oficiais (Meta):** ao salvar um modelo com um número Meta selecionado, o painel pergunta se você deseja **enviá-lo para revisão da Meta** agora ou mantê-lo como rascunho e enviá-lo mais tarde. Uma vez enviado, categoria, idioma e status de aprovação seguem as regras da Meta. Um modelo só pode ser enviado em um número Meta depois de ter uma versão **aprovada**.
+- **Números não oficiais (Evolution):** os modelos são criados localmente e são **imediatamente utilizáveis** — não há etapa de aprovação.
+
+Os modelos retornados por `GET /v1/templates` trazem um campo `source` (de onde o modelo veio), um campo `metaStatus` (status de revisão da Meta, por exemplo `PENDING`, `APPROVED`, `REJECTED`) e uma flag `sendable` indicando se ele pode ser usado para envios agora.
+
+## Estrutura do modelo
+
+Apenas o **body** é obrigatório.
+
+| Componente | Obrigatório | O que é |
+| --- | --- | --- |
+| **Header** | opcional | Texto (≤60 caracteres, ≤1 variável) ou um item de mídia (`IMAGE` JPG/PNG, `VIDEO` MP4, `DOCUMENT` PDF). |
+| **Body** | **obrigatório** | Texto principal (≤1024 caracteres) com marcadores `{{variable}}`. |
+| **Footer** | opcional | Texto estático ≤60 caracteres, sem variáveis. |
+| **Buttons** | opcional | Até 10 botões: `QUICK_REPLY` (≤10), `URL` (≤2), `PHONE_NUMBER` (≤1, E.164 com código do país), `COPY_CODE` (≤1, alfanumérico ≤15 caracteres). |
+
+Valores de header de mídia: via REST passe `header.url` (URL http(s) pública) **ou** `header.base64` (data URI, re-hospedado automaticamente no servidor). Via MCP apenas `header.url` é aceito.
+
+<Note>
+  Não existe header `LOCATION`. Também não são suportados: `FLOW`, `CAROUSEL`, `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, preenchimento automático/one-tap/zero-tap de OTP, botões `VOICE_CALL` e o `parameter_format` `NAMED`.
+</Note>
+
+## Regras de variáveis
+
+- Escreva variáveis como `{{name}}` no body, no header de texto e em botões de URL dinâmica (por exemplo `https://shop.com/promo/{{link}}` — uma variável, no **fim** da URL, nunca no domínio).
+- O body **não pode começar nem terminar com uma variável** — sempre inclua texto literal em ambas as extremidades.
+- Ao criar/atualizar via API ou MCP, um objeto `examples` mapeando **todas** as variáveis a um valor de exemplo real é **obrigatório**. Amostras ausentes retornam `400 TEMPLATE_EXAMPLES_REQUIRED` com as chaves faltantes em `details.missing`.
+- O valor do copy-code é a única exceção: ele vai no botão como `example` (por exemplo `["PROMO10"]`), não em `examples` de nível superior.
+- **Ao enviar**, todo marcador — incluindo chaves usadas apenas em botões — deve ser fornecido em `variables`, e cada valor deve ser uma **string não vazia**.
+
+## Formatação de texto
+
+Marcadores de formatação do WhatsApp funcionam no body: `*bold*`, `_italic_`, `~strikethrough~`, `monospace`. O **header de texto não permite** marcadores de formatação, emojis nem quebras de linha.
+
+## API de Modelos
+
+<CodeGroup>
+
+```bash Create
+curl -X POST "https://pilotstatus.com.br/v1/templates" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "promo_coupon",
+    "category": "MARKETING",
+    "language": "pt_BR",
+    "body": {
+      "header": { "type": "IMAGE", "url": "https://cdn.example.com/banner.png" },
+      "body":   { "text": "Hi {{name}}! Use it and get {{discount}} off." },
+      "footer": { "text": "Limited-time offer" },
+      "buttons": [
+        { "type": "QUICK_REPLY",  "text": "I want it!" },
+        { "type": "URL",          "text": "Buy", "url": "https://shop.com/promo/{{link}}" },
+        { "type": "COPY_CODE",    "example": ["PROMO10"] }
+      ]
+    },
+    "examples": { "name": "Maria", "discount": "10%", "link": "abc123" }
+  }'
+```
+
+```bash Update
+curl -X PUT "https://pilotstatus.com.br/v1/templates/tmpl_123" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "body": { "body": { "text": "Hi {{name}}! New copy here." } }, "examples": { "name": "Maria" } }'
+```
+
+```bash Delete
+curl -X DELETE "https://pilotstatus.com.br/v1/templates/tmpl_123" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+</CodeGroup>
+
+Uma criação bem-sucedida retorna `201`:
+
+```json
+{ "id": "tmpl_123", "name": "promo_coupon", "category": "MARKETING", "metaStatus": "PENDING" }
+```
+
+Após publicar uma versão, `GET /v1/templates/{id}` retorna todas as chaves de variáveis detectadas em `latestVersion.variables`.
+
+## Erros comuns de envio e submissão
+
+| Situação | Correção | Código Meta |
+| --- | --- | --- |
+| Body começa/termina com uma variável | Adicione texto literal em ambas as extremidades | `2388299` |
+| Botão de URL em um domínio de exemplo (example.com, yourdomain.com…) | Use o domínio real da sua empresa | `368/1346003` |
+| Botão de chamada com telefone sem código do país | Use E.164, por exemplo `+5521999998888` | `192` |
+| Variáveis demais em relação ao texto fixo | Adicione texto ou remova variáveis | `2388293` |
+| Enviar um modelo ainda não aprovado pela Meta | Aguarde a aprovação | `131053` |
+| Variáveis enviadas não correspondem ao modelo aprovado | Envie todas as chaves esperadas | `132000` |
+| Modelo pausado pela Meta por queda de qualidade | Melhore o conteúdo, reduza as denúncias | `132015` |
+
+Um `404` ao enviar significa que o modelo não existe para a chave ou — em um número Meta — ainda não tem uma versão aprovada.
+
+## Relacionados
+
+- [Enviar Mensagens](/pt-BR/guides/send-messages)
+- [Mensagens de Mídia](/pt-BR/guides/media-messages)

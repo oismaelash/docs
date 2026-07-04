@@ -1,0 +1,185 @@
+---
+title: "GET /v1/messages/group — Mensagens de Grupo"
+description: "Recupere mensagens de conversas de GRUPO para o número conectado."
+---
+
+Recupere mensagens de conversas de **GRUPO** para o número conectado.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/messages/group`
+
+<Note>
+  Requer uma chave de API **com escopo de número** (`ps_*`) no cabeçalho `x-api-key`. Chaves com escopo de tenant retornam `403`.
+</Note>
+
+<Warning>
+  **Números Meta:** este endpoint também funciona para números oficiais da **Meta Cloud API**, desde que o número seja uma **Conta Comercial Oficial (Official Business Account) aprovada** com grupos habilitados. Números que não são elegíveis retornam `400 META_GROUPS_NOT_ELIGIBLE`.
+</Warning>
+
+## Parâmetros de query
+
+<ParamField query="startDate" type="string">
+  Data/hora ISO 8601. Filtra mensagens criadas **na data ou depois** desta data.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Data/hora ISO 8601. Filtra mensagens criadas **na data ou antes** desta data.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Número da página (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Resultados por página (1–100).
+</ParamField>
+
+Tanto `startDate` quanto `endDate` são opcionais individualmente. Quando fornecidos, cada um deve ser uma string ISO 8601 válida e `startDate` não pode ser posterior a `endDate`; caso contrário, `400 INVALID_DATE_RANGE` é retornado.
+
+Os resultados são ordenados por `createdAt` de forma decrescente (mais recentes primeiro).
+
+## Efeito do modo PII
+
+A resposta depende do **modo PII** configurado para o número (definido via `PATCH /api/whatsapp-numbers/[id]`):
+
+| Modo PII | Efeito |
+| --- | --- |
+| `STORE_INDEFINITE` (padrão) | Todas as mensagens de grupo são retornadas (sujeito aos filtros de data). |
+| `STORE_X_DAYS` | Apenas mensagens dos últimos N dias são retornadas. O limite inferior efetivo é `max(startDate, now − piiRetentionDays)`. Mensagens fora da janela de retenção foram permanentemente excluídas pelo job diário. |
+| `RELAY_ONLY` | Retorna uma lista **vazia** (`messages: []`, `total: 0`) e inclui um campo `notice: "PII_RELAY_ONLY"`. Nenhum dado de mensagem é armazenado para este número. |
+
+## Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/messages/group?startDate=2026-06-01T00:00:00Z&endDate=2026-06-27T23:59:59Z&page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "messages": [
+    {
+      "id": "cmm04obm46zz0qv4ycjp8x6r2",
+      "conversationId": "conv_grp_789",
+      "direction": "INBOUND",
+      "type": "text",
+      "content": "Meeting confirmed for tomorrow.",
+      "from": "+5511999999999",
+      "participantName": "Alice",
+      "groupId": "120363123456789012@g.us",
+      "groupName": "Sales Team",
+      "createdAt": "2026-06-27T09:30:00.000Z"
+    },
+    {
+      "id": "cmm04xyzabcde1234567890ab",
+      "conversationId": "conv_grp_789",
+      "direction": "OUTBOUND",
+      "type": "text",
+      "content": "Great, see you at 10am.",
+      "from": "+5511888888888",
+      "groupId": "120363123456789012@g.us",
+      "groupName": "Sales Team",
+      "createdAt": "2026-06-27T09:35:00.000Z"
+    },
+    {
+      "id": "cmm05grpmedia0000000000ab",
+      "conversationId": "conv_grp_789",
+      "direction": "INBOUND",
+      "type": "image",
+      "content": null,
+      "media": {
+        "provider": "EVO_GO",
+        "id": null,
+        "url": "https://media.pilotstatus.com.br/evo/abc123.jpg",
+        "mimeType": "image/jpeg",
+        "fileName": null
+      },
+      "from": "+5511777777777",
+      "participantName": "Bob",
+      "groupId": "120363123456789012@g.us",
+      "groupName": "Sales Team",
+      "createdAt": "2026-06-27T09:40:00.000Z"
+    }
+  ],
+  "total": 87,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 3
+}
+```
+
+```json RELAY_ONLY (200)
+{
+  "messages": [],
+  "total": 0,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 0,
+  "notice": "PII_RELAY_ONLY"
+}
+```
+
+</CodeGroup>
+
+## Campos do objeto de mensagem
+
+<ResponseField name="id" type="string" required>
+  ID interno da mensagem no Pilot Status.
+</ResponseField>
+
+<ResponseField name="conversationId" type="string" required>
+  ID da conversa de grupo pai.
+</ResponseField>
+
+<ResponseField name="direction" type="string" required>
+  `"INBOUND"` (recebida no grupo) ou `"OUTBOUND"` (enviada ao grupo).
+</ResponseField>
+
+<ResponseField name="type" type="string" required>
+  `text`, `image`, `audio`, `video`, `document`, `location`, `contacts`, `sticker` ou `reaction`.
+</ResponseField>
+
+<ResponseField name="content" type="string | null">
+  Texto da mensagem ou legenda quando disponível.
+</ResponseField>
+
+<ResponseField name="from" type="string" required>
+  Remetente no formato E.164.
+</ResponseField>
+
+<ResponseField name="participantName" type="string | null">
+  Nome de exibição do remetente no WhatsApp quando disponível.
+</ResponseField>
+
+<ResponseField name="groupId" type="string" required>
+  JID do grupo (ex.: `120363123456789012@g.us`).
+</ResponseField>
+
+<ResponseField name="groupName" type="string | null">
+  Nome de exibição do grupo quando disponível.
+</ResponseField>
+
+<ResponseField name="media" type="object | null">
+  Descritor de mídia `{ provider, id, url, mimeType, fileName }` quando a mensagem carrega mídia; `null` para texto.
+
+  - `media.provider` — `"META"`, `"EVO"` ou `"EVO_GO"` — o provedor que entregou a mídia.
+  - `media.id` — id de mídia da **Meta**. Definido em números `META` — passe-o para `GET /v1/media/{mediaId}` para baixar os bytes; `null` no Evolution.
+  - `media.url` — URL de download direto quando disponível. Mídia inbound da **META** é espelhada no S3 (então mensagens META geralmente carregam tanto `id` **quanto** `url`); o **Evolution** fornece seu próprio link. É best-effort — pode ser `null`.
+  - `media.mimeType` — Tipo MIME da mídia quando conhecido (pode ser `null`).
+  - `media.fileName` — Nome do arquivo da mídia quando conhecido (pode ser `null`).
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 — quando a mensagem foi criada.
+</ResponseField>
+
+## Erros comuns
+
+- `400 META_GROUPS_NOT_ELIGIBLE` — a chave de API está vinculada a um número da Meta Cloud API que não é uma Conta Comercial Oficial (Official Business Account) aprovada (ou não tem grupos habilitados).
+- `400 INVALID_DATE_RANGE` — `startDate` ou `endDate` não é uma string ISO 8601 válida, ou `startDate > endDate`.
+- `400 NUMBER_NOT_FOUND` — a chave de API não está vinculada a um número de WhatsApp.
+- `401` — cabeçalho `x-api-key` ausente ou inválido.
+- `403` — chave com escopo de tenant utilizada (é necessária uma chave com escopo de número).

@@ -1,0 +1,114 @@
+---
+title: "Verificar se um Número Está no WhatsApp"
+description: "Verifique se números de telefone estão registrados no WhatsApp usando a sessão do número conectado."
+---
+
+Verifique se um ou mais números de telefone estão registrados no WhatsApp, usando a própria sessão do número conectado. Útil para validar uma lista antes de enviar, ou para resolver os dígitos exatos registrados (parte local do jid) para os quais o WhatsApp realmente vai entregar.
+
+## Endpoint
+
+`POST https://pilotstatus.com.br/v1/numbers/check`
+
+## Disponibilidade (apenas Evolution)
+
+<Warning>
+  Esta consulta só está disponível para **números não oficiais Evolution** (`EVO_GO` / `EVO_V2`). A API Meta Cloud **não** possui consulta de existência de número, então um número **Meta** retorna:
+
+  ```json
+  HTTP 400
+  { "error": "…", "code": "NOT_SUPPORTED_FOR_META" }
+  ```
+</Warning>
+
+## Cabeçalhos obrigatórios
+
+- `x-api-key: <your_number_scoped_key>` — deve ser uma chave **com escopo de número** (`ps_*`). Chaves com escopo de tenant retornam `403`.
+- Alternativamente, um **token OAuth / de tenant** junto com o cabeçalho `x-whatsapp-number-id: <numberId>` (como usado pelo servidor MCP) seleciona o número contra o qual verificar.
+
+## Corpo da requisição
+
+Envie **ou** uma lista **ou** um único número:
+
+<ParamField body="numbers" type="string[]">
+  Números de telefone a verificar (1–20 itens). Cada um pode estar em qualquer formato comum (E.164, com/sem `+`, com separadores).
+</ParamField>
+
+<ParamField body="number" type="string">
+  Um único número — tratado como `numbers: [number]`.
+</ParamField>
+
+Um corpo vazio/inválido (sem números, mais de 20, tipos errados) retorna **`400 VALIDATION_ERROR`**.
+
+```json
+{ "numbers": ["+5511967435133", "5511888888888"] }
+```
+
+```json
+{ "number": "+5511967435133" }
+```
+
+## Verificação dupla do 9º dígito no Brasil (\+55)
+
+Números de celular brasileiros são ambíguos: a mesma linha pode estar registrada no WhatsApp **com ou sem** o `9` extra após o DDD. Para evitar falsos negativos, cada entrada de celular `+55` é verificada **tanto** com quanto sem o 9º dígito, e a entrada conta como existente se **qualquer** variante estiver registrada.
+
+O `number` retornado são os dígitos **registrados** da variante correspondente — que podem diferir do que você enviou.
+
+**Exemplo:** enviar `"+5511967435133"` (com o 9º dígito) pode resolver para o número registrado `"551167435133"` (sem ele):
+
+```json
+{
+  "results": [
+    { "input": "+5511967435133", "exists": true, "number": "551167435133", "name": "Maria Souza" }
+  ]
+}
+```
+
+## Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/numbers/check" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "numbers": ["+5511967435133", "5511888888888"] }'
+```
+
+```json Response (200)
+{
+  "results": [
+    { "input": "+5511967435133", "exists": true,  "number": "551167435133", "name": "Maria Souza" },
+    { "input": "5511888888888",  "exists": false, "number": null,           "name": null }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Campos do objeto de resultado
+
+<ResponseField name="input" type="string" required>
+  A string original que você enviou, devolvida para que você possa correlacionar os resultados.
+</ResponseField>
+
+<ResponseField name="exists" type="boolean" required>
+  `true` se **qualquer** variante candidata da entrada estiver registrada no WhatsApp, caso contrário `false`.
+</ResponseField>
+
+<ResponseField name="number" type="string | null" required>
+  Os dígitos **registrados** do WhatsApp (parte local do jid) da variante correspondente — `null` quando não registrado. Para celulares `+55` isso pode descartar o 9º dígito (veja acima).
+</ResponseField>
+
+<ResponseField name="name" type="string | null" required>
+  O nome de exibição público do WhatsApp quando o provedor retorna um, caso contrário `null`.
+</ResponseField>
+
+## Erros comuns (códigos de API estáveis)
+
+- `400 VALIDATION_ERROR` — corpo ausente/inválido (sem números, mais de 20, ou tipos errados).
+- `400 NOT_SUPPORTED_FOR_META` — o número é um número da API Meta Cloud (sem consulta de existência no Meta).
+- `409 WHATSAPP_INSTANCE_NOT_CONNECTED` — a sessão não está `OPEN`.
+- `503 EVOLUTION_API_KEY_MISSING` — a chave do provedor Evolution não está configurada para a instância.
+- `401` — cabeçalho `x-api-key` ausente ou inválido.
+- `403` — chave com escopo de tenant usada (é necessária chave com escopo de número).
+- Falhas do provedor upstream aparecem como `WHATSAPP_UPSTREAM_ERROR` / `WHATSAPP_INVALID_JSON` (mesmo envelope dos endpoints de grupo).

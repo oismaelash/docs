@@ -1,0 +1,158 @@
+---
+title: "GET /v1/messages/unread — Mensagens não lidas"
+description: "Recupere todas as mensagens recebidas que ainda não foram lidas para o número conectado."
+---
+
+Recupere todas as mensagens recebidas que ainda não foram lidas (`readAt IS NULL`) para o número conectado. Cada item inclui a contagem de não lidas no nível da conversa.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/messages/unread`
+
+<Note>
+  Requer uma chave de API **com escopo de número** (`ps_*`) no cabeçalho `x-api-key`. Chaves com escopo de tenant retornam `403`.
+</Note>
+
+## Parâmetros de query
+
+<ParamField query="page" default="1" type="integer">
+  Número da página (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Resultados por página (1–100).
+</ParamField>
+
+Não há filtro de intervalo de datas neste endpoint; ele retorna todas as mensagens recebidas atualmente não lidas.
+
+## Efeito do modo PII
+
+A resposta depende do **modo PII** configurado para o número (definido via `PATCH /api/whatsapp-numbers/[id]`):
+
+| Modo PII | Efeito |
+| --- | --- |
+| `STORE_INDEFINITE` (padrão) | Todas as mensagens não lidas são retornadas. |
+| `STORE_X_DAYS` | Somente mensagens não lidas criadas nos últimos N dias são retornadas (mensagens fora da janela de retenção já foram excluídas permanentemente pelo job diário). |
+| `RELAY_ONLY` | Retorna uma lista **vazia** (`messages: []`, `total: 0`) e inclui um campo `notice: "PII_RELAY_ONLY"`. Nenhum dado de mensagem é armazenado para esse número. |
+
+## Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "messages": [
+    {
+      "id": "cmm04obm46zz0qv4ycjp8x6r2",
+      "conversationId": "conv_abc123",
+      "conversationUnreadCount": 3,
+      "direction": "INBOUND",
+      "type": "text",
+      "content": "Hi, I need help with my order.",
+      "from": "+5511999999999",
+      "fromName": "John Doe",
+      "readAt": null,
+      "createdAt": "2026-06-27T10:15:00.000Z"
+    },
+    {
+      "id": "cmm04xyzabcde1234567890ab",
+      "conversationId": "conv_abc123",
+      "conversationUnreadCount": 3,
+      "direction": "INBOUND",
+      "type": "image",
+      "content": null,
+      "media": {
+        "provider": "META",
+        "id": "845849791681505",
+        "url": "https://pilot-status.s3.us-east-1.amazonaws.com/public/tenants/<tenantId>/chat-media/….jpg",
+        "mimeType": "image/jpeg",
+        "fileName": null
+      },
+      "from": "+5511999999999",
+      "fromName": "John Doe",
+      "readAt": null,
+      "createdAt": "2026-06-27T10:16:00.000Z"
+    }
+  ],
+  "total": 12,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1
+}
+```
+
+```json RELAY_ONLY (200)
+{
+  "messages": [],
+  "total": 0,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 0,
+  "notice": "PII_RELAY_ONLY"
+}
+```
+
+</CodeGroup>
+
+## Campos do objeto de mensagem
+
+<ResponseField name="id" type="string" required>
+  ID interno da mensagem no Pilot Status.
+</ResponseField>
+
+<ResponseField name="conversationId" type="string" required>
+  ID da conversa pai.
+</ResponseField>
+
+<ResponseField name="conversationUnreadCount" type="integer" required>
+  Contagem total de mensagens não lidas dessa conversa.
+</ResponseField>
+
+<ResponseField name="direction" type="string" required>
+  Sempre `"INBOUND"` para este endpoint.
+</ResponseField>
+
+<ResponseField name="type" type="string" required>
+  `text`, `image`, `audio`, `video`, `document`, `location`, `contacts`, `sticker` ou `reaction`.
+</ResponseField>
+
+<ResponseField name="content" type="string | null">
+  Texto da mensagem ou legenda, quando disponível.
+</ResponseField>
+
+<ResponseField name="from" type="string" required>
+  Remetente no formato E.164.
+</ResponseField>
+
+<ResponseField name="fromName" type="string | null">
+  Nome de exibição do remetente (resolvido a partir da conversa), quando disponível.
+</ResponseField>
+
+<ResponseField name="media" type="object | null">
+  Descritor de mídia `{ provider, id, url, mimeType, fileName }` quando a mensagem carrega mídia; `null` para texto.
+
+  - `media.provider` — `"META"`, `"EVO"` ou `"EVO_GO"` — o provedor que entregou a mídia.
+  - `media.id` — id de mídia da **Meta**. Definido em números `META` — passe-o para `GET /v1/media/{mediaId}` para baixar os bytes; `null` na Evolution.
+  - `media.url` — URL de download direto quando disponível. Mídia recebida da **META** é espelhada no S3 (então mensagens META geralmente carregam tanto `id` **quanto** `url`); a **Evolution** fornece seu próprio link. Melhor esforço — pode ser `null`.
+  - `media.mimeType` — Tipo MIME da mídia quando conhecido (pode ser `null`).
+  - `media.fileName` — Nome do arquivo da mídia quando conhecido (pode ser `null`).
+</ResponseField>
+
+<ResponseField name="readAt" type="null" required>
+  `null` para mensagens não lidas (sempre null para resultados deste endpoint).
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 — quando a mensagem foi recebida.
+</ResponseField>
+
+## Erros comuns
+
+- `400 NUMBER_NOT_FOUND` — a chave de API não está vinculada a um número de WhatsApp.
+- `401` — cabeçalho `x-api-key` ausente ou inválido.
+- `403` — chave com escopo de tenant usada (é necessária uma chave com escopo de número).

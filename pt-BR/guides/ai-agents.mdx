@@ -1,0 +1,84 @@
+---
+title: "Crie Agentes de WhatsApp com IA usando a Pilot Status"
+sidebarTitle: "Agentes de IA"
+description: "Conecte LLMs e fluxos de trabalho de IA ao WhatsApp usando webhooks, servidor MCP e API REST da Pilot Status. Crie chatbots que respondem em tempo real, 24 horas por dia, 7 dias por semana."
+---
+
+A Pilot Status foi construída para ser operada por IA. Existem três formas complementares de conectar LLMs e agentes ao WhatsApp: o **servidor MCP** hospedado, a **API REST** simples com o cabeçalho `x-api-key` e os **bots orientados por webhook** que reagem a mensagens recebidas em tempo real.
+
+## Servidor MCP (conector hospedado)
+
+A Pilot Status disponibiliza um servidor oficial de Model Context Protocol que expõe a API pública `/v1` como **54 ferramentas MCP** — enviar mensagens, ler conversas e mensagens não lidas, gerenciar números, templates, webhooks, grupos, chamadas de voz e muito mais.
+
+O conector hospedado roda em:
+
+```text
+https://mcp.pilotstatus.com.br/mcp
+```
+
+Adicione-o no claude.ai em **Settings → Connectors → Add custom connector**. O claude.ai executa o login OAuth 2.1 (SSO da Pilot Status) — nenhuma chave de API é compartilhada com o cliente. Durante o login você vê uma **tela de consentimento** onde aprova o acesso no **nível do tenant** ou concede apenas **números específicos** (uma concessão por número restringe todas as ferramentas a esses números).
+
+Clientes configurados por arquivo podem pular o OAuth e enviar uma chave `ps_*` no cabeçalho `x-api-key`:
+
+```json
+{
+  "mcpServers": {
+    "pilot-status": {
+      "type": "http",
+      "url": "https://mcp.pilotstatus.com.br/mcp",
+      "headers": { "x-api-key": "ps_your_key_here" }
+    }
+  }
+}
+```
+
+Consulte a [página de integração do Servidor MCP](/pt-BR/integrations/mcp-server) para a lista completa de ferramentas e para hospedagem própria.
+
+## Ensine qualquer LLM sobre a Pilot Status
+
+Aponte seu modelo ou agente de código para a referência canônica legível por máquina:
+
+```text
+https://pilotstatus.com.br/llms.txt
+```
+
+Ela vincula endpoints, esquemas de webhook, conceitos e códigos de erro — tudo o que uma IA precisa para escrever uma integração correta.
+
+## Bots orientados por webhook
+
+O padrão clássico: inscreva um webhook em `message.received`, passe o payload pelo seu LLM e responda pela API.
+
+```javascript
+app.post("/hooks/whatsapp", async (req, res) => {
+  res.sendStatus(200); // acknowledge first
+  const { event, data } = req.body;
+  if (event !== "message.received") return;
+
+  const reply = await llm.complete(data.content); // your model call
+
+  await fetch("https://pilotstatus.com.br/v1/messages/send", {
+    method: "POST",
+    headers: {
+      "x-api-key": process.env.PILOT_STATUS_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ text: reply, destinationNumber: data.from }),
+  });
+});
+```
+
+<Tip>
+  A Pilot Status dispara webhooks em milissegundos após cada evento, então os agentes podem responder quase instantaneamente. Faça a deduplicação por `data.id` e mantenha seu handler rápido — execute a chamada ao LLM de forma assíncrona.
+</Tip>
+
+Os detalhes de configuração estão no [guia Receber Mensagens](/pt-BR/guides/receive-messages).
+
+## API REST direta
+
+Qualquer framework capaz de fazer requisições HTTP (LangChain, n8n, Make, backends personalizados) pode usar a API diretamente. A autenticação é sempre pelo cabeçalho `x-api-key: ps_...`; a URL base é `https://pilotstatus.com.br/v1` e o único endpoint de envio é `POST /v1/messages/send` (modo template, texto ou mídia). Os [SDKs](/pt-BR/integrations/sdks) oficiais encapsulam isso para Node.js, Python e n8n.
+
+## Relacionados
+
+- [Servidor MCP](/pt-BR/integrations/mcp-server)
+- [SDKs & n8n](/pt-BR/integrations/sdks)
+- [Usando IA/LLMs com a Pilot Status](/pt-BR/trust/llms)

@@ -1,0 +1,85 @@
+---
+title: "Incorpore a Caixa de Entrada do Chat"
+sidebarTitle: "Incorporar Chat"
+description: "Incorpore a caixa de entrada white-label do WhatsApp no seu próprio SaaS via iframe e o SDK @pilot-status/embed, com tokens de sessão escopados e de curta duração."
+---
+
+Incorpore a **caixa de entrada do WhatsApp (Chat)** do Pilot Status no seu próprio SaaS, white-label, por meio de um iframe hospedado mais o SDK `@pilot-status/embed`.
+
+## Pré-requisitos compartilhados (Chat \+ Connect)
+
+1. **Chave de API do tenant** (`ps_`, com escopo de tenant) — gerada em **Perfil → API**. Ela **nunca** sai do seu backend. (Uma chave com escopo de número só pode incorporar o próprio número.)
+2. **SDK** — `<script src="https://embed.pilotstatus.com.br/embed.js">` ou `npm i @pilot-status/embed`; chame `PilotStatus.init()`.
+3. **`allowedOrigins`** — ao emitir o token do Chat, liste as origens exatas (`scheme://host[:port]`, 1–20) autorizadas a incorporar.
+4. **Token por superfície** — o Chat usa `POST /v1/embed/sessions` (`surface: "chat"`, um JWT de curta duração mantido em memória). O Connect usa `POST /v1/numbers/remote-pairing` (um token de pareamento na URL — veja [Incorpore a Página de Connect](/pt-BR/integrations/embed-connect)).
+5. **Renovação** — o TTL do token do Chat é de 15 min com uma janela de atualização deslizante; ao expirar por completo, o SDK chama `onSessionExpired`.
+
+## Fluxo do Chat
+
+<Steps>
+  <Step title="Configuração única">
+    Seu backend lista os números com `GET /v1/numbers` (`x-api-key`) e armazena o mapa `cliente → [whatsappNumberIds]`.
+  </Step>
+  <Step title="Emita um token a cada carregamento de página">
+    Seu frontend solicita um token ao seu backend; o backend chama:
+
+    ```bash
+    curl -X POST "https://pilotstatus.com.br/v1/embed/sessions" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "surface": "chat",
+        "whatsappNumberIds": ["wn_abc123"],
+        "allowedOrigins": ["https://app.yoursaas.com"],
+        "ttlSeconds": 900
+      }'
+    ```
+
+    Resposta `201`: `{ token, surface, whatsappNumberIds, allowedOrigins, expiresAt }`. O backend encaminha **apenas o JWT** para o frontend.
+  </Step>
+  <Step title="Monte a caixa de entrada">
+    ```html
+    <script src="https://embed.pilotstatus.com.br/embed.js"></script>
+    <div id="inbox"></div>
+    <script>
+      PilotStatus.init();
+      const { token } = await fetch("/api/my-saas/embed-token").then(r => r.json());
+      const chat = PilotStatus.chat.mount("#inbox", {
+        token, locale: "en", theme: "light",
+        onUnreadCount: (n) => {},
+        onConversationOpened: (id) => {},
+        onSessionExpired: async () => {
+          const { token: t } = await fetch("/api/my-saas/embed-token").then(r => r.json());
+          chat.destroy();
+          PilotStatus.chat.mount("#inbox", { token: t, locale: "en" });
+        },
+      });
+      // chat.setTheme("dark"); chat.setLocale("pt"); chat.destroy();
+    </script>
+    ```
+  </Step>
+</Steps>
+
+## Protocolo postMessage (pai ↔ iframe)
+
+Envelope: `{ source: "pilot-status-embed", v: 1, type, payload }`. Mensagens sem esse `source` são ignoradas; a origem é validada em **ambos** os lados.
+
+| Passo | Quem | Mensagem |
+| --- | --- | --- |
+| A | SDK (pai) | cria `<iframe src="chat.pilotstatus.com.br/?parentOrigin=<origin>">` (sandbox `allow-scripts allow-same-origin allow-forms allow-popups`) |
+| B | iframe → pai | `ready` (o SDK valida `origin === chat.pilotstatus.com.br`) |
+| C | SDK → iframe | `init{ token, locale, theme }` (o iframe valida `origin === parentOrigin`) |
+| D | iframe | mantém o token **em memória** apenas — nunca na URL/localStorage |
+| E | iframe → pai | `resize{height}`, `chat:unread-count{count}`, `chat:conversation-opened{conversationId}`, `session-expired` |
+| — | SDK → iframe | `set-theme{theme}`, `set-locale{locale}` em tempo de execução |
+
+## Modelo de segurança
+
+- A `x-api-key` fica **apenas** no seu backend; o navegador só manipula o JWT de curta duração.
+- O JWT tem **escopo rígido** para os seus `whatsappNumberIds` — as rotas do chat reverificam a cada requisição (defesa em profundidade).
+- Token apenas em memória, TTL de ~15 min com atualização deslizante; `allowedOrigins` fixa quem pode incorporar; a origem do postMessage é validada em ambos os lados.
+
+## Relacionados
+
+- [Incorpore a Página de Connect](/pt-BR/integrations/embed-connect)
+- [Painel de Chat ao Vivo](/pt-BR/dashboard/live-chat)

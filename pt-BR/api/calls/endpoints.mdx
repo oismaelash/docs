@@ -1,0 +1,164 @@
+---
+title: "Referência da API de Chamadas"
+sidebarTitle: "Referência da API"
+description: "Todos os endpoints /v1/calls — iniciar, atender, rejeitar e encerrar chamadas, configurações de chamadas e permissões de chamada."
+---
+
+# Referência da API de Chamadas
+
+URL base: `https://pilotstatus.com.br/v1` Cabeçalhos: `Content-Type: application/json`, `x-api-key: <your_api_key>` (ou `x-api-key-id`).
+
+<Note>
+  Somente números da Meta Cloud API — veja a [visão geral](/pt-BR/api/calls/overview). Todos os endpoints exigem uma chave **com escopo de número**.
+</Note>
+
+## Endpoints
+
+| Método | Endpoint | Descrição |
+| --- | --- | --- |
+| `POST` | `/v1/calls` | Inicia uma chamada iniciada pela empresa (BIC). |
+| `GET` | `/v1/calls` | Lista as chamadas do número (mais recentes primeiro; `limit` 1–100, `before` cursor ISO 8601). |
+| `GET` | `/v1/calls/{callId}` | Uma chamada; adicione `?includeSdp=1` para receber `sdpOffer`/`sdpAnswer`. |
+| `POST` | `/v1/calls/{callId}/pre-accept` | Resposta SDP antecipada OPCIONAL (reduz cortes no áudio; a chamada só conecta ao aceitar). |
+| `POST` | `/v1/calls/{callId}/accept` | Atende uma chamada recebida (UIC) com a resposta SDP do lado da empresa. |
+| `POST` | `/v1/calls/{callId}/reject` | Recusa uma chamada recebida (sem corpo). |
+| `POST` | `/v1/calls/{callId}/terminate` | Desliga uma chamada ativa (sem corpo). |
+| `GET` | `/v1/calls/settings` | Lê o objeto de configurações `calling` do número. |
+| `PUT` | `/v1/calls/settings` | Atualização parcial das configurações `calling`. |
+| `GET` | `/v1/calls/permissions?to=<phone>` | Verifica se a empresa pode ligar para `to`. |
+| `POST` | `/v1/calls/permissions/request` | Envia a solicitação interativa de permissão de chamada (dentro da janela de 24h). |
+
+`{callId}` aceita **ou** o id de chamada do Pilot Status (`call_...`) **ou** o id de chamada da Meta (`wacid...`).
+
+## 1. Habilitar chamadas no número
+
+O Pilot Status tenta habilitar chamadas automaticamente quando um número Meta conecta. Leia/ajuste a qualquer momento:
+
+```bash
+curl "https://pilotstatus.com.br/v1/calls/settings" \
+  -H "x-api-key: ps_your_key_here"
+
+curl -X PUT "https://pilotstatus.com.br/v1/calls/settings" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "status": "ENABLED", "call_icon_visibility": "DEFAULT" }'
+```
+
+- O `PUT` é **parcial**: envie apenas `status`, `call_icon_visibility`, `callback_permission_status`, `call_hours`, `voicemail` (o objeto `sip` é rejeitado).
+- Um `call_hours` enviado **substitui** o objeto armazenado por completo (semântica da Meta).
+- Números com um limite de mensagens **abaixo de 2.000/dia ainda não podem habilitar chamadas** (erro 138015 da Meta).
+- Credenciais SIP nunca são solicitadas nem retornadas.
+
+## 2. Permissão de chamada (obrigatória antes de uma BIC)
+
+```bash
+# verificar
+curl "https://pilotstatus.com.br/v1/calls/permissions?to=%2B5511999999999" \
+  -H "x-api-key: ps_your_key_here"
+
+# solicitar (dentro da janela de atendimento de 24h)
+curl -X POST "https://pilotstatus.com.br/v1/calls/permissions/request" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "to": "+5511999999999", "text": "May we call you about your order?" }'
+```
+
+Resposta da verificação:
+
+```json
+{
+  "permission": { "status": "temporary", "expiration_time": 1768550400 },
+  "actions": [
+    {
+      "action_name": "start_call",
+      "can_perform_action": true,
+      "limits": [{ "time_period": "PT24H", "max_allowed": 1, "current_usage": 0 }]
+    }
+  ]
+}
+```
+
+A resposta do usuário chega como o evento de webhook **`call.permission_updated`** (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`). A Meta limita a taxa de solicitações de permissão (erro 138009) e o volume de BIC (100 chamadas/24h por número — erro 138012).
+
+## 3. Iniciar uma chamada (BIC)
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/calls" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "to": "+5511999999999",
+    "sdp": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n...",
+    "sdpType": "offer",
+    "bizOpaqueCallbackData": "order-42"
+  }'
+```
+
+```json
+HTTP 201
+{ "id": "call_01HZX...", "externalCallId": "wacid.ABGG...", "status": "INITIATED" }
+```
+
+- `sdp` é a **oferta** RFC 8866 produzida pelo SEU cliente WebRTC. O SDP do lado da empresa deve usar `a=setup:active`.
+- `bizOpaqueCallbackData` (opcional) é devolvido no webhook de encerramento.
+- Sem permissão, a Meta retorna 138006 → o endpoint expõe `code: "META_CALL_PERMISSION_REQUIRED"`.
+
+## 4. Atender uma chamada recebida (UIC)
+
+Quando um usuário liga para o seu número, você recebe o webhook **`call.ringing`** (e o envelope nativo `calls` carregando a oferta SDP do usuário). Então:
+
+```bash
+# busca a chamada com a oferta SDP
+curl "https://pilotstatus.com.br/v1/calls/wacid.ABGG...?includeSdp=1" \
+  -H "x-api-key: ps_your_key_here"
+
+# atende (corpo: sua resposta SDP; sdpType usa "answer" como padrão)
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../accept" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "sdp": "v=0\r\n..." }'
+
+# ou recusa / desliga (sem corpo)
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../reject" -H "x-api-key: ps_your_key_here"
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x-api-key: ps_your_key_here"
+```
+
+`accept`/`pre-accept`/`reject`/`terminate` respondem `{ "success": true, "id": "call_...", "status": "..." }`. O `pre-accept` é opcional (resposta SDP antecipada para reduzir cortes); a chamada só conecta no `accept`.
+
+## 5. Objeto de chamada (DTO)
+
+```json
+{
+  "id": "call_01HZX...",
+  "externalCallId": "wacid.ABGG...",
+  "direction": "INBOUND",
+  "status": "COMPLETED",
+  "peerNumber": "5511999999999",
+  "fromNumber": "5511999999999",
+  "conversationId": "conv_abc",
+  "bizOpaqueCallbackData": null,
+  "startedAt": "2026-07-03T15:00:00.000Z",
+  "connectedAt": "2026-07-03T15:00:05.000Z",
+  "endedAt": "2026-07-03T15:02:05.000Z",
+  "durationSeconds": 120,
+  "errorCode": null,
+  "errorMessage": null,
+  "createdAt": "2026-07-03T15:00:00.000Z",
+  "updatedAt": "2026-07-03T15:02:05.000Z"
+}
+```
+
+- `status`: `INITIATED` | `RINGING` | `ACCEPTED` | `REJECTED` | `COMPLETED` | `FAILED` | `MISSED`.
+- `direction`: `INBOUND` (UIC) | `OUTBOUND` (BIC).
+- Os SDPs (`sdpOffer`/`sdpAnswer`) aparecem apenas com `?includeSdp=1` em `GET /v1/calls/{callId}` — nunca na listagem.
+- `durationSeconds` é definido apenas quando a chamada foi atendida.
+
+## Erros comuns
+
+- `400 FEATURE_NOT_SUPPORTED` — o número da chave não é um número da Meta Cloud API.
+- `400 NUMBER_NOT_FOUND` — a chave não está vinculada a um número.
+- `400` — validação do corpo, `INVALID_LIMIT`, `INVALID_BEFORE`, `MISSING_TO`.
+- `401` — `x-api-key` / `x-api-key-id` ausente/inválido.
+- `403` — chave com escopo de tenant (os endpoints de chamadas têm escopo de número).
+- `404 CALL_NOT_FOUND` — o callId/wacid não pertence ao número da chave.
+- Erros de chamada da Meta são encaminhados com um `code` mapeado — ex.: `META_CALL_PERMISSION_REQUIRED` (138006), limite de solicitação de permissão (138009), limite de BIC de 100 chamadas/24h (138012), chamadas não habilitadas (138000), tier de mensagens muito baixo para habilitar (138015).

@@ -1,0 +1,99 @@
+---
+title: "Servidor MCP"
+sidebarTitle: "Servidor MCP"
+description: "Conecte agentes de IA ao WhatsApp através do servidor MCP hospedado da Pilot Status: autenticação OAuth ou x-api-key, 54 ferramentas sobre a API pública /v1, concessões por número."
+---
+
+A Pilot Status oferece um servidor oficial de **Model Context Protocol (MCP)** que expõe a API pública `/v1` como ferramentas MCP. Agentes de IA e clientes LLM podem usá-lo para enviar mensagens, consultar conversas, gerenciar números, templates, webhooks, grupos e chamadas de voz — diretamente do contexto do modelo.
+
+## Conector hospedado
+
+O servidor usa o transporte **streamable HTTP** e roda como um conector hospedado em:
+
+```text
+https://mcp.pilotstatus.com.br/mcp
+```
+
+Adicione-o como um **Conector Personalizado** no claude.ai (Configurações → Conectores → Adicionar conector personalizado). O claude.ai executa o login OAuth 2.1 (SSO da Pilot Status) — nenhuma chave de API é compartilhada com o cliente. Durante a etapa de consentimento você aprova o acesso ao **tenant inteiro** ou concede apenas **números específicos**; uma concessão por número restringe cada ferramenta a esses números.
+
+Qualquer cliente MCP que suporte conectores OAuth personalizados pode conectar da mesma forma. Clientes configurados por arquivo podem, em vez disso, enviar uma chave `ps_*` no header `x-api-key`:
+
+```json
+{
+  "mcpServers": {
+    "pilot-status": {
+      "type": "http",
+      "url": "https://mcp.pilotstatus.com.br/mcp",
+      "headers": { "x-api-key": "ps_your_key_here" }
+    }
+  }
+}
+```
+
+## Autenticação
+
+| Método | Como |
+| --- | --- |
+| OAuth 2.1 | `Authorization: Bearer <token>` — tratado automaticamente pelo conector Claude hospedado |
+| Chave de API | header `x-api-key` com uma chave `ps_*` |
+
+Use uma chave **com escopo de número** para ferramentas que operam em um número específico (mensagens, conversas, grupos); chaves **com escopo de tenant** são necessárias para ferramentas de tenant como `api_keys_list` e `numbers_list`.
+
+## Auto-hospedado
+
+O servidor é publicado como `@pilot-status/mcp-server` no npm e pode ser executado localmente:
+
+```bash
+npx @pilot-status/mcp-server
+```
+
+Forneça sua chave de API `ps_*` através do header `x-api-key` (modo HTTP) ou por configuração de ambiente, dependendo do seu cliente MCP.
+
+## Ferramentas disponíveis (54)
+
+| Área | Ferramentas |
+| --- | --- |
+| Mensagens | `messages_send`, `message_get`, `messages_cancel`, `messages_group`, `messages_unread`, `conversations_list` |
+| Webhooks | `webhooks_list`, `webhook_get`, `webhooks_create`, `webhooks_update`, `webhooks_delete`, `webhook_events` |
+| Grupos | `groups_list`, `groups_create`, `group_info`, `group_participants_add`/`remove`/`promote`/`demote`, `group_invite`, `group_pin` |
+| Canais | `newsletters_list` |
+| Números | `numbers_list`, `numbers_get`, `numbers_create`, `numbers_status`, `numbers_connect`, `numbers_delete`, `numbers_remote_pairing`, `numbers_check` |
+| Templates | `templates_list`, `templates_get`, `templates_create`, `templates_update`, `templates_delete` |
+| Chamadas de voz (apenas Meta) | `call_initiate`, `calls_list`, `call_get`, `call_accept`, `call_reject`, `call_terminate`, `call_settings_get`/`update`, `call_permission_get`/`request` |
+| Conta | `api_keys_list`, `api_keys_regenerate_number`, `subscription_extra_numbers_get`/`add`, `billing_checkout`, `branding_get`/`upsert`, `analytics_dashboard`, `media_get` |
+
+Notas:
+
+- `templates_create`/`templates_update` exigem o objeto `examples` (uma amostra real por variável; ausente → `400 TEMPLATE_EXAMPLES_REQUIRED`) e aceitam headers de mídia **apenas por URL** — base64 é exclusivo do REST.
+- `messages_send` suporta os três modos de envio: `templateId`, `text` ou mídia direta (`media` \+ `mediaType`; áudio é entregue como nota de voz).
+- Mídia recebida: em números META, passe `media.id` para `media_get`; em números Evolution, use `media.url` diretamente.
+- Rotas baseadas em token (endpoints públicos de remote-pairing, emissão de sessão de embed) são excluídas da lista de ferramentas porque usam um fluxo de autenticação diferente.
+
+## Exemplo de chamada de ferramenta
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "id": 2,
+  "params": {
+    "name": "messages_send",
+    "arguments": {
+      "templateId": "onboarding-test",
+      "destinationNumber": "+5511999999999",
+      "variables": { "name": "John" }
+    }
+  }
+}
+```
+
+## Erros comuns
+
+- `401` — chave de API ausente ou inválida.
+- `403` — chave com escopo de tenant em uma ferramenta com escopo de número (ou vice-versa), ou uma ferramenta fora de uma concessão por número.
+- `400` — argumentos de ferramenta inválidos (validados contra o schema da API subjacente).
+
+## Relacionados
+
+- [Guia de Agentes de IA](/pt-BR/guides/ai-agents)
+- [Usando IA/LLMs com a Pilot Status](/pt-BR/trust/llms)

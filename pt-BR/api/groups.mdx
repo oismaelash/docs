@@ -1,0 +1,82 @@
+---
+title: "API de Grupos do WhatsApp"
+description: "Envie para, liste, crie e gerencie grupos do WhatsApp, incluindo participantes, convites e mensagens fixadas."
+---
+
+Grupos do WhatsApp funcionam para **ambos** os números não oficiais (pareados por QR) **e** os números oficiais da **Meta Cloud API**, desde que o número Meta seja uma **Conta Comercial Oficial (OBA) aprovada** com grupos habilitados.
+
+<Warning>
+  Quando um número da Meta Cloud API não é uma OBA elegível, os endpoints de grupo retornam **`400 META_GROUPS_NOT_ELIGIBLE`**.
+</Warning>
+
+## Modelo de id do grupo
+
+Um grupo é identificado em todos os lugares por seu **JID terminando em `@g.us`**. Para números da Meta Cloud API, o grupo é representado como um **pseudo-JID** `<META_GROUP_ID>@g.us` — você o usa exatamente como qualquer outro JID de grupo (a conversão do id opaco do grupo Meta ↔ `@g.us` acontece internamente na fronteira HTTP da Meta). Newsletters/canais (`@newsletter`) permanecem **sem suporte para números Meta**.
+
+## Enviando para um grupo
+
+Em `POST /v1/messages/send`, passe **`groupId`** (JID terminando em `@g.us`) **em vez de** `destinationNumber` ou `newsletterId`. **Exatamente um** destino por requisição.
+
+- As mesmas regras de template/categoria se aplicam como para números de telefone.
+
+## `GET /v1/groups`
+
+Retorna `{ "groups": [ { "id": "…@g.us", "name": "…" } ] }` para a **mesma instância do WhatsApp** que `POST /v1/messages/send` para aquela chave de API (o número vinculado à chave).
+
+- A listagem usa a **mesma conexão** que o envio (mesma resolução de instância que `POST /v1/messages/send`).
+- A sessão deve estar **conectada** (`OPEN`); caso contrário, **409** com `WHATSAPP_INSTANCE_NOT_CONNECTED`.
+- Funciona para números não oficiais e números elegíveis da Meta Cloud API.
+
+## Endpoints de gerenciamento de grupos
+
+Todos exigem uma chave de API **com escopo de número** (`ps_*`) no cabeçalho `x-api-key`. `{groupId}` é o JID (`…@g.us`), codificado no caminho. Em números Meta que não são uma OBA elegível, estes retornam `400 META_GROUPS_NOT_ELIGIBLE`.
+
+| Método e caminho | Corpo | Descrição |
+| --- | --- | --- |
+| `POST /v1/groups` | `{ subject, participants? }` | Cria um grupo. `participants` são números de telefone em dígitos E.164. Retorna o grupo criado `{ id, subject, participants: [...] }`. |
+| `GET /v1/groups/{groupId}` | — | Informações do grupo: assunto e participantes com seus papéis. |
+| `POST /v1/groups/{groupId}/participants` | `{ participants: [...] }` | Adiciona participantes. |
+| `DELETE /v1/groups/{groupId}/participants` | `{ participants: [...] }` | Remove participantes. |
+| `POST /v1/groups/{groupId}/participants/promote` | `{ participants: [...] }` | Promove participantes a administrador. |
+| `POST /v1/groups/{groupId}/participants/demote` | `{ participants: [...] }` | Rebaixa administradores para participantes comuns. |
+| `POST /v1/groups/{groupId}/invite` | `{ reset? }` | Obtém o link de convite do grupo. `reset: true` revoga o link atual e emite um novo. Retorna `{ link }`. |
+| `POST /v1/groups/{groupId}/pin` | `{ messageId, action }` | Fixa/desafixa uma mensagem do grupo (`action`: `"pin"` ou `"unpin"`). **Sem suporte no Evolution v2.** |
+
+## Exemplo (criar um grupo)
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://pilotstatus.com.br/v1/groups \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_number_scoped_key" \
+  -d '{ "subject": "Sales Team", "participants": ["5511999999999", "5511888888888"] }'
+```
+
+```json Response (201)
+{
+  "id": "120363123456789012@g.us",
+  "subject": "Sales Team",
+  "participants": [
+    { "wa_id": "5511999999999", "role": "admin" },
+    { "wa_id": "5511888888888" }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Obtendo o `groupId`
+
+- **Webhook `message.group`**: o payload inclui `groupId` (e `groupName` quando disponível).
+- **`GET /v1/groups`**: retorna os ids dos grupos para o número vinculado à chave.
+
+## Erros comuns (códigos estáveis da API)
+
+- `400 META_GROUPS_NOT_ELIGIBLE` — o número da Meta Cloud API não é uma Conta Comercial Oficial aprovada (ou grupos não estão habilitados para ele).
+- `409 WHATSAPP_INSTANCE_NOT_CONNECTED` — a sessão não está `OPEN`.
+- `WHATSAPP_UPSTREAM_ERROR`, `WHATSAPP_INVALID_JSON`, `LINKED_WHATSAPP_INSTANCE_NOT_FOUND`; outros códigos estáveis podem aparecer dependendo da configuração da instância.
+
+## Variáveis em botões
+
+Cada `{{placeholder}}` no JSON do template armazenado (corpo **e** rótulos de botões) é validado no envio e aparece em `latestVersion.variables` depois que você **salva uma nova versão do template** no painel.

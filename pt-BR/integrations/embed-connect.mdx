@@ -1,0 +1,83 @@
+---
+title: "Incorpore a Página de Conexão"
+sidebarTitle: "Incorporar Conexão"
+description: "Incorpore o fluxo de pareamento de número white-label (QR code ou Meta Embedded Signup) no seu SaaS usando tokens de pareamento remoto e o SDK de incorporação."
+---
+
+Incorpore o **fluxo de pareamento de número (Connect)** do WhatsApp — QR code (não oficial) ou Meta Embedded Signup (oficial) — no seu próprio SaaS, white-label. Os pré-requisitos compartilhados (SDK, chave de tenant) estão em [Incorpore a Caixa de Entrada do Chat](/pt-BR/integrations/embed-chat).
+
+<Note>
+  Diferença principal em relação ao Chat: o Connect **não** usa o token `POST /v1/embed/sessions`. Ele usa o **token de pareamento remoto** que fica na **URL** do iframe (não em memória via postMessage), com um **TTL de 24h**.
+</Note>
+
+## Fluxo
+
+<Steps>
+  <Step title="O backend cria o link de pareamento">
+    ```bash
+    curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "Support",
+        "number": "5511999999999",
+        "sendViaWhatsApp": false,
+        "brandingOverride": { }
+      }'
+    ```
+
+    Passe `provider: "META"` para um pareamento via Cloud API (Embedded Signup); `brandingOverride` é opcional. A resposta inclui `remotePairingUrl` (`https://connect.pilotstatus.com.br/connect/<token>`), `maskedNumber` e `messageSent`. O **token** é o UUID no final da URL (TTL **24h**). Encaminhe apenas o token/URL para o seu frontend.
+  </Step>
+  <Step title="O frontend incorpora">
+    O SDK monta a URL do iframe a partir do token — você passa apenas o token:
+
+    ```html
+    <script src="https://embed.pilotstatus.com.br/embed.js"></script>
+    <script>
+      PilotStatus.init();
+      const { token } = await fetch("/api/my-saas/pairing-token").then(r => r.json());
+    
+      // Centered modal:
+      const h = PilotStatus.connect.open({
+        token,
+        onPaired: (d) => { /* d = { numberId?, redirectUrl? } */ h.destroy(); },
+        onError: (e) => alert(e.message),
+        onExpired: () => { /* mint a new link */ },
+      });
+    
+      // or inline:
+      // PilotStatus.connect.mount("#connect-widget", { token, onPaired, onError, onExpired });
+    </script>
+    ```
+
+    `ConnectOptions`: `token` (obrigatório), `baseUrl?` (padrão `https://connect.pilotstatus.com.br`), `onPaired(d)`, `onError(e)`, `onExpired()`.
+  </Step>
+</Steps>
+
+## Protocolo postMessage (iframe → parent)
+
+O Connect nunca recebe uma mensagem `init` — o token já está na URL. O SDK apenas **escuta** (validando `origin === connect.pilotstatus.com.br` e `source === iframe.contentWindow`):
+
+| Mensagem | Callback | Significado |
+| --- | --- | --- |
+| `connect:paired{numberId?, redirectUrl?}` | `onPaired` | número conectado |
+| `connect:error{message}` | `onError` | falha |
+| `connect:expired` | `onExpired` | token/QR expirado (24h) |
+| `resize{height}` | — | o SDK ajusta a altura do iframe |
+
+O sandbox do iframe é `allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox` — o escape do popup é necessário para a janela do Embedded Signup da Meta.
+
+## White-label / branding
+
+Precedência: **parâmetros de query da URL** \> **`brandingOverride`** por link (capturado como snapshot no número) \> **branding do tenant** (`GET`/`PUT /v1/branding`) \> padrão.
+
+## Modelo de segurança
+
+- O `x-api-key` permanece no seu backend; somente ele chama `POST /v1/numbers/remote-pairing`.
+- O token de pareamento expira em **24h** e autoriza apenas os endpoints de pareamento daquele link.
+- As origens são validadas em ambos os lados; o iframe roda em `connect.*`, então suas chamadas de API são same-origin (sem superfície de CORS para o seu app).
+
+## Relacionados
+
+- [Incorpore a Caixa de Entrada do Chat](/pt-BR/integrations/embed-chat)
+- [Conectar Números](/pt-BR/connecting-numbers)

@@ -1,0 +1,107 @@
+---
+title: "Personalização da Página de Conexão (White-label)"
+sidebarTitle: "Personalização da página de conexão"
+description: "Personalize a marca da página pública de conexão por tenant — logotipo, cores, títulos, alternância de white-label — via painel, GET/PUT /v1/branding, sobrescritas por link ou parâmetros de URL."
+---
+
+# Personalização da página de conexão (white-label)
+
+A **página de conexão** pública (`/connect/{token}`) — onde seu cliente final escaneia o QR code ou executa o Meta Embedded Signup para conectar um número de WhatsApp (veja [Pareamento Remoto](/pt-BR/api/numbers/remote-pairing)) — pode ser **personalizada por tenant**. Seus clientes veem a **sua** marca em vez de "Pilot Status".
+
+## O que você pode personalizar
+
+| Campo | Tipo | Observações |
+| --- | --- | --- |
+| `logoUrl` | URL https | Exibido no cabeçalho no lugar do nome da empresa. |
+| `primaryColor` | hex `#RRGGBB` | Botões, destaques, realces. |
+| `backgroundColor` | hex `#RRGGBB` | Fundo da página/cartão. |
+| `companyName` | string (≤ 60) | Título do cabeçalho (substitui "Pilot Status"). |
+| `subtitle` | string (≤ 120) | Subtítulo do cabeçalho (substitui "Conexão WhatsApp"). |
+| `supportUrl` | URL https | Renderiza um link "Precisa de ajuda?". |
+| `defaultRedirectUrl` | URL https | Para onde enviar o usuário após uma conexão bem-sucedida. |
+| `hidePilotStatusBranding` | boolean | **White-label**: oculta o rodapé "Pilot Status". |
+
+As cores são armazenadas como hex e convertidas automaticamente para o tema da página.
+
+## Quatro formas de configurar
+
+Precedência de resolução (maior → menor):
+
+```text
+URL query param  >  per-link override  >  tenant branding (dashboard/API)  >  Pilot Status default
+```
+
+### 1) Painel (recomendado)
+
+**Perfil → Marca**: envie um logotipo, escolha cores, defina o título/subtítulo/link de suporte, ative o white-label e veja uma **prévia ao vivo**. Essa personalização se aplica a **todos** os links de conexão do tenant.
+
+### 2) API Pública — GET / PUT /v1/branding
+
+<Note>
+  Requer uma chave de API **com escopo de tenant**. Chaves com escopo de número recebem `403` (`NUMBER_SCOPE_NOT_ALLOWED`).
+</Note>
+
+<CodeGroup>
+
+```bash Read
+curl "https://pilotstatus.com.br/v1/branding" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```bash Update
+curl -X PUT "https://pilotstatus.com.br/v1/branding" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -d '{ "companyName": "Acme", "primaryColor": "#1fd286", "hidePilotStatusBranding": true }'
+```
+
+</CodeGroup>
+
+Resposta (ambos):
+
+```json
+HTTP 200
+{ "branding": { "companyName": "Acme", "primaryColor": "#1fd286", "hidePilotStatusBranding": true, "logoUrl": null, "backgroundColor": null, "subtitle": null, "supportUrl": null, "defaultRedirectUrl": null } }
+```
+
+Todos os campos do `PUT` são opcionais — envie `null` para limpar um campo, omita uma chave para deixá-la inalterada.
+
+**Upload de logotipo** (sessão do painel): `POST /api/branding/logo` aceita um `file` multipart (PNG / JPG / WebP, ≤ 2 MB) e retorna `{ url, key, mimeType, fileName, sizeBytes }`. Use a `url` retornada como `logoUrl` em `PUT /v1/branding`.
+
+### 3) Sobrescrita por link
+
+Ao criar um link de pareamento, passe um objeto `branding` para sobrescrever a personalização **apenas para aquele link** (ele é registrado como snapshot no token e sobrescreve a personalização de tenant salva):
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_token_here" \
+  -d '{
+    "name": "Customer João",
+    "number": "+5511999999999",
+    "branding": { "companyName": "Customer João Co.", "primaryColor": "#2563eb" }
+  }'
+```
+
+### 4) Parâmetros de query da URL (apenas cosméticos)
+
+Anexe parâmetros sanitizados e permitidos a um link de conexão para ajustar a aparência na hora. Estes são **apenas cosméticos** — eles nunca alteram qual tenant/número é pareado:
+
+```text
+/connect/{token}?primary=%231fd286&title=Acme&hideBranding=1
+```
+
+Suportados: `logo` (https), `primary` (hex), `bg` (hex), `title`, `subtitle`, `support` (https), `hideBranding` (`1`/`true`).
+
+## Endpoint público de personalização
+
+A página de conexão lê sua personalização de:
+
+- `GET /v1/remote-pairing/{token}` → inclui um objeto `branding` resolvido, **ou**
+- `GET /v1/connect/{token}/branding` → `{ branding }` (usado pelo fluxo do Meta Embedded Signup; sempre `200`, recorrendo aos padrões do Pilot Status para um token desconhecido).
+
+## Observações
+
+- A personalização é **por tenant**; uma única personalização salva se aplica a todos os links de conexão, com sobrescritas opcionais por link e por parâmetro de query por cima.
+- `hidePilotStatusBranding: true` remove a atribuição ao Pilot Status (white-label). Use-o para apresentar o fluxo de conexão totalmente sob a sua própria marca.
+- As sobrescritas por parâmetro de query são intencionalmente limitadas à aparência; o token ainda controla o pareamento real.
