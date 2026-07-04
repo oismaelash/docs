@@ -1,0 +1,127 @@
+---
+title: "Chatwoot Voice Calls"
+sidebarTitle: "Chatwoot Voice"
+description: "Route Chatwoot's native WhatsApp voice channel through Pilot Status: agents answer and place calls in Chatwoot while your Meta token stays with Pilot Status."
+mode: "wide"
+icon: "phone"
+---
+
+Chatwoot **v4.15\+** ships a native WhatsApp voice channel. This guide routes it through Pilot Status so agents answer and place calls **inside Chatwoot**, while the real Meta access token never leaves Pilot Status — Chatwoot talks to the Graph API through the [Meta compatibility layer](/api/layer/meta) using your `ps_` key, and call webhooks are re-delivered by Pilot Status.
+
+```text
+Chatwoot (agent browser) ──Graph calls (ps_ key)──▶ Pilot Status /api/layer/meta ──token swap──▶ Meta
+        ▲                                                                                          │
+        └───────────── Pilot Status webhook (events: ["calls"]) ◀──────── calls webhook ───────────┘
+
+Audio: agent browser ◀── WebRTC/SRTP ──▶ Meta  (never passes through Pilot Status or the Chatwoot server)
+```
+
+## Requirements
+
+- **Self-hosted Chatwoot ≥ v4.15** (the voice channel is an enterprise feature; Chatwoot Cloud is **not** supported — this setup needs a global environment variable).
+- A **dedicated** Chatwoot installation, or one where **every** WhatsApp Cloud inbox uses a Pilot Status `ps_` key — the base-URL override below is global.
+- A **Meta Cloud API (official) number** on Pilot Status with **calling enabled** and messaging tier ≥ 2K. Unofficial (web) numbers are not supported by Chatwoot's voice channel — use the [Pilot Status softphone](/api/calls/overview) for those.
+- The number's **number-scoped `ps_` key** (Profile → API), plus its **Phone Number ID**, **WABA ID** and **Business Account ID** — all copyable from the number's card on the **Numbers** page.
+
+## Step 1 — Point Chatwoot at the Pilot Status Meta layer
+
+Add to the environment of **both** the Rails and Sidekiq containers, then restart:
+
+```env
+WHATSAPP_CLOUD_BASE_URL=https://pilotstatus.com.br/api/layer/meta
+```
+
+<Warning>
+  This variable is **global**: every `whatsapp_cloud` inbox in the installation will call the Pilot Status layer. An inbox configured with a real Meta token would break — use a dedicated installation or migrate all Cloud inboxes to `ps_` keys.
+</Warning>
+
+## Step 2 — Create a manual WhatsApp Cloud inbox
+
+In Chatwoot: **Settings → Inboxes → Add Inbox → WhatsApp → WhatsApp Cloud** (manual/API, **not** Embedded Signup):
+
+| Field | Value |
+| --- | --- |
+| Phone number | The number in E.164 **with**`+` (e.g. `+15551234567`) |
+| Phone number ID | The number's Meta Phone ID |
+| Business Account ID | The number's WABA ID |
+| API key | The number's **`ps_` key** |
+
+Chatwoot validates the credentials with a template-sync request — it authenticates Graph-style (`?access_token=ps_…`), which the Pilot Status layer accepts and strips before forwarding (your `ps_` key never reaches Meta).
+
+<Note>
+  After creation Chatwoot tries to auto-register its webhook **directly against `graph.facebook.com`** (the URL is hardcoded upstream), gets a 401 and shows a **"reauthorization required" banner**. This is cosmetic — Step 3 clears it.
+</Note>
+
+## Step 3 — Enable voice on the account and channel
+
+Chatwoot's voice path requires three things: the `channel_voice` account feature, the channel flag `calling_enabled`, and a `whatsapp_cloud` provider. The UI toggle (**inbox → Calls → Enable Voice Calling**) cannot set the flag in this setup — it also calls the hardcoded Graph URL, fails with 401 **before** persisting. Enable it from the Rails console instead:
+
+```ruby
+account = Account.first # or Account.find(<id>)
+account.enable_features!('channel_voice')
+
+ch = Channel::Whatsapp.find_by(phone_number: '+15551234567')
+ch.provider_config = ch.provider_config.merge('calling_enabled' => true)
+ch.save!(validate: false)
+ch.reauthorized! # clears the cosmetic banner from Step 2
+```
+
+<Accordion title="No shell access? Run it idempotently at boot (docker compose)">
+  If you cannot open a console on the host (managed platforms), run the same script at every boot of the `rails` service — it is a no-op once applied. Base64 avoids quoting issues in compose validators:
+
+  ```yaml
+  # 1. Generate the payload once (replace the phone number first):
+  #    base64 -w0 <<'EOF'
+  #    begin
+  #      a = Account.first
+  #      a.enable_features!('channel_voice') if a
+  #      ch = Channel::Whatsapp.find_by(phone_number: '+15551234567')
+  #      if ch && ch.provider_config['calling_enabled'] != true
+  #        ch.provider_config = ch.provider_config.merge('calling_enabled' => true)
+  #        ch.save!(validate: false)
+  #        ch.reauthorized!
+  #      end
+  #      puts 'voice-setup ok'
+  #    rescue => e
+  #      puts 'voice-setup skipped: ' + e.message
+  #    end
+  #    EOF
+  # 2. Splice it into the rails service command:
+  command: ["sh", "-c", "bundle exec rails db:chatwoot_prepare && (echo <BASE64_PAYLOAD> | base64 -d | bundle exec rails runner -) ; exec bundle exec rails s -p 3000 -b 0.0.0.0"]
+  ```
+
+  Look for `voice-setup ok` (or `voice-setup skipped: <reason>`) in the rails logs after deploy.
+</Accordion>
+
+## Step 4 — Deliver call webhooks from Pilot Status
+
+Create a webhook **scoped to the number** subscribing only the `calls` event, pointing at the inbox's webhook endpoint (the phone in the URL must match the channel's `phone_number` exactly, including the `+`):
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/webhooks \
+  -H "Authorization: Bearer ps_…" -H "Content-Type: application/json" \
+  -d '{"name":"Chatwoot Voice (calls)","url":"https://chatwoot.your-domain.com/webhooks/whatsapp/+15551234567","events":["calls"]}'
+```
+
+- **Do not set a `secret`** — signature verification is waived for manual inboxes without an app secret, which is exactly what makes Pilot Status re-delivery work.
+- Subscribe **only** `["calls"]`. Adding `messages` would duplicate every inbound message if the number also uses the standard [Chatwoot mirror](/integrations/chatwoot).
+- Pilot Status delivers the Meta envelope verbatim (single-change `entry[].changes[]` with `field: "calls"`), which is the exact shape Chatwoot's WhatsApp events job expects.
+
+## Step 5 — Test
+
+1. **Inbound (user calls the business):** call the number from a phone → a call banner rings in the Chatwoot inbox → answer in the browser → two-way audio → hang up; the call is logged in the conversation.
+2. **Outbound (agent calls the user):** requires the user's **call permission** (Meta blocks with error `138006` otherwise) and a **payment method on the WABA** (error `131044` otherwise). See [Call permissions](/api/calls/permissions).
+
+## Limitations & notes
+
+- **Signaling latency** — the webhook leg traverses Pilot Status delivery before Chatwoot's Sidekiq. Meta's ring window is ~30s; keep an eye on late rings under load.
+- **Audio path** — WebRTC between the agent's browser and Meta directly. Corporate networks that block UDP/SRTP will connect the call but produce silence; that is outside both Chatwoot's and Pilot Status's control.
+- **Call permission replies** are delivered on the `messages` field, not `calls`, so Chatwoot's permission state is not auto-updated in this setup. Outbound calls without permission fail with a readable `138006`.
+- **Settings are shared** — both Pilot Status (calling default-on) and Chatwoot write to the same Meta `/settings` object; the last write wins.
+- The Pilot Status **/chat softphone** keeps working alongside this — but only one surface should **answer** a given call.
+
+## Related
+
+- [Chatwoot messaging integration](/integrations/chatwoot)
+- [Voice Calls overview](/api/calls/overview)
+- [Meta compatibility layer](/api/layer/meta)
