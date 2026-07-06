@@ -62,12 +62,16 @@ Comportamento:
   Salve um cartão primeiro (para que as compras via API sejam cobradas instantaneamente) no painel em **Plans → Cartão**.
 </Note>
 
-## DELETE /v1/subscription/extra-numbers — Remover
+## A capacidade paga é um direito de 30 dias
 
-O On Demand é realmente pague-por-número: **você é cobrado apenas pelos números que mantém**. Há duas formas de liberar um slot pago:
+Ao comprar números extras, essa **capacidade é sua durante todo o ciclo de 30 dias**. Duas consequências:
 
-- **Delete o número** (`DELETE /v1/numbers/<id>`): o slot pago é liberado **automaticamente** — os próximos meses param de cobrar aquele número. Esse é o fluxo normal.
-- **Devolva um slot pré-pago** sem deletar um número (capacidade que você comprou adiantado mas não usa mais):
+- **Deletar um número _não_ reduz sua capacidade paga.** `DELETE /v1/numbers/<id>` libera o slot para você reconectar outro número no mesmo ciclo — sua contagem paga e sua cobrança seguem iguais até o fim do ciclo.
+- **Reduzir a capacidade é uma ação explícita e agendada.** Você decide baixar a quantidade de slots pagos; a mudança vale no **próximo** ciclo, quando a cobrança cai para o novo valor. Nada é estornado do ciclo em andamento.
+
+## DELETE /v1/subscription/extra-numbers — Agendar uma redução
+
+Agenda a redução de `quantity` slot(s) pago(s) para o **próximo** ciclo:
 
 ```bash
 curl -X DELETE "https://pilotstatus.com.br/v1/subscription/extra-numbers" \
@@ -78,21 +82,32 @@ curl -X DELETE "https://pilotstatus.com.br/v1/subscription/extra-numbers" \
 
 Comportamento:
 
-- **Sem estorno do ciclo corrente.** A remoção só para as cobranças **futuras**; a parte já paga do ciclo em andamento não é creditada de volta.
-- **Não pode ficar abaixo dos números conectados.** Se a remoção deixaria o limite abaixo dos números que você ainda tem conectados, retorna **409 `NUMBER_LIMIT_EXCEEDED`** (`{ currentNumberCount, maxNumbers }`) — delete um número antes.
+- **Agendado, não imediato.** Este ciclo mantém a capacidade atual (sem estorno); a redução vale a partir do próximo rollover, quando os meses futuros cobram menos.
+- **Editável.** Chamar de novo sobrescreve o alvo agendado. Cancele com `DELETE …/schedule` (abaixo).
+- **Não pode ficar abaixo dos números conectados.** Se o alvo deixaria o limite abaixo dos números que você ainda tem conectados, retorna **409 `NUMBER_LIMIT_EXCEEDED`** (`{ currentNumberCount, maxNumbers }`) — delete um número antes.
 - **`quantity`** tem default `1` e é limitado para nunca ficar abaixo de `0` extras pagos. Chaves de escopo de número recebem **403**.
 
-A resposta espelha o formato da compra:
+Resposta — `paidExtraNumbers` continua no valor do ciclo atual; `scheduledPaidExtraNumbers` é o alvo que passa a valer no próximo ciclo:
 
 ```json
 {
   "success": true,
   "charged": true,
   "plan": "ON_DEMAND",
-  "paidExtraNumbers": 1,
-  "maxNumbers": 1,
-  "proratedTotal": 0
+  "paidExtraNumbers": 5,
+  "scheduledPaidExtraNumbers": 4,
+  "scheduledReductionEffectiveAt": "2026-08-01T00:00:00.000Z",
+  "maxNumbers": 5
 }
+```
+
+## DELETE /v1/subscription/extra-numbers/schedule — Cancelar a redução agendada
+
+Cancela uma redução pendente para que o próximo ciclo mantenha sua capacidade paga atual. No-op se nada estiver agendado.
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/subscription/extra-numbers/schedule" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
 ```
 
 ## POST /v1/billing/checkout — Recarga de carteira / adicionar um cartão
