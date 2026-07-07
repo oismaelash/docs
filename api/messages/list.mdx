@@ -1,0 +1,141 @@
+---
+title: "GET /v1/messages — List Message Logs"
+sidebarTitle: "List Messages"
+description: "List and filter the message logs (sent and received) of the API key's WhatsApp number."
+mode: "wide"
+---
+
+# List Message Logs
+
+```text
+GET https://pilotstatus.com.br/v1/messages
+```
+
+Lists the message logs — **sent and received** — of the WhatsApp number tied to your API key, newest first, with pagination and filters. For the full detail of a single message, use [`GET /v1/messages/{messageId}`](/api/messages/status).
+
+<Note>
+  The dashboard [Logs & Analytics](/dashboard/logs-analytics) page is the visual counterpart of this endpoint — the same rows, filters, and statuses you see there are what this endpoint returns as JSON.
+</Note>
+
+## Headers
+
+- `x-api-key: ps_...` (or `x-api-key-id: <api_key_id>`) — a **number-scoped** key. Tenant-scoped keys receive `403`.
+
+## Query parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `page` | integer | `1` | Page number (1-based). |
+| `pageSize` | integer | `20` | Rows per page (max `100`). |
+| `status` | string (CSV) | — | Filter by delivery status: `QUEUED`, `SENT`, `DELIVERED`, `READ`, `FAILED`, `CANCELED`. Accepts a comma-separated list (e.g. `status=FAILED,CANCELED`). Delivery statuses only exist for outbound messages, so this filter **implies outbound-only** results. |
+| `direction` | string | — | `in` (received) or `out` (sent). |
+| `startDate` | string | — | ISO 8601 lower bound on `createdAt` (e.g. `2026-02-01T00:00:00.000Z`). |
+| `endDate` | string | — | ISO 8601 upper bound on `createdAt`. Must not be before `startDate`. |
+| `search` | string | — | A phone number in **any** format (`+5511999999999`, `5511999999999`, `11 99999-9999`, …) or a template name. |
+| `templateId` | string | — | Template **id or name** — returns only messages sent with that template. |
+| `window` | string | — | `open` or `closed` — the 24h service-window state **recorded at send time** (see the Note below). |
+
+<Note>
+  **24h service window:** WhatsApp opens a 24-hour customer-service window every time a contact messages you. `serviceWindowOpenAtSend` records the state of that window at the moment each outbound message was accepted: `true` means it was a reply inside an open window and was sent immediately; `false` means it was a "cold" send outside the window — paced by the anti-block engine on Pilot Status web numbers, and requiring an approved template on Meta Cloud API numbers; `null` means the window was not computed (inbound rows, group/channel destinations). Filter with `window=open` / `window=closed`.
+</Note>
+
+## Examples
+
+<CodeGroup>
+
+```bash x-api-key
+curl "https://pilotstatus.com.br/v1/messages?page=1&pageSize=20" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```bash x-api-key-id
+curl "https://pilotstatus.com.br/v1/messages?page=1&pageSize=20" \
+  -H "x-api-key-id: ck_xxx"
+```
+
+```bash Filtered (failed outbound in a date range)
+curl "https://pilotstatus.com.br/v1/messages?status=FAILED&direction=out&startDate=2026-02-01T00:00:00.000Z&endDate=2026-02-28T23:59:59.999Z" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+</CodeGroup>
+
+## Response (200)
+
+```json
+{
+  "data": [
+    {
+      "id": "msg_abc",
+      "correlationId": "corr_123",
+      "direction": "OUT",
+      "from": "+5511888888888",
+      "to": "+5511999999999",
+      "content": "Hi John, your order 123 is on its way!",
+      "template": "order_shipped",
+      "status": "READ",
+      "errorCode": null,
+      "errorMessage": null,
+      "origin": "API",
+      "serviceWindowOpenAtSend": true,
+      "createdAt": "2026-02-24T15:00:00.000Z",
+      "sentAt": "2026-02-24T15:00:05.000Z",
+      "deliveredAt": "2026-02-24T15:00:07.000Z",
+      "readAt": "2026-02-24T15:02:11.000Z",
+      "externalMessageId": "wamid.HBgLNTUxMTk5OTk5OTk5"
+    },
+    {
+      "id": "msg_def",
+      "correlationId": null,
+      "direction": "IN",
+      "from": "+5511999999999",
+      "to": "+5511888888888",
+      "content": "Thanks! See you tomorrow.",
+      "template": null,
+      "status": null,
+      "errorCode": null,
+      "errorMessage": null,
+      "origin": null,
+      "serviceWindowOpenAtSend": null,
+      "createdAt": "2026-02-24T15:03:40.000Z",
+      "sentAt": null,
+      "deliveredAt": null,
+      "readAt": null,
+      "externalMessageId": "wamid.HBgLNTUxMTg4ODg4ODg4"
+    }
+  ],
+  "page": 1,
+  "pageSize": 20,
+  "total": 2,
+  "totalPages": 1
+}
+```
+
+## Response fields
+
+| Field | Description |
+| --- | --- |
+| `id` | Internal message id — use it with [`GET /v1/messages/{messageId}`](/api/messages/status) for single-message detail. |
+| `correlationId` | Correlation identifier from the send request (outbound only). |
+| `direction` | `IN` (received) or `OUT` (sent). |
+| `from` / `to` | Sender and recipient phone numbers. |
+| `content` | Message text. `null` when redacted by the number's PII retention mode. |
+| `template` | Template name for template sends, otherwise `null`. |
+| `status` | Delivery status of outbound messages (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `FAILED`, `CANCELED`) — see [Message Status](/api/messages/status). `null` on inbound rows. |
+| `errorCode` / `errorMessage` | Populated on `FAILED` sends — see [Log Error Codes](/api/messages/log-error-codes). |
+| `origin` | Where the send originated: `API`, `CHAT`, `CHATWOOT`, `DASHBOARD`, `SYSTEM`, or `APP`. |
+| `serviceWindowOpenAtSend` | `true`, `false`, or `null` — the 24h service-window state recorded at send time (see the Note above). |
+| `createdAt` / `sentAt` / `deliveredAt` / `readAt` | Lifecycle timestamps (ISO 8601). |
+| `externalMessageId` | Provider WhatsApp message ID (wamid). |
+
+<Note>
+  **Retention:** rows respect the number's **PII retention mode**. On `RELAY_ONLY` numbers the rows are returned redacted (`content: null`).
+</Note>
+
+## Common errors
+
+| Status | Meaning |
+| --- | --- |
+| `400` | `INVALID_DATE_RANGE` — malformed `startDate`/`endDate`, or `endDate` before `startDate` |
+| `401` | Missing/invalid API key header (`x-api-key` / `x-api-key-id`) |
+| `403` | A tenant-scoped key used on a number-scoped endpoint |
