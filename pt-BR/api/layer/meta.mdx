@@ -1,0 +1,139 @@
+---
+title: "Camada Meta Cloud API — Referência da API"
+sidebarTitle: "Meta Cloud API"
+description: "Chame a WhatsApp Cloud API (Graph API) pela camada Meta do Pilot Status. Aponte sua base URL para a camada e mantenha suas requisições do Graph API — o Pilot troca sua chave ps_ pelo token real da Meta do número."
+mode: "wide"
+---
+
+A **Camada Meta Cloud API** do Pilot Status é um passthrough transparente para a WhatsApp Cloud API (Graph API). Aponte sua base URL para a camada e mantenha suas requisições do Graph API exatamente como estão — o Pilot Status troca sua chave `ps_` pelo **token de sistema** real da Meta do número, então você nunca manuseia tokens da Meta.
+
+## Base URL
+
+```text
+https://pilotstatus.com.br/api/layer/meta/
+```
+
+Anexe qualquer nó do Graph API exatamente como faria em `graph.facebook.com/<versao>/`. O segmento de versão `vNN.N` é **opcional** — omita e o Pilot usa o padrão (`v22.0`), ou inclua (ex.: `v22.0/<phone-number-id>/messages`) para fixar uma versão.
+
+## Autenticação
+
+Envie sua chave `ps_` do Pilot Status em qualquer uma das três formas abaixo. O Pilot troca pela token real da Meta antes de encaminhar — a chave `ps_` nunca chega à Meta:
+
+```text
+x-api-key: ps_sua_chave_aqui
+```
+
+```text
+Authorization: Bearer ps_sua_chave_aqui
+```
+
+```text
+?access_token=ps_sua_chave_aqui
+```
+
+## Como funciona
+
+A camada Meta é **passthrough com denylist**: encaminha tráfego de mensagens, mídia, templates, perfil, grupos e chamadas, e **bloqueia** gestão de conta / negócio / auth e (des)registro de número. O id do nó do Graph — phone-number id, WABA id, media id, group id, template id — é o **primeiro segmento do path**. O Pilot verifica que o phone-number id / WABA id no path pertence ao número da sua API key (`403` caso contrário).
+
+<Note>
+  Nós de segmento único (`GET`/`POST`/`DELETE /{id}`) são resolvidos por **tipo de id** — a mesma forma cobre ids de mídia, grupo, número e template, exatamente como o Graph API. Veja a descrição de cada operação no [Playground](/pt-BR/playground/meta-cloud-api/post-phonenumberid-messages).
+</Note>
+
+## Operações suportadas
+
+### Mensagens
+
+| Método | Path | Descrição |
+| --- | --- | --- |
+| `POST` | `/{phone-number-id}/messages` | Envia qualquer mensagem — `type` define text / image / audio / video / document / sticker / location / contacts / interactive / template / reaction. |
+| `POST` | `/{phone-number-id}/messages/status` | Confirmação de leitura (`status: read`) ou indicador de digitação. |
+
+### Mídia
+
+| Método | Path | Descrição |
+| --- | --- | --- |
+| `POST` | `/{phone-number-id}/media` | Upload de mídia (**multipart/form-data**: `messaging_product`, `type`, `file`). |
+| `POST` | `/{app-id}/uploads` | Cria sessão de upload resumível (`file_length`, `file_type`). |
+| `POST` | `/{upload-id}` | Envia os bytes do arquivo (binário cru, header `file_offset`). |
+| `GET` | `/{media-id}` | URL + metadados da mídia — o `url` é reescrito para uma URL de download assinada do Pilot. |
+| `DELETE` | `/{media-id}` | Exclui uma mídia enviada. |
+
+### Templates
+
+| Método | Path | Descrição |
+| --- | --- | --- |
+| `GET` | `/{waba-id}/message_templates` | Lista templates (paginação/filtro via query). |
+| `POST` | `/{waba-id}/message_templates` | Cria um template para aprovação. |
+| `DELETE` | `/{waba-id}/message_templates` | Exclui um template pelo nome (`?name=`). |
+| `GET` | `/{template-id}` | Lê um template. |
+| `POST` | `/{template-id}` | Edita os `components` de um template aprovado. |
+
+### Números
+
+| Método | Path | Descrição |
+| --- | --- | --- |
+| `GET` | `/{phone-number-id}` | Info do número — número exibido, qualidade, status. |
+| `GET` | `/{waba-id}/phone_numbers` | Lista os números da WABA. |
+
+### Perfil comercial
+
+| Método | Path | Descrição |
+| --- | --- | --- |
+| `GET` | `/{phone-number-id}/whatsapp_business_profile` | Lê o perfil comercial (`?fields=...`). |
+| `POST` | `/{phone-number-id}/whatsapp_business_profile` | Atualiza campos do perfil comercial. |
+
+### Grupos (OBA)
+
+| Método | Path | Descrição |
+| --- | --- | --- |
+| `POST` | `/{phone-number-id}/groups` | Cria um grupo. |
+| `GET` | `/{phone-number-id}/groups` | Lista grupos. |
+| `GET` | `/{group-id}` | Info do grupo. |
+| `POST` | `/{group-id}/participants` | Adiciona participantes. |
+| `DELETE` | `/{group-id}/participants` | Remove participantes. |
+| `POST` | `/{group-id}/admins` | Promove a admin. |
+| `DELETE` | `/{group-id}/admins` | Rebaixa admin. |
+| `GET` | `/{group-id}/invites` | Obtém link de convite. |
+| `POST` | `/{group-id}/invites` | Redefine link de convite. |
+| `DELETE` | `/{group-id}` | Sai / encerra um grupo. |
+| `POST` | `/{group-id}/pins` | Fixa uma mensagem no grupo. |
+
+### Chamadas (WhatsApp Business Calling)
+
+| Método | Path | Descrição |
+| --- | --- | --- |
+| `POST` | `/{phone-number-id}/calls` | Controle de chamada — `action`: `connect` / `pre_accept` / `accept` / `reject` / `terminate`. |
+| `GET` | `/{phone-number-id}/settings` | Lê configurações de chamada. |
+| `POST` | `/{phone-number-id}/settings` | Habilita/desabilita chamadas, horários, SIP, correio de voz. |
+| `GET` | `/{phone-number-id}/call_permissions` | Verifica permissão de chamada de um usuário (`?user_wa_id=`). |
+
+## Bloqueados (negados)
+
+Estes **não** são expostos pela camada e retornam **403** — gerencie-os pelo painel do Pilot Status:
+
+- Ciclo de vida do número: `POST /{phone-number-id}/register`, `POST /{phone-number-id}/deregister`
+- Segmentos de auth / gestão em qualquer parte do path: `oauth`, `debug_token`, `subscribed_apps`, `subscriptions`, `system_users`, `assigned_users`, `client_whatsapp_business_accounts`, `owned_whatsapp_business_accounts`
+- Excluir seu próprio WABA ou phone-number id
+
+## Exemplo: enviar mensagem de texto
+
+```bash
+curl -X POST 'https://pilotstatus.com.br/api/layer/meta/<phone-number-id>/messages' \
+  -H 'x-api-key: ps_sua_chave_aqui' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messaging_product": "whatsapp",
+    "recipient_type": "individual",
+    "to": "5511999999999",
+    "type": "text",
+    "text": { "preview_url": false, "body": "Olá do Pilot Status 👋" }
+  }'
+```
+
+## Teste agora
+
+Todos os endpoints acima são interativos no **Playground → [Meta Cloud API](/pt-BR/playground/meta-cloud-api/post-phonenumberid-messages)** — envie uma requisição com sua chave `ps_` e veja a resposta ao vivo do Graph API.
+
+<Note>
+  Para novas integrações, considere a [API nativa do Pilot Status](/pt-BR/api/messages/send) — um único endpoint envia para números Meta e não oficiais com um corpo mais simples.
+</Note>
