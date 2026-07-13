@@ -1,0 +1,140 @@
+---
+title: "GET /v1/pricing — Message Rate Card"
+description: "Published WhatsApp per-message rates (list price + volume tiers) by market, currency and category."
+mode: "wide"
+sidebarTitle: "Message pricing"
+icon: "tag"
+---
+
+The published **WhatsApp Business Platform** message rate card — the list price and volume tiers Meta charges per delivered message, broken down by market, currency and category. This is Meta's public rate card exposed as reference data; it is **not** your account's real billing.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/pricing`
+
+<Note>
+  Requires any valid API key (`ps_*`) in the `x-api-key` header. Both number-scoped and tenant-scoped keys work — pricing is global reference data, not tied to a number.
+</Note>
+
+## Query parameters
+
+<ParamField query="market" type="string">
+  Market code: ISO 3166-1 alpha-2 for countries (`BR`, `GB`, `IN`…), `NAM` for North America, or a region bucket (`AFR`, `APAC`, `CEEU`, `MDE`, `WEU`, `GLO`). Must be sent together with `currency`.
+</ParamField>
+
+<ParamField query="currency" type="string">
+  ISO 4217 currency code (`USD`, `BRL`, `EUR`, `GBP`, `INR`…). Must be sent together with `market`.
+</ParamField>
+
+<ParamField query="category" type="string">
+  Optional filter: `marketing`, `utility`, `authentication`, `service` or `authentication_international`.
+</ParamField>
+
+## Modes
+
+| Call | Returns |
+| --- | --- |
+| No `market` / `currency` | **Metadata** — the available markets (code \+ name), currencies and categories. |
+| `market` \+ `currency` | The **rates** for that pair — all categories, or one when `category` is set. |
+| Only one of the two | `400 MARKET_CURRENCY_REQUIRED`. |
+
+## Examples
+
+<CodeGroup>
+
+```bash Metadata
+curl "https://pilotstatus.com.br/v1/pricing" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```bash Rates
+curl "https://pilotstatus.com.br/v1/pricing?market=BR&currency=BRL" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+</CodeGroup>
+
+```json Metadata response (200)
+{
+  "markets": [
+    { "code": "BR", "name": "Brazil" },
+    { "code": "NAM", "name": "North America" }
+  ],
+  "currencies": ["AED","ARS","AUD","BRL","CLP","COP","EUR","GBP","IDR","INR","MXN","MYR","PEN","SAR","SGD","USD"],
+  "categories": ["authentication","marketing","utility","service","authentication_international"],
+  "source": "whatsappbusiness.com"
+}
+```
+
+```json Rates response (200)
+{
+  "market": "BR",
+  "marketName": "Brazil",
+  "currency": "BRL",
+  "rates": [
+    {
+      "category": "authentication",
+      "listQuote": "0.035",
+      "tiers": [
+        { "minVolume": 0, "maxVolume": 500000, "quote": "0.035" },
+        { "minVolume": 500001, "maxVolume": 3000000, "quote": "0.0333" },
+        { "minVolume": 20000001, "maxVolume": null, "quote": "0.0263" }
+      ]
+    },
+    { "category": "marketing", "listQuote": "0.3217", "tiers": [] },
+    { "category": "service", "listQuote": "0", "tiers": [] }
+  ],
+  "source": "whatsappbusiness.com",
+  "fetchedAt": "2026-07-13T06:00:00.000Z"
+}
+```
+
+## Response fields
+
+<ResponseField name="market" type="string">
+  Market code echoed back (upper-cased). Absent in metadata mode.
+</ResponseField>
+
+<ResponseField name="marketName" type="string">
+  Human-readable market name; falls back to the code when the market has no stored rates yet.
+</ResponseField>
+
+<ResponseField name="currency" type="string">
+  ISO 4217 currency echoed back.
+</ResponseField>
+
+<ResponseField name="rates" type="array">
+  One entry per category. Each entry is `{ category, listQuote, tiers }`.
+</ResponseField>
+
+<ResponseField name="listQuote" type="string">
+  List price per delivered message, as a decimal string in the requested currency (e.g. `"0.035"`). `"0"` for free categories (Service).
+</ResponseField>
+
+<ResponseField name="tiers" type="array">
+  Volume tiers `{ minVolume, maxVolume, quote }`, cheaper as volume grows. `maxVolume` is `null` on the unbounded top tier. Empty for categories without volume tiering (Marketing / Service).
+</ResponseField>
+
+<ResponseField name="fetchedAt" type="string | null">
+  ISO 8601 — when these rates were last refreshed from the source.
+</ResponseField>
+
+## Message categories
+
+| Category | What it covers |
+| --- | --- |
+| `marketing` | Promotions, offers, product suggestions, re-engagement. |
+| `utility` | Transactional / user-triggered updates (order, payment, delivery). |
+| `authentication` | One-time passwords and identity verification. |
+| `authentication_international` | Authentication to certain international destinations (its own rate). |
+| `service` | Replies within the 24h customer service window — **free** (`0`). |
+
+<Note>
+  Meta only changes prices on the 1st day of each quarter (≈1 month notice), so this rate card is refreshed on a schedule. Treat the values as indicative and confirm against Meta's official rate cards for exact billing.
+</Note>
+
+## Common errors
+
+- `400 MARKET_CURRENCY_REQUIRED` — `market` and `currency` must be provided together.
+- `400 INVALID_CATEGORY` — the `category` value is not one of the five valid categories.
+- `401` — missing or invalid `x-api-key` header.
