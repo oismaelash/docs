@@ -1,0 +1,140 @@
+---
+title: "GET /v1/pricing — Tabela de Preços"
+description: "Preços publicados do WhatsApp por mensagem (preço de tabela + volume tiers) por mercado, moeda e categoria."
+mode: "wide"
+sidebarTitle: "Preços de mensagens"
+icon: "tag"
+---
+
+A tabela de preços publicada do **WhatsApp Business Platform** — o preço de tabela e os volume tiers que a Meta cobra por mensagem entregue, por mercado, moeda e categoria. É a tabela pública da Meta exposta como dado de referência; **não** é a cobrança real da sua conta.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/pricing`
+
+<Note>
+  Requer qualquer API key válida (`ps_*`) no header `x-api-key`. Chaves com escopo de número ou de tenant funcionam — preço é dado global, não vinculado a um número.
+</Note>
+
+## Parâmetros de query
+
+<ParamField query="market" type="string">
+  Código do mercado: ISO 3166-1 alpha-2 para países (`BR`, `GB`, `IN`…), `NAM` para América do Norte, ou um bucket regional (`AFR`, `APAC`, `CEEU`, `MDE`, `WEU`, `GLO`). Deve ser enviado junto com `currency`.
+</ParamField>
+
+<ParamField query="currency" type="string">
+  Código de moeda ISO 4217 (`USD`, `BRL`, `EUR`, `GBP`, `INR`…). Deve ser enviado junto com `market`.
+</ParamField>
+
+<ParamField query="category" type="string">
+  Filtro opcional: `marketing`, `utility`, `authentication`, `service` ou `authentication_international`.
+</ParamField>
+
+## Modos
+
+| Chamada | Retorna |
+| --- | --- |
+| Sem `market` / `currency` | **Metadados** — os mercados disponíveis (código \+ nome), moedas e categorias. |
+| `market` \+ `currency` | As **rates** desse par — todas as categorias, ou uma quando `category` é informado. |
+| Apenas um dos dois | `400 MARKET_CURRENCY_REQUIRED`. |
+
+## Exemplos
+
+<CodeGroup>
+
+```bash Metadados
+curl "https://pilotstatus.com.br/v1/pricing" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+```bash Rates
+curl "https://pilotstatus.com.br/v1/pricing?market=BR&currency=BRL" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+</CodeGroup>
+
+```json Resposta de metadados (200)
+{
+  "markets": [
+    { "code": "BR", "name": "Brazil" },
+    { "code": "NAM", "name": "North America" }
+  ],
+  "currencies": ["AED","ARS","AUD","BRL","CLP","COP","EUR","GBP","IDR","INR","MXN","MYR","PEN","SAR","SGD","USD"],
+  "categories": ["authentication","marketing","utility","service","authentication_international"],
+  "source": "whatsappbusiness.com"
+}
+```
+
+```json Resposta de rates (200)
+{
+  "market": "BR",
+  "marketName": "Brazil",
+  "currency": "BRL",
+  "rates": [
+    {
+      "category": "authentication",
+      "listQuote": "0.035",
+      "tiers": [
+        { "minVolume": 0, "maxVolume": 500000, "quote": "0.035" },
+        { "minVolume": 500001, "maxVolume": 3000000, "quote": "0.0333" },
+        { "minVolume": 20000001, "maxVolume": null, "quote": "0.0263" }
+      ]
+    },
+    { "category": "marketing", "listQuote": "0.3217", "tiers": [] },
+    { "category": "service", "listQuote": "0", "tiers": [] }
+  ],
+  "source": "whatsappbusiness.com",
+  "fetchedAt": "2026-07-13T06:00:00.000Z"
+}
+```
+
+## Campos da resposta
+
+<ResponseField name="market" type="string">
+  Código do mercado devolvido (em maiúsculas). Ausente no modo de metadados.
+</ResponseField>
+
+<ResponseField name="marketName" type="string">
+  Nome legível do mercado; usa o código como fallback quando o mercado ainda não tem rates armazenadas.
+</ResponseField>
+
+<ResponseField name="currency" type="string">
+  Moeda ISO 4217 devolvida.
+</ResponseField>
+
+<ResponseField name="rates" type="array">
+  Uma entrada por categoria. Cada entrada é `{ category, listQuote, tiers }`.
+</ResponseField>
+
+<ResponseField name="listQuote" type="string">
+  Preço de tabela por mensagem entregue, como string decimal na moeda pedida (ex.: `"0.035"`). `"0"` para categorias gratuitas (Service).
+</ResponseField>
+
+<ResponseField name="tiers" type="array">
+  Volume tiers `{ minVolume, maxVolume, quote }`, mais baratos conforme o volume cresce. `maxVolume` é `null` no tier superior ilimitado. Vazio para categorias sem tiering (Marketing / Service).
+</ResponseField>
+
+<ResponseField name="fetchedAt" type="string | null">
+  ISO 8601 — quando essas rates foram atualizadas pela última vez a partir da fonte.
+</ResponseField>
+
+## Categorias de mensagem
+
+| Categoria | O que cobre |
+| --- | --- |
+| `marketing` | Promoções, ofertas, sugestões de produto, reengajamento. |
+| `utility` | Atualizações transacionais / disparadas pelo usuário (pedido, pagamento, entrega). |
+| `authentication` | Senhas de uso único (OTP) e verificação de identidade. |
+| `authentication_international` | Autenticação para certos destinos internacionais (rate própria). |
+| `service` | Respostas dentro da janela de atendimento de 24h — **grátis** (`0`). |
+
+<Note>
+  A Meta só muda preços no 1º dia de cada trimestre (aviso de ~1 mês), então esta tabela é atualizada por schedule. Trate os valores como indicativos e confirme com as tabelas oficiais da Meta para a cobrança exata.
+</Note>
+
+## Erros comuns
+
+- `400 MARKET_CURRENCY_REQUIRED` — `market` e `currency` devem ser enviados juntos.
+- `400 INVALID_CATEGORY` — o valor de `category` não é uma das cinco categorias válidas.
+- `401` — header `x-api-key` ausente ou inválido.
