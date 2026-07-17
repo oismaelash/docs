@@ -1,7 +1,7 @@
 ---
 title: "Extra Numbers & On Demand"
 sidebarTitle: "Extra numbers"
-description: "Buy extra WhatsApp numbers via /v1/subscription/extra-numbers — preview cost, Free → On Demand conversion, and payment via saved card or checkout URL."
+description: "Buy extra WhatsApp numbers via /v1/subscription/extra-numbers — prorated first charge, Free → On Demand conversion, and payment from the prepaid wallet, a saved card, or a checkout URL."
 mode: "wide"
 ---
 
@@ -12,6 +12,8 @@ Buy an extra WhatsApp number via the public API with a **tenant-scoped** key. Pr
 <Frame caption="The Card tab in Plans — save a card once and extra numbers bought via the API bill automatically (On Demand).">
   ![Saved card tab in the Plans page](/images/dashboard/saved-card.png)
 </Frame>
+
+Billing runs off a **prepaid wallet**: credits first, saved card for whatever the credits do not cover. Credits can be topped up by card or PIX.
 
 <Note>
   Number-scoped keys get **403** — use the tenant-scoped key (dashboard **Profile → API**).
@@ -24,23 +26,36 @@ curl "https://pilotstatus.com.br/v1/subscription/extra-numbers?quantity=1" \
   -H "x-api-key: ps_your_tenant_scoped_key"
 ```
 
-Returns the cost and whether buying converts the plan:
+Returns the cost and whether buying converts the plan. `proratedTotal` is what you are charged **now**; `monthlyTotalBRL` is what recurs every cycle after that:
 
 ```json
 {
+  "plan": "FREE",
   "requiresConversion": true,
-  "fromPlan": "FREE",
-  "toPlan": "ON_DEMAND",
+  "explanation": { "pt": "…", "en": "…" },
   "currentNumbers": 1,
   "requested": 1,
   "billedQuantity": 2,
-  "unitPriceBRL": 29.9,
-  "monthlyTotalBRL": 59.8,
-  "messagesBecomeUnlimited": true,
+  "currency": "BRL",
+  "unitPriceMonthly": 29.9,
+  "proratedUnitPrice": 14.95,
+  "proratedTotal": 29.9,
+  "remainingDays": 15,
+  "totalDaysInCycle": 30,
+  "walletBalance": 0,
   "hasSavedCard": false,
-  "explanation": { "pt": "…", "en": "…" }
+  "fundingSource": "none",
+  "canFund": false,
+  "unitPriceBRL": 29.9,
+  "monthlyTotalBRL": 59.8
 }
 ```
+
+<Note>
+  **You only pay for the days left in the cycle.** The first charge is prorated: `proratedUnitPrice = unitPriceMonthly × (remainingDays / totalDaysInCycle)`. In the example above, half the cycle is left, so 2 numbers × R\$14,95 = **R\$29,90 now**, and **R\$59,80/month** from the next cycle on.
+</Note>
+
+`fundingSource` tells you how the charge will be covered — `credits`, `card`, `credits+card`, or `none`. When it is `none`, `canFund` is `false` and the `POST` returns a `checkoutUrl` instead of charging.
 
 ## POST /v1/subscription/extra-numbers — Buy
 
@@ -55,11 +70,15 @@ Behaviour:
 
 - **Free → On Demand conversion.** If you are on the **Free** plan, buying an extra number moves you to On Demand: your current (formerly free, 200-message-limited) number becomes a **paid, unlimited** number **and** the new number is billed too. So buying 1 extra while Free bills you for **2** numbers. Because this changes what you pay, the `POST` returns **409 `CONFIRMATION_REQUIRED`** (with the preview) unless you send `confirm: true`.
 - **Already On Demand / paid.** Buying increments your number count; messages stay unlimited.
-- **Payment.** If a card is saved (dashboard **Plans → Cartão**), it is charged immediately and the slot is unlocked. Otherwise the response is `{ "success": true, "charged": false, "checkoutUrl": "https://…" }` — open it to pay; once paid, the slot unlocks (webhook) and you can create the number with `POST /v1/numbers`.
-- **Stripe only.** On Demand billing is card-based (no PIX).
+- **Payment.** The prorated cost is taken from your **prepaid wallet** first, then any remainder from your saved card (dashboard **Plans → Cartão**). With neither, the response is `{ "success": true, "charged": false, "checkoutUrl": "https://…" }` — open it to pay the prorated amount; the card you use there is saved for the recurring charge. Once paid, the slot unlocks (webhook) and you can create the number with `POST /v1/numbers`.
+- **The monthly recurrence comes out of the wallet**, not a separate subscription. Each cycle, `paidExtraNumbers × unit price` is debited from your credits, falling back to your saved card. Top the wallet up with `POST /v1/billing/checkout` (`wallet_topup`), which accepts PIX — so you can run On Demand on PIX credits and never save a card.
 
 <Note>
-  Save a card first (so API purchases charge instantly) in the dashboard under **Plans → Cartão**. To lower your paid capacity, see the scheduled-reduction section below.
+  Keep either credits or a saved card available. If a cycle's charge cannot be funded, you get **2 days** to add credits or update the card before all your numbers stop **sending** (inbound keeps working). Adding funds reactivates immediately.
+</Note>
+
+<Note>
+  To lower your paid capacity, see the scheduled-reduction section below.
 </Note>
 
 ## Paid capacity is a 30-day entitlement
