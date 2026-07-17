@@ -1,7 +1,7 @@
 ---
 title: "Números extras e On Demand"
 sidebarTitle: "Números extras"
-description: "Compre números extras de WhatsApp via /v1/subscription/extra-numbers — visualize o custo, a conversão Free → On Demand e o pagamento por cartão salvo ou URL de checkout."
+description: "Compre números extras de WhatsApp via /v1/subscription/extra-numbers — primeira cobrança proporcional, conversão Free → On Demand e pagamento pela carteira pré-paga, cartão salvo ou URL de checkout."
 mode: "wide"
 ---
 
@@ -12,6 +12,8 @@ Compre um número extra de WhatsApp pela API pública com uma chave **de escopo 
 <Frame caption="A aba Cartão em Planos — salve um cartão uma vez e números extras comprados via API são cobrados automaticamente (On Demand).">
   ![Aba de cartão salvo na página de Planos](/images/dashboard/saved-card.png)
 </Frame>
+
+A cobrança roda sobre uma **carteira pré-paga**: primeiro os créditos, depois o cartão salvo para o que os créditos não cobrirem. Os créditos podem ser recarregados por cartão ou PIX.
 
 <Note>
   Chaves de escopo de número recebem **403** — use a chave de escopo do tenant (painel **Profile → API**).
@@ -24,23 +26,36 @@ curl "https://pilotstatus.com.br/v1/subscription/extra-numbers?quantity=1" \
   -H "x-api-key: ps_your_tenant_scoped_key"
 ```
 
-Retorna o custo e se a compra converte o plano:
+Retorna o custo e se a compra converte o plano. `proratedTotal` é o que você paga **agora**; `monthlyTotalBRL` é o que passa a ser cobrado a cada ciclo:
 
 ```json
 {
+  "plan": "FREE",
   "requiresConversion": true,
-  "fromPlan": "FREE",
-  "toPlan": "ON_DEMAND",
+  "explanation": { "pt": "…", "en": "…" },
   "currentNumbers": 1,
   "requested": 1,
   "billedQuantity": 2,
-  "unitPriceBRL": 29.9,
-  "monthlyTotalBRL": 59.8,
-  "messagesBecomeUnlimited": true,
+  "currency": "BRL",
+  "unitPriceMonthly": 29.9,
+  "proratedUnitPrice": 14.95,
+  "proratedTotal": 29.9,
+  "remainingDays": 15,
+  "totalDaysInCycle": 30,
+  "walletBalance": 0,
   "hasSavedCard": false,
-  "explanation": { "pt": "…", "en": "…" }
+  "fundingSource": "none",
+  "canFund": false,
+  "unitPriceBRL": 29.9,
+  "monthlyTotalBRL": 59.8
 }
 ```
+
+<Note>
+  **Você só paga pelos dias que faltam no ciclo.** A primeira cobrança é proporcional: `proratedUnitPrice = unitPriceMonthly × (remainingDays / totalDaysInCycle)`. No exemplo acima falta metade do ciclo, então são 2 números × R\$14,95 = **R\$29,90 agora**, e **R\$59,80/mês** a partir do próximo ciclo.
+</Note>
+
+`fundingSource` diz como a cobrança será coberta — `credits`, `card`, `credits+card` ou `none`. Quando é `none`, `canFund` vem `false` e o `POST` devolve uma `checkoutUrl` em vez de cobrar.
 
 ## POST /v1/subscription/extra-numbers — Comprar
 
@@ -55,11 +70,11 @@ Comportamento:
 
 - **Conversão Free → On Demand.** Se você está no plano **Free**, comprar um número extra move você para o On Demand: seu número atual (antes gratuito, limitado a 200 mensagens) se torna um número **pago e ilimitado** **e** o novo número também é cobrado. Portanto, comprar 1 extra estando no Free cobra você por **2** números. Como isso altera o que você paga, o `POST` retorna **409 `CONFIRMATION_REQUIRED`** (com a prévia) a menos que você envie `confirm: true`.
 - **Já no On Demand / pago.** Comprar incrementa sua contagem de números; as mensagens permanecem ilimitadas.
-- **Pagamento.** Se houver um cartão salvo (painel **Plans → Cartão**), ele é cobrado imediatamente e o slot é desbloqueado. Caso contrário, a resposta é `{ "success": true, "charged": false, "checkoutUrl": "https://…" }` — abra-a para pagar; após o pagamento, o slot é desbloqueado (webhook) e você pode criar o número com `POST /v1/numbers`.
-- **Somente Stripe.** A cobrança On Demand é baseada em cartão (sem PIX).
+- **Pagamento.** O custo proporcional sai primeiro da sua **carteira pré-paga** e o que sobrar vai no cartão salvo (painel **Plans → Cartão**). Sem nenhum dos dois, a resposta é `{ "success": true, "charged": false, "checkoutUrl": "https://…" }` — abra-a para pagar o valor proporcional; o cartão usado ali fica salvo para a cobrança recorrente. Após o pagamento, o slot é desbloqueado (webhook) e você pode criar o número com `POST /v1/numbers`.
+- **A recorrência mensal sai da carteira**, não de uma assinatura à parte. A cada ciclo, `paidExtraNumbers × preço unitário` é debitado dos créditos, com o cartão salvo como reserva. Recarregue com `POST /v1/billing/checkout` (`wallet_topup`), que aceita PIX — dá para rodar On Demand só com créditos de PIX, sem nunca salvar um cartão.
 
 <Note>
-  Salve um cartão primeiro (para que as compras via API sejam cobradas instantaneamente) no painel em **Plans → Cartão**.
+  Mantenha créditos ou um cartão salvo disponíveis. Se a cobrança de um ciclo não puder ser paga, você tem **2 dias** para adicionar créditos ou atualizar o cartão antes que seus números parem de **enviar** (o recebimento continua). Adicionar saldo reativa na hora.
 </Note>
 
 ## A capacidade paga é um direito de 30 dias
