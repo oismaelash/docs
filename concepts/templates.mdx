@@ -39,13 +39,34 @@ Only **body** is required.
 | **Header** | optional | Text (≤60 chars, ≤1 variable) or one media item (`IMAGE` JPG/PNG, `VIDEO` MP4, `DOCUMENT` PDF). |
 | **Body** | **required** | Main text (≤1024 chars) with `{{variable}}` placeholders. |
 | **Footer** | optional | Static text ≤60 chars, no variables. |
-| **Buttons** | optional | Up to 10 buttons: `QUICK_REPLY` (≤10), `URL` (≤2), `PHONE_NUMBER` (≤1, E.164 with country code), `COPY_CODE` (≤1, alphanumeric ≤15 chars). |
+| **Buttons** | optional | Up to 10 buttons: `QUICK_REPLY` (≤10), `URL` (≤2), `PHONE_NUMBER` (≤1, E.164 with country code), `COPY_CODE` (≤1, alphanumeric ≤15 chars), `PAYMENT_REQUEST` (≤1, PIX). |
 
 Media header values: via REST pass `header.url` (public http(s) URL) **or** `header.base64` (data URI, re-hosted server-side automatically). Via MCP only `header.url` is accepted.
 
 <Note>
-  There is no `LOCATION` header. Also not supported: `FLOW`, `CAROUSEL`, `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP autofill/one-tap/zero-tap, `VOICE_CALL` buttons, and the `NAMED` `parameter_format`.
+  There is no `LOCATION` header. Also not supported: `FLOW`, `CAROUSEL`, `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP autofill/one-tap/zero-tap, `VOICE_CALL` buttons, and `ORDER_DETAILS` (Meta's legacy payments button — use `PAYMENT_REQUEST`).
+
+  The `NAMED` `parameter_format` **is** supported: a template authored in Meta's console with named variables (`{{customer_name}}`) imports with the right variables and sends with `parameter_name` on each parameter.
 </Note>
+
+### PIX payment button (`PAYMENT_REQUEST`)
+
+WhatsApp Pay Brazil payment button: the customer taps it and copies the PIX code. This is the right way to deliver a PIX copy-and-paste code — `COPY_CODE` caps at 15 alphanumeric characters, while a real BR Code runs 100-400 characters with punctuation.
+
+The code is a **per-send** value: put a variable in the button's `example` and pass the real code in `variables` at send time, like any other variable.
+
+```json
+{ "type": "PAYMENT_REQUEST", "text": "Copy Pix code",
+  "paymentType": "pix_dynamic_code", "example": ["{{codigo_pix}}"] }
+```
+
+<Note>
+  This button requires Meta to have enabled **payments** on your WhatsApp Business Account. Enablement is gradual and per-account — Meta's own wording is _"this feature is rolling out and might not be available yet for your WhatsApp Business account"_. On an account without it, Meta refuses the template with `100` / subcode `2388128` (_"Button at index 0 has unexpected type (PAYMENT\_REQUEST)"_). There is no API field to check this — the only way to know is to try creating one.
+</Note>
+
+<Warning>
+  The PIX code variable is **required** at send time. If it is missing the send is refused rather than delivered: without the parameter Meta would fall back to the **sample** code stored on the template, and the customer would pay the wrong account.
+</Warning>
 
 ## Variable rules
 
@@ -118,6 +139,9 @@ After saving, `GET /v1/templates/{id}` returns all detected variable keys in the
 | Sending a template not yet approved by Meta | Wait for approval | `131053` |
 | Variables sent don't match the approved template | Send every expected key | `132000` |
 | Template paused by Meta for quality drop | Improve content, reduce reports | `132015` |
+| A required parameter is missing (e.g. an unfilled button variable) | Supply every template variable | `131008` |
+| Display name not approved yet | Wait for Meta's approval | `131037` |
+| Payment button not enabled for this WABA | Wait for Meta to enable payments | `100/subcode 2388128` |
 
 A `404` when sending means the template does not exist for the key or — on a Meta number — it has no approved version yet.
 
