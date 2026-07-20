@@ -155,8 +155,110 @@ curl -X POST https://pilotstatus.com.br/v1/templates \
 </CodeGroup>
 
 - `body` pode ser um **objeto** (recomendado), uma **string JSON** ou **texto simples** (templates só de body).
-- Edite com `PUT /v1/templates/{id}` (mesmo formato); remova com `DELETE /v1/templates/{id}` (também exclui da Meta para templates Meta; retorna `{ deleted: true, id }`).
+- Edite com `PUT /v1/templates/{id}` (mesmo formato); remova com `DELETE /v1/templates/{id}` — para um template Meta isso também pede à Meta para excluí-lo, e a resposta depende do que a Meta faz (veja [Excluir](#excluir)).
 - `GET /v1/templates` / `GET /v1/templates/{id}` retornam `source` (`META` | `PILOT_STATUS`), `metaStatus` (`APPROVED` | `PENDING` | `REJECTED` | `DISABLED` | `null`), `metaLanguage` e `sendable` — em um número Meta apenas templates `META` com `metaStatus: "APPROVED"` são enviáveis.
+
+## Excluir
+
+`DELETE /v1/templates/{id}` **não retorna mais sucesso sempre.** Para um template Meta a exclusão é encaminhada à Meta, e o resultado depende do que a Meta faz:
+
+| Resultado | HTTP | Corpo | Registro local |
+| --- | --- | --- | --- |
+| Removido dos dois lados | `200` | `{ "deleted": true, "id": "tmpl_123" }` | removido |
+| A Meta **recusou** a exclusão | `409` | mensagem bilíngue nomeando o template e o motivo | **mantido** |
+| Template realmente ausente na Meta (404 de verdade) | `200` | `{ "deleted": true, "id": "tmpl_123" }` | removido |
+
+- Um `200 { "deleted": true, "id" }` é a única resposta que significa que o template realmente sumiu — removido na Meta **e** localmente.
+- Um `409` significa que **nada foi removido**: a Meta rejeitou a exclusão (ex.: o system token não tem permissão na WABA), então o template ainda existe na Meta e o nome dele **continua reservado**. O registro local é mantido, e a mensagem nomeia o template e o motivo. Corrija a permissão e tente de novo.
+- Se a Meta informar que o template não existe (um 404 de verdade / "template does not exist"), o registro local obsoleto é removido e você ainda recebe `200 { "deleted": true, "id" }`.
+
+## Templates de carrossel
+
+Um **template de carrossel** é um template aprovado cujo `body` carrega um bloco `carousel`: uma faixa rolável na horizontal com **2 a 10** cartões de mídia, cada um com sua própria imagem, linha de texto e botões. Templates de carrossel são **exclusivos de números Meta** e sempre da categoria **MARKETING** — em um número Meta a criação é enviada à Meta como um componente `CAROUSEL`.
+
+Diferente do [carrossel de sessão](/pt-BR/api/messages/send) (interativo, **somente resposta rápida** — um botão de URL ali retorna `400`), um cartão de carrossel de **template** pode combinar botões `QUICK_REPLY` **e** `URL` no mesmo cartão.
+
+### O bloco `carousel`
+
+Ele fica dentro de `body`, ao lado de `body.text` — a mensagem exibida **acima** dos cartões (o corpo do carrossel).
+
+| Campo | O que é |
+| --- | --- |
+| `cardTemplate` | O **esqueleto** compartilhado que todo cartão deve seguir: uma decisão `hasBody` e uma lista `buttons` (tipos \+ ordem). |
+| `cardTemplate.hasBody` | `true`/`false` — se todo cartão tem uma linha de texto. O body é **tudo-ou-nada** entre os cartões. |
+| `cardTemplate.buttons` | Os **tipos e a ordem** dos botões que todo cartão repete, ex.: `[{ "type": "QUICK_REPLY" }, { "type": "URL" }]`. |
+| `cards` | 2 a 10 cartões. Cada cartão só preenche sua própria `media`, o texto de `body` e os **valores** dos botões (`text`, `payload`, `url`). |
+
+### Limites (validados na **criação e na atualização**)
+
+Os mesmos limites e regras de mídia valem para `POST` (criar) **e** `PUT` (atualizar) — a validação não é mais pulada.
+
+| Regra | Limite |
+| --- | --- |
+| Cartões | 2 a 10 |
+| Botões por cartão | ≤ 2 |
+| Body do cartão | ≤ 160 caracteres |
+| Body da mensagem (`body.text`, acima dos cartões) | ≤ 1024 caracteres |
+| Rótulo do botão (`text`) | ≤ 20 caracteres |
+| Payload / id do botão | ≤ 256 caracteres |
+| Body | tudo-ou-nada — ou todo cartão tem body, ou nenhum tem |
+| Botões | todo cartão repete exatamente os tipos **e** a ordem de `cardTemplate.buttons` |
+
+**Mídia do cartão** — cada `card.media.url` deve ser uma URL **https** pública terminada em `.png`, `.jpg`, `.jpeg` ou `.webp`, **sem query string**. A Meta aceita uma imagem inacessível com `200` e depois não entrega nada, então a URL é buscada e recusada antes do envio, com um erro tipado que nomeia o cartão problemático.
+
+<Note>
+  Um `header` de nível superior **não** é permitido com `carousel` (a mídia fica em cada cartão), e os botões dos cartões substituem os `buttons` de nível superior.
+</Note>
+
+### Criar um template de carrossel
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://pilotstatus.com.br/v1/templates \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_token_here" \
+  -d '{
+  "name": "lancamentos_carrossel",
+  "category": "MARKETING",
+  "language": "pt_BR",
+  "body": {
+    "body": { "text": "Confira nossos lançamentos da semana!" },
+    "carousel": {
+      "cardTemplate": {
+        "hasBody": true,
+        "buttons": [{ "type": "QUICK_REPLY" }, { "type": "URL" }]
+      },
+      "cards": [
+        {
+          "media": { "format": "IMAGE", "url": "https://cdn.exemplo.com/tenis.png" },
+          "body": "Tênis Runner — R$ 299",
+          "buttons": [
+            { "type": "QUICK_REPLY", "text": "Quero", "payload": "SKU-1" },
+            { "type": "URL",         "text": "Ver produto", "url": "https://loja.com/p/tenis" }
+          ]
+        },
+        {
+          "media": { "format": "IMAGE", "url": "https://cdn.exemplo.com/jaqueta.png" },
+          "body": "Jaqueta Wind — R$ 459",
+          "buttons": [
+            { "type": "QUICK_REPLY", "text": "Quero", "payload": "SKU-2" },
+            { "type": "URL",         "text": "Ver produto", "url": "https://loja.com/p/jaqueta" }
+          ]
+        }
+      ]
+    }
+  }
+}'
+```
+
+```json Response 201
+{ "id": "tmpl_car_1", "name": "lancamentos_carrossel", "category": "MARKETING", "metaStatus": "PENDING" }
+```
+
+</CodeGroup>
+
+Aqui todo cartão repete o par `QUICK_REPLY` \+ `URL` declarado em `cardTemplate.buttons`, nessa ordem. Um cartão que omite um botão, troca a ordem ou muda um tipo é recusado antes do envio.
 
 ## Aprovação
 
@@ -165,7 +267,7 @@ curl -X POST https://pilotstatus.com.br/v1/templates \
 
 ## Não suportado
 
-`FLOW`, `LOCATION` (header ou botão), `CAROUSEL`, `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP **autofill/one-tap/zero-tap**, botões `VOICE_CALL` e `ORDER_DETAILS` (botão de pagamento legado — use `PAYMENT_REQUEST`).
+`FLOW`, `LOCATION` (header ou botão), `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP **autofill/one-tap/zero-tap**, botões `VOICE_CALL` e `ORDER_DETAILS` (botão de pagamento legado — use `PAYMENT_REQUEST`). (O `carousel` de sessão — a variante fora de template — está na referência de [Enviar mensagem](/pt-BR/api/messages/send).)
 
 O `parameter_format` `NAMED` **é** suportado: um template criado no painel da Meta com variáveis nomeadas (`{{nome_do_cliente}}`) é importado com as variáveis certas e enviado com `parameter_name` em cada parâmetro.
 

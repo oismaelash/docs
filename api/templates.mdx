@@ -131,8 +131,110 @@ curl -X POST https://pilotstatus.com.br/v1/templates \
 </CodeGroup>
 
 - `body` may be an **object** (recommended), a **JSON string**, or **plain text** (body-only templates).
-- Edit with `PUT /v1/templates/{id}` (same shape); remove with `DELETE /v1/templates/{id}` (also deletes from Meta for Meta templates; returns `{ deleted: true, id }`).
+- Edit with `PUT /v1/templates/{id}` (same shape); remove with `DELETE /v1/templates/{id}` — for a Meta template this also asks Meta to delete it, and the response depends on Meta's answer (see [Delete](#delete)).
 - `GET /v1/templates` / `GET /v1/templates/{id}` return `source` (`META` | `PILOT_STATUS`), `metaStatus` (`APPROVED` | `PENDING` | `REJECTED` | `DISABLED` | `null`), `metaLanguage`, and `sendable` — on a Meta number only `META` templates with `metaStatus: "APPROVED"` are sendable.
+
+## Delete
+
+`DELETE /v1/templates/{id}` **no longer always returns success.** For a Meta template the deletion is forwarded to Meta, and the outcome depends on what Meta does:
+
+| Outcome | HTTP | Body | Local row |
+| --- | --- | --- | --- |
+| Removed on both sides | `200` | `{ "deleted": true, "id": "tmpl_123" }` | removed |
+| Meta **refused** the deletion | `409` | bilingual message naming the template and the reason | **kept** |
+| Template genuinely absent on Meta (real 404) | `200` | `{ "deleted": true, "id": "tmpl_123" }` | removed |
+
+- A `200 { "deleted": true, "id" }` is the only response that means the template is really gone — removed on Meta **and** locally.
+- A `409` means **nothing was removed**: Meta rejected the deletion (e.g. the system token lacks permission on the WABA), so the template still exists on Meta and its name **stays reserved**. The local row is kept, and the message names the template and the reason. Fix the underlying permission and retry.
+- If Meta reports the template does not exist (a genuine 404 / "template does not exist"), the stale local row is removed and you still get `200 { "deleted": true, "id" }`.
+
+## Carousel templates
+
+A **carousel template** is an approved template whose `body` carries a `carousel` block: a horizontally-scrollable strip of **2–10** media cards, each with its own image, body line and buttons. Carousel templates are **Meta-only** and always category **MARKETING** — on a Meta number the create is submitted to Meta as a `CAROUSEL` component.
+
+Unlike the [session carousel](/api/messages/send) (interactive, **quick-reply only** — a URL button there returns `400`), a **template** carousel card may mix `QUICK_REPLY` **and** `URL` buttons in the same card.
+
+### The `carousel` block
+
+It sits inside `body` next to `body.text` — the message shown **above** the cards (the carousel body).
+
+| Field | What it is |
+| --- | --- |
+| `cardTemplate` | The shared **skeleton** every card must match: one `hasBody` decision and one `buttons` list (types \+ order). |
+| `cardTemplate.hasBody` | `true`/`false` — whether every card carries a body line. Body is **all-or-nothing** across cards. |
+| `cardTemplate.buttons` | The button **types and order** every card repeats, e.g. `[{ "type": "QUICK_REPLY" }, { "type": "URL" }]`. |
+| `cards` | 2–10 cards. Each card only fills its own `media`, `body` text and button **values** (`text`, `payload`, `url`). |
+
+### Caps (validated at **create and update**)
+
+The same caps and media rules apply to `POST` (create) **and** `PUT` (update) — validation is no longer skipped.
+
+| Rule | Limit |
+| --- | --- |
+| Cards | 2–10 |
+| Buttons per card | ≤ 2 |
+| Card body | ≤ 160 chars |
+| Message body (`body.text`, above the cards) | ≤ 1024 chars |
+| Button label (`text`) | ≤ 20 chars |
+| Button payload / id | ≤ 256 chars |
+| Body | all-or-nothing — every card has a body, or none does |
+| Buttons | every card repeats the exact types **and** order from `cardTemplate.buttons` |
+
+**Card media** — each `card.media.url` must be a public **https** URL ending in `.png`, `.jpg`, `.jpeg` or `.webp`, with **no query string**. Meta accepts an unreachable image with `200` and then delivers nothing, so the URL is fetched and refused before submission with a typed error naming the offending card.
+
+<Note>
+  A top-level `header` is **not** allowed with `carousel` (media lives on each card), and card buttons replace top-level `buttons`.
+</Note>
+
+### Create a carousel template
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://pilotstatus.com.br/v1/templates \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_token_here" \
+  -d '{
+  "name": "lancamentos_carrossel",
+  "category": "MARKETING",
+  "language": "pt_BR",
+  "body": {
+    "body": { "text": "Confira nossos lançamentos da semana!" },
+    "carousel": {
+      "cardTemplate": {
+        "hasBody": true,
+        "buttons": [{ "type": "QUICK_REPLY" }, { "type": "URL" }]
+      },
+      "cards": [
+        {
+          "media": { "format": "IMAGE", "url": "https://cdn.exemplo.com/tenis.png" },
+          "body": "Runner sneakers — $59",
+          "buttons": [
+            { "type": "QUICK_REPLY", "text": "I want it", "payload": "SKU-1" },
+            { "type": "URL",         "text": "See product", "url": "https://loja.com/p/tenis" }
+          ]
+        },
+        {
+          "media": { "format": "IMAGE", "url": "https://cdn.exemplo.com/jaqueta.png" },
+          "body": "Wind jacket — $89",
+          "buttons": [
+            { "type": "QUICK_REPLY", "text": "I want it", "payload": "SKU-2" },
+            { "type": "URL",         "text": "See product", "url": "https://loja.com/p/jaqueta" }
+          ]
+        }
+      ]
+    }
+  }
+}'
+```
+
+```json Response 201
+{ "id": "tmpl_car_1", "name": "lancamentos_carrossel", "category": "MARKETING", "metaStatus": "PENDING" }
+```
+
+</CodeGroup>
+
+Every card here repeats the `QUICK_REPLY` \+ `URL` pair declared in `cardTemplate.buttons`, in that order. A card that omits a button, reorders them, or changes a type is rejected before dispatch.
 
 ## Approval
 
@@ -141,7 +243,7 @@ curl -X POST https://pilotstatus.com.br/v1/templates \
 
 ## Not supported
 
-`FLOW`, `LOCATION` (header or button), `CAROUSEL`, `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP **autofill/one-tap/zero-tap**, `VOICE_CALL` buttons, and the `NAMED` `parameter_format`.
+`FLOW`, `LOCATION` (header or button), `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP **autofill/one-tap/zero-tap**, `VOICE_CALL` buttons, and the `NAMED` `parameter_format`. (Session `carousel` — the non-template kind — is covered in the [Send message](/api/messages/send) reference.)
 
 ## Submit & rejection errors
 
