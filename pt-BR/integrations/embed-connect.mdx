@@ -12,14 +12,40 @@ Incorpore o **fluxo de pareamento de número (Connect)** do WhatsApp — QR code
 </Frame>
 
 <Note>
-  Diferença principal em relação ao Chat: o Connect **não** usa o token `POST /v1/embed/sessions`. Ele usa o **token de pareamento remoto** que fica na **URL** do iframe (não em memória via postMessage), com um **TTL de 24h**.
+  Diferença principal em relação ao Chat: o Connect **não** usa o token de `POST /v1/embed/sessions`. Ele usa o **token de pareamento remoto** gerado por `POST /v1/numbers/remote-pairing`, e esse token fica no **caminho da URL** do iframe (`/connect/<token>`), não em memória via postMessage.
 </Note>
+
+## Formato e validade do token
+
+O token devolvido depende do `provider` — não são o mesmo objeto e **não** compartilham a mesma validade:
+
+| `provider` | Token | Validade | A resposta traz |
+| --- | --- | --- | --- |
+| `META` (Cloud API / Embedded Signup) | JWT assinado (contém pontos) | **30 minutos** | `provider`, `remotePairingUrl`, `expiresAt` |
+| `PILOT_STATUS` (pareamento por QR, padrão) | UUID puro | **24 horas** | `provider`, `instance`, `remotePairingUrl`, `maskedNumber`, `messageSent`, `messageError` |
+
+Gere o link Meta **no momento em que o usuário vai clicar**, não horas antes — 30 minutos é curto de propósito. Quando expira, o iframe emite `connect:expired`; gere um novo.
 
 ## Fluxo
 
 <Steps>
   <Step title="O backend cria o link de pareamento">
-    ```bash
+    <CodeGroup>
+    ```bash Meta (Embedded Signup)
+    curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "provider": "META",
+        "metaFlow": "embedded",
+        "name": "Support",
+        "externalRef": "crm-cliente-4821",
+        "redirectUrl": "https://app.seusaas.com/whatsapp/pronto",
+        "branding": { "primaryColor": "#1877F2" }
+      }'
+    ```
+
+    ```bash Pilot Status (QR)
     curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
       -H "x-api-key: ps_your_tenant_key" \
       -H "Content-Type: application/json" \
@@ -27,11 +53,18 @@ Incorpore o **fluxo de pareamento de número (Connect)** do WhatsApp — QR code
         "name": "Support",
         "number": "5511999999999",
         "sendViaWhatsApp": false,
-        "brandingOverride": { }
+        "branding": { }
       }'
     ```
+    </CodeGroup>
 
-    Passe `provider: "META"` para um pareamento via Cloud API (Embedded Signup); `brandingOverride` é opcional. A resposta inclui `remotePairingUrl` (`https://connect.pilotstatus.com.br/connect/<token>`), `maskedNumber` e `messageSent`. O **token** é o UUID no final da URL (TTL **24h**). Encaminhe apenas o token/URL para o seu frontend.
+    `201` nos dois casos. `remotePairingUrl` é `https://connect.pilotstatus.com.br/connect/<token>`; o **token** é o último segmento do caminho. Encaminhe apenas o token (ou a URL) para o seu frontend — nunca a chave `ps_`.
+
+    Para `provider: "META"`, `name`/`number` não são obrigatórios: o usuário final escolhe o número dentro do diálogo do Facebook. Para `PILOT_STATUS`, ambos são obrigatórios.
+
+    <Note>
+      O campo de branding por link é `branding` (não `brandingOverride`). `externalRef` (máx. 200 caracteres) é o id do cliente no seu sistema — ele é assinado dentro do token Meta e devolvido para você no `connect:paired`.
+    </Note>
   </Step>
   <Step title="O frontend incorpora">
     O SDK monta a URL do iframe a partir do token — você passa apenas o token:
@@ -41,23 +74,112 @@ Incorpore o **fluxo de pareamento de número (Connect)** do WhatsApp — QR code
     <script>
       PilotStatus.init();
       const { token } = await fetch("/api/my-saas/pairing-token").then(r => r.json());
-    
-      // Centered modal:
+
+      // Modal centralizado:
       const h = PilotStatus.connect.open({
         token,
-        onPaired: (d) => { /* d = { numberId?, redirectUrl? } */ h.destroy(); },
+        onPaired: (d) => { salvar(d.numberId, d.externalRef); h.destroy(); },
         onError: (e) => alert(e.message),
-        onExpired: () => { /* mint a new link */ },
+        onExpired: () => { /* gerar um novo link */ },
       });
-    
-      // or inline:
+
+      // ou inline:
       // PilotStatus.connect.mount("#connect-widget", { token, onPaired, onError, onExpired });
     </script>
     ```
 
-    `ConnectOptions`: `token` (obrigatório), `baseUrl?` (padrão `https://connect.pilotstatus.com.br`), `onPaired(d)`, `onError(e)`, `onExpired()`.
+    `ConnectOptions`: `token` (obrigatório), `baseUrl?` (padrão `https://connect.pilotstatus.com.br`), `mode?` (`"page"` \| `"button"`, padrão `"page"`), `onPaired(d)`, `onError(e)`, `onExpired()`.
   </Step>
 </Steps>
+
+## Modo botão
+
+`mode: "button"` renderiza **apenas o botão do Meta Embedded Signup** — sem cabeçalho, sem card, sem linha do tempo, fundo transparente e altura controlada pela mensagem `resize` já existente. Todo o resto (token, protocolo postMessage, callbacks) é idêntico ao modo página.
+
+Use quando você já tem a sua própria tela de onboarding e o card hospedado seria uma segunda UI competindo dentro dela. Use o modo página (padrão) quando quiser o fluxo explicativo completo, ou para pareamento por QR.
+
+<CodeGroup>
+```js SDK
+PilotStatus.connect.mount("#connect-button", {
+  token,                 // token Meta, metaFlow: "embedded"
+  mode: "button",
+  onPaired: (d) => salvar(d.numberId, d.externalRef),
+  onError: (e) => console.error(e.message),
+  onExpired: () => renovarToken(),
+});
+```
+
+```html iframe manual
+<iframe
+  src="https://connect.pilotstatus.com.br/connect/<token>?embed=1&mode=button&parentOrigin=https://app.seusaas.com"
+  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+  style="width:100%;border:0;display:block"
+></iframe>
+```
+</CodeGroup>
+
+**O modo botão exige um token Meta gerado com `metaFlow: "embedded"`.** Um token `metaFlow: "credentials"` ignora `mode=button` e cai na página completa — o formulário de credenciais da Cloud API não cabe em um botão. Tokens de QR (`PILOT_STATUS`) também renderizam a página completa.
+
+Os estados de carregamento, erro de configuração, token expirado e sucesso continuam aparecendo no modo botão, em versão mínima e inline — nunca em tela cheia.
+
+<Warning>
+  O iframe **precisa** do sandbox com `allow-popups` **e** `allow-popups-to-escape-sandbox`. A janela de login do Facebook abre de dentro do frame; sem `allow-popups` o navegador bloqueia e **não acontece nada** — sem erro, sem callback, sem mensagem no console. O SDK já define o sandbox correto (`allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox`); se você montar o iframe na mão, copie exatamente.
+</Warning>
+
+<Note>
+  O Facebook valida a origem do **iframe**, não a da sua página de nível superior. É exatamente esse o ponto desta integração: o botão roda em `connect.pilotstatus.com.br`, um domínio já registrado no app Meta da Pilot Status, então você nunca precisa registrar o seu domínio (nem o do seu cliente).
+</Note>
+
+## Estilo do botão (somente via token)
+
+A aparência do botão é definida **na hora de gerar o link**, dentro de `branding.button`, e viaja no token assinado:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
+  -H "x-api-key: ps_your_tenant_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "META",
+    "metaFlow": "embedded",
+    "branding": {
+      "primaryColor": "#0F172A",
+      "button": {
+        "variant": "dark",
+        "label": "Conectar WhatsApp",
+        "radius": "pill",
+        "size": "lg",
+        "fullWidth": true
+      }
+    }
+  }'
+```
+
+| Campo | Valores | Padrão |
+| --- | --- | --- |
+| `variant` | `facebook` \| `dark` \| `light` \| `outline` | `facebook` |
+| `label` | texto, sem espaços nas pontas, máx. **40** caracteres | `Continuar com o Facebook` |
+| `primaryColor` | hex `#RRGGBB` | conforme a variante |
+| `textColor` | hex `#RRGGBB` | conforme a variante |
+| `radius` | `sm` \| `md` \| `lg` \| `pill` | `lg` |
+| `size` | `sm` \| `md` \| `lg` | `md` |
+| `fullWidth` | booleano | `true` |
+| `hideProvenance` | booleano | `false` (com trava — veja abaixo) |
+
+Todos os campos são opcionais. O botão ocupa toda a largura do contêiner por padrão; use `fullWidth: false` para encolhê-lo até o conteúdo. O rótulo interno é a string em português `Continuar com o Facebook` — defina `label` explicitamente para qualquer outro idioma. Mantenha o objeto pequeno: ele viaja dentro do JWT que está na URL de conexão.
+
+<Warning>
+  **Nada disso pode ser definido por parâmetro de query**, e não há plano para permitir. O estilo chega somente por um token gerado com a sua chave `ps_`, de modo que toda página estilizada é atribuível a um tenant. Uma página cuja aparência qualquer visitante anônimo pudesse reescrever pela query string é exatamente a superfície de phishing que já fez um domínio da Pilot Status ser sinalizado — a sobreposição por query segue limitada aos parâmetros cosméticos já existentes, listados abaixo.
+</Warning>
+
+### `hideProvenance`
+
+`branding.button.hideProvenance: true` pede que o botão esconda o pequeno marcador “secured by pilotstatus.com.br”. Saiba exatamente o que isso faz:
+
+- Ele é **travado por uma chave do lado do servidor, controlada pela Pilot Status, e essa chave vem desligada.** Enquanto estiver desligada, `hideProvenance` é aceito e silenciosamente ignorado — **o marcador continua aparecendo**. Peça ao suporte para habilitar no seu tenant.
+- Só vale no **modo botão**. Na página de conexão completa o marcador é sempre visível, inclusive com `hidePilotStatusBranding` ligado.
+- Não pode ser definido por parâmetro de query, apenas no token gerado.
+
+Desenhe sua UI para ficar bonita **com** o marcador: esse é o comportamento que você tem, a menos que (e até que) a chave seja ligada para você.
 
 ## Protocolo postMessage (iframe → parent)
 
@@ -65,22 +187,41 @@ O Connect nunca recebe uma mensagem `init` — o token já está na URL. O SDK a
 
 | Mensagem | Callback | Significado |
 | --- | --- | --- |
-| `connect:paired{numberId?, redirectUrl?}` | `onPaired` | número conectado |
+| `connect:paired{…}` | `onPaired` | número conectado — payload abaixo |
 | `connect:error{message}` | `onError` | falha |
-| `connect:expired` | `onExpired` | token/QR expirado (24h) |
+| `connect:expired` | `onExpired` | token expirado (30 min no Meta, 24 h no QR) ou QR esgotado |
 | `resize{height}` | — | o SDK ajusta a altura do iframe |
 
-O sandbox do iframe é `allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox` — o escape do popup é necessário para a janela do Embedded Signup da Meta.
+### Payload do `connect:paired`
+
+```json
+{
+  "numberId": "wn_9f3c21ab",
+  "phone": "5511999999999",
+  "displayName": "Support",
+  "provider": "META",
+  "externalRef": "crm-cliente-4821",
+  "redirectUrl": "https://app.seusaas.com/whatsapp/pronto"
+}
+```
+
+- `numberId` é o id usado em todo o resto da API (`GET /v1/numbers/{id}`, webhooks, envio).
+- `externalRef` é o valor que você passou ao gerar o link — cruze com o seu próprio cadastro de cliente. Ele é carregado pelos links Meta; no pareamento por QR chega como `null`.
+- Todos os seis campos — `numberId`, `phone`, `displayName`, `provider`, `externalRef`, `redirectUrl` — estão sempre presentes: um fluxo que não conhece algum envia **`null`, nunca o omite**, então você não precisa de ramificações por fluxo sobre eles.
+- O `redirectUrl`, quando presente, **não** é seguido enquanto incorporado — o iframe entrega o valor para você e deixa a sua página decidir se e para onde navegar, em vez de estourar o frame.
 
 ## White-label / branding
 
-Precedência: **parâmetros de query da URL** \> **`brandingOverride`** por link (capturado como snapshot no número) \> **branding do tenant** (`GET`/`PUT /v1/branding`) \> padrão.
+Precedência: **parâmetros de query da URL** \> **`branding`** por link (do token gerado, ou capturado como snapshot no número nos links de QR) \> **branding do tenant** (`GET`/`PUT /v1/branding`) \> padrões da Pilot Status.
+
+Os parâmetros de query são apenas cosméticos e deliberadamente restritos — `primary`, `bg`, `logo`, `title`, `subtitle`, `support`, `hideBranding`. Eles são aplicados **somente depois que o token é resolvido como válido**; com token inválido ou expirado a página cai nos padrões da Pilot Status e os ignora por completo. O `?logo` precisa ser `https` e é restrito ao host de assets de primeira parte. O estilo do botão e o `hideProvenance` **não** fazem parte desse conjunto.
 
 ## Modelo de segurança
 
 - O `x-api-key` permanece no seu backend; somente ele chama `POST /v1/numbers/remote-pairing`.
-- O token de pareamento expira em **24h** e autoriza apenas os endpoints de pareamento daquele link.
+- O token de pareamento autoriza apenas os endpoints de pareamento daquele link e expira — **30 minutos** para token Meta, **24 horas** para token de pareamento por QR.
 - As origens são validadas em ambos os lados; o iframe roda em `connect.*`, então suas chamadas de API são same-origin (sem superfície de CORS para o seu app).
+- Tudo que muda a *aparência* da página para o usuário final é autenticado: vem de um token gerado com a sua chave, nunca de uma URL que um estranho possa digitar.
 
 ## Relacionados
 
