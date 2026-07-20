@@ -1,0 +1,766 @@
+---
+title: "Meta Embedded Signup dentro do seu próprio app | Pilot Status"
+sidebarTitle: "Embedded Signup próprio"
+description: "Coloque o botão Continuar com o Facebook na sua própria página, abra o popup do Meta Embedded Signup e conecte o número oficial (Cloud API) do seu cliente na sua conta Pilot Status — com o token de onboarding sempre no seu backend."
+mode: "wide"
+---
+
+# Embedded Signup no seu próprio app
+
+Este guia mostra como executar o **Meta Embedded Signup** dentro da sua própria interface: seu cliente clica em **Continuar com o Facebook** na sua página, escolhe a WABA e o número dele no popup da Meta, e o número oficial (Cloud API) entra na sua conta Pilot Status — sem nunca sair do seu produto.
+
+## Quando usar este fluxo
+
+Quando o cliente ainda não tem WABA, existem duas formas de rodar o Embedded Signup. Elas usam o **mesmo** token de onboarding; a diferença é quem desenha a tela.
+
+| | Página Connect hospedada | Embedded Signup próprio (este guia) |
+| --- | --- | --- |
+| Quem renderiza a UI | Pilot Status (iframe ou link) | Você |
+| Onde o token vive | Na **URL** que o cliente abre | Só no **seu backend** |
+| Personalização | Logo, cores e título (white-label) | Total |
+| Esforço | Baixo — algumas linhas de SDK | Médio — você integra o SDK do Facebook |
+| Ideal para | Onboarding rápido, enviar link por WhatsApp/e-mail | SaaS/CRM que já tem uma tela de "conectar canais" |
+
+Se você não precisa de controle sobre o layout, use a opção hospedada: [Incorpore a Página de Conexão](/pt-BR/integrations/embed-connect). Se você quer o botão na sua página, siga adiante.
+
+<Note>
+  Se o cliente **já tem WABA própria** e vai colar as credenciais na mão, o popup do Facebook não entra na história. Use o [fluxo credentials](#fluxo-credentials) descrito no fim desta página, ou cadastre o número direto com `POST /v1/numbers/meta` — veja [Cadastrar número](/pt-BR/api/numbers/create).
+</Note>
+
+## Pré-requisitos
+
+1. Uma chave de API `ps_` com **escopo de tenant** (painel `/api-keys`). Chaves com escopo de número não servem — veja [Autenticação da API](/pt-BR/api/authentication).
+2. Um backend próprio capaz de fazer chamadas HTTP de servidor para servidor.
+3. Um slot de número livre no seu plano.
+
+Você **não** precisa de um app Meta próprio, nem de App Review, nem de um `config_id` seu. O Embedded Signup roda sobre o app da Pilot Status: o `appId` e o `config_id` vêm de `GET /api/health`, que é público e não exige chave.
+
+```bash cURL
+curl -s "https://pilotstatus.com.br/api/health" | jq '.features | {metaAppId, metaEmbeddedConfigId, metaGraphApiVersion}'
+```
+
+```json Resposta (recorte)
+{
+  "metaAppId": "1234567890123456",
+  "metaEmbeddedConfigId": "9876543210987654",
+  "metaGraphApiVersion": "v22.0"
+}
+```
+
+<Warning>
+  **O browser do seu cliente não pode chamar a API Pilot Status diretamente.** O CORS é uma allowlist estrita, limitada aos domínios da própria Pilot Status: uma origem de terceiro simplesmente não recebe `Access-Control-Allow-Origin`. O acesso à API é **sempre servidor a servidor**, pelo **seu** backend — inclusive `GET /api/health`. Não existe caminho de front-end direto.
+</Warning>
+
+## Arquitetura
+
+```text
+Browser (sua página + SDK do Facebook)
+   │  1. GET  /api/config              → appId + configId  (seu backend leu de /api/health)
+   │  2. POST /api/onboarding/start    → { sessionId }      (o TOKEN nunca desce)
+   │  3. FB.login popup                → code + phone_number_id + waba_id
+   │  4. POST /api/onboarding/complete { sessionId, code, ... }
+   ▼
+Seu backend  ── x-api-key: ps_ ──►  https://pilotstatus.com.br/v1
+```
+
+O proxy existe por dois motivos reais: o CORS bloqueia o browser de terceiro, e o token de onboarding é um segredo bearer de 30 minutos — mantê-lo no servidor é mais seguro que o fluxo hospedado, onde ele viaja na URL.
+
+## Os quatro passos
+
+<Steps>
+  <Step title="Minte o token de onboarding no seu backend">
+    Chame `POST /v1/numbers/remote-pairing` com `provider: "META"` e `metaFlow: "embedded"`, usando a chave de tenant.
+
+    ```bash cURL
+    curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: ps_sua_chave_tenant" \
+      -d '{
+        "provider": "META",
+        "metaFlow": "embedded",
+        "name": "Cliente João",
+        "externalRef": "crm-org-42"
+      }'
+    ```
+
+    A resposta traz exatamente três campos:
+
+    ```json
+    {
+      "provider": "META",
+      "remotePairingUrl": "https://pilotstatus.com.br/connect/eyJhbGciOiJIUzI1NiIs...",
+      "expiresAt": "2026-07-20T18:30:00.000Z"
+    }
+    ```
+
+    O **token** é o último segmento da `remotePairingUrl` (`/connect/<JWT>`). Ele é HS256, tem TTL de **30 minutos** e carrega as claims `tenantId`, `numberId`, `metaFlow`, `kind: "meta-embedded-session"` e, opcionalmente, `redirectUrl`, `externalRef` e `branding`.
+
+    O **id do número placeholder não vem no corpo da resposta** — ele só existe na claim `numberId` do JWT. Decodifique o payload em base64url para lê-lo (é leitura de metadado; não é preciso verificar a assinatura). Guarde esse `numberId`: ele é o que você usa para [cadastrar o webhook antes do cliente concluir](#webhooks).
+
+    <Warning>
+      O token de onboarding é um **segredo bearer de 30 minutos** e **não** é de uso único: não há CSRF nem checagem de origem, e quem o tiver pode completar o fluxo. Nunca envie o token ao browser — troque-o por um `sessionId` opaco do seu lado e mantenha o mapeamento no servidor.
+    </Warning>
+
+    <Warning>
+      **Mintar o link já consome um slot do plano.** A chamada cria um `WhatsAppNumber` placeholder na hora. Um link abandonado **vaza o slot** — não existe rotina de limpeza automática. Minte o link só depois que o cliente clicar em conectar, e remova os placeholders órfãos manualmente no painel `/numbers`.
+
+      É aqui, e não no `complete`, que o slot do plano é cobrado. Se não houver slot livre, esta chamada falha: libere um slot em `/numbers` ou contrate números extras antes de tentar de novo.
+    </Warning>
+
+    Para checar um token sem consumi-lo, use `GET /v1/meta-embedded/{token}`. Ele responde **sempre `200`** — com `{ "valid": true, "metaFlow": "embedded", "name": "..." }` ou `{ "valid": false, "code": "INVALID_SESSION" }`. Nunca ramifique sua lógica pelo status HTTP dessa rota; olhe o campo `valid`.
+  </Step>
+
+  <Step title="Sirva appId e configId para a sua página">
+    Seu backend lê `GET /api/health` (sem chave) e expõe um endpoint próprio, por exemplo `GET /api/config`, devolvendo `{ appId, configId, apiVersion }`. Faça cache em memória por alguns minutos — esses valores praticamente não mudam.
+
+    Se `metaAppId` ou `metaEmbeddedConfigId` vierem `null`, o Embedded Signup não está configurado do lado da Pilot Status para o seu ambiente. Trate isso na UI antes de renderizar o botão.
+  </Step>
+
+  <Step title="Rode FB.login no browser">
+    Carregue o SDK do Facebook, registre o listener de `message` e abra o popup com `FB.login`. O popup devolve duas coisas por **canais independentes**:
+
+    - o `code` de autorização, pelo callback de `FB.login`;
+    - o `phone_number_id`, o `waba_id` e o `business_id`, por `postMessage` da janela do Facebook.
+
+    Não há ordem garantida entre os dois. Só chame o seu backend quando tiver `code`, `phone_number_id` e `waba_id`.
+
+    <Warning>
+      **Nunca registre o `addEventListener("message", ...)` atrás do early-return do "script já carregado".** Como `code` e IDs chegam separados, a chegada do `code` provoca um re-render; o effect re-roda, cai no `return` antecipado e o cleanup anterior remove o **único** listener. Os IDs se perdem e o fluxo trava em silêncio, sem erro nenhum. Guarde com `if (!document.getElementById("facebook-jssdk"))` **apenas** a injeção do script, e registre o listener incondicionalmente depois.
+    </Warning>
+  </Step>
+
+  <Step title="Complete pelo seu backend">
+    Com os três valores em mãos, o browser chama o **seu** endpoint com o `sessionId`; o seu backend resolve o token e chama:
+
+    ```bash cURL
+    curl -X POST "https://pilotstatus.com.br/v1/meta-embedded/<token>/complete" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "code": "AQD...",
+        "phoneNumberId": "123456789012345",
+        "wabaId": "987654321098765",
+        "businessId": "111222333444555"
+      }'
+    ```
+
+    Este endpoint autentica **pelo token na URL**, não por chave de API — não envie `x-api-key` aqui.
+
+    Sucesso é `201`:
+
+    ```json
+    {
+      "number": {
+        "id": "cmm0abc123",
+        "number": "5511999999999",
+        "displayName": "Suporte João",
+        "provider": "META",
+        "metaPhoneId": "123456789012345",
+        "metaWabaId": "987654321098765",
+        "metaWebhookVerifyToken": "...",
+        "webhookUrl": "https://pilotstatus.com.br/api/meta/webhook",
+        "createdAt": "2026-07-20T18:05:00.000Z"
+      },
+      "redirectUrl": null
+    }
+    ```
+
+    Depois do `complete`, a Pilot Status troca o `code` por um token de sistema, inscreve a WABA em `subscribed_apps` e chama `/{phone_number_id}/register` com um PIN gerado. As duas últimas etapas são **best-effort**: o `201` não garante que deram certo.
+
+    <Note>
+      O resultado dessas duas etapas não é exposto pela API pública — `GET /v1/numbers/{id}` devolve uma lista fixa de campos e não inclui o estado interno de registro. Trate o `201` como "número conectado" na sua UI e trate a falha onde ela realmente aparece: **no primeiro envio**. Se o primeiro envio falhar por número não registrado, refaça o onboarding ou fale com o suporte.
+    </Note>
+  </Step>
+</Steps>
+
+## Código completo
+
+Os três blocos abaixo formam um exemplo funcional: um backend Express que guarda o token, uma página HTML/JS pura e a mesma lógica como componente React.
+
+<CodeGroup>
+
+```javascript Backend — Node.js / Express
+import crypto from "node:crypto";
+import express from "express";
+
+const app = express();
+app.use(express.json());
+
+const BASE = (process.env.PILOT_API_BASE || "https://pilotstatus.com.br").replace(/\/$/, "");
+const TENANT_KEY = process.env.PILOT_TENANT_KEY; // ps_... com escopo de tenant
+
+// O token de onboarding fica SÓ aqui. O browser recebe apenas o sessionId opaco.
+// Em produção, troque este Map por Redis ou uma tabela com TTL de 30 min.
+const sessions = new Map();
+
+// GET /api/health é público (sem chave). Cache de 5 min: os valores quase não mudam.
+let cachedConfig = null;
+async function getMetaConfig() {
+  if (cachedConfig && Date.now() - cachedConfig.at < 5 * 60_000) return cachedConfig.value;
+  const res = await fetch(`${BASE}/api/health`);
+  const health = await res.json();
+  const value = {
+    appId: health.features?.metaAppId ?? null,
+    configId: health.features?.metaEmbeddedConfigId ?? null,
+    apiVersion: health.features?.metaGraphApiVersion ?? "v22.0",
+  };
+  cachedConfig = { at: Date.now(), value };
+  return value;
+}
+
+// O id do número placeholder só existe na claim `numberId` do JWT — não vem no corpo.
+// Só leitura de metadado: não verificamos a assinatura aqui.
+function readNumberId(token) {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+    return payload.numberId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+app.get("/api/config", async (_req, res) => {
+  res.json(await getMetaConfig());
+});
+
+app.post("/api/onboarding/start", async (req, res) => {
+  // Um mesmo handler serve os dois fluxos: só o metaFlow muda. Default "embedded".
+  const metaFlow = req.body?.metaFlow === "credentials" ? "credentials" : "embedded";
+
+  const r = await fetch(`${BASE}/v1/numbers/remote-pairing`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": TENANT_KEY },
+    body: JSON.stringify({
+      provider: "META",
+      metaFlow,
+      name: req.body?.name,
+      externalRef: req.body?.externalRef,
+    }),
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    return res.status(r.status).json({ error: data?.error || data?.message || `Erro ${r.status}` });
+  }
+
+  // ATENÇÃO: esta chamada já consumiu um slot do plano (criou o número placeholder).
+  const token = new URL(data.remotePairingUrl).pathname.split("/").pop();
+  const numberId = readNumberId(token);
+  const sessionId = crypto.randomUUID();
+  sessions.set(sessionId, { token, numberId, metaFlow, expiresAt: data.expiresAt });
+
+  // O token NÃO desce para o browser.
+  res.status(201).json({ sessionId, numberId, metaFlow, expiresAt: data.expiresAt });
+});
+
+app.post("/api/onboarding/complete", async (req, res) => {
+  const session = sessions.get(req.body?.sessionId);
+  if (!session) return res.status(404).json({ error: "Sessão desconhecida ou expirada" });
+
+  // Este endpoint autentica pelo token na URL — sem x-api-key.
+  const r = await fetch(`${BASE}/v1/meta-embedded/${session.token}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      code: req.body.code,
+      phoneNumberId: req.body.phoneNumberId,
+      wabaId: req.body.wabaId,
+      // businessId é opcional na API: aceita string OU ausente, mas REJEITA null.
+      // `|| undefined` faz o campo sumir do JSON quando não veio nada do popup.
+      businessId: req.body.businessId || undefined,
+    }),
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    // Repasse o status original: 409 e 502 significam coisas bem diferentes para a sua UI.
+    return res.status(r.status).json({ error: data?.error || data?.message || `Erro ${r.status}` });
+  }
+
+  sessions.delete(req.body.sessionId);
+  res.status(201).json(data); // { number: {...}, redirectUrl }
+});
+
+app.listen(process.env.PORT || 8788);
+```
+
+```html Frontend — HTML + JS puro
+<!-- Nasce desabilitado: só liberamos depois que /api/config responder e o SDK carregar. -->
+<button id="connect" type="button" disabled>Conectar WhatsApp</button>
+<p id="status"></p>
+
+<script>
+  const statusEl = document.getElementById("status");
+  const connectBtn = document.getElementById("connect");
+  let cfg = null;
+  let sessionId = null;
+
+  // code e IDs chegam por canais independentes, sem ordem garantida.
+  let code = null;
+  // Começa vazio de propósito: campo ausente é o que a API aceita para businessId.
+  let ids = {};
+  let fired = false; // garante uma única chamada ao backend
+
+  // 1) O listener é registrado UMA vez, no carregamento, e nunca é removido.
+  //    Registrá-lo dentro de um bloco condicional é a forma clássica de perder os IDs.
+  window.addEventListener("message", (event) => {
+    // Checagem de origem obrigatória.
+    if (event.origin !== "https://www.facebook.com" && !event.origin.endsWith(".facebook.com")) return;
+
+    // event.data chega como string OU como objeto. Trate os dois.
+    let parsed = event.data;
+    if (typeof parsed === "string") {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        return;
+      }
+    }
+    if (!parsed || typeof parsed !== "object") return;
+
+    // Os IDs chegam aninhados em `data` OU no topo. Trate os dois locais e sempre
+    // preserve o valor anterior, para um evento parcial não apagar um ID já capturado.
+    // Não filtre por type === "WA_EMBEDDED_SIGNUP": nem todo evento útil vem marcado.
+    const nested = parsed.data || {};
+    ids = {
+      phoneNumberId: nested.phone_number_id || parsed.phone_number_id || ids.phoneNumberId,
+      wabaId: nested.waba_id || parsed.waba_id || ids.wabaId,
+      businessId: nested.business_id || parsed.business_id || ids.businessId,
+    };
+    maybeComplete();
+  });
+
+  // 2) SDK do Facebook: fbAsyncInit é atribuído ANTES de anexar o script.
+  //    O botão só é habilitado quando o SDK terminou de inicializar. Habilitá-lo antes
+  //    permite um clique que já gastou um slot do plano em /api/onboarding/start e depois
+  //    estoura um TypeError em window.FB.login — o slot vaza e o cliente não vê o popup.
+  async function loadSdk() {
+    statusEl.textContent = "Carregando...";
+    try {
+      cfg = await fetch("/api/config").then((r) => r.json());
+    } catch {
+      statusEl.textContent = "Não foi possível carregar a configuração.";
+      return;
+    }
+    if (!cfg.appId || !cfg.configId) {
+      // Embedded Signup não configurado: o botão CONTINUA desabilitado.
+      statusEl.textContent = "Embedded Signup indisponível neste ambiente.";
+      return;
+    }
+    window.fbAsyncInit = function () {
+      window.FB.init({
+        appId: cfg.appId,
+        autoLogAppEvents: true,
+        xfbml: true,
+        version: cfg.apiVersion || "v22.0",
+      });
+      connectBtn.disabled = false;
+      statusEl.textContent = "";
+    };
+    // Só a INJEÇÃO do script é guardada — nunca o listener acima.
+    if (!document.getElementById("facebook-jssdk")) {
+      const s = document.createElement("script");
+      s.id = "facebook-jssdk";
+      s.src = "https://connect.facebook.net/en_US/sdk.js";
+      s.async = true;
+      s.defer = true;
+      s.crossOrigin = "anonymous";
+      document.body.appendChild(s);
+    } else if (window.FB) {
+      // SDK já inicializado por outro trecho da página.
+      connectBtn.disabled = false;
+      statusEl.textContent = "";
+    }
+  }
+  loadSdk();
+
+  connectBtn.addEventListener("click", async () => {
+    // Guarda final: nunca gaste um slot do plano se o SDK não estiver pronto.
+    if (!window.FB?.login) {
+      statusEl.textContent = "SDK do Facebook ainda não carregou. Tente de novo em instantes.";
+      return;
+    }
+    connectBtn.disabled = true;
+
+    // Minte o link só agora: esta chamada consome um slot do plano.
+    statusEl.textContent = "Gerando sessão...";
+    const startRes = await fetch("/api/onboarding/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Cliente João", externalRef: "crm-org-42" }),
+    });
+    const started = await startRes.json();
+    if (!startRes.ok) {
+      // Ex.: nenhum slot livre no plano — o placeholder não pôde ser criado.
+      statusEl.textContent = `Falha ao gerar a sessão: ${started.error}`;
+      connectBtn.disabled = false;
+      return;
+    }
+    sessionId = started.sessionId;
+
+    // Reset a cada tentativa.
+    code = null;
+    ids = {};
+    fired = false;
+
+    statusEl.textContent = "Aguardando o Facebook...";
+    window.FB.login(
+      (response) => {
+        if (response?.authResponse?.code) {
+          code = response.authResponse.code;
+          maybeComplete();
+        } else {
+          // Cancelado ou falhou — o FB não distingue os dois casos.
+          statusEl.textContent = "Login cancelado ou não concluído.";
+          connectBtn.disabled = false;
+        }
+      },
+      {
+        config_id: cfg.configId,
+        response_type: "code",
+        override_default_response_type: true,
+        extras: { sessionInfoVersion: "3", featureType: "whatsapp_business_app_onboarding" },
+      }
+    );
+  });
+
+  async function maybeComplete() {
+    if (fired) return;
+    if (!code || !ids.phoneNumberId || !ids.wabaId) return; // ainda falta um dos canais
+    fired = true;
+
+    statusEl.textContent = "Conectando o número...";
+    const res = await fetch("/api/onboarding/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        code,
+        phoneNumberId: ids.phoneNumberId,
+        wabaId: ids.wabaId,
+        // Só mande businessId se ele existir: a API aceita string ou ausente, nunca null.
+        ...(ids.businessId ? { businessId: ids.businessId } : {}),
+      }),
+    });
+    const data = await res.json();
+    statusEl.textContent = res.ok
+      ? `Número conectado: ${data.number.number}`
+      : `Falha: ${data.error}`;
+    if (!res.ok) connectBtn.disabled = false;
+  }
+</script>
+```
+
+```tsx Frontend — variante React
+import { useCallback, useEffect, useRef, useState } from "react";
+
+type Ids = { phoneNumberId?: string; wabaId?: string; businessId?: string };
+type Signup = Ids & { code: string };
+
+export function FacebookLoginButton({
+  appId,
+  configId,
+  apiVersion = "v22.0",
+  onSignup,
+  onError,
+  disabled,
+  children = "Continuar com o Facebook",
+}: {
+  appId: string;
+  configId: string;
+  apiVersion?: string;
+  onSignup: (s: Signup) => void;
+  onError?: (message: string) => void;
+  disabled?: boolean;
+  children?: React.ReactNode;
+}) {
+  const [code, setCode] = useState<string | null>(null);
+  const [ids, setIds] = useState<Ids>({});
+  const firedRef = useRef(false); // um disparo por tentativa
+
+  useEffect(() => {
+    // Só a INJEÇÃO do script é guardada. Se você colocar o addEventListener abaixo
+    // atrás deste if, o re-render provocado pelo `code` re-roda o effect, cai no
+    // return e o cleanup remove o único listener — os IDs somem sem erro nenhum.
+    if (!document.getElementById("facebook-jssdk")) {
+      (window as any).fbAsyncInit = () => {
+        (window as any).FB.init({ appId, autoLogAppEvents: true, xfbml: true, version: apiVersion });
+      };
+      const s = document.createElement("script");
+      s.id = "facebook-jssdk";
+      s.src = "https://connect.facebook.net/en_US/sdk.js";
+      s.async = true;
+      s.defer = true;
+      s.crossOrigin = "anonymous";
+      document.body.appendChild(s);
+    }
+
+    // Registrado incondicionalmente, sempre.
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== "https://www.facebook.com" && !event.origin.endsWith(".facebook.com")) return;
+
+      let parsed: any = event.data;
+      if (typeof parsed === "string") {
+        try {
+          parsed = JSON.parse(parsed);
+        } catch {
+          return;
+        }
+      }
+      if (!parsed || typeof parsed !== "object") return;
+
+      // Aninhado em `data` OU no topo; nunca sobrescreva um ID já capturado.
+      const nested = parsed.data || {};
+      setIds((prev) => ({
+        phoneNumberId: nested.phone_number_id || parsed.phone_number_id || prev.phoneNumberId,
+        wabaId: nested.waba_id || parsed.waba_id || prev.wabaId,
+        businessId: nested.business_id || parsed.business_id || prev.businessId,
+      }));
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+    // Deps mínimas de propósito: nada que mude a cada render.
+  }, [appId, apiVersion]);
+
+  // Dispara quando os dois canais convergirem — em qualquer ordem.
+  useEffect(() => {
+    if (firedRef.current) return;
+    if (!code || !ids.phoneNumberId || !ids.wabaId) return;
+    firedRef.current = true;
+    onSignup({ code, ...ids });
+  }, [code, ids, onSignup]);
+
+  const launch = useCallback(() => {
+    firedRef.current = false;
+    setCode(null);
+    setIds({});
+
+    (window as any).FB?.login(
+      (response: any) => {
+        if (response?.authResponse?.code) setCode(response.authResponse.code);
+        // Cancelado ou falhou — o FB não distingue os dois casos.
+        else onError?.("Login cancelado ou não concluído.");
+      },
+      {
+        config_id: configId,
+        response_type: "code",
+        override_default_response_type: true,
+        extras: { sessionInfoVersion: "3", featureType: "whatsapp_business_app_onboarding" },
+      }
+    );
+  }, [configId, onError]);
+
+  return (
+    <button type="button" onClick={launch} disabled={disabled}>
+      {children}
+    </button>
+  );
+}
+```
+
+</CodeGroup>
+
+## Erros de `POST /v1/meta-embedded/{token}/complete`
+
+Ramifique sempre pelo campo `error`. A coluna `code` só existe na resposta `401`.
+
+| Status | Campo `error` | Campo `code` | Causa | O que fazer |
+| --- | --- | --- | --- | --- |
+| `401` | `Invalid or expired onboarding token` | `INVALID_SESSION` | Token ausente, malformado, com assinatura inválida ou fora dos 30 minutos de validade. | Minte um novo link e recomece o fluxo. |
+| `400` | `Validation error` | — | Falta `code`, `phoneNumberId` ou `wabaId` no corpo, ou algum campo veio com tipo errado — inclusive `businessId: null`, que é rejeitado (mande a string ou omita o campo). | Só chame o `complete` quando os dois canais tiverem convergido. |
+| `409` | `Number already exists` | — | O número já está cadastrado nesta conta. | Use o número existente; não minte outro link. |
+| `409` | `Este número já está cadastrado, possivelmente em outra conta.` | — | O número está vinculado a outro tenant. | Peça ao cliente para remover o número da outra conta antes de repetir. |
+| `409` | `PLAN_NUMBER_LIMIT_REACHED` | — | O número placeholder criado no passo 1 foi apagado no meio do caminho, então a cobrança do slot voltou a valer. | Minte um novo link e refaça o fluxo do início. |
+| `502` | `Failed to exchange authorization code for access token` | — | O `code` do Facebook já foi usado ou expirou. | Reabra o `FB.login` para obter um `code` novo. |
+| `502` | `Failed to fetch the selected phone number from Meta` | — | A Graph API não devolveu o número escolhido (permissão faltando, número removido, instabilidade da Meta). | Tente de novo; se persistir, confirme com o cliente as permissões concedidas no popup. |
+
+O slot do plano normalmente já foi cobrado quando você mintou o link, então o `complete` pula essa verificação. A única exceção é o `409 PLAN_NUMBER_LIMIT_REACHED` da tabela acima: quando o placeholder do passo 1 sumiu, o `complete` cai no caminho de criação e a checagem de limite volta a valer.
+
+<Warning>
+  **Reenviar o mesmo `code` sempre dá `502 Failed to exchange authorization code for access token`.** Os códigos de autorização da Meta são de uso único — isso não é bug, é replay. Nunca implemente retry automático do `complete` com o mesmo `code`; um retry precisa começar de um novo `FB.login`.
+</Warning>
+
+## Fluxo credentials
+
+O fluxo `embedded` acima resolve o caso comum: o cliente não tem nada pronto e você quer que a Meta faça o trabalho de criar a WABA e verificar o número. O fluxo **`credentials`** atende o caso oposto — o cliente **já tem WABA própria**, já tem o número verificado na Cloud API, e só quer colar as credenciais dele no seu produto.
+
+Use o fluxo `credentials` quando o cliente puder fornecer, com as próprias mãos, o `metaPhoneId`, o `metaWabaId`, um token de acesso, o `metaAppId` e o `metaAppSecret` do app Meta dele. Se ele não souber onde achar esses valores, use o fluxo `embedded`.
+
+O começo é idêntico: você minta o mesmo token de 30 minutos com `POST /v1/numbers/remote-pairing`, trocando apenas o `metaFlow`.
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_sua_chave_tenant" \
+  -d '{
+    "provider": "META",
+    "metaFlow": "credentials",
+    "name": "Cliente João",
+    "externalRef": "crm-org-42"
+  }'
+```
+
+Depois, em vez de `/complete`, o seu backend chama `POST /v1/meta-embedded/{token}/complete-credentials`. A autenticação é a mesma: **pelo token na URL**, sem `x-api-key`.
+
+### Corpo da requisição
+
+Todos os campos são obrigatórios, exceto `routeWebhooksToPilot`.
+
+| Campo | Tipo | Regra |
+| --- | --- | --- |
+| `name` | string | 1 a 60 caracteres. Vira o nome de exibição do número. |
+| `number` | string | Mínimo 8 caracteres, só dígitos com `+` opcional (`/^\+?\d+$/`). O `+` é removido ao persistir. |
+| `metaPhoneId` | string | Mínimo 1. O **phone number ID** da Cloud API. |
+| `metaWabaId` | string | Mínimo 1. O ID da WhatsApp Business Account. |
+| `metaAccessToken` | string | Mínimo 1. Token de acesso do app Meta do cliente. |
+| `metaAppSecret` | string | Mínimo 1. App secret do mesmo app. |
+| `metaAppId` | string | Mínimo 1. App ID do mesmo app. |
+| `routeWebhooksToPilot` | boolean | Opcional, **default `false`**. Leia o aviso abaixo antes de mandar `true`. |
+
+<Warning>
+  **`routeWebhooksToPilot: true` sequestra a WABA inteira.** Com `true`, a Pilot Status envia `override_callback_uri` e `verify_token` para `/{waba}/subscribed_apps`, o que redireciona os webhooks de **toda a WABA** para a Pilot Status — inclusive os de números que não têm nada a ver com este onboarding, e para longe do callback próprio do cliente. O default é `false` e é o certo para quase todo mundo: só mande `true` se o cliente entender e aceitar que a WABA inteira passa a apontar para a Pilot Status. Se a URL de callback ou o verify token estiverem ausentes na configuração, a chamada é silenciosamente rebaixada para uma inscrição simples, com apenas um log de aviso — o `201` não confirma que o redirecionamento aconteceu.
+</Warning>
+
+### Resposta
+
+Sucesso é `201`. O corpo é quase igual ao do `/complete`, com um campo a mais: `routedToPilot`.
+
+```json
+{
+  "number": {
+    "id": "cmm0abc123",
+    "number": "5511988887777",
+    "displayName": "Loja do Ismael",
+    "provider": "META",
+    "metaPhoneId": "123456789012345",
+    "metaWabaId": "987654321098765",
+    "metaWebhookVerifyToken": "",
+    "webhookUrl": "https://pilotstatus.com.br/api/meta/webhook",
+    "routedToPilot": false,
+    "createdAt": "2026-07-20T18:05:00.000Z"
+  },
+  "redirectUrl": null
+}
+```
+
+`routedToPilot` reflete o que você pediu em `routeWebhooksToPilot`. `metaWebhookVerifyToken` vem como string vazia (`""`) quando a linha do número não tem segredo de webhook gravado — não trate isso como erro.
+
+### Exemplo
+
+As credenciais Meta do cliente final vão do formulário direto para a API. **Não as persista** no seu banco: você não precisa delas depois, e guardá-las só aumenta o seu raio de exposição.
+
+```javascript Backend — Node.js / Express
+app.post("/api/onboarding/complete-credentials", async (req, res) => {
+  const session = sessions.get(req.body?.sessionId);
+  if (!session) return res.status(404).json({ error: "Sessão desconhecida ou expirada" });
+
+  // As credenciais do cliente atravessam este handler e NÃO são gravadas em lugar nenhum.
+  const r = await fetch(`${BASE}/v1/meta-embedded/${session.token}/complete-credentials`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" }, // autentica pelo token na URL
+    body: JSON.stringify({
+      name: req.body.name,
+      number: req.body.number,
+      metaPhoneId: req.body.metaPhoneId,
+      metaWabaId: req.body.metaWabaId,
+      metaAccessToken: req.body.metaAccessToken,
+      metaAppSecret: req.body.metaAppSecret,
+      metaAppId: req.body.metaAppId,
+      // Default false de propósito: true redireciona os webhooks da WABA INTEIRA.
+      routeWebhooksToPilot: req.body.routeWebhooksToPilot === true,
+    }),
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    return res.status(r.status).json({ error: data?.error || data?.message || `Erro ${r.status}` });
+  }
+
+  // O token vale por 30 min e uma segunda chamada SOBRESCREVE o número. Descarte já.
+  sessions.delete(req.body.sessionId);
+  res.status(201).json(data); // { number: {...}, redirectUrl }
+});
+```
+
+### Erros de `POST /v1/meta-embedded/{token}/complete-credentials`
+
+| Status | Campo `error` | Campo `code` | Causa | O que fazer |
+| --- | --- | --- | --- | --- |
+| `401` | `Invalid or expired onboarding token` | `INVALID_SESSION` | Token ausente, malformado, com assinatura inválida ou fora dos 30 minutos. | Minte um novo link e recomece. |
+| `400` | `Validation error` | — | Algum campo obrigatório faltou ou violou a regra da tabela acima. O corpo traz `details` com o erro por campo. | Valide o formulário antes de enviar; mostre `details` ao operador. |
+| `402` | `INSUFFICIENT_FUNDS` | — | Saldo insuficiente na carteira para criar o número. Ocorre apenas no ramo de criação. | Adicione saldo e repita. O detalhamento de valores não vem nesta resposta. |
+| `409` | `PLAN_NUMBER_LIMIT_REACHED` | — | O número placeholder do passo 1 foi apagado no meio do caminho, então a cobrança do slot voltou a valer. | Minte um novo link e refaça o fluxo do início. |
+| `500` | mensagem crua do banco | `P2002` | Número já cadastrado — veja o aviso de duplicata abaixo. | Cheque antes com `GET /v1/numbers` e mostre um erro amigável na sua UI. |
+| `500` | `Internal server error` | — | Falha inesperada do lado da Pilot Status. | Tente de novo; se persistir, fale com o suporte. |
+
+### Armadilhas do fluxo credentials
+
+<Warning>
+  **As credenciais não são validadas contra a Graph API antes de serem gravadas.** Um `metaAccessToken` errado, expirado ou com escopo insuficiente ainda assim produz `201`. Nenhuma chamada à Meta pode reprovar esta rota: a inscrição da WABA é best-effort e a habilitação de chamadas é fire-and-forget. O erro só aparece **no primeiro envio**. Faça um envio de teste logo após conectar, antes de dizer ao cliente que está tudo pronto.
+</Warning>
+
+<Warning>
+  **Número duplicado devolve `500` cru, não `409`.** Diferente do `/complete`, esta rota não pré-checa duplicata: se o número já existe em qualquer conta, a violação de unicidade do banco vaza como `500` com `code: "P2002"`. Consulte `GET /v1/numbers` antes de enviar o formulário se quiser dar um erro legível ao seu operador.
+</Warning>
+
+<Warning>
+  **A rota é reexecutável e destrutiva.** O `/complete` se autobloqueia com `409 Number already exists`; o `complete-credentials` **não tem checagem de duplicata nenhuma**. Uma segunda chamada com o mesmo token reencontra o mesmo placeholder e faz `UPDATE` in-place, sobrescrevendo `number`, `displayName`, `metaPhoneId`, `metaWabaId`, `metaAccessToken` e `metaAppSecret` — em silêncio, sem erro. Durante os 30 minutos de validade, quem tiver o token repontua o número para outras credenciais. Reforça a regra do fluxo embedded: **o token é um segredo bearer**, nunca desce ao browser, e deve ser descartado do seu armazenamento assim que o `201` chegar.
+</Warning>
+
+<Warning>
+  **`routeWebhooksToPilot` afeta a WABA inteira, não só este número.** Repetindo porque é a decisão mais fácil de errar: `false` (o default) é o certo para quase todo mundo. Mande `true` apenas quando o cliente quiser que a Pilot Status seja o único destino dos webhooks de toda a WABA dele.
+</Warning>
+
+## Webhooks
+
+Um número conectado por qualquer um dos dois fluxos é um número **META**. Isso muda o formato do que chega no seu endpoint.
+
+<Warning>
+  **Número META entrega o envelope nativo da Meta**, com `entry[].changes[].field: "messages"` — e **nunca** `message.received`. O evento `message.received` é vocabulário de números não oficiais (Pilot Status web). Inscrever-se em `events: ["*"]` **não** converte o envelope: você continua recebendo o formato nativo. Escreva o parser do seu receptor para os dois formatos, ou ramifique pelo provedor do número.
+</Warning>
+
+```json Envelope nativo (recorte)
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "987654321098765",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "5511999999999", "phone_number_id": "123456789012345" },
+            "messages": [{ "from": "5585984387245", "id": "wamid...", "type": "text", "text": { "body": "Oi" } }]
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Cadastre o webhook antes de o cliente concluir
+
+Você não precisa esperar o `complete`. O `numberId` que você leu da claim do JWT no passo 1 já é o id definitivo: o `complete` faz um `UPDATE` na mesma linha, então a inscrição sobrevive.
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_sua_chave_tenant" \
+  -d '{
+    "url": "https://seu-crm.com/hooks/whatsapp",
+    "whatsappNumberId": "<numberId do placeholder>",
+    "events": ["*"]
+  }'
+```
+
+Assim você não perde as primeiras mensagens do cliente entre o `complete` e o cadastro do webhook. As entregas usam BullMQ com **5 tentativas** e backoff exponencial a partir de 5 segundos. Veja [Receber mensagens](/pt-BR/guides/receive-messages) e a [referência de eventos](/pt-BR/api/webhooks/events).
+
+<Warning>
+  **Hoje nenhum cabeçalho de assinatura é emitido** para webhooks criados pela API pública: o campo `secret` nunca é gravado, então `x-pilot-status-signature` não chega. Não escreva verificação de assinatura contando com ele. Autentique as entregas por outro meio — URL secreta e imprevisível, mTLS ou allowlist de IP.
+</Warning>
+
+## Próximos passos
+
+- Opção hospedada, sem integrar o SDK: [Incorpore a Página de Conexão](/pt-BR/integrations/embed-connect)
+- Referência do endpoint que minta o token: [POST /v1/numbers/remote-pairing](/pt-BR/api/numbers/remote-pairing)
+- Escopos de chave e cabeçalhos: [Autenticação da API](/pt-BR/api/authentication)
+- Primeiro envio pelo número recém-conectado: [Enviar mensagens](/pt-BR/guides/send-messages)
