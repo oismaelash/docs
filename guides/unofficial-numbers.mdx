@@ -1,0 +1,333 @@
+---
+title: "Connect unofficial WhatsApp numbers from your app | Pilot Status"
+sidebarTitle: "Unofficial numbers"
+description: "Let your own users pair their WhatsApp number by QR code from inside your SaaS or CRM — create the number, render the QR in your UI, detect the connection, and send and receive on it through the public API."
+mode: "wide"
+---
+
+# Connect unofficial numbers from your app
+
+You run a SaaS or a CRM. Your customer has a normal WhatsApp number on their phone, and you want them to link it **inside your product** — your screen, your styling, your QR — and then send and receive on it through the Pilot Status API. That is the **unofficial (QR-paired)** flow, and it is two pieces of work:
+
+1. Your **backend** creates the number (`POST /v1/numbers` with your `ps_` key) and refreshes the QR (`GET /v1/numbers/{id}/connect`).
+2. Your **page** renders that QR and waits for the number to reach `OPEN` — by polling status, or by taking the `number.connected` webhook.
+
+Nothing else is required: no Meta app, no App Review, no Facebook SDK. The first QR even comes back **in the create response**, so pairing starts on the very first call.
+
+<Note>
+  Prefer a running start? Download the MIT-licensed demo — a Node/Express backend that holds the `ps_` key and a React/Vite frontend wired to exactly this flow: **[public-api-demo.zip](https://pilotstatus.com.br/downloads/public-api-demo.zip)**. Unzip, set your `ps_` key, `npm run dev` (or `docker compose up`). It ships three screens — **Números** (create + QR modal + live status), **Enviar** (free text or template, with a "Ver cURL" modal) and **Webhooks** (deliveries of a registered webhook plus events received locally).
+</Note>
+
+## Architecture
+
+```text
+Browser (your page)
+   │ 1. POST /api/numbers        → { instanceId, qrcodeBase64, pairingCode }
+   │ 2. <img src={qrcodeBase64}>  ← your own modal, your own styling
+   │ 3. GET  /api/numbers/:id/connect  (refresh the QR)
+   │ 4. GET  /api/numbers/:id/status   → { state } … until "OPEN"
+   ▼
+Your backend ── x-api-key: ps_ ──►  https://pilotstatus.com.br/v1/…
+   ▲
+   └── POST /hooks/pilot  ◄── number.connected / message.received  (production path)
+```
+
+The browser never sees a `ps_` key. Like the demo, keep a thin proxy on your server and expose only the fields your UI needs.
+
+## What you need
+
+**One credential: a `ps_` API key.** Copy it from the dashboard at **`/profile`**, under the **API** tab.
+
+`POST /v1/numbers` accepts **both** a tenant-scoped and a number-scoped key — there is no scope gate on that route. But **sending** later needs a number-scoped key (or a tenant key plus the `x-whatsapp-number-id` header — see step 4 of [The flow](#the-flow)), so a tenant-scoped key is the practical choice for a multi-customer product.
+
+<Note>
+  If your key was issued through OAuth with **per-number consent grants**, creating a number is refused with `403 { "code": "NUMBERS_GRANT_NOT_ALLOWED" }`. Use a tenant key instead.
+</Note>
+
+<Warning>
+  **Creating the number consumes a plan slot immediately.** Capacity is checked and taken *before* the row is written. Over your funded ceiling and unfundable, the call fails with `402 { "error": "INSUFFICIENT_FUNDS" }` — free a slot in `/numbers` or buy extra numbers first. Within the funded ceiling it is allowed and not charged again.
+</Warning>
+
+If you are still deciding whether unofficial is the right connection type at all, read [Official vs. unofficial](/concepts/official-vs-unofficial). For the click-through version in the Pilot Status dashboard, see [Connect Numbers](/connecting-numbers). This guide is the programmatic build.
+
+## The flow
+
+<Steps>
+  <Step title="Create the number — the first QR comes back here">
+    `POST /v1/numbers` creates the number and starts pairing in one call. There is **no `provider` field** on this endpoint: it always creates an unofficial number.
+
+    ```bash cURL
+    curl -X POST "https://pilotstatus.com.br/v1/numbers" \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -d '{
+        "name": "Acme Sales",
+        "number": "+5511999999999",
+        "linkToApiKey": true
+      }'
+    ```
+
+    | Field | Type | Notes |
+    | --- | --- | --- |
+    | `name` | string, 1–60 | **Required.** |
+    | `number` | string, min 10, `/^\+?\d+$/` | **Required.** |
+    | `linkToApiKey` | boolean | Optional. |
+    | `piiMode` | `RELAY_ONLY` \| `STORE_X_DAYS` \| `STORE_INDEFINITE` | Optional. |
+    | `piiRetentionDays` | integer 1–3650 | Optional, only with `STORE_X_DAYS`. |
+
+    The response is **201**:
+
+    ```json
+    {
+      "instance": {
+        "id": "inst_9f3c21ab",
+        "instanceName": "acme-sales",
+        "number": "+5511999999999",
+        "displayName": "Acme Sales",
+        "name": "Acme Sales",
+        "provider": "PILOT_STATUS",
+        "status": "CONNECTING",
+        "quality": "UNKNOWN",
+        "integration": "WHATSAPP-BAILEYS",
+        "tenantId": "tn_1234",
+        "createdAt": "2026-07-21T12:00:00.000Z",
+        "updatedAt": "2026-07-21T12:00:00.000Z",
+        "isFullyConnected": false
+      },
+      "qrcodeBase64": "data:image/png;base64,iVBORw0KGgo...",
+      "pairingCode": "ABCD-EFGH",
+      "linkedApiKeyId": "key_77"
+    }
+    ```
+
+    <Note>
+      `provider: "PILOT_STATUS"` appears in the **response**, never in your request body — the endpoint hardcodes the unofficial provider. Do not send it.
+    </Note>
+
+    **`instance.id` is the id every later call in this guide uses.** Persist it next to your customer record before you show anything on screen.
+
+    Errors: `400 { "error": "Validation error", "details": … }`, `409 { "error": "Number already exists" }`, `402 INSUFFICIENT_FUNDS`, `403 NUMBERS_GRANT_NOT_ALLOWED`, `502 { "error": "Failed to create instance", "details": … }`, `401` with no credential.
+  </Step>
+
+  <Step title="Render the QR in your own UI">
+    Show `qrcodeBase64` as an image and `pairingCode` as the type-it-instead fallback. Your customer opens WhatsApp → **Linked devices** → **Link a device**.
+
+    In practice `qrcodeBase64` arrives as a `data:image/png;base64,…` data URL — the demo drops it straight into `<img src={qr}>` and it renders. Shipped Pilot Status UI code still guards the prefix, and so should you:
+
+    ```js Browser
+    const src = qr.startsWith("data:") ? qr : `data:image/png;base64,${qr}`;
+    // <img src={src} alt="Scan with WhatsApp" />
+    ```
+
+    A QR is short-lived. To hand out a fresh one, call `GET /v1/numbers/{id}/connect` with the **instance id**:
+
+    ```bash cURL
+    curl "https://pilotstatus.com.br/v1/numbers/inst_9f3c21ab/connect" \
+      -H "x-api-key: ps_your_tenant_key"
+    ```
+
+    It returns **exactly two fields**, each `string | null`, and no state field:
+
+    ```json
+    { "qrcodeBase64": "data:image/png;base64,iVBORw0KGgo...", "pairingCode": "ABCD-EFGH" }
+    ```
+
+    <Note>
+      There is **no way to ask for a pairing code specifically** — no query param, no header, no body. The endpoint always requests both and returns whatever the provider gave back, so either field can be `null`. Render whichever you got.
+    </Note>
+
+    On success the instance moves to `CONNECTING`. Errors: `409 { "error": "Instance already connected", "state": "OPEN" }`, `404` when the id is not in your tenant, `502 { "error": "Failed to generate QR code", "code": "EMPTY_CONNECT_BUNDLE" }` when neither came back, `502` on an upstream failure, and `500 { "error": "WhatsApp provider not configured" }`.
+  </Step>
+
+  <Step title="Know when it connected">
+    Two ways, and you should probably use both.
+
+    **Poll while the modal is open.** `GET /v1/numbers/{id}/status` returns `{ id, state }`, where `state` is `OPEN`, `CONNECTING`, or the uppercased raw provider state. `OPEN` means paired.
+
+    ```bash cURL
+    curl "https://pilotstatus.com.br/v1/numbers/inst_9f3c21ab/status" \
+      -H "x-api-key: ps_your_tenant_key"
+    ```
+
+    ```json
+    { "id": "inst_9f3c21ab", "state": "OPEN" }
+    ```
+
+    No poll interval is enforced server-side. The demo polls connection status every **3 s** and stops at `OPEN` (and its webhook screen refreshes every **5 s**) — that is the demo's choice, not a documented requirement. `503 { "error": …, "state": … }` means the sync failed; `404` means not found.
+
+    **Take the webhook in production.** `number.connected` and `number.disconnected` are real customer webhook events, and `number.connected` is dispatched from the provider connection handler, so it covers this unofficial path. Subscribe your endpoint and you learn about pairing (and later drop-offs) even when nobody has your UI open. See [Configure webhooks](/api/webhooks/configure).
+
+    <Note>
+      Rule of thumb: **poll** to drive a modal that is already in front of the user, **webhook** for anything your system must react to on its own.
+    </Note>
+  </Step>
+
+  <Step title="Send on the number">
+    `POST /v1/messages/send` acts on a single number, so it requires a **number-scoped** key. A tenant-scoped key on its own is refused:
+
+    ```json
+    { "error": "This endpoint acts on a single WhatsApp number: …", "code": "TENANT_SCOPE_NOT_ALLOWED" }
+    ```
+
+    **The shortcut:** send the same tenant key *plus* the `x-whatsapp-number-id` header. The credential is narrowed to that number and the call works — no key juggling in a multi-customer backend. An id that cannot be resolved returns `404 { "code": "NUMBER_NOT_FOUND" }`.
+
+    <CodeGroup>
+    ```bash cURL
+    curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -H "x-whatsapp-number-id: inst_9f3c21ab" \
+      -d '{ "destinationNumber": "+5511988887777", "text": "Hi from Acme" }'
+    ```
+
+    ```js Your backend
+    // The ps_ key never leaves your server.
+    const r = await fetch("https://pilotstatus.com.br/v1/messages/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.PILOT_TENANT_KEY,
+        "x-whatsapp-number-id": instanceId,
+      },
+      body: JSON.stringify({ destinationNumber, text }),
+    });
+    // 202 { id, correlationId, status, createdAt, origin, sourceNumber }
+    ```
+    </CodeGroup>
+
+    Success is **202** — an **enqueue**, not a synchronous delivery. Track the outcome through message webhooks, not through this response. Full payload options live in [Send messages](/guides/send-messages).
+
+    ### Resolving a real number-scoped key
+
+    If you'd rather hold the number's own key (this is what the demo does), `GET /v1/api-keys` is the reveal endpoint. It needs a **tenant-capable** credential — a number-scoped key gets `403 { "error": "This endpoint requires a tenant-scoped API key", "code": "NUMBER_SCOPE_NOT_ALLOWED" }`.
+
+    ```bash cURL
+    curl "https://pilotstatus.com.br/v1/api-keys" \
+      -H "x-api-key: ps_your_tenant_key"
+    ```
+
+    Each entry is `{ numberId, number, displayName, keyId, keyLast4, key, revealable }`. `key` is the real decrypted value; it is `null` with `revealable: false` **only** when the stored key cannot be decrypted. The demo resolves the key at runtime this way and caches it in memory.
+
+    <Warning>
+      `POST /v1/api-keys { "whatsappNumberId": … }` **regenerates** that number's key and returns `{ numberId, keyId, keyPrefix, keyLast4, key, createdAt }`. It **invalidates the previous key**. The demo uses it only as a fallback when the reveal came back unrevealable — don't call it on every request, or you'll break anything else already holding that key.
+    </Warning>
+  </Step>
+
+  <Step title="Receive">
+    Inbound messages arrive on your webhook. Unofficial numbers emit Pilot Status events such as `message.received` — subscribe an endpoint per number and parse the envelope there.
+
+    Don't wire this from memory: [Receive messages](/guides/receive-messages) and [Configure webhooks](/api/webhooks/configure) own the event list, the payload shapes, and the delivery/retry behavior. The demo's **Webhooks** screen shows the same thing end to end — a registered webhook, its delivery log, and the events actually received locally.
+  </Step>
+</Steps>
+
+## When the phone isn't in front of your UI
+
+Sometimes the person holding the phone is not the person using your app — a client of your client, an ops team in another building. For that, `POST /v1/numbers/remote-pairing` returns a **hosted** pairing page you can just send them a link to.
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_key" \
+  -d '{ "name": "Acme Sales", "number": "+5511999999999", "sendViaWhatsApp": true }'
+```
+
+- `provider` is optional and defaults to `"PILOT_STATUS"` — **the QR flow is the default**, so omitting it is correct here.
+- For `PILOT_STATUS`, **both** `name` and `number` are required, or you get `400 { "error": "name and number are required for PILOT_STATUS remote pairing" }`.
+- The **201** body is `{ provider: "PILOT_STATUS", instance: { id, instanceName, number, displayName, state: "CLOSE" }, remotePairingUrl, maskedNumber, messageSent, messageError }`. There is **no `expiresAt`** on the QR branch — only the Meta branch returns one.
+- The token in the URL is a **bare UUID** (no dots), lives **24 h**, and is **single-use**: the status route clears it once the poll sees `OPEN`. (Meta's token is a signed JWT with a 30-minute TTL — different thing entirely.)
+- It creates a **real** number and a **real** upstream instance — not a Meta-style placeholder — and fires `number.created`.
+- It honors `sendViaWhatsApp` (delivers the link to the number itself), `linkToApiKey` and `branding`. `redirectUrl` and `externalRef` are consumed **only** by the Meta branch.
+
+<Warning>
+  **Never hardcode the connect host.** `remotePairingUrl` is built from the configured connect host, falling back to the request origin. Use the URL the API returned, verbatim.
+</Warning>
+
+<Warning>
+  **`mode=button` is Meta-only.** An unofficial token resolves to the unofficial flow and always renders the full hosted page with the QR timeline, whatever you append. Don't offer button mode for QR pairing.
+
+  Also note that in the hosted QR flow, `connect:paired` carries **explicit `null`s** for `numberId`, `phone` and `provider` (the status endpoint behind it returns only state and `isFullyConnected`), and `connect:expired` carries no payload at all. So the host page cannot learn the number id from those events — keep the `instance.id` you got in the **201** above.
+</Warning>
+
+For the Meta/official variant of this endpoint, see [Embedded Signup](/guides/embedded-signup) and the [remote pairing reference](/api/numbers/remote-pairing).
+
+## Removing a number
+
+```bash cURL
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/inst_9f3c21ab" \
+  -H "x-api-key: ps_your_tenant_key"
+```
+
+Success is **200 `{ "ok": true }`**; an unknown id returns `404 { "error": "Number not found" }`. It accepts a **WhatsAppNumber id or a WhatsAppInstance id**, and emits `number.removed`.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="402 INSUFFICIENT_FUNDS on POST /v1/numbers">
+    Capacity is taken at creation, before the row exists. You are above the funded ceiling and the extra capacity could not be funded. Free a slot in `/numbers` or add extra numbers, then retry.
+  </Accordion>
+
+  <Accordion title='403 { "code": "NUMBERS_GRANT_NOT_ALLOWED" }'>
+    `"Creating a number is not available for a per-number connection"` — the credential is an OAuth per-number grant. Creating numbers needs a regular tenant key.
+  </Accordion>
+
+  <Accordion title='409 { "error": "Number already exists" }'>
+    That phone number is already registered. Look it up and reuse its id instead of creating a second one.
+  </Accordion>
+
+  <Accordion title='409 { "error": "Instance already connected", "state": "OPEN" } on /connect'>
+    Not an error worth surfacing: the number paired already. Close the QR modal and move on to sending.
+  </Accordion>
+
+  <Accordion title='502 EMPTY_CONNECT_BUNDLE — "Failed to generate QR code"'>
+    Neither a QR nor a pairing code came back from the provider. There is no rate limit or cooldown on this route, so retrying is safe — call `/connect` again, and surface a plain "couldn't generate a code, try again" in your UI.
+  </Accordion>
+
+  <Accordion title='500 "WhatsApp provider not configured"'>
+    A server-side configuration problem, not something your request can fix. Retry, and contact support if it persists.
+  </Accordion>
+
+  <Accordion title="404 on /connect or /status">
+    The id doesn't belong to your tenant, or it isn't an instance id. Use `instance.id` from the create response — not the number string, not a WhatsAppNumber id.
+  </Accordion>
+
+  <Accordion title="503 on /status with a state field">
+    The state sync with the provider failed for that poll. Keep polling; treat it as "unknown", not as "disconnected".
+  </Accordion>
+
+  <Accordion title='403 TENANT_SCOPE_NOT_ALLOWED when sending'>
+    `POST /v1/messages/send` needs a number-scoped credential. Either send the number's own key, or keep your tenant key and add `x-whatsapp-number-id: <id>`.
+  </Accordion>
+
+  <Accordion title='404 NUMBER_NOT_FOUND when sending'>
+    The `x-whatsapp-number-id` you sent couldn't be resolved to a number in your tenant. Check that you stored `instance.id`.
+  </Accordion>
+
+  <Accordion title='403 NUMBER_SCOPE_NOT_ALLOWED on GET /v1/api-keys'>
+    `"This endpoint requires a tenant-scoped API key"` — you called the reveal endpoint with a number-scoped key. Use the tenant key.
+  </Accordion>
+
+  <Accordion title='400 Validation error on create'>
+    Check `details`. The usual causes: `name` outside 1–60 characters, or `number` shorter than 10 characters or containing anything other than digits and a leading `+`.
+
+    The PII fields answer with their own messages instead, not with `details`: an unknown mode gives `400 { "error": "Invalid piiMode" }`, and `piiMode: "STORE_X_DAYS"` without a valid companion gives `400 { "error": "piiRetentionDays must be an integer between 1 and 3650 for STORE_X_DAYS" }`. Sending `piiRetentionDays` on its own is simply ignored.
+  </Accordion>
+
+  <Accordion title="The QR renders as a broken image">
+    Use the defensive prefix from step 2 — `qr.startsWith("data:") ? qr : "data:image/png;base64," + qr` — instead of assuming one shape or the other.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Numbers API reference" icon="hashtag" href="/api/numbers/create">
+    Every field and response for create, connect, status and delete.
+  </Card>
+  <Card title="Receive messages" icon="inbox" href="/guides/receive-messages">
+    Inbound events, payload shapes, and how to consume them.
+  </Card>
+  <Card title="Official vs. unofficial" icon="scale-balanced" href="/concepts/official-vs-unofficial">
+    Which connection type belongs in your product.
+  </Card>
+  <Card title="Embedded Signup" icon="facebook" href="/guides/embedded-signup">
+    The official Meta Cloud API equivalent of this flow.
+  </Card>
+</CardGroup>
