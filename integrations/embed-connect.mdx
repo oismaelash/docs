@@ -98,6 +98,8 @@ Mint the Meta link **when the user is about to click**, not hours ahead — 30 m
 
 Use it when you already have your own onboarding screen and the hosted card would be a second, competing UI inside it. Use the default page mode when you want the full explanatory flow, or for QR pairing.
 
+Button mode also clears the page's own background (`html` and `body`). That is a property of `mode=button` itself, not of being framed — it holds however the URL is loaded. In the normal embed the effect is that **your host page shows through the iframe** and the button sits on your surface rather than on a stray solid rectangle. Nothing to configure on your side.
+
 <CodeGroup>
 ```js SDK
 PilotStatus.connect.mount("#connect-button", {
@@ -144,42 +146,65 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
     "branding": {
       "primaryColor": "#0F172A",
       "button": {
-        "variant": "dark",
+        "variant": "whatsapp",
         "label": "Connect WhatsApp",
+        "icon": "whatsapp",
         "radius": "pill",
         "size": "lg",
-        "fullWidth": true
+        "height": 56,
+        "width": 320
       }
     }
   }'
 ```
 
+That is the green WhatsApp button with its own logo, 56 px tall and 320 px wide.
+
 | Field | Values | Default |
 | --- | --- | --- |
-| `variant` | `facebook` \| `dark` \| `light` \| `outline` | `facebook` |
+| `variant` | `facebook` \| `whatsapp` \| `dark` \| `light` \| `outline` | `facebook` |
 | `label` | text, trimmed, max **40** chars | `Continuar com o Facebook` (Portuguese) |
 | `primaryColor` | hex `#RRGGBB` | from variant |
 | `textColor` | hex `#RRGGBB` | from variant |
 | `radius` | `sm` \| `md` \| `lg` \| `pill` | `lg` |
 | `size` | `sm` \| `md` \| `lg` | `md` |
 | `fullWidth` | boolean | `true` |
-| `hideProvenance` | boolean | `false` (gated — see below) |
+| `icon` | `facebook` \| `whatsapp` \| `none` | derived from `variant` |
+| `height` | integer px, **24–200** | whatever `size` implies |
+| `width` | integer px, **64–800** | `fullWidth` / auto |
+| `hideProvenance` | boolean | `false` (see below) |
 
-Every field is optional. The button fills its container by default; set `fullWidth: false` to shrink it to its content. The built-in `label` is the Portuguese string `Continuar com o Facebook` — set `label` explicitly for any other locale. Keep the object small: it rides inside the JWT that sits in the connect URL.
+Every field is optional. The built-in `label` is the Portuguese string `Continuar com o Facebook` — set `label` explicitly for any other locale. Keep the object small: it rides inside the JWT that sits in the connect URL.
+
+- **`variant: "whatsapp"`** paints the button WhatsApp green (`#25D366`).
+- **`icon`** is an inline brand glyph (SVG, no network call) drawn before the label; it inherits the text color. Omit it and it follows the variant: `facebook` → the Facebook glyph, `whatsapp` → the WhatsApp glyph, **any other variant → no glyph at all**. Send `icon: "none"` to drop it explicitly.
+- **`height`** is applied as a **min-height** — the label never clips — and replaces the vertical padding that `size` would have given the button.
+- **`width`** **overrides `fullWidth`**: when `width` is present, `fullWidth` is ignored. Without `width`, the button fills its container by default; set `fullWidth: false` to shrink it to its content.
+- **Validate before you call.** Every bound in the table is enforced when you mint the link: a value outside the allowed range or enum makes `POST /v1/numbers/remote-pairing` answer `400 Validation error` with a `details` breakdown, and **nothing is created** — no token, no link, no placeholder. A `height` of `1000` is a rejected request, not a button silently clamped back to the height implied by `size`.
+
+<Note>
+  The connect page itself does fall back to the default for any button field it cannot make sense of, but that is a renderer safety net for a stale value already sitting inside a signed token. It is not reachable from the API: a bad value sent to `POST /v1/numbers/remote-pairing` gets you a `400`, never a defaulted button.
+</Note>
 
 <Warning>
   **None of these can be set by query parameter**, and there is no plan to allow it. Styling arrives only through a token minted with your `ps_` key, so every styled page is attributable to a tenant. A page whose appearance any anonymous visitor could rewrite via the query string is exactly the phishing surface that got a Pilot Status domain flagged once — the query-string overlay stays limited to the pre-existing cosmetic params below.
 </Warning>
 
-### `hideProvenance`
+### The “secured by pilotstatus.com.br” marker
 
-`branding.button.hideProvenance: true` asks the button to drop the small “secured by pilotstatus.com.br” marker. Be aware of exactly what it does:
+Whether the small provenance marker renders under the button depends on **where the page is running** — you do not have to configure anything for the normal embedded case. There are exactly three cases:
 
-- It is **gated by a server-side switch that Pilot Status controls, and that switch is off by default.** While it is off, `hideProvenance` is accepted and silently ignored — **the marker still renders**. Ask support to enable it for your tenant.
-- It only applies in **button mode**. On the full connect page the marker is always visible, including when `hidePilotStatusBranding` is set.
-- It cannot be set by query parameter, only in the minted token.
+| Case | Marker |
+| --- | --- |
+| `mode=button` inside a real iframe (the normal embed) | **hidden by default** |
+| `mode=button` opened top-level, not framed | **shown** |
+| Full connect page (no `mode=button`) | **always shown** |
 
-Write your UI so it looks right **with** the marker: that is the behavior you get unless and until the switch is turned on for you.
+- **Framed button mode hides it automatically.** The page checks whether it is actually inside a frame (`window.parent !== window`); if it is, the marker is dropped. No token field, no switch, nothing to ask for — embed the button and it is already gone.
+- **Top-level button mode keeps it, deliberately.** A lone, tenant-styled login button sitting on a `*.pilotstatus.com.br` URL with nothing identifying whose page it is, is precisely the surface Safe Browsing flags as deceptive. The marker is what keeps that URL attributable, so it stays whenever the button is not embedded.
+- **The full page always keeps it,** including when `hidePilotStatusBranding` is set.
+
+`branding.button.hideProvenance: true` still exists as an explicit opt-out for the top-level button case, and it is still paired with a server-side switch that Pilot Status controls. That switch is **off by default**, so setting `hideProvenance` on its own changes nothing; ask support if you genuinely need it. It cannot be set by query parameter, only in the minted token — and it never affects the full connect page.
 
 ## postMessage protocol (iframe → parent)
 
@@ -188,9 +213,43 @@ Connect never receives an `init` message — the token is already in the URL. Th
 | Message | Callback | Meaning |
 | --- | --- | --- |
 | `connect:paired{…}` | `onPaired` | number connected — payload below |
-| `connect:error{message}` | `onError` | failure |
+| `connect:error{message}` | `onError` | failure **or the customer cancelling / closing the Facebook popup** — Facebook does not distinguish the two, so both arrive here. The button **stays on screen** for a retry; the page does not go into an error state. The iframe also prints Facebook's raw `message` **inline, under the button** — your customer reads it too, so do not plan on handling it silently. |
 | `connect:expired` | `onExpired` | token expired (30 min for Meta, 24 h for QR) or the QR was exhausted |
 | `resize{height}` | — | SDK adjusts iframe height |
+
+### Plan slots and the delete-on-abandon pattern
+
+<Warning>
+  **Minting the link already costs a plan slot.** `POST /v1/numbers/remote-pairing` creates a placeholder number immediately, and an abandoned link keeps holding that slot — there is no automatic cleanup. Mint the link only when the customer is about to click.
+</Warning>
+
+Give the slot back yourself instead of waiting for the link to lapse. `connect:error` is the signal that an attempt failed — including someone closing the Facebook popup — but it is **not** the signal to delete: the button is still on screen and they can click again. Note the failed attempt, and run the cleanup when the session is really over without a `connect:paired` (you closed the modal, they navigated away, you gave up):
+
+```js
+PilotStatus.connect.mount("#connect-button", {
+  token,
+  mode: "button",
+  onPaired: (d) => save(d.numberId, d.externalRef),
+  onError: () => {
+    // Cancel or failure — the button is still on screen for a retry, so mark the
+    // attempt as abandoned and let your own UI decide when to give up.
+    markPairingAbandoned(customerId);
+  },
+});
+```
+
+When you do give up, your backend deletes the placeholder it created for that customer with `DELETE /v1/numbers/{id}` and the `ps_` key — the slot comes back immediately instead of staying held until you notice. The cleanup call itself is written out in [Embedded Signup](/guides/embedded-signup).
+
+**Where the placeholder id comes from.** There are exactly two supported sources, and neither is a listing call:
+
+- The `numberId` claim inside the Meta token. Split the JWT on `.` and base64url-decode the middle segment — a metadata read of a token you minted yourself, no signature check needed.
+- The `numberId` field on `connect:paired` — but that only arrives on success, so it is no help for the abandoned case.
+
+Decode the claim **when you generate the link** and store it next to your own customer record. Do not plan on rediscovering it later from `GET /v1/numbers`.
+
+<Warning>
+  **Deleting the placeholder does not invalidate the link.** The pairing token is verified statelessly — signature, kind and expiry only, with no database lookup — so `GET /v1/meta-embedded/{token}` keeps answering `valid: true` after the placeholder row is gone, and the customer's button keeps working until the 30 minutes lapse. Completion then finds no placeholder and falls back to **creating a brand-new number**, re-asserting your plan limit at that moment. So delete only once you are confident the customer is not retrying — not because the link stops working, but because a retry after your delete hands you a second, unexpected number holding a fresh slot.
+</Warning>
 
 ### `connect:paired` payload
 
@@ -208,7 +267,6 @@ Connect never receives an `init` message — the token is already in the URL. Th
 - `numberId` is the id you use everywhere else in the API (`GET /v1/numbers/{id}`, webhooks, sending).
 - `externalRef` is whatever you passed when minting — join it against your own customer record. It is carried by Meta links; on QR pairing it arrives as `null`.
 - All six fields — `numberId`, `phone`, `displayName`, `provider`, `externalRef`, `redirectUrl` — are always present: a flow that cannot know one sends **`null`, never omits it**, so you do not need per-path branching over them.
-- `externalRef` is whatever you passed when minting — join it against your own customer record. It is carried by Meta links; on QR pairing it arrives as `null`.
 - `redirectUrl`, when present, is **not** followed while embedded — the iframe hands it to you and lets your page decide whether and where to navigate, instead of blowing out of the frame.
 
 ## White-label / branding

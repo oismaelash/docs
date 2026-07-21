@@ -16,14 +16,14 @@ Seu app faz só duas coisas: o **backend gera o link de conexão** com a sua cha
 </Note>
 
 <Note>
-  **Este é o caminho recomendado.** Ele evita todo o trabalho de rodar o Embedded Signup na sua própria página. Seu app não carrega SDK nenhum do Facebook, não serve `appId`/`config_id`, não lê `/api/health` e não roda `FB.login`. Nenhum domínio seu precisa ser registrado num app Meta — o botão roda em `connect.pilotstatus.com.br`, um domínio já registrado no app Meta da Pilot Status.
+  **Este é o caminho recomendado.** Ele evita todo o trabalho de rodar o Embedded Signup na sua própria página. Seu app não carrega SDK nenhum do Facebook e não roda `FB.login` — não há nada de app Meta para você provisionar. Nenhum domínio seu precisa ser registrado num app Meta: o botão roda em `connect.pilotstatus.com.br`, um domínio já registrado no app Meta da Pilot Status.
 </Note>
 
 ## Uma credencial só
 
 Você precisa de exatamente uma coisa: uma chave de API `ps_` com **escopo de tenant**. Pegue em `/profile`, aba **API**.
 
-Você **não** precisa de app Meta próprio, nem de App Review, nem de um `config_id` seu, nem de chave com escopo de número. O Embedded Signup roda sobre o app da Pilot Status.
+Você **não** precisa de app Meta próprio, nem de App Review, nem de nenhuma configuração do lado da Meta, nem de chave com escopo de número. O Embedded Signup roda sobre o app da Pilot Status.
 
 A chave `ps_` fica **no seu servidor** — o browser nunca chama a API da Pilot Status, ele só embeda o iframe.
 
@@ -58,16 +58,19 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
         "externalRef": "crm-org-42",
         "branding": {
           "button": {
-            "variant": "facebook",
+            "variant": "whatsapp",
             "label": "Conectar meu WhatsApp",
-            "primaryColor": "#1877F2",
+            "icon": "whatsapp",
             "radius": "pill",
             "size": "lg",
+            "height": 56,
             "fullWidth": true
           }
         }
       }'
     ```
+
+    Esse exemplo rende o caso mais pedido: botão verde WhatsApp (`#25D366`) com o logo do WhatsApp antes do rótulo, cantos arredondados e 56 px de altura.
 
     A resposta traz exatamente três campos:
 
@@ -81,12 +84,40 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
 
     Guarde a `remotePairingUrl` — é o link de conexão (`connectUrl`) que o frontend vai embutir. Devolva **só** esse link (ou o token) ao seu frontend, nunca a chave `ps_`.
 
-    O `branding.button` controla a **aparência** do botão — `variant` (`facebook` \| `dark` \| `light` \| `outline`), `label`, `primaryColor` (`#RRGGBB`), `textColor` (`#RRGGBB`), `radius` (`sm` \| `md` \| `lg` \| `pill`), `size` (`sm` \| `md` \| `lg`) e `fullWidth` (todos opcionais). Ele **só** pode ser definido aqui, ao gerar o link — nunca por parâmetro de query na URL do iframe. É por segurança: toda página estilizada fica atribuível a um tenant.
+    O `branding.button` controla a **aparência** do botão. **Todos os campos são opcionais:**
 
-    O **id do número placeholder não vem no corpo da resposta** — ele só existe na claim `numberId` do JWT. Decodifique o payload em base64url (é leitura de metadado; não é preciso verificar a assinatura) para lê-lo agora e já cadastrar o webhook (passo 4) antes de o cliente concluir. Você também recebe esse `numberId` no evento `connect:paired`, no passo 3.
+    | Campo | Valores | Padrão |
+    | --- | --- | --- |
+    | `variant` | `"facebook"` \| `"whatsapp"` \| `"dark"` \| `"light"` \| `"outline"` | `"facebook"` |
+    | `label` | texto, até 40 caracteres | `Continuar com o Facebook` |
+    | `primaryColor` | `#RRGGBB` | a cor da variante |
+    | `textColor` | `#RRGGBB` | a cor da variante |
+    | `radius` | `"sm"` \| `"md"` \| `"lg"` \| `"pill"` | `"lg"` |
+    | `size` | `"sm"` \| `"md"` \| `"lg"` | `"md"` |
+    | `fullWidth` | boolean | `true` |
+    | `icon` | `"facebook"` \| `"whatsapp"` \| `"none"` | derivado da `variant` |
+    | `height` | inteiro em px, 24–200 | a altura que o `size` implica |
+    | `width` | inteiro em px, 64–800 | `fullWidth`/automático |
+
+    Alguns comportamentos que valem saber:
+
+    - **`variant: "whatsapp"`** pinta o botão de verde WhatsApp (`#25D366`) com texto branco — o casamento mais natural com um rótulo do tipo "conectar meu WhatsApp".
+    - **`icon`** desenha um glifo de marca inline antes do rótulo (SVG embutido, sem nenhuma requisição de rede) que herda a cor do texto. Omitido, ele segue a variante: `facebook` → glifo do Facebook, `whatsapp` → glifo do WhatsApp, **qualquer outra variante → nenhum glifo**. Mande `"none"` para tirá-lo explicitamente.
+    - **`height`** é aplicado como **min-height** — o rótulo nunca corta — e substitui o padding vertical que o `size` usaria.
+    - **`width`** **substitui o `fullWidth`**: se você mandar uma largura, o `fullWidth` é ignorado.
+    - **Valor inválido é rejeitado, não corrigido.** Os intervalos de `height`/`width` e as listas de `variant`, `icon`, `radius` e `size` são validados no servidor: qualquer valor fora deles faz a chamada voltar `400 Validation error` com um `details`, e **nenhum link é gerado** — nenhum placeholder é criado e nenhum slot é consumido. Valide os valores antes de chamar.
+    - Mantenha o objeto pequeno: ele viaja dentro do token assinado que está na URL do connect.
+
+    <Note>
+      A página do botão ainda tolera um campo estragado caindo no padrão daquele campo — mas isso é só rede de proteção do **renderizador**, para um valor velho já preso dentro de um token assinado. Mandando um valor ruim para a API você nunca chega lá: a resposta é `400` e você fica sem link.
+    </Note>
+
+    O `branding.button` **só** pode ser definido aqui, ao gerar o link — nunca por parâmetro de query na URL do iframe. É por segurança: toda página estilizada fica atribuível a um tenant.
+
+    O **id do número placeholder não vem no corpo da resposta** — ele só existe na claim `numberId` do JWT. Decodifique o payload em base64url (é leitura de metadado; não é preciso verificar a assinatura) para lê-lo agora e já cadastrar o webhook (passo 4) antes de o cliente concluir. Você também recebe esse `numberId` no evento `connect:paired`, no passo 3. Esses dois são os caminhos suportados — **guarde o id assim que decodificar**, junto do seu cadastro de cliente, porque é ele que você vai usar depois para apagar um placeholder abandonado.
 
     <Warning>
-      **Gerar o link já consome um slot do plano.** A chamada cria um `WhatsAppNumber` placeholder na hora. Um link abandonado **vaza o slot** — não existe rotina de limpeza automática. Gere o link só depois que o cliente clicar em conectar, e remova os placeholders órfãos manualmente no painel `/numbers` (veja [Limpe placeholders órfãos](#limpe-placeholders-orfaos)).
+      **Gerar o link já consome um slot do plano.** A chamada cria um `WhatsAppNumber` placeholder na hora. Um link abandonado **vaza o slot** — não existe rotina de limpeza automática. Gere o link só depois que o cliente clicar em conectar, e devolva o slot quando a sessão terminar sem um `connect:paired` (passo 3) — o `DELETE` está em [Limpe placeholders órfãos](#limpe-placeholders-órfãos).
 
       É aqui, e não no complete, que o slot é cobrado. Sem slot livre, esta chamada falha: libere um slot em `/numbers` ou contrate números extras antes de tentar de novo.
     </Warning>
@@ -135,7 +166,7 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
     </Warning>
 
     <Note>
-      Esta página aponta para **produção** (`connect.pilotstatus.com.br`). O `mode=button` só renderiza o botão depois de estar deployado; até lá, o iframe cai na página de conexão completa.
+      No modo botão a página renderiza **só o botão**, e o fundo dela fica **transparente** — isso é propriedade do próprio `mode=button`, não de estar num iframe —, então o fundo do seu app aparece atrás. Já o pequeno marcador **"secured by pilotstatus.com.br"** é o que depende do iframe: dentro de um iframe de verdade ele fica **escondido por padrão** (você não precisa pedir). Aberto em nível superior (o mesmo link sem iframe em volta), o marcador **aparece**, de propósito: um botão de login estilizado sozinho numa URL `*.pilotstatus.com.br`, sem procedência visível, é exatamente o que o Safe Browsing marca como enganoso.
     </Note>
   </Step>
 
@@ -145,6 +176,8 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
     ```html Frontend — HTML + JS
     <script>
       const CONNECT_ORIGIN = "https://connect.pilotstatus.com.br";
+      // numberId veio junto com o connectUrl (seu backend decodificou a claim do JWT).
+      let conectado = false;
 
       window.addEventListener("message", (event) => {
         // Dois cheques obrigatórios: a origem tem que ser o host do connect, e
@@ -161,6 +194,7 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
           case "connect:paired": {
             // p = { numberId, phone, displayName, provider, externalRef, redirectUrl }
             // Cruze pelo externalRef que VOCÊ passou ao gerar o link.
+            conectado = true;
             salvarNumeroConectado(p.numberId, p.externalRef);
             break;
           }
@@ -168,6 +202,10 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
             // Token de 30 min expirou — gere um novo link e re-embeta.
             break;
           case "connect:error":
+            // Chega também quando a pessoa CANCELA ou fecha o popup do Facebook.
+            // O botão continua na tela para ela tentar de novo — aqui só anote.
+            // Cancelou o popup? Ela ainda pode clicar de novo — só limpe quando
+            // tiver certeza de que foi embora (ex.: fechou o modal, saiu da página).
             console.error(p.message);
             break;
           case "resize":
@@ -176,10 +214,46 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
             break;
         }
       });
+
+      // Chame quando a pessoa realmente foi embora: você fechou o modal,
+      // ela saiu da página, ou você desistiu da sessão.
+      async function encerrarOnboarding(numberId) {
+        if (conectado) return; // conectou: o número é real, não apague.
+        // Só o SEU backend tem a chave ps_ — é ele que chama DELETE /v1/numbers/{id}.
+        await fetch("/api/onboarding/abandon", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ numberId }),
+        });
+      }
     </script>
     ```
 
     O payload de `connect:paired` traz `numberId`, `phone`, `displayName`, `provider`, `externalRef` e `redirectUrl` — todos sempre presentes (um fluxo que não conhece algum envia `null`, nunca omite). Cruze pelo `externalRef` para casar o número com o cadastro de cliente do seu lado. O `numberId` é o id usado em todo o resto da API (`GET /v1/numbers/{id}`, webhooks, envio). Remova o listener no cleanup da sua página/componente.
+
+    ### `connect:error` também é o seu sinal de "o cliente desistiu"
+
+    O `connect:error` chega numa falha terminal **e** quando a pessoa **cancela ou fecha o popup do Facebook** — o Facebook não distingue as duas coisas, então ambas chegam pelo mesmo evento, com o mesmo payload `{ message }`. Nos dois casos o botão **continua na tela**, e a pessoa pode simplesmente clicar de novo.
+
+    Isso importa por causa do custo: o número placeholder criado no passo 1 já está segurando um slot do plano. O link expira em 30 minutos, mas o placeholder **não** some junto — ele fica lá segurando o slot até alguém apagar. Em vez de deixar isso acontecer, rode uma limpeza **delete-on-abandon** sempre que a sessão terminar **sem** um `connect:paired` — você fechou o modal, a pessoa saiu da página, ou você desistiu da sessão — e **não** no primeiro `connect:error`, que ela ainda pode tentar de novo. O browser avisa o **seu** backend (ele não tem chave `ps_`), e o seu backend apaga o placeholder com `DELETE /v1/numbers/{id}`, devolvendo o slot na hora. A chamada está em [Limpe placeholders órfãos](#limpe-placeholders-órfãos); o id é o `numberId` que você leu da claim do JWT no passo 1.
+
+    ```javascript Backend — devolve o slot ao abandonar
+    // POST /api/onboarding/abandon  { numberId }
+    // BASE e TENANT_KEY são as mesmas constantes do "Backend de exemplo", abaixo.
+    app.post("/api/onboarding/abandon", async (req, res) => {
+      const { numberId } = req.body || {};
+      const r = await fetch(`${BASE}/v1/numbers/${numberId}`, {
+        method: "DELETE",
+        headers: { "x-api-key": TENANT_KEY },
+      });
+      // 200 { ok: true } — slot devolvido. 404 = já não existe: nada a fazer.
+      res.status(r.ok ? 200 : r.status).json(await r.json().catch(() => ({})));
+    });
+    ```
+
+    <Warning>
+      **Não delete no primeiro `connect:error`.** O botão continua ali para uma nova tentativa — e apagar o placeholder **não invalida o link**: o token é verificado só pela assinatura e pela validade, sem consultar o banco. Se a pessoa clicar de novo depois do seu `DELETE`, o fluxo conclui assim mesmo e a Pilot Status cria um número **novo**, consumindo um slot novo (o limite do plano é reavaliado nessa hora). Ou seja, deletar cedo demais não te protege: te dá um segundo número inesperado. Dispare a limpeza só quando a pessoa realmente foi embora: fechou o seu modal, saiu da página, ou você desistiu da sessão.
+    </Warning>
   </Step>
 
   <Step title="Cadastre o webhook">
@@ -300,7 +374,11 @@ curl -X DELETE "https://pilotstatus.com.br/v1/numbers/<numberId>" \
   -H "x-api-key: ps_sua_chave_tenant"
 ```
 
-Responde `200 { "ok": true }` (ou `404 "Number not found"` se o id não existir). Aceita o id do número **ou** o id da instância. Use o `numberId` que você guardou no passo 1 para liberar o slot de um placeholder abandonado.
+Responde `200 { "ok": true }` (ou `404 "Number not found"` se o id não existir). Aceita o id do número **ou** o id da instância. Use o `numberId` que você guardou no passo 1 (a claim `numberId` do JWT, ou o mesmo id que chega no `connect:paired`) para liberar o slot de um placeholder abandonado — de preferência automatizando quando a sessão do passo 3 acabar sem `connect:paired`. Esperar o link expirar não resolve: o placeholder continua ocupando o slot depois dos 30 minutos.
+
+<Warning>
+  Apagar o placeholder **não revoga o link**. O token é validado só pela assinatura e pela validade — não há consulta ao banco —, então, enquanto ele valer, uma nova tentativa do cliente ainda conclui e cria um número **novo**, consumindo outro slot. Delete só quando tiver certeza de que ninguém vai tentar de novo.
+</Warning>
 
 ## Outros caminhos
 
