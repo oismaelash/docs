@@ -1,7 +1,7 @@
 ---
 title: "Conecte números WhatsApp não-oficiais pelo seu app | Pilot Status"
 sidebarTitle: "Números não-oficiais"
-description: "Crie, pareie por QR Code e passe a enviar mensagens por um número WhatsApp não-oficial inteiramente pela API pública: POST /v1/numbers devolve o primeiro QR, /connect renova, /status ou o webhook number.connected avisam quando conectou."
+description: "Crie, pareie por QR Code e passe a enviar mensagens por um número WhatsApp não-oficial inteiramente pela API pública: POST /v1/numbers devolve o primeiro QR, /connect renova, /status e o webhook number.connected avisam quando conectou."
 mode: "wide"
 ---
 
@@ -34,7 +34,7 @@ Seu backend ── x-api-key: ps_ ──►  https://pilotstatus.com.br/v1/numbe
 Só o seu backend fala com a API da Pilot Status. O browser conversa apenas com o seu backend — é assim que o demo faz, e é o motivo de a chave `ps_` nunca aparecer no navegador.
 
 <Warning>
-  **Nunca coloque uma chave `ps_` em código que roda no browser.** Ela dá acesso à sua conta inteira. Todo exemplo `js` deste guia é código de servidor.
+  **Nunca coloque uma chave `ps_` em código que roda no browser.** Ela dá acesso à sua conta inteira. Todo exemplo deste guia que usa a chave é código de servidor — os blocos marcados **"Sua tela"** rodam no browser e nunca tocam na chave.
 </Warning>
 
 ## O que você precisa
@@ -55,18 +55,25 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
   <Step title="Crie o número — e receba o primeiro QR">
     `POST /v1/numbers` exige apenas `name` (1 a 60 caracteres) e `number` (mínimo 10 caracteres, só dígitos com `+` opcional).
 
+    O `name` não passa por trim e não tem restrição de caracteres — o valor é gravado exatamente como enviado, então um espaço no começo ou no fim sobrevive. No `number`, o mínimo de 10 caracteres conta o `+`, então `+123456789` (9 dígitos) passa e `123456789` não. Separadores não são aceitos: `+55 11 99999-9999` devolve 400.
+
     ```bash cURL
     curl -X POST "https://pilotstatus.com.br/v1/numbers" \
       -H "Content-Type: application/json" \
       -H "x-api-key: ps_sua_chave" \
       -d '{
         "name": "Atendimento Acme",
-        "number": "+5511999999999",
-        "linkToApiKey": true
+        "number": "+5511999999999"
       }'
     ```
 
     Campos opcionais: `linkToApiKey` (boolean), `piiMode` (`RELAY_ONLY` | `STORE_X_DAYS` | `STORE_INDEFINITE`) e `piiRetentionDays` (inteiro de 1 a 3650, só junto com `STORE_X_DAYS`).
+
+    <Note>
+      **O que `linkToApiKey` faz (e o que ele não faz).** Ele só vale quando você chama **com uma chave de número**: nesse caso o padrão é `true` e ele **re-aponta a chave chamadora para o número novo** — ela deixa de estar restrita ao número em que estava antes. Mande `false` para deixá-la onde está. Com uma chave de **tenant** (inclusive uma chave de tenant restrita por `x-whatsapp-number-id`, e OAuth de tenant completo) o campo é **ignorado**: mesmo com `true` nada é vinculado e `linkedApiKeyId` volta `null`.
+
+      Em nenhum caso este endpoint **cria** uma chave: nada no caminho de criação grava uma linha de `ApiKey`.
+    </Note>
 
     <Note>
       **Não existe campo `provider` nesta requisição.** O endpoint já fixa o provedor não-oficial. O `provider: "PILOT_STATUS"` que você vê é da **resposta**, não do corpo que você envia.
@@ -77,25 +84,33 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
     ```json
     {
       "instance": {
-        "id": "inst_9f3c21ab",
-        "instanceName": "acme-atendimento",
-        "number": "+5511999999999",
+        "id": "cmm04obm46zz0qv4ycjp8x6r2",
+        "instanceName": "PS-5511999999999-0",
+        "number": "5511999999999",
         "displayName": "Atendimento Acme",
         "name": "Atendimento Acme",
         "provider": "PILOT_STATUS",
         "status": "CONNECTING",
         "quality": "UNKNOWN",
         "integration": "WHATSAPP-BAILEYS",
-        "tenantId": "tn_1234",
+        "tenantId": "cmneu67400001oa8pp4dtmwem",
         "createdAt": "2026-07-21T12:00:00.000Z",
         "updatedAt": "2026-07-21T12:00:00.000Z",
         "isFullyConnected": false
       },
       "qrcodeBase64": "data:image/png;base64,iVBORw0KGgo...",
       "pairingCode": "ABCD-EFGH",
-      "linkedApiKeyId": "key_77"
+      "linkedApiKeyId": null
     }
     ```
+
+    O `instanceName` é gerado pela Pilot Status no formato `PS-{dígitos}-{n}`, em que `{n}` é o próximo índice livre daquele número na sua conta (uma segunda conexão do mesmo número vira `PS-5511999999999-1`). Ele nunca vem do `name`, e o `name` não é "slugificado": é gravado literalmente como `displayName` e devolvido em `displayName` e `name`.
+
+    Você pode enviar `number` com ou sem `+`; um único `+` inicial é removido e tudo que a API grava e devolve (`instance.number`, `GET /v1/numbers`) são só dígitos. O `+` só reaparece no webhook `number.created`, cujo campo `phone` vem em E.164 completo (`+5511999999999`).
+
+    Todo id desta resposta é um cuid de 25 caracteres — letras minúsculas e dígitos, sempre começando com `c`, sem prefixo (`cmm04obm46zz0qv4ycjp8x6r2`). Vale para `instance.id`, `tenantId` e `linkedApiKeyId`, então não tente distinguir um do outro pelo prefixo. O único valor com prefixo na API é a própria chave: `ps_` seguido de 48 caracteres hexadecimais.
+
+    `linkedApiKeyId: null` significa que nenhuma chave foi vinculada nesta chamada. **Significa também que o número novo não tem chave de API própria** — `POST /v1/numbers` nunca cria uma.
 
     Guarde `instance.id`: é o id da **instância WhatsApp**, e é ele que todas as chamadas seguintes deste guia usam.
 
@@ -104,20 +119,24 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
     </Warning>
 
     Outros erros: `400 { "error": "Validation error", "details" }`, `409 { "error": "Number already exists" }`, `502 { "error": "Failed to create instance", "details" }` e `401` quando não há credencial.
+
+    O 409 é comparação exata dos dígitos, dentro da sua própria conta: `+5511999999999` e `5511999999999` são o mesmo número, mas `5511987654321` e `551187654321` (o nono dígito opcional brasileiro) são números diferentes — os dois podem ser criados e cada um consome um slot do plano. Um número já conectado em **outra** conta Pilot Status não devolve 409, e sim outro erro 4xx; trate qualquer 4xx na criação como "número indisponível". Se você precisa de tolerância ao nono dígito, use `POST /v1/numbers/check`, que é o único endpoint que testa as duas variantes.
   </Step>
 
   <Step title="Desenhe o QR na sua tela e renove quando precisar">
-    Não adicione prefixo às cegas: na prática o `qrcodeBase64` vem como uma **data URL** (`data:image/png;base64,...`), mas o valor é repassado do provedor sem normalização. Renderize defensivamente:
+    O `qrcodeBase64` é um PNG e chega como **data URL completa** (`data:image/png;base64,iVBORw0KGgo…`), pronta para ir direto no `<img src={qr}>` — é assim que o demo faz. A Pilot Status **não monta nem normaliza** essa string: ela é o campo do próprio provedor não-oficial, repassado byte a byte (só com `trim`). O prefixo é garantia do provedor, não nossa — por isso a própria interface da Pilot Status ainda checa antes de renderizar. Mantenha a checagem:
 
     ```js Sua tela
     const src = qr.startsWith("data:") ? qr : `data:image/png;base64,${qr}`;
     ```
 
+    Não existe parâmetro para pedir o payload sem prefixo: o campo é essa data URL ou `null`. O texto bruto do QR (o que uma biblioteca de QR codificaria) nunca é exposto — só o PNG já renderizado.
+
     QR Code do WhatsApp expira rápido. Para pegar um novo (ou um novo código de pareamento), chame `GET /v1/numbers/{id}/connect` com o `instance.id`:
 
     <CodeGroup>
     ```bash cURL
-    curl "https://pilotstatus.com.br/v1/numbers/inst_9f3c21ab/connect" \
+    curl "https://pilotstatus.com.br/v1/numbers/cmm04obm46zz0qv4ycjp8x6r2/connect" \
       -H "x-api-key: ps_sua_chave"
     ```
 
@@ -136,15 +155,19 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
     { "qrcodeBase64": "data:image/png;base64,iVBORw0KGgo...", "pairingCode": "ABCD-EFGH" }
     ```
 
+    O código de pareamento tem sempre 9 caracteres: 8 caracteres base32 maiúsculos com um hífen após o quarto — `XXXX-XXXX`. O alfabeto é `123456789ABCDEFGHJKLMNPQRSTVWXYZ`: não existe zero nem `I`, `O` ou `U`, e nunca vem em minúsculas. A Pilot Status repassa a string do provedor sem alterar — não insere o hífen, não completa nem muda a caixa. Exiba o valor como veio e não valide com um regex mais estrito que `^[1-9A-HJ-NP-TV-Z]{4}-[1-9A-HJ-NP-TV-Z]{4}$`.
+
+    O código de pareamento é gerado para o número gravado na instância — o mesmo `number` que você mandou no `POST /v1/numbers`. O `/connect` não aceita corpo, header nem query param, então não dá para pedir um código para outro telefone; ele só funciona digitado naquele número exato.
+
     Não há campo de estado aqui — para saber se conectou, use o passo 3.
 
     <Note>
-      **Não existe parâmetro para pedir "só o código de pareamento".** A rota não aceita query param, header nem corpo: ela sempre pede os dois ao provedor e devolve o que vier. Se você vir alguma sugestão de `?pairingCode=1` por aí, ignore — não existe.
+      **Não existe parâmetro para pedir "só o código de pareamento".** A rota não aceita query param, header nem corpo: ela sempre pede os dois ao provedor e devolve o que vier — por isso qualquer um dos dois campos pode vir `null` (nunca os dois, isso é o 502 mais abaixo). O `pairingCode` volta `null` quando a chamada de pareamento do provedor falha ou responde com um código vazio — em geral porque a sessão ainda não está de pé, ou porque o número gravado não é um número internacional válido (o provedor recusa números com 6 dígitos ou menos e números começando com `0`, mesmo que o `POST /v1/numbers` os aceite). Sempre desenhe o QR como caminho principal e o código como alternativa; nunca monte um fluxo que exija a presença do `pairingCode`. Se você vir alguma sugestão de `?pairingCode=1` por aí, ignore — não existe.
     </Note>
 
-    Como efeito colateral, uma chamada bem-sucedida coloca a instância em `CONNECTING`. Não há rate limit nem carência nessa rota.
+    Como efeito colateral, uma chamada bem-sucedida coloca a instância em `CONNECTING`, **mas o `GET /status` vai reportar `CLOSE`** — o poll seguinte substitui esse valor interno pela leitura ao vivo do provedor. A Pilot Status não conta nem limita chamadas a essa rota.
 
-    Erros: `409 { "error": "Instance already connected", "state": "OPEN" }`, `404` quando o id não é do seu tenant, `502 { "error": "Failed to generate QR code", "details", "code": "EMPTY_CONNECT_BUNDLE" }` quando nem QR nem código voltaram, `502` em falha do provedor e `500 { "error": "WhatsApp provider not configured" }`.
+    Erros: `409 { "error": "Instance already connected", "state": "OPEN" }`, `404 { "error": "Not found" }` quando o id não é do seu tenant, `502 { "error": "Failed to generate QR code", "details": "WhatsApp provider returned no QR code and no pairing code", "code": "EMPTY_CONNECT_BUNDLE" }` quando nem QR nem código voltaram, `502` em falha do provedor e `{ "error": "WhatsApp provider not configured" }` — **500** quando o provedor não-oficial não está configurado, **502** quando a própria chamada de connect reporta isso.
   </Step>
 
   <Step title="Saiba quando conectou">
@@ -153,21 +176,57 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
     **Polling** — bom quando a sua tela já está aberta na frente da pessoa:
 
     ```bash cURL
-    curl "https://pilotstatus.com.br/v1/numbers/inst_9f3c21ab/status" \
+    curl "https://pilotstatus.com.br/v1/numbers/cmm04obm46zz0qv4ycjp8x6r2/status" \
       -H "x-api-key: ps_sua_chave"
     ```
 
     ```json
-    { "id": "inst_9f3c21ab", "state": "OPEN" }
+    { "id": "cmm04obm46zz0qv4ycjp8x6r2", "state": "OPEN" }
     ```
 
-    O vocabulário de estado por instância é `OPEN` | `CONNECTING` | o valor bruto do provedor em maiúsculas. `OPEN` é o que você espera. Falha de sincronização devolve `503 { "error", "state" }`; id inexistente, `404`.
+    No `200` existem apenas dois valores na prática: **`OPEN`** (pareado) e **`CLOSE`** (qualquer outra coisa — nunca escaneado, QR na tela, QR expirado ou queda depois de conectado; o endpoint não distingue esses casos). **Este endpoint nunca devolve `CONNECTING` em um `200`**: o estado `connecting` do provedor é normalizado para `CLOSE` antes da resposta. Faça polling até `state === "OPEN"` e trate qualquer outro valor como "ainda não".
+
+    Falha de sincronização devolve `503 { "error", "state" }`. O `state` dessa resposta **não** é leitura ao vivo — é o último valor gravado; só aí podem aparecer `CONNECTING`, `LOGOUT` ou `connecting` em minúsculas. Trate o 503 como "não sei" e continue o polling. Id inexistente devolve `404 { "error": "Not found" }`.
+
+    Cada `GET /status` faz uma chamada ao vivo ao provedor (timeout de 7 s) — nada é cacheado e nada espera por webhook de entrada. O primeiro poll depois de a sessão subir já devolve `OPEN`.
 
     <Note>
       **Não há intervalo mínimo imposto pelo servidor.** O demo escolheu **3 segundos** e para ao ver `OPEN` — é a escolha dele, não uma exigência da API.
     </Note>
 
-    **Webhook** — o caminho recomendado em produção, porque não depende de ninguém estar com a aba aberta. `number.connected` e `number.disconnected` são eventos reais de webhook, e `number.connected` é disparado no tratador de conexão do provedor, ou seja, cobre o caminho não-oficial. Assine o evento e reaja quando ele chegar, em vez de manter um loop de polling vivo.
+    <Warning>
+      **Um `200 OPEN` também pode vir do último estado conhecido** quando o provedor não responde àquele poll (timeout da sondagem ou provedor inacessível). Isso nunca inventa uma primeira conexão — antes do escaneamento o estado gravado não é `OPEN`, então a mesma falha devolve `503` —, mas significa que um poller de longa duração pode continuar vendo `OPEN` por um tempo depois de uma queda real.
+    </Warning>
+
+    **Webhook** — pegue o `number.connected` também. Ele é disparado no tratador de conexão do provedor, ou seja, cobre este caminho não-oficial, e chega mesmo com ninguém olhando a sua tela. Três coisas para desenhar em volta dele.
+
+    Ele dispara **só no primeiro pareamento bem-sucedido daquele número** — um novo pareamento do mesmo número depois é suprimido pela camada de deduplicação de ingestão, então nunca trate a ausência de `number.connected` como "não conectou"; o `GET /v1/numbers/{id}/status` é a fonte da verdade. Ele é entregue **uma única vez, sem reentrega** — se o seu endpoint responder 5xx ou estourar o tempo, o evento não é reenviado (a tentativa falha fica registrada no log de entregas). E ele **não** tem um par funcional para quedas: `number.disconnected` é um nome de evento válido, mas no caminho não-oficial só é emitido por um fluxo interno de recuperação de restart, então um logout comum ou um celular que saiu do ar normalmente não produzem nada. Para saber de quedas, assine com `"events": ["*"]` e observe `number.health_blocked` (todas as conexões do número fora do ar, detectado por um healthcheck periódico — espere minutos, não segundos) e `number.recovered`. Esses dois nomes são recusados se você listá-los explicitamente: só o curinga `*` os entrega.
+
+    O corpo que você recebe:
+
+    ```json
+    {
+      "event": "number.connected",
+      "data": {
+        "numberId": "cmm04obm46zz0qv4ycjp8x6r2",
+        "phone": "+5511999999999",
+        "displayName": "Atendimento Acme",
+        "createdAt": "2026-07-21T12:34:56.789Z"
+      }
+    }
+    ```
+
+    O `numberId` é o mesmo id que o `POST /v1/numbers` devolveu. O `createdAt` é o momento do disparo do evento, não a data de criação do número. Se o webhook tiver segredo, o corpo vem assinado em `x-pilot-status-signature` (HMAC-SHA256 em hexadecimal). Não existe header `Idempotency-Key` neste evento.
+
+    <Warning>
+      **Não conte com receber o `number.connected` enquanto você estiver fazendo polling.** Ele só é emitido quando o evento de conexão do provedor encontra o nosso estado gravado ainda diferente de `OPEN`; um poll que virar o estado primeiro suprime o evento. Escolha um: polling para o modal, ou só webhook para o backend.
+    </Warning>
+
+    <Note>
+      **Regra de bolso:** faça polling do `GET /v1/numbers/{id}/status` para conduzir um modal que está na frente da pessoa *e* como fonte da verdade do estado conectado/desconectado; use o webhook para acordar trabalho quando ninguém estiver com a sua tela aberta.
+    </Note>
+
+    Para números criados por `POST /v1/numbers`, os únicos eventos de conexão assináveis são `number.created`, `number.connected`, `number.disconnected` e `number.removed` (além de `message.*` e `call.*`). O `connection.update` e os nomes nativos da Evolution (`Connected`, `LoggedOut`) **não** são assináveis para esses números e são descartados em silêncio se você os pedir no array `events`.
   </Step>
 
   <Step title="Envie por esse número">
@@ -175,57 +234,76 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
 
     ```json
     {
-      "error": "This endpoint acts on a single WhatsApp number: ...",
+      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
       "code": "TENANT_SCOPE_NOT_ALLOWED"
     }
     ```
 
-    Há um atalho: **uma chave de tenant que também mande o header `x-whatsapp-number-id`** fica restrita àquele número e funciona normalmente. Um id que não resolve devolve `404 { "code": "NUMBER_NOT_FOUND" }`.
+    O `error` é uma única string bilíngue (EN | PT); trate sempre pelo `code`.
+
+    Há um atalho: **uma chave de tenant que também mande o header `x-whatsapp-number-id`** fica restrita àquele número e funciona normalmente. **É este o caminho para números criados com uma chave de tenant, que não têm chave própria.** Um id que não resolve devolve `404 { "error": "x-whatsapp-number-id does not name a WhatsApp number of this account | x-whatsapp-number-id não indica um número de WhatsApp desta conta", "code": "NUMBER_NOT_FOUND" }` — o `code` é a parte estável.
 
     ```bash cURL
     curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
       -H "Content-Type: application/json" \
       -H "x-api-key: ps_sua_chave_de_tenant" \
-      -H "x-whatsapp-number-id: inst_9f3c21ab" \
+      -H "x-whatsapp-number-id: cmm04obm46zz0qv4ycjp8x6r2" \
       -d '{ "destinationNumber": "+5511988887777", "text": "Olá do meu app!" }'
     ```
+
+    O corpo mínimo é exatamente `{ "destinationNumber", "text" }`. O `destinationNumber` aceita com ou sem `+`, mas **só dígitos** — `+55 11 98888-7777` é recusado com `400 Validation error`, assim como qualquer valor com menos de 10 dígitos.
+
+    Texto livre em número não-oficial **não tem janela de atendimento de 24 horas nem exigência de template** — essas travas existem apenas para números oficiais da Meta. As únicas recusas de envio que valem aqui são `422 BILLING_SUSPENDED` e `429 Rate limit exceeded`.
 
     O sucesso é **202** — um **enfileiramento**, não uma entrega síncrona:
 
     ```json
     {
-      "id": "msg_abc123",
-      "correlationId": "corr_abc123",
+      "id": "cmdb7q0k30001x9mf1s2p4a7c",
+      "correlationId": "cid_3f9a1c74b8e04d2fa1c6e7d05b93aa12",
       "status": "QUEUED",
       "createdAt": "2026-07-21T12:03:00.000Z",
-      "origin": "API",
-      "sourceNumber": "+5511999999999"
+      "origin": "Atendimento Acme",
+      "sourceNumber": "5511999999999"
     }
     ```
 
+    `id` é um cuid (sem prefixo `msg_`), `correlationId` é sempre `cid_` + 32 caracteres hexadecimais, `status` no 202 é sempre `QUEUED`, `sourceNumber` é o número remetente em dígitos puros — **sem `+`** —, e `origin` é apenas um rótulo legível da instância usada (nunca a string `"API"`); para identificar o remetente use `sourceNumber`, não `origin`.
+
+    O campo `media` só vale no modo de **mídia direta** (nunca junto com `text`) e aceita uma URL http(s) **ou** um data URI base64 (`data:<mime>;base64,…`) de até 16 MB decodificados.
+
     ### Descobrir a chave do número por código
 
-    É o que o demo faz. `GET /v1/api-keys` é o endpoint de **revelação** e exige credencial com capacidade de tenant — uma chave de número recebe `403 { "error": "This endpoint requires a tenant-scoped API key", "code": "NUMBER_SCOPE_NOT_ALLOWED" }`. Ele devolve um array de `{ numberId, number, displayName, keyId, keyLast4, key, revealable }`, onde `key` é o valor real descriptografado. `key` só vem `null` (com `revealable: false`) quando a chave guardada não pôde ser descriptografada.
+    É o que o demo faz. `GET /v1/api-keys` é o endpoint de **revelação** e exige credencial com capacidade de tenant — uma chave de número recebe `403 { "error": "This endpoint requires a tenant-scoped API key", "code": "NUMBER_SCOPE_NOT_ALLOWED" }`. Ele devolve um array de `{ numberId, number, displayName, keyId, keyLast4, key, revealable }`, onde `key` é o valor real descriptografado.
+
+    `key` só traz o valor real quando `revealable` é `true`. Vem `null` com `revealable: false` em dois casos: a chave foi criada antes de a criptografia reversível estar ativa (não há o que descriptografar) ou o texto cifrado guardado não descriptografa mais. É um item por chave, não por número — um número que nunca foi usado pode não ter item nenhum, e um número pode ter vários (todos válidos).
+
+    Um número **sem** chave de número não aparece nessa lista — ele não vem com `revealable: false`, simplesmente não vem. Se você criou o número com uma chave de tenant, esse é o caso normal.
 
     ```js Seu backend
+    const digits = (s) => (s || "").replace(/\D/g, "");
     const r = await fetch("https://pilotstatus.com.br/v1/api-keys", {
       headers: { "x-api-key": process.env.PILOT_TENANT_KEY },
     });
-    const entry = (await r.json()).find((k) => k.numberId === numberId);
+    const entry = (await r.json()).find(
+      (k) => k.numberId === numberId || digits(k.number) === digits(phone)
+    );
     const numberKey = entry?.key; // guarde em memória, nunca mande ao browser
     ```
 
-    Como plano B, `POST /v1/api-keys { "whatsappNumberId": "..." }` **regenera** a chave daquele número e devolve `{ numberId, keyId, keyPrefix, keyLast4, key, createdAt }`.
+    Case também pelo telefone (`number`), não só pelo `numberId` — para números não-oficiais o `GET /v1/numbers` devolve o id da instância, que não é o `numberId` desta resposta. O `numberId` aqui é o id do **`WhatsAppNumber`**, um valor diferente do `instance.id` que você guardou. Guarde os dois se precisar chamar `/v1/numbers/{id}` (id do número) e também `/connect` ou `/status` (id da instância).
+
+    Como plano B, `POST /v1/api-keys { "whatsappNumberId": "..." }` devolve `{ numberId, keyId, keyPrefix, keyLast4, key, createdAt }`. Se o número ainda não tinha chave, isso apenas **cria** a primeira e devolve o valor utilizável uma única vez.
 
     <Warning>
-      **Regenerar invalida a chave anterior.** Qualquer integração que ainda esteja usando a chave antiga daquele número para de funcionar na hora. Use como fallback, não como rotina.
+      **`POST /v1/api-keys` não rotaciona a chave no lugar** — cria uma chave **nova** (novo `keyId`) e depois apaga **todas as outras** chaves de número daquele número, inclusive as criadas pelo painel ou pelos testes de template. Elas param de funcionar na requisição seguinte, sem carência. Se o número tiver uma inbox nativa do Chatwoot e o envio da chave nova para ela falhar, as antigas são mantidas de propósito para a inbox não quebrar — então, após uma rotação que falhou nesse passo, mais de uma chave pode continuar valendo. Aceita o id do número ou o id da instância e devolve o `numberId` canônico. Use como plano B, não como rotina.
     </Warning>
   </Step>
 
   <Step title="Receba mensagens">
     Recepção é a mesma história de sempre: registre um webhook por número e trate as entregas. Não vamos repetir aqui — o assunto inteiro (lista de eventos, formato, reentregas) está em [Receber mensagens](/pt-BR/guides/receive-messages) e em [Webhooks](/pt-BR/concepts/webhooks).
 
-    Assine `number.connected` junto com os eventos de mensagem e você fecha o ciclo do passo 3 no mesmo endpoint.
+    Assine `number.connected` junto com os eventos de mensagem e você fecha o ciclo do passo 3 no mesmo endpoint — lembrando que ele chega uma única vez, no primeiro pareamento, e sem reentrega.
   </Step>
 </Steps>
 
@@ -237,10 +315,14 @@ Alguns pontos que importam:
 
 - **`provider` é opcional e o padrão é `"PILOT_STATUS"`** (o enum aceita `"PILOT_STATUS"` ou `"META"`), então o fluxo de QR é o comportamento padrão quando você omite o campo.
 - Para `PILOT_STATUS`, **`name` e `number` são ambos obrigatórios** — faltando um, `400 { "error": "name and number are required for PILOT_STATUS remote pairing" }`.
-- O token é um **UUID puro** (sem pontos), com TTL de **24 horas** e de **uso único**: a rota de status o limpa assim que o polling vê `OPEN`. (O token do fluxo Meta é outra coisa: um JWT assinado com TTL de 30 minutos. Não confunda os dois.)
+- O token é um **UUID puro** (sem pontos), com TTL de **24 horas** e de **uso único**: a rota de status o limpa assim que o polling vê `OPEN`. (O token do fluxo Meta é outra coisa: um JWT assinado com TTL de 30 minutos. Não confunda os dois.) Uso único também quer dizer **um link vivo por número**: chamar `POST /v1/numbers/remote-pairing` de novo para o mesmo telefone gera um token novo no mesmo número e invalida o link anterior em silêncio. E como o 201 não traz `expiresAt`, calcule você mesmo o prazo de 24 h a partir do momento da chamada.
 - A resposta **201** traz `{ provider: "PILOT_STATUS", instance: { id, instanceName, number, displayName, state: "CLOSE" }, remotePairingUrl, maskedNumber, messageSent, messageError }`. **Não há `expiresAt`** neste ramo — só o ramo Meta devolve esse campo.
 - Ele cria um `WhatsAppNumber` **real** e uma instância real no provedor (nada de placeholder no estilo Meta) e dispara `number.created`.
-- Aceita `sendViaWhatsApp` (entrega o link para o próprio número), `linkToApiKey` e `branding`. Já `redirectUrl` e `externalRef` são consumidos **apenas** pelo ramo Meta.
+- **Consome capacidade do plano, igual ao `POST /v1/numbers`** — a linha do número passa pela mesma checagem de fundos antes de ser gravada. **Mas o erro chega diferente nesta rota:** acima do teto já custeado e sem como custear, você recebe `500 { "error": "INSUFFICIENT_FUNDS", "code": "INSUFFICIENT_FUNDS" }`, e **não** o `402` do `POST /v1/numbers`. Trate pelo `code`, nunca pelo status.
+- **Parear um número que você já tem não custa nada.** Se já existir um número com os mesmos dígitos no seu tenant, ele é reaproveitado: nenhuma capacidade é consumida e `INSUFFICIENT_FUNDS` não acontece. Mesmo assim uma nova conexão e um novo token de 24 h são criados, e o `number.created` dispara de novo — então trate esse evento como *pelo menos uma vez por link de pareamento*, não como prova de número novo.
+- Aceita `linkToApiKey` e `branding`. Já `redirectUrl` e `externalRef` são consumidos **apenas** pelo ramo Meta. Atenção: o `linkToApiKey` se comporta **diferente** aqui — esta rota vincula mesmo uma chave de tenant e grava apenas o vínculo com a instância.
+- `sendViaWhatsApp` é aceito mas **hoje não entrega nada** — `messageSent` volta `false` em toda chamada. Duas coisas precisam se encaixar e a segunda está quebrada hoje: o tenant precisa de um template chamado exatamente `pilot_status_remote_pairing` com uma variável `{{link}}` (se faltar → `messageError: "Template \"pilot_status_remote_pairing\" not found. Create an OTP template with this name and a {{link}} variable."`), e o envio em si falha hoje com `messageError: "WhatsApp instance name is required to enqueue messages"`. Nenhuma das duas falhas é fatal: você ainda recebe **201**, o número e a instância no provedor são criados, o `number.created` dispara e a `remotePairingUrl` é válida. **Entregue o link você mesmo** — mande a `remotePairingUrl` para a pessoa pelo seu próprio canal. E note que o envio sairia do *número mais antigo conectado no seu tenant*, não de um número de plataforma da Pilot Status.
+- Se a sua credencial veio de OAuth por número, esta rota devolve o mesmo `code` da criação com outra mensagem: `403 { "error": "Pairing a new number is not available for a per-number connection", "code": "NUMBERS_GRANT_NOT_ALLOWED" }`.
 
 ```bash cURL
 curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
@@ -248,37 +330,46 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
   -H "x-api-key: ps_sua_chave_de_tenant" \
   -d '{
     "name": "Atendimento Acme",
-    "number": "+5511999999999",
-    "sendViaWhatsApp": true
+    "number": "+5511999999999"
   }'
 ```
+
+Pegue a `remotePairingUrl` da resposta e entregue você mesmo — por SMS, e-mail, ou o canal que fizer sentido no seu produto.
 
 <Warning>
   **Nunca fixe o host de conexão no seu código.** A `remotePairingUrl` é montada a partir de `NEXT_PUBLIC_CONNECT_HOST`, ou `CONNECT_PUBLIC_URL`, ou a origem da requisição. Use exatamente a URL que a API devolveu, sem remontar.
 </Warning>
 
-<Note>
-  **`mode=button` é exclusivo do Meta.** Um token não-oficial resolve para o fluxo de QR e sempre renderiza a página hospedada completa, com a linha do tempo do pareamento. Não tente usar modo botão aqui.
+<Warning>
+  **Um pareamento que falha ainda pode consumir uma vaga.** Diferente do `POST /v1/numbers`, esta rota não desfaz a criação do número quando o provedor recusa a instância (`502 { "error": "Failed to create instance" }` — diferente do `POST /v1/numbers`, esta rota não devolve o campo `details`). O número continua no tenant contando na capacidade — tentar de novo com o mesmo telefone reaproveita a linha (sem cobrar duas vezes), mas se você desistir precisa chamar `DELETE /v1/numbers/{id}` para liberar a vaga.
+</Warning>
 
-  E se você embutir a página: no fluxo de QR o evento `connect:paired` carrega **`null` explícito** em `numberId`, `phone` e `provider` (o endpoint de status só devolve estado e `isFullyConnected`), então o host **não** consegue descobrir o id do número por esse evento. Já `connect:expired` não carrega payload nenhum.
+<Note>
+  **`mode=button` é exclusivo do Meta.** Um token não-oficial resolve para o fluxo de QR e sempre renderiza a página hospedada completa, com a linha do tempo do pareamento. Não tente usar modo botão aqui. Enquanto o token ainda está sendo resolvido, um frame em `mode=button` chega a renderizar por um instante como um esqueleto de 48 px em formato de botão antes de virar a página inteira — então não dimensione o container assumindo altura de botão.
+
+  E se você embutir a página: no fluxo de QR o evento `connect:paired` carrega **`null` explícito** em `numberId`, `phone`, `provider`, `externalRef` **e** `redirectUrl` — o `displayName` (o `name` que você mandou ao criar o link) é o único campo com valor. Não existe id de correlação nenhum no fluxo de QR, então case o evento com o seu cliente do lado do servidor, pelo `instance.id` do 201 ou pelo webhook `number.connected`, cujo `numberId` é esse mesmo id de instância.
+
+  Já `connect:expired` não carrega payload nenhum, e significa que o **token** acabou (expirou, nunca foi válido, ou já foi consumido por um pareamento bem-sucedido) — não é o QR da tela vencendo. A contagem "expira em Ns" da página é cosmética: ela é reiniciada a cada poll de status e nunca dispara evento. Recarregar a página hospedada depois de um pareamento bem-sucedido, portanto, mostra "link expirado" e emite `connect:expired`.
 </Note>
 
 ## Remover um número
 
-`DELETE /v1/numbers/{id}` aceita tanto um id de `WhatsAppNumber` quanto um id de instância.
+`DELETE /v1/numbers/{id}` aceita tanto um id de `WhatsAppNumber` quanto um id de instância — é a única rota `/v1/numbers/{id}` que aceita os dois. Já `GET` e `PATCH /v1/numbers/{id}` são o oposto do `/connect`: eles resolvem só pelo id do `WhatsAppNumber`, então o `instance.id` devolve `404 { "error": "Number not found" }` ali.
 
 ```bash cURL
-curl -X DELETE "https://pilotstatus.com.br/v1/numbers/inst_9f3c21ab" \
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/cmm04obm46zz0qv4ycjp8x6r2" \
   -H "x-api-key: ps_sua_chave"
 ```
 
 Sucesso é **200** `{ "ok": true }`; id inexistente devolve `404 { "error": "Number not found" }`. A remoção emite `number.removed`.
 
+Remover libera a vaga, não o dinheiro. O número some e a vaga fica imediatamente reutilizável — você pode criar outro número no mesmo ciclo sem pagar de novo, desde que continue dentro da capacidade que já tem. O que a remoção **não** faz: não reduz sua capacidade paga de números extras, não devolve nem credita nada do ciclo atual, e não agenda nenhuma mudança. Se você não quer mais pagar por essa capacidade extra, reduza explicitamente com `DELETE /v1/subscription/extra-numbers` — a redução fica **agendada** e só vale a partir da virada do próximo ciclo, ainda sem estorno do ciclo corrente. Remova o número antes: uma redução que deixaria o limite abaixo dos números ainda conectados é recusada com `409 NUMBER_LIMIT_EXCEEDED`.
+
 ## Problemas comuns
 
 <AccordionGroup>
   <Accordion title="402 INSUFFICIENT_FUNDS ao criar o número">
-    A capacidade do plano é consumida **na criação**, antes de a linha ser gravada. Você passou do teto já custeado e não havia como custear o número extra. Libere capacidade removendo um número que não usa mais, ou contrate números adicionais, e tente de novo.
+    A capacidade do plano é consumida **na criação**, antes de a linha ser gravada. Você passou do teto já custeado e não havia como custear o número extra. Libere capacidade removendo um número que não usa mais, ou contrate números adicionais, e tente de novo. A vaga liberada por um `DELETE` é reutilizável **sem custo adicional dentro do mesmo ciclo** — mas remover o número **não** interrompe a cobrança recorrente da capacidade extra; para isso é preciso reduzir a capacidade explicitamente.
   </Accordion>
 
   <Accordion title="409 Number already exists">
@@ -290,11 +381,17 @@ Sucesso é **200** `{ "ok": true }`; id inexistente devolve `404 { "error": "Num
   </Accordion>
 
   <Accordion title="502 Failed to generate QR code — EMPTY_CONNECT_BUNDLE">
-    O provedor respondeu sem QR **e** sem código de pareamento. Não há rate limit nem carência nessa rota, então você pode simplesmente chamar `GET /v1/numbers/{id}/connect` de novo. Se persistir, verifique o estado da instância pelo `/status`.
+    O provedor respondeu sem QR **e** sem código de pareamento. A Pilot Status não conta nem limita chamadas a `/connect`, então chamar de novo é o caminho certo — e depois que a sessão de pareamento expira, é o caminho *obrigatório*. Uma sessão de pareamento rotaciona um número limitado de QR codes; quando esgota, o provedor desconecta a instância e limpa o QR, e o `/connect` seguinte inicia uma sessão nova. Chame `GET /v1/numbers/{id}/connect` de novo; se persistir, verifique o estado pelo `/status`. Um `/connect` "frio" pode levar alguns segundos, então faça polling em vez de um laço apertado.
+
+    Um `/connect` que devolve QR com `pairingCode: null` não se conserta sozinho: o fallback interno que roda quando falta um dos dois campos só consegue buscar o QR de novo, nunca o código de pareamento. Se você precisa do código, chame `/connect` mais uma vez.
   </Accordion>
 
-  <Accordion title="500 WhatsApp provider not configured">
-    O provedor não-oficial não está configurado no ambiente que atendeu a chamada. Isso não se resolve do lado do cliente — fale com o suporte.
+  <Accordion title="500 ou 502 WhatsApp provider not configured">
+    O provedor não-oficial não está configurado no ambiente que atendeu a chamada — **500** quando o provedor não está configurado, **502** quando a própria chamada de connect reporta isso. Isso não se resolve do lado do cliente — fale com o suporte.
+  </Accordion>
+
+  <Accordion title="429 Rate limit exceeded em POST /v1/messages/send">
+    Apesar do nome, isso é uma **cota de plano**, não um limite por segundo — a Pilot Status não afunila a vazão de envio. O corpo é `{ "error": "Rate limit exceeded", "reason": "..." }` com um de dois motivos: `"No active subscription"` (o tenant não tem assinatura ativa) ou `"Plan limit reached (N messages)"` (a franquia vitalícia de 200 mensagens do plano Free, mais os pacotes comprados, acabou). Planos pagos não têm limite de quantidade de mensagens. Resolva ativando uma assinatura ou adicionando créditos — repetir a chamada não desbloqueia.
   </Accordion>
 
   <Accordion title="403 TENANT_SCOPE_NOT_ALLOWED ao enviar">
@@ -310,15 +407,21 @@ Sucesso é **200** `{ "ok": true }`; id inexistente devolve `404 { "error": "Num
   </Accordion>
 
   <Accordion title="404 em connect ou status">
-    O id não pertence ao seu tenant, ou não existe. Confirme que você está usando o `instance.id` devolvido na criação — não o nome da instância nem o número de telefone.
+    O id não pertence ao seu tenant, ou não é um id de instância. O `/connect` aceita **somente** o id da instância; o `/status` aceita o id da instância (e, apenas para números oficiais/Meta, o id do `WhatsAppNumber`). Use o `instance.id` devolvido na criação — não o `numberId` que aparece em `GET /v1/api-keys`, não o nome da instância, não o número de telefone. Um id errado sempre dá 404, nunca "funciona em silêncio".
   </Accordion>
 
   <Accordion title="503 no status">
-    Falha ao sincronizar o estado com o provedor. A resposta ainda traz `{ error, state }`. Tente novamente na próxima iteração do seu polling.
+    Falha ao sincronizar o estado com o provedor. A resposta ainda traz `{ error, state }`, mas esse `state` é o **último valor gravado**, não uma leitura ao vivo — é o único lugar em que podem aparecer `CONNECTING`, `LOGOUT` ou `connecting` em minúsculas. Trate como "não sei" e tente novamente na próxima iteração do seu polling.
+
+    **Mas leia o `error` antes de repetir — nem todo 503 é passageiro.** A rota coloca no `error` exatamente o que a sincronização reportou, então uma condição permanente chega com o mesmo status. O caso concreto: `503 { "error": "WhatsApp provider not configured", "state": "CLOSE" }` nunca se resolve sozinho — o provedor daquele número está mal configurado, e um poller que ignora a mensagem fica em loop para sempre. Nesse caso pare o polling e fale com o suporte. Já um 503 com mensagem de timeout é o tipo passageiro — siga tentando.
+  </Accordion>
+
+  <Accordion title="Um 5xx que não é JSON">
+    Os corpos de erro da API são JSON, mas um 5xx também pode vir da borda que fica na frente dela — e esses são texto puro (`error code: 502`). Nunca chame `res.json()` numa resposta que falhou sem proteção: cheque `res.ok` e o `content-type` antes, ou proteja o parse. Isso morde mais no `/connect`, que é a chamada mais lenta do fluxo e, por isso, a mais sujeita a ser respondida pela borda em vez da aplicação.
   </Accordion>
 
   <Accordion title="O QR não renderiza na tela">
-    Normalmente `qrcodeBase64` já vem como data URL e você pode usá-lo direto em `<img src={...}>`. Como o valor é repassado do provedor sem normalização, renderize defensivamente:
+    O `qrcodeBase64` chega como data URL completa e você pode usá-lo direto em `<img src={...}>`. Como a Pilot Status repassa o campo do provedor byte a byte, sem montar nem normalizar o prefixo, renderize defensivamente:
 
     ```js
     const src = qr.startsWith("data:") ? qr : `data:image/png;base64,${qr}`;
