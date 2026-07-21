@@ -9,12 +9,12 @@ mode: "wide"
 
 The recommended way to run **Meta Embedded Signup** inside your product is to embed Pilot Status's **hosted Connect button** in an iframe. Your customer clicks **Continue with Facebook**, completes Meta's popup, and their official WhatsApp Cloud API number lands in **your** Pilot Status account.
 
-The Facebook SDK and the login popup live **inside the hosted page** on `connect.pilotstatus.com.br`. Your app loads no Facebook SDK, serves no `appId` or `config_id`, reads no health endpoint, and never runs `FB.login`. It does exactly two things:
+The Facebook SDK and the login popup live **inside the hosted page** on `connect.pilotstatus.com.br`. Your app loads no Facebook SDK, runs no Facebook login code, and never touches Meta's APIs — none of the Meta wiring is yours to set up. It does exactly two things:
 
 1. Your **backend** generates the connection link (`POST /v1/numbers/remote-pairing` with your tenant `ps_` key).
 2. Your **page** embeds the returned link in an iframe and listens for the `connect:paired` message.
 
-That's the whole integration. No Meta app of your own, no App Review, no `config_id`, no domain to register.
+That's the whole integration. No Meta app of your own, no App Review, no Meta credentials to serve, no domain to register.
 
 <Note>
   Prefer a running start? Download the MIT-licensed demo — a Node backend and a React frontend wired to exactly this flow, with ready-made button presets: **[embedded-signup-demo.zip](https://pilotstatus.com.br/downloads/embedded-signup-demo.zip)**. Unzip, set your `ps_` key, `npm run dev` (or `docker compose up`).
@@ -41,7 +41,7 @@ Only your backend ever calls the Pilot Status API, and it does so for one reason
 It must be **tenant-scoped**, not number-scoped: generating a link creates a brand-new placeholder number, so a key bound to one existing number cannot authorize it.
 
 <Note>
-  There is nothing else to provision. You do **not** register a Meta app, submit App Review, obtain a `config_id`, or create a number-scoped key. Everything the popup needs already lives on the hosted page. If your key was issued through OAuth with per-number consent grants, the route returns `403 NUMBERS_GRANT_NOT_ALLOWED` — use a tenant key instead.
+  There is nothing else to provision. You do **not** register a Meta app, submit App Review, or create a number-scoped key — there is no Meta app wiring of any kind on your side. Everything the popup needs already lives on the hosted page. If your key was issued through OAuth with per-number consent grants, the route returns `403 NUMBERS_GRANT_NOT_ALLOWED` — use a tenant key instead.
 </Note>
 
 Keep the `ps_` key on your server. The browser never sees it — it only embeds the iframe.
@@ -63,11 +63,12 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
         "externalRef": "crm-customer-4211",
         "branding": {
           "button": {
-            "variant": "facebook",
+            "variant": "whatsapp",
             "label": "Connect my WhatsApp",
-            "primaryColor": "#1877F2",
+            "icon": "whatsapp",
             "radius": "pill",
             "size": "lg",
+            "height": 56,
             "fullWidth": true
           }
         }
@@ -88,26 +89,47 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
 
     **Every `branding.button` field is optional:**
 
-    | Field | Values |
-    | --- | --- |
-    | `variant` | `"facebook"` \| `"dark"` \| `"light"` \| `"outline"` |
-    | `label` | Any string |
-    | `primaryColor` | `#RRGGBB` |
-    | `textColor` | `#RRGGBB` |
-    | `radius` | `"sm"` \| `"md"` \| `"lg"` \| `"pill"` |
-    | `size` | `"sm"` \| `"md"` \| `"lg"` |
-    | `fullWidth` | boolean |
+    | Field | Values | Default |
+    | --- | --- | --- |
+    | `variant` | `"facebook"` \| `"whatsapp"` \| `"dark"` \| `"light"` \| `"outline"` | `"facebook"` |
+    | `label` | Any string, trimmed, max **40** characters | `Continuar com o Facebook` |
+    | `primaryColor` | `#RRGGBB` | the variant's own color |
+    | `textColor` | `#RRGGBB` | the variant's own color |
+    | `radius` | `"sm"` \| `"md"` \| `"lg"` \| `"pill"` | `"lg"` |
+    | `size` | `"sm"` \| `"md"` \| `"lg"` | `"md"` |
+    | `fullWidth` | boolean | `true` |
+    | `icon` | `"facebook"` \| `"whatsapp"` \| `"none"` | derived from `variant` |
+    | `height` | integer px, **24–200** | whatever `size` implies |
+    | `width` | integer px, **64–800** | `fullWidth` / auto |
+
+    A few behaviors worth knowing:
+
+    - **`variant: "whatsapp"`** paints the button WhatsApp green (`#25D366`) with white text — the closest match to "connect my WhatsApp" wording.
+    - **`icon`** draws a brand glyph inline before the label (an inline SVG, no network request) that inherits the text color. Leave it out and it follows the variant: `facebook` → the Facebook glyph, `whatsapp` → the WhatsApp glyph, **any other variant → no glyph**. Send `"none"` to drop it explicitly.
+    - **`height`** is applied as a **min-height** — the label never clips — and replaces the vertical padding that `size` would have used.
+    - **`width`** **overrides `fullWidth`**: when you send a width, `fullWidth` is ignored.
+    - **Validate the values before you call.** These are hard constraints on the endpoint, not hints: a number outside the range, or a string outside the enum, gets you `400 Validation error` with a `details` object (`formErrors` / `fieldErrors`) carrying the validation messages — **no link is generated and no placeholder is created**. (The button renderer does fall back to the default for a stale value already baked into an older token, but you cannot reach that path by sending a bad value to the API.)
+    - Keep the object small: it travels inside the signed token that sits in the connect URL.
 
     <Note>
       `branding.button` controls how the button looks and can **only** be set here, when you generate the link — never through a query param on the iframe URL. That is deliberate: a stranger who sees the iframe URL cannot restyle your button.
     </Note>
+
+    **The placeholder's id is not in the response body.** It lives in the `numberId` claim of the token — the last path segment of `remotePairingUrl`. Decode the base64url payload to read it (a metadata read; no signature check needed) and store it next to your customer record, because that id is what you need for the delete-on-abandon cleanup in step 3, and it lets you register the webhook (step 4) before the customer finishes. The same id arrives again on `connect:paired`. Those two — the decoded claim and the event — are the supported ways to obtain it.
+
+    ```js Your backend
+    // token = the last path segment of remotePairingUrl
+    const numberId = JSON.parse(
+      Buffer.from(token.split(".")[1], "base64url").toString("utf8")
+    ).numberId;
+    ```
 
     <Note>
       The link carries a signed token with a **30-minute** TTL. In the hosted model this token rides in the iframe URL — that is inherent to embedding a hosted page, so generate the link **just before** the customer clicks connect, not hours ahead.
     </Note>
 
     <Warning>
-      **Generating the link already consumes a plan slot.** The call creates a placeholder `WhatsAppNumber` right away. An abandoned link leaks the slot — there is no automatic cleanup routine. Generate the link only after the customer clicks connect, and remove orphaned placeholders yourself in the `/numbers` panel. This is where the slot is charged — not at complete. With no free slot, this call fails: free a slot in `/numbers` or buy extra numbers before trying again.
+      **Generating the link already consumes a plan slot.** The call creates a placeholder `WhatsAppNumber` right away. An abandoned link leaks the slot — there is no automatic cleanup routine. Generate the link only after the customer clicks connect, wire the delete-on-abandon cleanup shown in step 3, and remove any leftover placeholders yourself in the `/numbers` panel. This is where the slot is charged — not at complete. With no free slot, this call fails: free a slot in `/numbers` or buy extra numbers before trying again.
     </Warning>
   </Step>
 
@@ -137,7 +159,13 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
     ```
 
     <Note>
-      The Facebook SDK and the login popup run **inside this iframe**, on `connect.pilotstatus.com.br` — a domain already registered with Pilot Status's Meta app. Your app loads no Facebook SDK, serves no `appId` or `config_id`, and registers no domain of its own.
+      The Facebook SDK and the login popup run **inside this iframe**, on `connect.pilotstatus.com.br` — a domain already registered with Pilot Status's Meta app. Your app loads no Facebook SDK, runs no Facebook login code, and registers no domain of its own: none of the Meta app wiring is yours to provision.
+    </Note>
+
+    <Note>
+      **Button mode renders only the button, and clears the page background** — that is a property of `mode=button` itself, so whatever sits behind the frame shows through. You don't have to ask for it.
+
+      The small **"secured by pilotstatus.com.br"** marker is a separate, independent rule: it is **hidden by default when the page really is inside an iframe**, and it does show when the same link is opened top-level, on purpose — a stand-alone styled login button on a `*.pilotstatus.com.br` URL with no visible provenance is exactly what Safe Browsing flags as deceptive.
     </Note>
 
     <Warning>
@@ -174,7 +202,9 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
             // The 30-minute link lapsed. Generate a fresh link and re-embed.
             break;
           case "connect:error":
-            console.error("Connect failed:", p.message);
+            // Also fires when the customer cancels or closes the Facebook popup.
+            // The button stays on screen, so let them retry before cleaning up.
+            console.error("Connect failed or was cancelled:", p.message);
             break;
           case "resize":
             iframe.style.height = p.height + "px";
@@ -191,10 +221,56 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
     - `redirectUrl`, when set, is handed to you rather than followed — your page decides whether and where to navigate.
 
     Also handle `connect:expired` (generate a new link), `connect:error` (surface the message), and `resize` (adjust the iframe height, which starts small and grows once the button renders).
+
+    ### Cancel, retry, and the plan slot
+
+    `connect:error` arrives on a terminal failure **and** when the customer cancels or closes the Facebook popup — Facebook does not tell the two apart, so both reach you the same way, with the same `{ message }` payload. The button **stays on screen** either way, so the person can simply click again.
+
+    That matters for cost: the placeholder number created in step 1 is already holding a plan slot, and nothing frees it on its own. So run a **delete-on-abandon** cleanup whenever the session ends without a `connect:paired` — you closed the modal, the customer navigated away, or you gave up — and not on the first `connect:error`, which they can still retry past. The browser tells *your* backend the session died (the browser has no `ps_` key), and your backend deletes the placeholder with `DELETE /v1/numbers/{id}`, returning the slot right away instead of leaving it parked.
+
+    **Where the id comes from:** it is the `numberId` you decoded from the token in step 1 and stored alongside your customer record — that is what your page sends to your own backend here. (If the flow got as far as `connect:paired`, the same id arrived in that payload.) Hand the browser that id when you hand it the `connectUrl`, and the cleanup needs no lookup at all.
+
+    ```js Browser
+    case "connect:paired":
+      connected = true; // a real number now — never delete it.
+      break;
+
+    case "connect:error":
+      // Cancelling is not leaving: the button is still there for a retry.
+      console.error("Connect failed or was cancelled:", p.message);
+      break;
+
+    // ...elsewhere, when the customer is actually gone — you closed the modal,
+    // they navigated away, or you gave up on the session:
+    if (!connected) {
+      // Your backend holds the ps_ key and calls DELETE /v1/numbers/{id}.
+      await fetch("/api/onboarding/abandon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // numberId: decoded from the token in step 1 and kept with the customer.
+        body: JSON.stringify({ numberId, externalRef: "crm-customer-4211" }),
+      });
+    }
+    ```
+
+    ```js Your backend
+    // POST /api/onboarding/abandon { numberId } — the ps_ key never leaves here.
+    const r = await fetch(`https://pilotstatus.com.br/v1/numbers/${numberId}`, {
+      method: "DELETE",
+      headers: { "x-api-key": process.env.PILOT_TENANT_KEY },
+    });
+    // 200 { ok: true } — slot returned. 404 — already gone, nothing to do.
+    ```
+
+    See [Clean up an abandoned link](#clean-up-an-abandoned-link) below for the delete call in full.
+
+    <Warning>
+      **Don't delete on the first `connect:error`.** The button is still on screen for a retry, and deleting does **not** revoke the link: the pairing token is verified statelessly — signature, kind, and expiry only, with no database lookup — so a customer who clicks again after your cleanup still completes the flow. What they get then is a **brand-new number**, created from scratch and consuming a **fresh plan slot** (the plan limit is re-checked at that moment). That is the real cost of deleting too early — not a broken link. Fire the cleanup once you are confident they are gone: they closed your modal, navigated away, or you gave up on the session.
+    </Warning>
   </Step>
 
   <Step title="Register a webhook for the connected number">
-    Once you have `numberId` from `connect:paired`, subscribe your endpoint with `POST /v1/webhooks`, using the same tenant key. See [Configure webhooks](/api/webhooks/configure) for the full CRUD surface.
+    With the `numberId` in hand — decoded from the token in step 1, or received on `connect:paired` — subscribe your endpoint with `POST /v1/webhooks`, using the same tenant key. Since the id is already final at link-generation time, you can register the webhook **before** the customer finishes and not miss the first inbound messages. See [Configure webhooks](/api/webhooks/configure) for the full CRUD surface.
 
     ```bash cURL
     curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
@@ -225,7 +301,7 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
 
 ## Clean up an abandoned link
 
-If a customer never finishes, the placeholder number keeps holding its plan slot. Remove it with `DELETE /v1/numbers/{id}`, using your tenant key. The id can be a number id (from `connect:paired` or `/numbers`) or an instance id.
+If a customer never finishes, the placeholder number keeps holding its plan slot. Remove it with `DELETE /v1/numbers/{id}`, using your tenant key. The id is the `numberId` you decoded from the token when you generated the link (step 1), or the one delivered on `connect:paired` — a number id or an instance id both work. This is the call behind the delete-on-abandon pattern in step 3.
 
 ```bash cURL
 curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wn_9f3c21ab" \
@@ -239,6 +315,10 @@ Success is **200**:
 ```
 
 An id that does not exist returns `404` with `"Number not found"`. You can also delete orphaned placeholders from the dashboard at `/numbers`.
+
+<Note>
+  Deleting the placeholder frees the slot, but it does **not** invalidate the link: the token is verified on signature, kind, and expiry alone. Until it expires, a customer who retries will still complete — and, with the placeholder gone, a **new** number is created and a new slot consumed. So delete once you are confident nobody is coming back, or be ready for a second, unexpected number.
+</Note>
 
 ## Prefer your own markup?
 
