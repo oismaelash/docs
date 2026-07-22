@@ -35,10 +35,10 @@ Every event arrives as JSON:
 
 **Number lifecycle:**
 
-- `number.created` — instance created in Pilot Status
+- `number.created` — number created in Pilot Status
 - `number.connected` — connected to WhatsApp (OPEN state)
-- `number.disconnected` — disconnect confirmed after periodic health check (does not reflect every brief connectivity fluctuation)
-- `number.removed` — instance removed
+- `number.disconnected` — connection drop confirmed by the number-health transition, on **native web (unofficial)** numbers (one event per confirmed drop, not one per connectivity blip).
+- `number.removed` — number removed
 - `number.recovered` — number recovered from a degraded/blocked state (delivered only to `"*"` wildcard subscriptions)
 
 **Health events (`"*"` subscription only):** the health transition events — `number.health_blocked`, `number.health_degraded`, `number.health_shadowban` — and `number.recovered` are **not individually subscribable** and do not appear in the event picker. They are delivered **only** to webhooks subscribed with the `"*"` wildcard.
@@ -64,7 +64,7 @@ Every message event carries two distinct IDs:
 
 - `messageId` — WhatsApp/provider message ID (e.g. `key.id`). May be `null` for failures that happen before the provider returns an ID.
 - `id` — Pilot Status internal message ID. Same value as the `id` in the `HTTP 202` of `POST /v1/messages/send`.
-- `numberId` — the **public** ID of the number (instance) that handled the event — the same `id` exposed by `GET /v1/numbers`.
+- `numberId` — the **public** ID of the number that handled the event — the same `id` exposed by `GET /v1/numbers`. This is now true of **every** event, `message.*` and `number.*` alike (see the [breaking change](#number-payload) on the `number.*` family).
 - `correlationId` — present when the event correlates to a prior send (same value as the `202` `correlationId`).
 - `quotedMessageId` — on `message.reply`, the `messageId` of the quoted original message (equals the `messageId` of the original `message.sent`).
 
@@ -317,10 +317,14 @@ The contact's **new** text is in `content`; the **quoted** original message text
 
 Fields for `number.created` / `number.connected` / `number.disconnected` / `number.removed` / `number.recovered` (and the `number.health_blocked` / `number.health_degraded` / `number.health_shadowban` events):
 
+<Warning>
+  **Breaking change — `data.numberId` is always the number ID.** On every `number.*` event, `data.numberId` is now the WhatsApp **number** ID — the same `id` returned by `GET /v1/numbers`. Previously `number.created`, `number.connected` and `number.removed` carried the internal **instance** ID, while the health events already carried the number ID: two opaque IDs in the same field, so cross-referencing the two families silently never matched. **If your consumer matched lifecycle events by instance ID, it will stop matching — key it on the number ID instead.**
+</Warning>
+
 | Field | Presence | Description |
 | --- | --- | --- |
 | `event` | always | event name |
-| `numberId` | always | public number ID (same `id` as `GET /v1/numbers`) |
+| `numberId` | always | public number ID — always the WhatsApp number ID (same `id` as `GET /v1/numbers`) |
 | `phone` | always | number in E.164 with `+` |
 | `displayName` | always | display name of the number |
 | `createdAt` | always | ISO 8601 — event time |
@@ -358,6 +362,13 @@ Fields for `number.created` / `number.connected` / `number.disconnected` / `numb
 ```
 
 ### number.disconnected
+
+Emitted from the **number-health transition**, which owns the anti-flap window and the one-alert-per-transition dedup: you get **one** event per confirmed drop, not one per socket blip.
+
+- **Native web (unofficial)** numbers: this event fires on a confirmed connection drop. Previously an unofficial number that fell off produced no subscribable event at all — only the `"*"`-only health events.
+- **Meta Cloud API** numbers: they never emit `number.disconnected`. A Meta quality/status transition emits only its number-health event (`number.health_blocked` / `number.health_degraded` / `number.health_shadowban`), which reaches `"*"` subscriptions.
+
+`error` and `errorCode` are included when the health transition carries a reason.
 
 ```json
 {
@@ -420,6 +431,7 @@ See the [full calling flow](/api/calls/overview).
 
 - **`message.newsletter`:** `newsletterName` is the channel display name when available; otherwise it may be omitted. The channel identifier is `newsletterId` (full `...@newsletter` JID). `participantName` is the message author in the channel.
 - **Media:** on inbound media events, `mediaLink` is a durable, publicly-fetchable URL to the re-hosted media — for **all** providers (Evolution GO, Evolution v2, Meta Cloud API), including WhatsApp end-to-end-encrypted media decrypted server-side. `mediaType` is the category (`image`/`video`/`audio`/`document`/`sticker`), `mediaCaption` the accompanying text, `mediaFilename` the original filename (documents). All four are omitted on text-only messages and when a number's PII redaction blanks content.
-- `number.*` events are not correlated to `POST /v1/messages/send`; use them for provisioning/monitoring. `number.disconnected` is emitted after the health check confirms disconnect, not on every connection flap.
+- `number.*` events are not correlated to `POST /v1/messages/send`; use them for provisioning/monitoring. `data.numberId` is always the WhatsApp number ID on all of them — see the [breaking change](#number-payload).
+- `number.disconnected` is emitted from the number-health transition (one event per confirmed drop, not one per connection flap), and only for native web (unofficial) numbers; Meta Cloud API numbers signal trouble through the number-health events instead.
 - Delivery of sensitive fields can depend on retention configuration. With retention off, conditional fields such as `content` may be empty; IDs and timestamps still exist.
 - The `message.read` event (and **Read** status in the API/Logs) only occurs when the recipient has **WhatsApp read receipts** enabled.
