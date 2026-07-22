@@ -10,7 +10,7 @@ mode: "wide"
 Para plataformas SaaS que gerenciam números para clientes finais, o Pareamento Remoto permite gerar um **link de pareamento** em vez de exibir o QR code você mesmo. Seu cliente abre o link, escaneia o QR (ou executa o Meta Embedded Signup), e o número conecta à sua conta.
 
 <Frame caption="Uma sessão de pareamento remoto — envie o link hospedado ao seu cliente; quando ele escanear o QR, o webhook number.connected dispara.">
-  ![Modal Pairing Link com o link de conexão hospedado e a opção de envio via WhatsApp](/images/dashboard/remote-pairing-link.png)
+  ![Modal Pairing Link com o link de conexão hospedado](/images/dashboard/remote-pairing-link.png)
 </Frame>
 
 ## POST /v1/numbers/remote-pairing
@@ -23,9 +23,7 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
   -H "x-api-key: ps_your_token_here" \
   -d '{
     "name": "Customer João",
-    "number": "+5511999999999",
-    "linkToApiKey": true,
-    "sendViaWhatsApp": false
+    "number": "+5511999999999"
   }'
 ```
 
@@ -33,22 +31,39 @@ Resposta `201`:
 
 ```json
 {
-  "instance": { "id": "wa_abc", "instanceName": "PS-tenant-xxx", "number": "5511999999999", "name": "Customer João", "state": "CLOSE" },
+  "provider": "PILOT_STATUS",
+  "instance": { "id": "wa_abc", "instanceName": "PS-tenant-xxx", "number": "5511999999999", "displayName": "Customer João", "state": "CLOSE" },
   "remotePairingUrl": "https://pilotstatus.com.br/connect/abc123-def456-...",
   "maskedNumber": "+551199****9999",
-  "messageSent": false
+  "linkedApiKeyId": null
 }
 ```
 
 Diferenças em relação a `POST /v1/numbers`:
 
 - A instância é criada no estado `CLOSE` (desconectada) — **nenhum QR code** é retornado.
-- `remotePairingUrl` é o link público para enviar ao cliente final.
+- `remotePairingUrl` é o link público para o cliente final. O endpoint apenas devolve o link — **a entrega ao cliente é sua** (sua própria interface, e-mail, chat, onde ele estiver).
 - Quando o cliente final abre a URL e conecta, o webhook `number.connected` dispara normalmente.
 
-## Envio automático via WhatsApp
+### `linkToApiKey` — aposentado
 
-Com `sendViaWhatsApp: true`, o Pilot Status tenta enviar uma mensagem de template para o número de destino contendo o link de pareamento. Requer um template chamado `pilot_status_remote_pairing` (categoria OTP) criado no painel. Se o envio falhar, a instância e a URL ainda são criadas, mas `messageSent` retorna `false` com um `messageError`.
+**Aceito, mas não faz nada.** Enviá-lo não é erro, e nenhuma chave de API é alterada: `linkedApiKeyId` na resposta é **sempre `null`**. Ele reapontava uma chave com escopo de número para o número recém-pareado, tirando-a silenciosamente do número ao qual estava presa.
+
+## `warnings` no `201`
+
+Um pareamento bem-sucedido pode voltar com um array `warnings` de strings. Ele só aparece quando há algo a relatar.
+
+Para `provider=PILOT_STATUS`, `externalRef` e `redirectUrl` são aceitos mas **não podem ser honrados**: eles viajam na sessão assinada da Meta, e o link de pareamento por QR não carrega sessão nenhuma. Cada um deles é relatado em `warnings` — e o pareamento continua dando certo. **Não** é um `400`:
+
+```json
+{
+  "provider": "PILOT_STATUS",
+  "remotePairingUrl": "https://pilotstatus.com.br/connect/abc123-def456-...",
+  "warnings": ["redirectUrl is only supported for provider=META and was ignored"]
+}
+```
+
+Antes eles eram descartados em silêncio. Se você precisa de algum dos dois, use `provider=META` — é o ramo Meta que os leva adiante na sessão assinada.
 
 ## Marca por link (white-label)
 
@@ -63,6 +78,18 @@ Para números da **API oficial Meta Cloud** o link de pareamento pode executar f
 
 <Note>
   O pareamento remoto com `metaFlow` é a opção **hospedada**. Se você já possui as credenciais da WABA no servidor, use `POST /v1/numbers/meta` (BYO-WABA direto) em vez disso — sem link e sem interação do cliente final.
+</Note>
+
+## Erros
+
+| Status | Corpo | Significado |
+| --- | --- | --- |
+| `400` | `{ "error": "Validation error", "details": … }` | Corpo inválido. Para `provider=PILOT_STATUS`, `name` e `number` são obrigatórios. |
+| `402` | `{ "error": "INSUFFICIENT_FUNDS", "code": "INSUFFICIENT_FUNDS" }` | O tenant não consegue custear mais um número. |
+| `403` | `{ "error": "…", "code": "NUMBERS_GRANT_NOT_ALLOWED" }` | Uma conexão OAuth por número não pode parear números novos. |
+
+<Note>
+  **Corrigido:** `INSUFFICIENT_FUNDS` nesta rota agora responde **`402`**, com o mesmo corpo e o mesmo `code` do `POST /v1/numbers`. Antes vinha como `500`.
 </Note>
 
 ## Endpoints públicos por token (sem autenticação)

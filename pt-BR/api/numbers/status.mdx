@@ -19,7 +19,9 @@ Resposta:
 ```json
 {
   "id": "wa_abc",
-  "state": "OPEN"
+  "state": "OPEN",
+  "stale": false,
+  "checkedAt": "2026-07-22T12:34:56.000Z"
 }
 ```
 
@@ -37,7 +39,39 @@ Resposta:
 | `state` | Significado |
 | --- | --- |
 | `OPEN` | Conectado ao WhatsApp. |
-| `CONNECTING` | Conexão em andamento. |
-| `CLOSE` | Desconectado — gere um novo QR com `GET /v1/numbers/{id}/connect`. |
+| `CLOSE` | Não conectado — gere um novo QR com `GET /v1/numbers/{id}/connect`. Um pareamento ainda em andamento também aparece como `CLOSE`; só uma conexão concluída vira `OPEN`. |
 
 Trate `state === "OPEN"` como o indicador definitivo de "pronto para enviar".
+
+## Quão recente é a resposta: `stale`, `checkedAt`, `lastKnownAt`
+
+Todo `200` traz `stale`, mais **exatamente um** dos dois carimbos de tempo:
+
+| Campo | Tipo | Presente quando |
+| --- | --- | --- |
+| `stale` | boolean | Sempre. |
+| `checkedAt` | string (ISO 8601) | `stale: false` — o provedor respondeu a esta consulta, então `state` é uma leitura ao vivo feita neste instante. |
+| `lastKnownAt` | string (ISO 8601) | `stale: true` — o provedor **não** respondeu a esta consulta, então `state` é o valor que tínhamos guardado, atualizado pela última vez neste instante. |
+
+`stale: true` vem sempre com `state: "OPEN"`. O valor lembrado só é devolvido quando o estado guardado já era `OPEN`; para um número que não estava `OPEN`, um provedor que não responde gera um `503` (veja abaixo).
+
+**Números Meta (API oficial da Cloud)** respondem `{ "id": "…", "state": "OPEN", "stale": false }` e **não** trazem nenhum dos dois carimbos — eles são gerenciados remotamente, nada é consultado para eles, então não há leitura a datar.
+
+## Erros
+
+| Status | Corpo | Significado |
+| --- | --- | --- |
+| `404` | `{ "error": "…", "state": null }` | Não existe esse número para esta chave de API. **Sem o campo `code`.** |
+| `503` | `{ "error": "…", "code": "…", "state": "…" }` | A verificação de conexão falhou. `state` traz o último estado guardado para o número. |
+
+O `code` de um `503` diz se vale a pena tentar de novo:
+
+| `code` | O que fazer |
+| --- | --- |
+| `PROVIDER_NOT_CONFIGURED` | **Permanente.** Pare o polling e leve o caso a um operador — repetir não resolve. |
+| `UPSTREAM_TIMEOUT` | Transitório. Espere um pouco e tente de novo. |
+| `UPSTREAM_ERROR` | Transitório. Espere um pouco e tente de novo. |
+
+<Note>
+  **Corrigido:** este endpoint respondia `503` "WhatsApp provider not configured" para **todo** número que ainda não estivesse `OPEN` sempre que o número da própria plataforma estivesse desconectado. Esse acoplamento acabou — um `503` agora fala do provedor do próprio número consultado.
+</Note>

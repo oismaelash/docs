@@ -22,7 +22,7 @@ The token you get back depends on `provider` — they are **not** the same objec
 | `provider` | Token | TTL | Response carries |
 | --- | --- | --- | --- |
 | `META` (Cloud API / Embedded Signup) | signed JWT (contains dots) | **30 minutes** | `provider`, `remotePairingUrl`, `expiresAt` |
-| `PILOT_STATUS` (QR pairing, default) | bare UUID | **24 hours** | `provider`, `instance`, `remotePairingUrl`, `maskedNumber`, `messageSent`, `messageError` |
+| `PILOT_STATUS` (QR pairing, default) | bare UUID | **24 hours** | `provider`, `instance`, `remotePairingUrl`, `maskedNumber`, `linkedApiKeyId` (always `null`), and `warnings` when there is something to report |
 
 Mint the Meta link **when the user is about to click**, not hours ahead — 30 minutes is short on purpose. When it lapses the iframe emits `connect:expired`; mint a new one.
 
@@ -52,7 +52,6 @@ Mint the Meta link **when the user is about to click**, not hours ahead — 30 m
       -d '{
         "name": "Support",
         "number": "5511999999999",
-        "sendViaWhatsApp": false,
         "branding": { }
       }'
     ```
@@ -61,6 +60,18 @@ Mint the Meta link **when the user is about to click**, not hours ahead — 30 m
     `201` in both cases. `remotePairingUrl` is `https://connect.pilotstatus.com.br/connect/<token>`; the **token** is the last path segment. Forward only the token (or the URL) to your frontend — never the `ps_` key.
 
     For `provider: "META"`, `name`/`number` are not required: the end-user picks the number inside the Facebook dialog. For `PILOT_STATUS`, both are required.
+
+    **`warnings` on a QR pairing.** `externalRef` and `redirectUrl` ride the Meta signed session, and a QR link has none — so on `PILOT_STATUS` they are accepted but cannot be honored. Each one you send is reported back in a `warnings` array (`string[]`) on the `201`, and the pairing still succeeds; it is **not** a `400`. The field is absent when there is nothing to report. Read it in your integration tests — it is how you find out a value you passed was ignored instead of applied.
+
+    ```json
+    {
+      "provider": "PILOT_STATUS",
+      "instance": { "id": "…", "instanceName": "…", "number": "5511999999999", "displayName": "Support", "state": "CLOSE" },
+      "remotePairingUrl": "https://connect.pilotstatus.com.br/connect/<token>",
+      "maskedNumber": "+5511****9999",
+      "warnings": ["redirectUrl is only supported for provider=META and was ignored"]
+    }
+    ```
 
     <Note>
       The per-link branding field is `branding` (not `brandingOverride`). `externalRef` (max 200 chars) is your own customer id — it is signed into the Meta token and echoed back to you on `connect:paired`.
@@ -221,6 +232,8 @@ Connect never receives an `init` message — the token is already in the URL. Th
 
 <Warning>
   **Minting the link already costs a plan slot.** `POST /v1/numbers/remote-pairing` creates a placeholder number immediately, and an abandoned link keeps holding that slot — there is no automatic cleanup. Mint the link only when the customer is about to click.
+
+  When the tenant cannot fund one more number, the call answers **`402`** with `code: "INSUFFICIENT_FUNDS"` — the same body `POST /v1/numbers` returns — and no link and no placeholder are created. Handle it as a billing condition, not as a server fault: this path used to answer `500` for it.
 </Warning>
 
 Give the slot back yourself instead of waiting for the link to lapse. `connect:error` is the signal that an attempt failed — including someone closing the Facebook popup — but it is **not** the signal to delete: the button is still on screen and they can click again. Note the failed attempt, and run the cleanup when the session is really over without a `connect:paired` (you closed the modal, they navigated away, you gave up):
