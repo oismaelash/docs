@@ -40,8 +40,38 @@ Response:
 | --- | --- |
 | `OPEN` | Connected to WhatsApp. |
 | `CLOSE` | Not connected — generate a new QR with `GET /v1/numbers/{id}/connect`. A pairing still in progress also reads as `CLOSE`; only a completed connection flips to `OPEN`. |
+| `PENDING` | Meta number waiting for the end user to finish the Embedded Signup dialog opened by `POST /v1/numbers/remote-pairing`. Carries `expiresAt`. Keep polling. |
+| `EXPIRED` | That signup window closed without completion. Carries `expiresAt`. **Terminal** — stop polling and create a new pairing link. |
 
 Treat `state === "OPEN"` as the definitive "ready to send" flag.
+
+<Warning>
+  A `200` does **not** mean connected. A number created through Meta remote pairing answers `200` with `PENDING` from the moment the link is generated. Branch on `state`, never on the HTTP status alone.
+</Warning>
+
+## Meta remote pairing: `PENDING`, `EXPIRED` and `expiresAt`
+
+`POST /v1/numbers/remote-pairing` with `provider: "META"` creates the number right
+away, so it shows up as "awaiting connection" while your end user is still inside the
+Facebook dialog. Polling its status during that window answers:
+
+```json
+{
+  "id": "num_01HZX...",
+  "state": "PENDING",
+  "stale": false,
+  "expiresAt": "2026-08-04T18:27:31.000Z"
+}
+```
+
+`expiresAt` is the end of the pairing window. After it passes, the same call answers
+`state: "EXPIRED"` — the number will never connect on its own, so stop polling and
+generate a new link.
+
+<Note>
+  Previously both cases answered `404`, indistinguishable from an id that does not
+  exist, which left polling loops with no way to tell "still waiting" from "gone".
+</Note>
 
 ## How fresh is the answer: `stale`, `checkedAt`, `lastKnownAt`
 
