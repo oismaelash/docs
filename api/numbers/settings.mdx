@@ -1,0 +1,79 @@
+---
+title: "PATCH /v1/numbers/{id} — Number settings"
+sidebarTitle: "Number settings"
+description: "PATCH /v1/numbers/{id} — retention policy, history behaviour and the Evolution GO advanced settings of one number."
+mode: "wide"
+---
+
+# Number settings
+
+`PATCH /v1/numbers/{id}` is where you configure a number. It is **partial**: only the fields you send change.
+
+<Warning>
+There is no `POST /v1/numbers/{id}/settings`. If you are coming from the Evolution API, that route does not exist here and returns a 404 — as does its `syncFullHistory` field. The equivalent is `settings.historyImportEnabled` below.
+</Warning>
+
+```bash
+curl -X PATCH https://pilotstatus.com.br/v1/numbers/num_01HZX... \
+  -H "x-api-key: $PILOT_STATUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "settings": {
+      "rejectCall": true,
+      "msgRejectCall": "I do not take calls here",
+      "webhookHistoricalMessages": false
+    }
+  }'
+```
+
+The same `settings` block comes back on `GET /v1/numbers/{id}`.
+
+## Fields
+
+| Field | Type | Default | Applies to |
+| --- | --- | --- | --- |
+| `piiMode` | `STORE_INDEFINITE` \| `STORE_X_DAYS` \| `RELAY_ONLY` | `STORE_INDEFINITE` | all providers |
+| `piiRetentionDays` | integer 1–3650 | `null` | required with `STORE_X_DAYS` |
+| `settings.historyImportEnabled` | boolean | `true` | all providers |
+| `settings.webhookHistoricalMessages` | boolean | `false` | all providers |
+| `settings.alwaysOnline` | boolean \| null | `null` | unofficial numbers |
+| `settings.rejectCall` | boolean \| null | `null` | unofficial numbers |
+| `settings.msgRejectCall` | string (≤1000) \| null | `null` | unofficial numbers |
+| `settings.readMessages` | boolean \| null | `null` | unofficial numbers |
+| `settings.ignoreGroups` | boolean \| null | `null` | unofficial numbers |
+| `settings.ignoreStatus` | boolean \| null | `null` | unofficial numbers |
+
+`null` on one of the unofficial-number fields means **reset to the provider default** — it does not mean `false`.
+
+Note the field name `ignoreGroups`. That is the dialect the unofficial provider actually speaks; `groupsIgnore` belongs to a different provider version and never reaches your number.
+
+<Note>
+On an official Meta number the six advanced fields are accepted and stored, but nothing ever applies them. The response says so in `settings.appliesTo.advanced`, which is `"none"` for Meta numbers and `"evolution-go"` for unofficial ones.
+</Note>
+
+## History
+
+When a number connects, WhatsApp hands the provider the device's message history, and the platform imports up to **30 days** back from the connection moment. Two independent switches control what happens to it:
+
+- **`historyImportEnabled`** — whether that history is stored at all. Turn it off and the number effectively starts existing at the moment it connected.
+- **`webhookHistoricalMessages`** — whether those old messages are **delivered to your webhooks**. Off by default: every reconnect replays the history, and nothing in the payload lets your integration tell it apart from a message that just arrived. Turn it on and they arrive as `message.received` / `message.group` / `message.newsletter`; on the FREE plan they also count against your inbound allowance.
+
+To **read** history, use [`GET /v1/messages/history`](/api/messages/history) with `startDate` / `endDate` — that is the supported path, and it filters on when each message actually happened.
+
+## Upstream push
+
+The unofficial-number fields are stored on the number **and** pushed to its connected instances. The response reports that push in `settingsSync`:
+
+```json
+{ "settingsSync": { "applied": 1, "failed": 0, "skipped": 0 } }
+```
+
+The push is best-effort. An instance that is offline at the time does not fail the request — the value stays persisted and is reapplied the next time that instance is provisioned. `skipped` counts instances on a provider that has no such setting.
+
+## Errors
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 400 | `INVALID_SETTINGS` | a field has the wrong type, or `msgRejectCall` is longer than 1000 characters |
+| 400 | `EMPTY_PATCH` | the body carries no recognised field — this is an error, not a silent no-op |
+| 404 | — | the number does not belong to the authenticated tenant |

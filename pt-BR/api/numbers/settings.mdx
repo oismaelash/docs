@@ -1,0 +1,79 @@
+---
+title: "PATCH /v1/numbers/{id} — Configuração do número"
+sidebarTitle: "Configuração do número"
+description: "PATCH /v1/numbers/{id} — política de retenção, comportamento do histórico e os advanced settings do Evolution GO de um número."
+mode: "wide"
+---
+
+# Configuração do número
+
+`PATCH /v1/numbers/{id}` é onde se configura um número. Ele é **parcial**: só o que vier no corpo muda.
+
+<Warning>
+Não existe `POST /v1/numbers/{id}/settings`. Se você vem da Evolution API, essa rota não existe aqui e devolve 404 — assim como o campo `syncFullHistory`. O equivalente é o `settings.historyImportEnabled` abaixo.
+</Warning>
+
+```bash
+curl -X PATCH https://pilotstatus.com.br/v1/numbers/num_01HZX... \
+  -H "x-api-key: $PILOT_STATUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "settings": {
+      "rejectCall": true,
+      "msgRejectCall": "Não atendo por aqui",
+      "webhookHistoricalMessages": false
+    }
+  }'
+```
+
+O mesmo bloco `settings` volta em `GET /v1/numbers/{id}`.
+
+## Campos
+
+| Campo | Tipo | Padrão | Vale para |
+| --- | --- | --- | --- |
+| `piiMode` | `STORE_INDEFINITE` \| `STORE_X_DAYS` \| `RELAY_ONLY` | `STORE_INDEFINITE` | todos os providers |
+| `piiRetentionDays` | inteiro 1–3650 | `null` | obrigatório com `STORE_X_DAYS` |
+| `settings.historyImportEnabled` | booleano | `true` | todos os providers |
+| `settings.webhookHistoricalMessages` | booleano | `false` | todos os providers |
+| `settings.alwaysOnline` | booleano \| null | `null` | números não-oficiais |
+| `settings.rejectCall` | booleano \| null | `null` | números não-oficiais |
+| `settings.msgRejectCall` | string (≤1000) \| null | `null` | números não-oficiais |
+| `settings.readMessages` | booleano \| null | `null` | números não-oficiais |
+| `settings.ignoreGroups` | booleano \| null | `null` | números não-oficiais |
+| `settings.ignoreStatus` | booleano \| null | `null` | números não-oficiais |
+
+`null` num dos campos de número não-oficial significa **voltar ao padrão do provedor** — não significa `false`.
+
+Repare no nome `ignoreGroups`. É o dialeto que o provedor não-oficial realmente fala; `groupsIgnore` pertence a outra versão de provedor e nunca chega ao seu número.
+
+<Note>
+Em número oficial da Meta os seis campos avançados são aceitos e guardados, mas nada os aplica. A resposta diz isso em `settings.appliesTo.advanced`, que vem `"none"` para número Meta e `"evolution-go"` para não-oficial.
+</Note>
+
+## Histórico
+
+Quando um número conecta, o WhatsApp entrega ao provedor o histórico do aparelho, e a plataforma importa até **30 dias** para trás a partir do momento da conexão. Dois interruptores independentes decidem o que fazer com ele:
+
+- **`historyImportEnabled`** — se esse histórico é armazenado. Desligue e o número passa a existir, na prática, a partir do momento em que conectou.
+- **`webhookHistoricalMessages`** — se essas mensagens antigas são **entregues nos seus webhooks**. Desligado por padrão: cada reconexão replica o histórico, e nada no payload permite à sua integração distinguir isso de uma mensagem que acabou de chegar. Ligado, elas chegam como `message.received` / `message.group` / `message.newsletter`; no plano FREE também contam na cota de inbound.
+
+Para **ler** o histórico, use [`GET /v1/messages/history`](/pt-BR/api/messages/history) com `startDate` / `endDate` — é o caminho suportado, e ele filtra por quando cada mensagem realmente aconteceu.
+
+## Push para a instância
+
+Os campos de número não-oficial são gravados no número **e** empurrados para as instâncias conectadas. A resposta reporta esse push em `settingsSync`:
+
+```json
+{ "settingsSync": { "applied": 1, "failed": 0, "skipped": 0 } }
+```
+
+O push é best-effort. Uma instância fora do ar na hora não faz a requisição falhar — o valor fica persistido e é reaplicado no próximo provisionamento daquela instância. `skipped` conta as instâncias num provedor que não tem essa configuração.
+
+## Erros
+
+| Status | `code` | Quando |
+| --- | --- | --- |
+| 400 | `INVALID_SETTINGS` | um campo veio com o tipo errado, ou `msgRejectCall` passou de 1000 caracteres |
+| 400 | `EMPTY_PATCH` | o corpo não trouxe nenhum campo reconhecido — isso é erro, não no-op silencioso |
+| 404 | — | o número não pertence ao tenant autenticado |
