@@ -1,0 +1,141 @@
+---
+title: "GET /v1/messages — Listar Logs de Mensagens"
+sidebarTitle: "Listar Mensagens"
+description: "Liste e filtre os logs de mensagens (enviadas e recebidas) do número de WhatsApp da chave de API."
+mode: "wide"
+---
+
+# Listar Logs de Mensagens
+
+```text
+GET https://pilotstatus.com.br/v1/messages
+```
+
+Lista os logs de mensagens — **enviadas e recebidas** — do número de WhatsApp vinculado à sua chave de API, das mais recentes para as mais antigas, com paginação e filtros. Para o detalhe completo de uma única mensagem, use [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status).
+
+<Note>
+  A página [Logs & Analytics](/pt-BR/dashboard/logs-analytics) do painel é a contraparte visual deste endpoint — as mesmas linhas, filtros e status que você vê lá são o que este endpoint retorna em JSON.
+</Note>
+
+## Cabeçalhos
+
+- `x-api-key: ps_...` (ou `x-api-key-id: <api_key_id>`) — uma chave com **escopo de número**. Chaves com escopo de tenant recebem `403`.
+
+## Parâmetros de query
+
+| Parâmetro | Tipo | Padrão | Descrição |
+| --- | --- | --- | --- |
+| `page` | integer | `1` | Número da página (começa em 1). |
+| `pageSize` | integer | `20` | Linhas por página (máx. `100`). |
+| `status` | string (CSV) | — | Filtra por status de entrega: `QUEUED`, `SENT`, `DELIVERED`, `READ`, `FAILED`, `CANCELED`. Aceita lista separada por vírgula (ex.: `status=FAILED,CANCELED`). Status de entrega só existem para mensagens enviadas, então este filtro **implica somente saídas** (outbound). |
+| `direction` | string | — | `in` (recebidas) ou `out` (enviadas). |
+| `startDate` | string | — | Limite inferior em ISO 8601 sobre `createdAt` (ex.: `2026-02-01T00:00:00.000Z`). |
+| `endDate` | string | — | Limite superior em ISO 8601 sobre `createdAt`. Não pode ser anterior a `startDate`. |
+| `search` | string | — | Um número de telefone em **qualquer** formato (`+5511999999999`, `5511999999999`, `11 99999-9999`, …) ou o nome de um template. |
+| `templateId` | string | — | **Id ou nome** do template — retorna apenas mensagens enviadas com esse template. |
+| `window` | string | — | `open` ou `closed` — o estado da janela de atendimento de 24h **registrado no momento do envio** (veja a nota abaixo). |
+
+<Note>
+  **Janela de atendimento de 24h:** o WhatsApp abre uma janela de atendimento de 24 horas sempre que um contato manda mensagem para você. `serviceWindowOpenAtSend` registra o estado dessa janela no momento em que cada mensagem enviada foi aceita: `true` significa que foi uma resposta dentro de uma janela aberta e foi enviada imediatamente; `false` significa que foi um envio "frio" fora da janela — ritmado pelo motor anti-bloqueio em números web do Pilot Status, e exigindo um template aprovado em números Meta Cloud API; `null` significa que a janela não foi computada (linhas recebidas, destinos de grupo/canal). Filtre com `window=open` / `window=closed`.
+</Note>
+
+## Exemplos
+
+<CodeGroup>
+
+```bash x-api-key
+curl "https://pilotstatus.com.br/v1/messages?page=1&pageSize=20" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```bash x-api-key-id
+curl "https://pilotstatus.com.br/v1/messages?page=1&pageSize=20" \
+  -H "x-api-key-id: ck_xxx"
+```
+
+```bash Filtrado (falhas de envio em um período)
+curl "https://pilotstatus.com.br/v1/messages?status=FAILED&direction=out&startDate=2026-02-01T00:00:00.000Z&endDate=2026-02-28T23:59:59.999Z" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+</CodeGroup>
+
+## Resposta (200)
+
+```json
+{
+  "data": [
+    {
+      "id": "msg_abc",
+      "correlationId": "corr_123",
+      "direction": "OUT",
+      "from": "+5511888888888",
+      "to": "+5511999999999",
+      "content": "Oi João, seu pedido 123 está a caminho!",
+      "template": "order_shipped",
+      "status": "READ",
+      "errorCode": null,
+      "errorMessage": null,
+      "origin": "API",
+      "serviceWindowOpenAtSend": true,
+      "createdAt": "2026-02-24T15:00:00.000Z",
+      "sentAt": "2026-02-24T15:00:05.000Z",
+      "deliveredAt": "2026-02-24T15:00:07.000Z",
+      "readAt": "2026-02-24T15:02:11.000Z",
+      "externalMessageId": "wamid.HBgLNTUxMTk5OTk5OTk5"
+    },
+    {
+      "id": "msg_def",
+      "correlationId": null,
+      "direction": "IN",
+      "from": "+5511999999999",
+      "to": "+5511888888888",
+      "content": "Obrigado! Até amanhã.",
+      "template": null,
+      "status": null,
+      "errorCode": null,
+      "errorMessage": null,
+      "origin": null,
+      "serviceWindowOpenAtSend": null,
+      "createdAt": "2026-02-24T15:03:40.000Z",
+      "sentAt": null,
+      "deliveredAt": null,
+      "readAt": null,
+      "externalMessageId": "wamid.HBgLNTUxMTg4ODg4ODg4"
+    }
+  ],
+  "page": 1,
+  "pageSize": 20,
+  "total": 2,
+  "totalPages": 1
+}
+```
+
+## Campos da resposta
+
+| Campo | Descrição |
+| --- | --- |
+| `id` | Id interno da mensagem — use com [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) para o detalhe de uma única mensagem. |
+| `correlationId` | Identificador de correlação da requisição de envio (somente saídas). |
+| `direction` | `IN` (recebida) ou `OUT` (enviada). |
+| `from` / `to` | Telefones de remetente e destinatário. |
+| `content` | Texto da mensagem. `null` quando redigido pelo modo de retenção de PII do número. |
+| `template` | Nome do template em envios de template; caso contrário, `null`. |
+| `status` | Status de entrega das mensagens enviadas (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `FAILED`, `CANCELED`) — veja [Status da Mensagem](/pt-BR/api/messages/status). `null` em linhas recebidas. |
+| `errorCode` / `errorMessage` | Preenchidos em envios `FAILED` — veja [Códigos de Erro do Log](/pt-BR/api/messages/log-error-codes). |
+| `origin` | Onde o envio se originou: `API`, `CHAT`, `CHATWOOT`, `DASHBOARD`, `SYSTEM` ou `APP`. |
+| `serviceWindowOpenAtSend` | `true`, `false` ou `null` — o estado da janela de atendimento de 24h registrado no momento do envio (veja a nota acima). |
+| `createdAt` / `sentAt` / `deliveredAt` / `readAt` | Timestamps do ciclo de vida (ISO 8601). |
+| `externalMessageId` | ID de mensagem do WhatsApp do provedor (wamid). |
+
+<Note>
+  **Retenção:** as linhas respeitam o **modo de retenção de PII** do número. Em números `RELAY_ONLY`, as linhas retornam redigidas (`content: null`).
+</Note>
+
+## Erros comuns
+
+| Status | Significado |
+| --- | --- |
+| `400` | `INVALID_DATE_RANGE` — `startDate`/`endDate` malformados, ou `endDate` anterior a `startDate` |
+| `401` | Cabeçalho de chave de API ausente/inválido (`x-api-key` / `x-api-key-id`) |
+| `403` | Chave com escopo de tenant usada em endpoint com escopo de número |
