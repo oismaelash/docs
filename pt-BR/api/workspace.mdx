@@ -1,0 +1,119 @@
+---
+title: "API de Workspace — membros, papéis e assentos"
+sidebarTitle: "Workspace"
+description: "Leia o workspace, liste membros, convide, reenvie, mude papel e remova — em /v1/workspace. Inclui por que escrita exige OAuth e nunca chave de API clássica."
+mode: "wide"
+---
+
+Seis endpoints em `/v1/workspace` espelham o que o painel faz com membros e assentos.
+
+## Qual credencial funciona onde
+
+Esta é a parte para ler antes de qualquer coisa.
+
+| Endpoint | Chave clássica (`x-api-key`) | Token OAuth |
+|---|:---:|:---:|
+| `GET /v1/workspace` | ✅ | ✅ |
+| `GET /v1/workspace/members` | ✅ | ✅ |
+| `POST /v1/workspace/members` | ❌ | ✅ |
+| `POST /v1/workspace/members/{id}/resend` | ❌ | ✅ |
+| `PATCH /v1/workspace/members/{id}` | ❌ | ✅ |
+| `DELETE /v1/workspace/members/{id}` | ❌ | ✅ |
+
+<Warning>
+**Escrita exige OAuth de propósito.** Numa requisição `x-api-key` não há usuário por trás — a chave é do workspace, não de uma pessoa. Se convidar fosse permitido com chave tenant-scoped, quem tivesse *qualquer* chave do workspace se convidaria como Administrador, e a chave viraria caminho de takeover da conta.
+</Warning>
+
+Transferir posse e arquivar workspace **não têm API nenhuma**. São as únicas ações que mudam quem paga a conta, e nenhuma credencial de máquina as alcança.
+
+## Ler o workspace
+
+```bash
+curl https://api.pilotstatus.com.br/v1/workspace \
+  -H "x-api-key: ps_..."
+```
+
+```json
+{
+  "id": "tn_...",
+  "name": "Acme",
+  "plan": "PREMIUM",
+  "seatsUsed": 4,
+  "seatLimit": 10
+}
+```
+
+`seatsUsed` conta membros ativos **e convites pendentes que ainda não venceram**. Convite vencido para de contar sozinho.
+
+## Listar membros
+
+```bash
+curl https://api.pilotstatus.com.br/v1/workspace/members \
+  -H "x-api-key: ps_..."
+```
+
+Devolve membros ativos e convites pendentes numa lista só, distinguidos por `status`.
+
+<Warning>
+A lista **nunca traz link nem token de convite**, e nunca vai trazer: guardamos apenas o hash do token, então o link não é derivável depois. Se você precisa do link de um convite pendente, chame `resend`.
+</Warning>
+
+## Convidar
+
+```bash
+curl -X POST https://api.pilotstatus.com.br/v1/workspace/members \
+  -H "Authorization: Bearer <token-oauth>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alguem@acme.com","role":"AGENT","sendEmail":true}'
+```
+
+| Campo | Significado |
+|---|---|
+| `email` | Normalizado para minúsculas. Um convite por endereço por workspace |
+| `role` | `ADMIN`, `AGENT` ou `ANALYST`. **`OWNER` nunca é atribuível** |
+| `allowedNumberIds` | Opcional. Restringe Atendente ou Analista a números específicos; ignorado para Administrador |
+| `sendEmail` | Default `true`. Com `false`, nenhum e-mail sai e a resposta traz `inviteUrl` |
+
+`sendEmail: false` é a escotilha para entregar o convite do seu jeito. **A resposta é o único lugar onde o link aparece** — se perder, chame `resend`, que emite um novo e mata o anterior.
+
+Convidar um endereço que já tem convite pendente não é erro: rotaciona o token na mesma linha e devolve `200` em vez de `201`.
+
+## Erros que vale tratar
+
+| Status | `code` | O que aconteceu |
+|---|---|---|
+| `400` | `INVALID_EMAIL` | O endereço não é plausível |
+| `409` | `ALREADY_MEMBER` | O endereço já é membro ativo |
+| `409` | `SEAT_LIMIT_REACHED` | Sem assento livre. O corpo traz `seats` com o uso atual |
+| `409` | `OWNER_INVITE_FORBIDDEN` | `OWNER` foi pedido como papel |
+| `409` | `OWNER_IMMUTABLE` | O alvo é o proprietário — mudança ou remoção recusada |
+| `409` | `MEMBER_HAS_API_KEYS` | Veja abaixo |
+| `429` | — | Limitado. Convite tem limite por workspace, por destinatário e por IP |
+
+## Remover membro que criou chaves de API
+
+O `DELETE` recusa com `409 MEMBER_HAS_API_KEYS` e lista as chaves:
+
+```json
+{
+  "code": "MEMBER_HAS_API_KEYS",
+  "apiKeys": [
+    { "id": "key_...", "name": "n8n", "keyLast4": "9f21", "lastUsedAt": "2026-08-01T12:00:00.000Z" }
+  ],
+  "hint": "Repita com ?apiKeyAction=revoke ou ?apiKeyAction=keep."
+}
+```
+
+Repita a chamada com a decisão explícita:
+
+```bash
+curl -X DELETE "https://api.pilotstatus.com.br/v1/workspace/members/mb_...?apiKeyAction=keep" \
+  -H "Authorization: Bearer <token-oauth>"
+```
+
+- `revoke` — as chaves param de autenticar. O que integra por elas quebra na hora.
+- `keep` — as chaves continuam funcionando e passam para quem chamou.
+
+Não há default. Um integrador não pode derrubar integração de produção por omissão.
+
+Revogar nunca é apagar: o registro sobrevive para que o histórico de mensagens e chamadas continue apontando para algo real.

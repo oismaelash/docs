@@ -1,0 +1,119 @@
+---
+title: "Workspace API — Members, Roles and Seats"
+sidebarTitle: "Workspace"
+description: "Read your workspace, list members, invite, resend, change roles and remove — over /v1/workspace. Includes why writes require OAuth and never a classic API key."
+mode: "wide"
+---
+
+Six endpoints under `/v1/workspace` mirror what the dashboard does with members and seats.
+
+## Which credential works where
+
+This is the part to read before anything else.
+
+| Endpoint | Classic API key (`x-api-key`) | OAuth token |
+|---|:---:|:---:|
+| `GET /v1/workspace` | ✅ | ✅ |
+| `GET /v1/workspace/members` | ✅ | ✅ |
+| `POST /v1/workspace/members` | ❌ | ✅ |
+| `POST /v1/workspace/members/{id}/resend` | ❌ | ✅ |
+| `PATCH /v1/workspace/members/{id}` | ❌ | ✅ |
+| `DELETE /v1/workspace/members/{id}` | ❌ | ✅ |
+
+<Warning>
+**Writes require OAuth on purpose.** An `x-api-key` request has no user behind it — the key belongs to the workspace, not to a person. If inviting were allowed with a tenant-scoped key, then whoever holds *any* key of the workspace could invite themselves an Admin, and the key would become a path to taking over the account.
+</Warning>
+
+Transferring ownership and archiving a workspace have **no API at all**. They are the only actions that change who pays the bill, and no machine credential reaches them.
+
+## Read the workspace
+
+```bash
+curl https://api.pilotstatus.com.br/v1/workspace \
+  -H "x-api-key: ps_..."
+```
+
+```json
+{
+  "id": "tn_...",
+  "name": "Acme",
+  "plan": "PREMIUM",
+  "seatsUsed": 4,
+  "seatLimit": 10
+}
+```
+
+`seatsUsed` counts active members **and pending invitations that have not expired**. An expired invitation stops counting on its own.
+
+## List members
+
+```bash
+curl https://api.pilotstatus.com.br/v1/workspace/members \
+  -H "x-api-key: ps_..."
+```
+
+Returns active members and pending invitations in one list, distinguished by `status`.
+
+<Warning>
+The list **never contains an invitation link or token**, and it never will: only a hash of the token is stored, so the link is not derivable after the fact. If you need a link for a pending invitation, call `resend`.
+</Warning>
+
+## Invite
+
+```bash
+curl -X POST https://api.pilotstatus.com.br/v1/workspace/members \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"someone@acme.com","role":"AGENT","sendEmail":true}'
+```
+
+| Field | Meaning |
+|---|---|
+| `email` | Normalized to lowercase. One invitation per address per workspace |
+| `role` | `ADMIN`, `AGENT` or `ANALYST`. **`OWNER` is never assignable** |
+| `allowedNumberIds` | Optional. Limits an Agent or Analyst to specific numbers; ignored for Admins |
+| `sendEmail` | Default `true`. With `false`, no e-mail is sent and the response carries `inviteUrl` |
+
+`sendEmail: false` is the hatch for delivering the invitation your own way. **The response is the only place the link appears** — if you lose it, call `resend`, which issues a new one and kills the old.
+
+Inviting an address that already has a pending invitation is not an error: it rotates the token in place and returns `200` instead of `201`.
+
+## Errors worth handling
+
+| Status | `code` | What happened |
+|---|---|---|
+| `400` | `INVALID_EMAIL` | The address is not plausible |
+| `409` | `ALREADY_MEMBER` | That address is already an active member |
+| `409` | `SEAT_LIMIT_REACHED` | No free seat. The body carries `seats` with current usage |
+| `409` | `OWNER_INVITE_FORBIDDEN` | `OWNER` was requested as a role |
+| `409` | `OWNER_IMMUTABLE` | The target is the owner — change or removal refused |
+| `409` | `MEMBER_HAS_API_KEYS` | See below |
+| `429` | — | Rate limited. Invitations are limited per workspace, per recipient and per IP |
+
+## Removing a member who created API keys
+
+`DELETE` refuses with `409 MEMBER_HAS_API_KEYS` and lists the keys:
+
+```json
+{
+  "code": "MEMBER_HAS_API_KEYS",
+  "apiKeys": [
+    { "id": "key_...", "name": "n8n", "keyLast4": "9f21", "lastUsedAt": "2026-08-01T12:00:00.000Z" }
+  ],
+  "hint": "Repeat with ?apiKeyAction=revoke or ?apiKeyAction=keep."
+}
+```
+
+Repeat the call with an explicit decision:
+
+```bash
+curl -X DELETE "https://api.pilotstatus.com.br/v1/workspace/members/mb_...?apiKeyAction=keep" \
+  -H "Authorization: Bearer <oauth-token>"
+```
+
+- `revoke` — the keys stop authenticating. Integrations through them break immediately.
+- `keep` — the keys keep working and are reassigned to the caller.
+
+There is no default. An integrator must not take down production integrations by omission.
+
+Revoking is never a delete: the record survives so message and call history keeps pointing somewhere real.

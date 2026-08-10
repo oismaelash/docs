@@ -2122,7 +2122,13 @@
                   },
                   "mediaType": {
                     "type": "string",
-                    "enum": ["image", "video", "document", "audio", "voice"],
+                    "enum": [
+                      "image",
+                      "video",
+                      "document",
+                      "audio",
+                      "voice"
+                    ],
                     "description": "Tipo da mídia. No modo mídia direta (sem templateId/text) envie media + mediaType: caption opcional para image/video/document (não para audio/voice); botões/header/footer/variáveis não permitidos. \"audio\" entrega como nota de voz (PTT) sem waveform; \"voice\" entrega como nota de voz com waveform/ondinha (Meta renderiza a ondina quando `voice: true`). Ambos são normalizados no servidor (OGG/Opus mono, metadados removidos, start_time zero). Na Evolution v2 e GO um indicador \"gravando áudio\" é mostrado antes da nota de voz.",
                     "example": "image"
                   },
@@ -9908,6 +9914,469 @@
           },
           "404": {
             "description": "PRICE_NOT_FOUND - sem rate publicada para esse mercado+moeda+categoria."
+          }
+        }
+      }
+    },
+    "/v1/workspace": {
+      "get": {
+        "summary": "Ler o workspace",
+        "description": "Dados do workspace da credencial, com uso de assentos. `seatsUsed` conta membros ativos **e** convites pendentes ainda no prazo — convite vencido para de contar sozinho.",
+        "tags": [
+          "Workspace"
+        ],
+        "operationId": "get_workspace",
+        "responses": {
+          "200": {
+            "description": "O workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "example": "tn_1a2b"
+                    },
+                    "name": {
+                      "type": "string",
+                      "example": "Acme"
+                    },
+                    "plan": {
+                      "type": "string",
+                      "example": "PREMIUM"
+                    },
+                    "seatsUsed": {
+                      "type": "integer",
+                      "example": 4
+                    },
+                    "seatLimit": {
+                      "type": "integer",
+                      "example": 10
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel insuficiente, credencial errada ou convites desabilitados."
+          }
+        }
+      }
+    },
+    "/v1/workspace/members": {
+      "get": {
+        "summary": "Listar membros",
+        "description": "Membros ativos e convites pendentes numa lista só, distinguidos por `status`.\n\n**Nunca devolve token nem `inviteUrl`** — guardamos apenas o hash, então o link não é derivável depois. Para obter um link de convite pendente, use o `resend`.",
+        "tags": [
+          "Workspace"
+        ],
+        "operationId": "get_workspace-members",
+        "responses": {
+          "200": {
+            "description": "Membros e convites",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "example": "mb_1a2b"
+                          },
+                          "email": {
+                            "type": "string",
+                            "example": "alguem@acme.com"
+                          },
+                          "name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "OWNER",
+                              "ADMIN",
+                              "AGENT",
+                              "ANALYST"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "PENDING",
+                              "ACTIVE"
+                            ]
+                          },
+                          "allowedNumberIds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "invitedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "joinedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time"
+                          },
+                          "inviteExpiresAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time"
+                          },
+                          "inviteExpired": {
+                            "type": "boolean",
+                            "description": "`true` quando o convite venceu: a linha existe mas não ocupa assento."
+                          }
+                        }
+                      }
+                    },
+                    "seats": {
+                      "type": "object",
+                      "properties": {
+                        "ocupados": {
+                          "type": "integer"
+                        },
+                        "limite": {
+                          "type": "integer"
+                        },
+                        "disponiveis": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Papel insuficiente, credencial errada ou convites desabilitados."
+          }
+        }
+      },
+      "post": {
+        "summary": "Convidar membro",
+        "description": "Convida um e-mail. Endereço que já tem convite pendente NÃO é erro: rotaciona o token na mesma linha (o link antigo morre) e devolve `200` em vez de `201`.\n\n**Exige OAuth.** Chave clássica (`x-api-key`) é recusada: numa requisição `x-api-key` não há usuário por trás, e permitir escrita na lista de membros faria de qualquer chave do workspace um caminho de takeover da conta.",
+        "tags": [
+          "Workspace"
+        ],
+        "operationId": "post_workspace-members",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "description": "Normalizado para minúsculas.",
+                    "example": "alguem@acme.com"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "ADMIN",
+                      "AGENT",
+                      "ANALYST"
+                    ],
+                    "description": "`OWNER` NUNCA é atribuível — virar dono é transferência de posse.",
+                    "example": "AGENT"
+                  },
+                  "allowedNumberIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Restringe AGENT/ANALYST a números específicos. Ignorado para ADMIN, que é workspace-wide."
+                  },
+                  "sendEmail": {
+                    "type": "boolean",
+                    "description": "Default `true`. Com `false` nenhum e-mail sai e a resposta traz `inviteUrl` — a ÚNICA vez que o link aparece.",
+                    "example": true
+                  }
+                },
+                "required": [
+                  "email",
+                  "role"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Convite criado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "member": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "example": "mb_1a2b"
+                        },
+                        "email": {
+                          "type": "string",
+                          "example": "alguem@acme.com"
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "OWNER",
+                            "ADMIN",
+                            "AGENT",
+                            "ANALYST"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "PENDING",
+                            "ACTIVE"
+                          ]
+                        },
+                        "allowedNumberIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "invitedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "joinedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "inviteExpiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "inviteExpired": {
+                          "type": "boolean",
+                          "description": "`true` quando o convite venceu: a linha existe mas não ocupa assento."
+                        }
+                      }
+                    },
+                    "inviteUrl": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Presente apenas com `sendEmail: false`."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Convite pendente rotacionado"
+          },
+          "400": {
+            "description": "Payload inválido (`INVALID_EMAIL`, papel ausente)."
+          },
+          "403": {
+            "description": "Papel insuficiente, credencial errada ou convites desabilitados."
+          },
+          "409": {
+            "description": "Conflito de estado: `ALREADY_MEMBER`, `SEAT_LIMIT_REACHED`, `OWNER_INVITE_FORBIDDEN`, `OWNER_IMMUTABLE`."
+          },
+          "429": {
+            "description": "Limitado por workspace, por destinatário e por IP."
+          }
+        }
+      }
+    },
+    "/v1/workspace/members/{id}": {
+      "patch": {
+        "summary": "Mudar papel do membro",
+        "description": "Muda papel e, opcionalmente, o escopo por número. Promover a ADMIN limpa o escopo: ADMIN é workspace-wide, e guardar restrição que o gate ignora faria a resposta mentir.\n\n**Exige OAuth.** Chave clássica (`x-api-key`) é recusada: numa requisição `x-api-key` não há usuário por trás, e permitir escrita na lista de membros faria de qualquer chave do workspace um caminho de takeover da conta.",
+        "tags": [
+          "Workspace"
+        ],
+        "operationId": "patch_workspace-member",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Id da membership (o `id` que a listagem devolve), NÃO o id do usuário."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "ADMIN",
+                      "AGENT",
+                      "ANALYST"
+                    ],
+                    "example": "ADMIN"
+                  },
+                  "allowedNumberIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "role"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Membro atualizado"
+          },
+          "400": {
+            "description": "Payload inválido (`INVALID_EMAIL`, papel ausente)."
+          },
+          "403": {
+            "description": "Papel insuficiente, credencial errada ou convites desabilitados."
+          },
+          "409": {
+            "description": "Conflito de estado: `ALREADY_MEMBER`, `SEAT_LIMIT_REACHED`, `OWNER_INVITE_FORBIDDEN`, `OWNER_IMMUTABLE`."
+          },
+          "429": {
+            "description": "Limitado por workspace, por destinatário e por IP."
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remover membro ou revogar convite",
+        "description": "Mesma rota para as duas coisas: convite e membership são a mesma linha.\n\nSe o membro criou chaves de API ainda ativas, a remoção PARA com `409 MEMBER_HAS_API_KEYS` e devolve a lista. Repita com `apiKeyAction=revoke` ou `apiKeyAction=keep` — **não há default**, porque revogar por omissão derruba integração de produção no meio de um desligamento.\n\n**Exige OAuth.** Chave clássica (`x-api-key`) é recusada: numa requisição `x-api-key` não há usuário por trás, e permitir escrita na lista de membros faria de qualquer chave do workspace um caminho de takeover da conta.",
+        "tags": [
+          "Workspace"
+        ],
+        "operationId": "delete_workspace-member",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Id da membership (o `id` que a listagem devolve), NÃO o id do usuário."
+          },
+          {
+            "name": "apiKeyAction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "revoke",
+                "keep"
+              ]
+            },
+            "description": "`revoke` marca `revokedAt` (soft, nunca delete); `keep` re-atribui as chaves a quem chamou."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Removido"
+          },
+          "409": {
+            "description": "`MEMBER_HAS_API_KEYS` (com a lista em `apiKeys`) ou `OWNER_IMMUTABLE`."
+          },
+          "403": {
+            "description": "Papel insuficiente, credencial errada ou convites desabilitados."
+          }
+        }
+      }
+    },
+    "/v1/workspace/members/{id}/resend": {
+      "post": {
+        "summary": "Reenviar convite",
+        "description": "Rotaciona o token (o link anterior morre) e reenfileira o e-mail. Passa POR CIMA do teto de assento: o assento do convite já está contado, e recobrar faria o reenvio falhar exatamente no workspace lotado, que é onde ele mais é usado.\n\nÉ o que torna `sendEmail: false` recuperável — como guardamos só o hash, sem esta rota quem perdeu a resposta ficaria sem caminho.\n\n**Exige OAuth.** Chave clássica (`x-api-key`) é recusada: numa requisição `x-api-key` não há usuário por trás, e permitir escrita na lista de membros faria de qualquer chave do workspace um caminho de takeover da conta.",
+        "tags": [
+          "Workspace"
+        ],
+        "operationId": "post_workspace-member-resend",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Id da membership (o `id` que a listagem devolve), NÃO o id do usuário."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sendEmail": {
+                    "type": "boolean",
+                    "example": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Convite reenviado"
+          },
+          "409": {
+            "description": "`ALREADY_MEMBER` (já aceitou) ou `NOT_FOUND`."
+          },
+          "403": {
+            "description": "Papel insuficiente, credencial errada ou convites desabilitados."
           }
         }
       }
