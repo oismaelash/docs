@@ -1,0 +1,230 @@
+---
+title: "GET /v1/referrals — atribuição de Click-to-WhatsApp"
+description: "Descubra de qual anúncio ou post veio cada conversa e agrupe seu tráfego do WhatsApp por anúncio."
+mode: "wide"
+---
+
+Quando alguém toca num anúncio **Click-to-WhatsApp** (CTWA) ou num post orgânico e escreve para
+o seu número da API oficial, a Meta anexa a origem daquele clique à primeira mensagem recebida.
+A Pilot Status guarda isso, e estes dois endpoints leem de volta: um mensagem por mensagem,
+outro agregado por anúncio.
+
+## Endpoints
+
+`GET https://pilotstatus.com.br/v1/referrals`
+
+`GET https://pilotstatus.com.br/v1/referrals/summary`
+
+<Note>
+  Os dois exigem uma API key **escopada a número** (`ps_*`) no header `x-api-key`. Keys de
+  tenant recebem `403`.
+</Note>
+
+Na prática só números da API oficial (Meta) têm origem de anúncio — o bloco de origem é um campo
+do webhook da Cloud API do WhatsApp, então número conectado por QR code nunca tem.
+
+## O que vem, e o que não vem
+
+<Warning>
+  **Não existe nome de campanha nem de conjunto aqui, e isso é proposital.**
+
+  `sourceId` é o id do anúncio (ou do post) da Meta, exposto como **chave opaca de
+  agrupamento**. Transformar isso em nome de campanha significa ler o objeto do anúncio —
+  `GET /{ad_id}?fields=id,name,adset{id,name},campaign{id,name}` — e essa chamada exige a
+  permissão `ads_read` na **conta de anúncios do anunciante**. O token de usuário de sistema por
+  trás de um número conectado carrega apenas `whatsapp_business_management` e
+  `whatsapp_business_messaging`, então a Meta responde `GraphMethodException` código `100`,
+  subcódigo `33`.
+
+  Se você quer os nomes, chame a Marketing API da Meta com um token autorizado naquela conta e
+  use o `sourceId` daqui como chave de busca. Todo o resto — título, texto, URL do criativo e
+  permalink do anúncio — a Meta já nos manda, e está na resposta abaixo.
+</Warning>
+
+## Só a primeira mensagem carrega a origem
+
+A Meta envia a origem na **primeira mensagem da conversa** e nunca repete. Então uma linha em
+`GET /v1/referrals` equivale a *uma conversa que nasceu daquele anúncio*, e `conversations` no
+resumo é o número que o seu anúncio realmente produziu.
+
+## `GET /v1/referrals`
+
+### Parâmetros de query
+
+<ParamField query="sourceId" type="string">
+  Restringe a um único id de anúncio/post.
+</ParamField>
+
+<ParamField query="sourceType" type="string">
+  `ad` ou `post`. Qualquer outro valor devolve `400 INVALID_SOURCE_TYPE`.
+</ParamField>
+
+<ParamField query="startDate" type="string">
+  Data-hora ISO 8601. Mensagens **a partir de** (inclusive) este instante.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Data-hora ISO 8601. Mensagens **até** (inclusive) este instante.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Página (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Itens por página (1–100).
+</ParamField>
+
+### O objeto `referral`
+
+| Campo | Significado |
+| --- | --- |
+| `sourceId` | Id do anúncio (ou post) na Meta. Chave opaca — veja o aviso acima. |
+| `sourceType` | `ad` ou `post`. |
+| `sourceUrl` | Permalink do anúncio/post clicado. |
+| `headline` | Título do anúncio. |
+| `body` | Texto do anúncio. |
+| `mediaType` | `image` ou `video`. |
+| `imageUrl` | Imagem do criativo, quando o anúncio é de imagem. |
+| `videoUrl` | Vídeo do criativo, quando o anúncio é de vídeo. |
+| `thumbnailUrl` | Miniatura do criativo. |
+| `ctwaClid` | Id daquele clique específico na Meta. Tratado como dado pessoal — veja abaixo. |
+
+### Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/referrals?sourceType=ad&startDate=2026-08-01T00:00:00Z" \
+  -H "x-api-key: ps_sua_key_aqui"
+```
+
+```json Resposta (200)
+{
+  "referrals": [
+    {
+      "id": "cm_abc123",
+      "conversationId": "conv_abc123",
+      "direction": "INBOUND",
+      "providerKind": "META",
+      "externalMessageId": "wamid.HBgNNTU0Mj...",
+      "messageType": "text",
+      "text": "Oi, vi o anúncio",
+      "providerTimestamp": "2026-08-16T12:00:00.000Z",
+      "referral": {
+        "sourceId": "120249828053880703",
+        "sourceType": "ad",
+        "sourceUrl": "https://www.instagram.com/p/DcJhrlpA3Pl/",
+        "headline": "SALE MM DESIGN",
+        "body": "Seu ambiente pode ficar ainda mais incrível",
+        "mediaType": "video",
+        "imageUrl": null,
+        "videoUrl": "https://video.example/v.mp4",
+        "thumbnailUrl": "https://thumb.example/t.jpg",
+        "ctwaClid": "ARAaZ1x..."
+      }
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1
+}
+```
+
+</CodeGroup>
+
+## `GET /v1/referrals/summary`
+
+Agrupa os mesmos dados por anúncio, ordenado por número de conversas desc.
+
+### Parâmetros de query
+
+<ParamField query="startDate" type="string">
+  Data-hora ISO 8601.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Data-hora ISO 8601.
+</ParamField>
+
+### Regra de contagem
+
+`conversations` conta **conversas distintas**; `messages` conta mensagens. Duas mensagens na
+mesma conversa são 1 conversa e 2 mensagens — então `conversations` é a contagem de leads e
+`messages` é o volume.
+
+`lastSourceUrl` e `lastHeadline` vêm da mensagem **mais recente** daquele anúncio: a copy pode
+ser editada, e a última versão que a Meta mandou é a útil.
+
+### O teto é informado, não escondido
+
+A lista para em **200 anúncios**. Quando houver mais, `truncated` vem `true` e um `notice`
+avisa — estreite a janela com `startDate`/`endDate` em vez de paginar.
+
+### Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/referrals/summary?startDate=2026-08-01T00:00:00Z" \
+  -H "x-api-key: ps_sua_key_aqui"
+```
+
+```json Resposta (200)
+{
+  "ads": [
+    {
+      "sourceId": "120249828053880703",
+      "sourceType": "ad",
+      "conversations": 12,
+      "messages": 31,
+      "firstAt": "2026-07-28T10:00:00.000Z",
+      "lastAt": "2026-08-16T12:00:00.000Z",
+      "lastSourceUrl": "https://www.instagram.com/p/DcJhrlpA3Pl/",
+      "lastHeadline": "SALE MM DESIGN"
+    },
+    {
+      "sourceId": "120249828075420703",
+      "sourceType": "ad",
+      "conversations": 4,
+      "messages": 9,
+      "firstAt": "2026-08-02T09:00:00.000Z",
+      "lastAt": "2026-08-15T18:30:00.000Z",
+      "lastSourceUrl": "https://www.instagram.com/p/DcAbcdEfGh/",
+      "lastHeadline": "MM DESIGN — Outlet"
+    }
+  ],
+  "total": 2,
+  "limit": 200,
+  "truncated": false
+}
+```
+
+</CodeGroup>
+
+## Efeito do modo de privacidade (PII)
+
+A identidade do anúncio e a copy do anúncio são tratadas de forma diferente de propósito: um
+**id de anúncio identifica um criativo, nunca uma pessoa**, enquanto `ctwaClid` é um
+identificador por clique ligado ao indivíduo, e título/texto são conteúdo.
+
+| Modo PII | Efeito |
+| --- | --- |
+| `STORE_INDEFINITE` (padrão) | Tudo é devolvido. |
+| `STORE_X_DAYS` | Linhas mais antigas que a janela de retenção mantêm `sourceId` e `sourceType`; `ctwaClid`, `headline` e `body` vêm nulos e `redacted: true` é marcado. |
+| `RELAY_ONLY` | A mesma divisão em toda linha, mais `notice: "PII_RELAY_ONLY"`. No resumo os **contadores seguem corretos** — só `lastSourceUrl` e `lastHeadline` voltam nulos, com `piiNotice: "PII_RELAY_ONLY"`. |
+
+É essa divisão que mantém a atribuição de anúncio funcionando num número RELAY_ONLY em vez de
+devolver nada.
+
+## Erros
+
+| Status | Código | Causa |
+| --- | --- | --- |
+| `400` | `INVALID_SOURCE_TYPE` | `sourceType` não era `ad` nem `post`. |
+| `400` | `INVALID_DATE_RANGE` | Data malformada, ou `startDate` depois de `endDate`. |
+| `400` | `INVALID_PAGINATION` | `page × pageSize` passou do limite de profundidade. Estreite o período. |
+| `400` | `NUMBER_NOT_FOUND` | A key não está atrelada a um número de WhatsApp. |
+| `401` | — | `x-api-key` ausente ou inválida. |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Foi usada uma key de tenant. |
