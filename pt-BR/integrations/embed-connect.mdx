@@ -12,6 +12,10 @@ Incorpore o **fluxo de pareamento de número (Connect)** do WhatsApp — QR code
 </Frame>
 
 <Note>
+  **Esta página é a referência** — todas as opções, os dois providers, o protocolo postMessage completo e a tabela cheia do `branding.button`. Se você está ligando o onboarding da API oficial pela primeira vez, comece pelo passo a passo: **[Embedded Signup no seu app](/pt-BR/guides/embedded-signup)** percorre as quatro chamadas de ponta a ponta, com código de backend e frontend pra copiar. Volte aqui para o detalhe campo por campo.
+</Note>
+
+<Note>
   Diferença principal em relação ao Chat: o Connect **não** usa o token de `POST /v1/embed/sessions`. Ele usa o **token de pareamento remoto** gerado por `POST /v1/numbers/remote-pairing`, e esse token fica no **caminho da URL** do iframe (`/connect/<token>`), não em memória via postMessage.
 </Note>
 
@@ -102,15 +106,31 @@ Gere o link Meta **no momento em que o usuário vai clicar**, não horas antes �
     </script>
     ```
 
-    `ConnectOptions`: `token` (obrigatório), `baseUrl?` (padrão `https://connect.pilotstatus.com.br`), `mode?` (`"page"` \| `"button"`, padrão `"page"`), `onPaired(d)`, `onError(e)`, `onExpired()`.
+    `ConnectOptions`: `token` (obrigatório), `baseUrl?` (padrão `https://connect.pilotstatus.com.br`), `mode?` (`"page"` \| `"button"` — omita para automático, veja [Modo botão](#modo-botao)), `onPaired(d)`, `onError(e)`, `onExpired()`.
   </Step>
 </Steps>
 
 ## Modo botão
 
-`mode: "button"` renderiza **apenas o botão do Meta Embedded Signup** — sem cabeçalho, sem card, sem linha do tempo, fundo transparente e altura controlada pela mensagem `resize` já existente. Todo o resto (token, protocolo postMessage, callbacks) é idêntico ao modo página.
+O modo botão renderiza **apenas o botão do Meta Embedded Signup** — sem cabeçalho, sem card, sem linha do tempo, fundo transparente e altura controlada pela mensagem `resize` já existente. Todo o resto (token, protocolo postMessage, callbacks) é idêntico ao modo página.
 
-Use quando você já tem a sua própria tela de onboarding e o card hospedado seria uma segunda UI competindo dentro dela. Use o modo página (padrão) quando quiser o fluxo explicativo completo, ou para pareamento por QR.
+Use quando você já tem a sua própria tela de onboarding e o card hospedado seria uma segunda UI competindo dentro dela. Use o modo página quando quiser o fluxo explicativo completo, ou para pareamento por QR.
+
+### Qual modo um link renderiza
+
+**Um link gerado com `branding.button` renderiza o botão por padrão.** Mandar esse objeto **é** o pedido do botão — não existe uma segunda flag pra lembrar, nem como estilizar um botão e ser surpreendido por um card. Três entradas decidem, nesta ordem de precedência:
+
+| Entrada | Renderiza |
+| --- | --- |
+| `?mode=button` na URL (ou `mode: "button"` no SDK) | botão — sempre |
+| `?mode=page` (ou `mode: "page"`) | a página cheia — **o opt-out**, mesmo num link gerado com `branding.button` |
+| nenhuma das duas | **automático**: botão quando o link carrega `branding.button`, página cheia caso contrário |
+
+<Warning>
+  **Isso mudou em 17/08/2026.** Um link gerado com `branding.button` renderizava a página cheia a menos que o host também anexasse `?mode=button`. Se você gera com `branding.button` e quer a página cheia de propósito — aí o estilo do token se aplica ao botão *dentro* do card —, anexe **`?mode=page`** (ou passe `mode: "page"`). Nada mais muda: link sem estilo continua renderizando a página, e `?mode=button` explícito continua renderizando o botão.
+</Warning>
+
+O `branding.button` só chega a um link pelo token assinado, então o modo automático só pode disparar num link cujo próprio backend pediu: não existe configuração no nível do tenant que vire os seus outros links, nem parâmetro de query que vire o link de outra pessoa.
 
 No modo botão a página também limpa o próprio fundo (`html` e `body`). Isso é característica do `mode=button` em si, não de estar dentro de um iframe — vale independentemente de como a URL for aberta. No embed normal, o efeito é que **a sua página aparece através do iframe** e o botão pousa direto no seu layout, em vez de ficar sobre um retângulo sólido perdido ali. Nada a configurar do seu lado.
 
@@ -134,7 +154,7 @@ PilotStatus.connect.mount("#connect-button", {
 ```
 </CodeGroup>
 
-**O modo botão exige um token Meta gerado com `metaFlow: "embedded"`.** Um token `metaFlow: "credentials"` ignora `mode=button` e cai na página completa — o formulário de credenciais da Cloud API não cabe em um botão. Tokens de QR (`PILOT_STATUS`) também renderizam a página completa.
+**O modo botão exige um token Meta gerado com `metaFlow: "embedded"`.** Um token `metaFlow: "credentials"` ignora o modo botão — pedido explicitamente ou alcançado pelo automático — e cai na página completa — o formulário de credenciais da Cloud API não cabe em um botão. Tokens de QR (`PILOT_STATUS`) também renderizam a página completa.
 
 Os estados de carregamento, erro de configuração, token expirado e sucesso continuam aparecendo no modo botão, em versão mínima e inline — nunca em tela cheia.
 
@@ -148,7 +168,7 @@ Os estados de carregamento, erro de configuração, token expirado e sucesso con
 
 ## Estilo do botão (somente via token)
 
-A aparência do botão é definida **na hora de gerar o link**, dentro de `branding.button`, e viaja no token assinado:
+A aparência do botão é definida **na hora de gerar o link**, dentro de `branding.button`, e viaja no token assinado. Mandar esse objeto também põe o link em [modo botão](#modo-botao) por padrão, então esse único objeto é o pedido inteiro: *estilize um botão e receba um botão.*
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
@@ -172,7 +192,7 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
   }'
 ```
 
-O exemplo acima produz o caso mais pedido: um **botão verde WhatsApp com o logotipo do WhatsApp, 56 px de altura** e 320 px de largura.
+O exemplo acima gera um link cuja página é só um **botão verde WhatsApp com o logotipo do WhatsApp, 56 px de altura** e 320 px de largura. Abra a `remotePairingUrl` devolvida no navegador para ver exatamente o que o seu cliente vai ver — a única diferença é o marcador "secured by", que aparece em nível superior e se esconde dentro do seu iframe.
 
 | Campo | Valores | Padrão |
 | --- | --- | --- |

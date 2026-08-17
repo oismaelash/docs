@@ -9,6 +9,27 @@ mode: "wide"
 
 Webhooks deliver real-time events to your system's URL. This page documents every event, its payload, and how to correlate events with your API calls. To create and manage webhooks, see [Configure webhooks](/api/webhooks/configure).
 
+## Which events your number sends
+
+**The event vocabulary depends on how the number was connected.** A number paired by QR code speaks the canonical Pilot Status vocabulary documented on this page; a Meta Cloud API number forwards **Meta's own native envelope** instead. They are different formats with different names, and no subscription setting converts one into the other.
+
+| How the number was connected | Vocabulary you receive | Full list |
+| --- | --- | --- |
+| **Native web (unofficial)** — paired by QR code | Canonical Pilot Status events: `message.received`, `message.sent`, … | [Canonical events](#available-events) (this page) |
+| **Meta Cloud API (official)** — Embedded Signup or credentials | Meta's **native envelope**, keyed by `entry[].changes[].field` | [Meta Cloud API events](#meta-cloud-api-events-native-envelope) |
+| **Migrated via the Evolution GO layer** | Evolution GO's native **PascalCase** names: `Message`, `Receipt`, … | [Migration-layer numbers](#migration-layer-events-evolution-go-and-v2) |
+| **Migrated via the Evolution v2 layer** | Evolution v2's native **dotted** names: `messages.upsert`, … | [Migration-layer numbers](#migration-layer-events-evolution-go-and-v2) |
+
+Three things are the same on every vocabulary:
+
+- **Number lifecycle** — `number.created`, `number.connected`, `number.disconnected`, `number.removed` are subscribable on every number, whatever its provider. (`number.disconnected` only ever *fires* on native web numbers — see [`number.disconnected`](#numberdisconnected).)
+- **Normalized call events** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` on any calling-capable number.
+- **`events` is never optional.** A webhook stored with an empty `events` array delivers **nothing**, on every vocabulary, and says nothing about it — it is a silent `201`. Subscribe to the names you want, or to the `"*"` wildcard.
+
+<Note>
+  Not sure which kind your number is? `GET /v1/numbers` returns `provider` per number: `PILOT_STATUS` for native web, `META` for Cloud API. See [Official vs unofficial](/concepts/official-vs-unofficial).
+</Note>
+
 ## Payload format
 
 Every event arrives as JSON:
@@ -71,10 +92,6 @@ The normalized call events — `call.ringing`, `call.connected`, `call.ended`, `
 - `call.missed` — inbound call ended without being answered
 - `call.permission_updated` — (**Meta Cloud API only**) reply to a call-permission request (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`)
 - `calls` — (**Meta Cloud API only**) Meta's **native** `calls` envelope (raw `entry[].changes[].value`, carrying SDPs) for custom WebRTC signaling
-
-## Migration-layer events
-
-If you connected through the Evolution GO or Evolution v2 compatibility layer, events are **also** forwarded to your webhook in that provider's **own native event format** (not the normalized schema above). See the event lists on the [Evolution GO](/api/layer/evolution-go) and [Evolution V2](/api/layer/evolution-v2) layer pages.
 
 ## Identifiers and correlation
 
@@ -484,6 +501,104 @@ Unlike `message.*` / `number.*`, the normalized `call.*` events are **flat** (no
 | `duration` | conditional | call duration in seconds (`call.ended`, only when answered) |
 
 See the [full calling flow](/api/calls/overview).
+
+## Meta Cloud API events (native envelope)
+
+A number connected through the Meta Cloud API — [Embedded Signup](/guides/embedded-signup) or pasted credentials — does **not** send the canonical events above. It forwards **Meta's own webhook envelope, verbatim**, keyed by the field name Meta puts in `entry[].changes[].field`.
+
+<Warning>
+  **`message.received` never fires on a Meta number, and `events: ["*"]` does not convert the format.** The event name you subscribe to is Meta's field name — `messages` — and the body you receive is Meta's envelope. A receiver written against the canonical schema (`{ event, data }`) reads `undefined` out of a Meta payload and reports nothing, which looks exactly like "the customer never wrote". Write the parser for the native shape, or branch on the number's `provider`.
+</Warning>
+
+```json Native envelope (as delivered)
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "987654321098765",
+      "time": 1771000000,
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "5511999999999",
+              "phone_number_id": "123456789012345"
+            },
+            "contacts": [{ "profile": { "name": "João" }, "wa_id": "5585984387245" }],
+            "messages": [
+              {
+                "from": "5585984387245",
+                "id": "wamid.HBgNNTU4NTk4NDM4NzI0NRUCABIYIDc...",
+                "timestamp": "1771000000",
+                "type": "text",
+                "text": { "body": "Oi" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+`entry[].changes[].value` is Meta's payload for that field, unmodified — the same shape Meta's own reference documents. Nothing is added to it and nothing is removed, so a receiver already written against Meta's webhooks keeps working.
+
+**One change per delivery.** Meta may batch several changes into one `entry`; each one is subscription-matched and delivered on its own, so `entry` and `entry[0].changes` always have exactly **one** element. Keep the loops your Meta parser already has — they will simply always run once — and never assume two changes in one request are related.
+
+### Subscribable fields
+
+These are the field names you can put in `events` on [`POST /v1/webhooks`](/api/webhooks/configure) for a Meta number. They are also the names that arrive as the delivered event.
+
+| Field | What it reports |
+| --- | --- |
+| `messages` | **Inbound messages and delivery statuses** — the field you want for conversations. Statuses (`sent` / `delivered` / `read` / `failed`) ride in `value.statuses`, not in a separate field. |
+| `message_echoes` | Copy of messages **sent by the business** through any other tool on the same WABA. |
+| `smb_message_echoes` | Same, for sends made from the WhatsApp Business **app** (coexistence). |
+| `message_template_status_update` | A template was approved, rejected, paused or disabled. |
+| `message_template_quality_update` | A template's quality score changed. |
+| `message_template_components_update` | A template's components were changed by Meta. |
+| `template_category_update` | A template's category changed (`MARKETING` ⇄ `UTILITY` …). |
+| `template_correct_category_detection` | Meta detected that a template's declared category is wrong. |
+| `phone_number_name_update` | The number's display-name review finished. |
+| `phone_number_quality_update` | The number's quality rating or messaging tier changed. |
+| `account_review_update` | Your WABA's review finished. |
+| `account_update` | Account-level change (ban, restriction, verification …). |
+| `account_settings_update` | An account setting changed. |
+| `business_capability_update` | Throughput / limits changed (e.g. max daily conversations). |
+| `business_status_update` | Business verification status changed. |
+| `calls` | Meta's **native** `calls` envelope, carrying SDPs — for custom WebRTC signaling. The normalized `call.*` events below are the easier read. |
+| `flows` | WhatsApp Flows lifecycle and responses. |
+| `payment_configuration_update` | A payment configuration changed. |
+| `user_preferences` | A user opted in or out of marketing messages. |
+| `group_lifecycle_update` | Group created / deleted. **Paid plan.** |
+| `group_participants_update` | Participants joined / left / were promoted. **Paid plan.** |
+| `group_settings_update` | Group settings changed. **Paid plan.** |
+| `group_status_update` | Group status changed. **Paid plan.** |
+
+Plus the two families shared with every other vocabulary:
+
+- **Normalized call events** — `call.ringing`, `call.connected`, `call.ended`, `call.missed`, and `call.permission_updated` (Meta only). These are flat Pilot Status events, not Meta's envelope — see [`call.*` payload](#call-payload).
+- **Number lifecycle** — `number.created`, `number.connected`, `number.removed`. `number.disconnected` is subscribable but **never fires on a Meta number**: a Meta quality/status transition emits a number-health event instead, and those reach `"*"` subscriptions only.
+
+<Note>
+  **Nine of Meta's fields are never delivered**, not even to a `"*"` subscription: `account_alerts`, `automatic_events`, `history`, `messaging_handovers`, `partner_solutions`, `security`, `smb_app_state_sync`, `standby` and `tracking_events`. They are internal (bulk history backfill, coexistence state sync) or admin/security traffic, and they are not offered in the event picker either. Everything else Meta sends for a subscribed field is forwarded.
+</Note>
+
+## Migration-layer events (Evolution GO and v2)
+
+A number you brought over through a compatibility layer keeps that provider's **own** event vocabulary — the point of the layer is that your existing handlers do not change:
+
+- **Evolution GO** — native PascalCase (`Message`, `SendMessage`, `Receipt`, `Presence`, …), with the UPPER\_SNAKE aliases also accepted. Full list on the [Evolution GO layer](/api/layer/evolution-go#events) page.
+- **Evolution v2** — native dotted names (`messages.upsert`, `messages.update`, `connection.update`, …). Full list on the [Evolution V2 layer](/api/layer/evolution-v2#events) page.
+
+Both also carry the shared normalized `call.*` and `number.*` families described above.
+
+<Note>
+  **Group and channel events on these two need a paid plan**: `groups.upsert`, `groups.update`, `group-participants.update` (v2) and `GroupInfo`, `JoinedGroup`, `NewsletterJoin`, `NewsletterLeave` (GO) are hidden from the event picker on a free account. The canonical `message.group` and `message.newsletter` are **not** restricted.
+</Note>
 
 ## Important notes
 

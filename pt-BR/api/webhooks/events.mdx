@@ -9,6 +9,27 @@ mode: "wide"
 
 Webhooks entregam eventos em tempo real para a URL do seu sistema. Esta página documenta cada evento, seu payload e como correlacionar eventos com suas chamadas de API. Para criar e gerenciar webhooks, consulte [Configurar webhooks](/pt-BR/api/webhooks/configure).
 
+## Quais eventos o seu número envia
+
+**O vocabulário de eventos depende de como o número foi conectado.** Um número pareado por QR code fala o vocabulário canônico do Pilot Status, documentado nesta página; um número da Meta Cloud API encaminha o **envelope nativo da própria Meta**. São formatos diferentes, com nomes diferentes, e nenhuma configuração de assinatura converte um no outro.
+
+| Como o número foi conectado | Vocabulário que você recebe | Lista completa |
+| --- | --- | --- |
+| **Web nativo (não oficial)** — pareado por QR code | Eventos canônicos do Pilot Status: `message.received`, `message.sent`, … | [Eventos disponíveis](#eventos-disponiveis) (nesta página) |
+| **Meta Cloud API (oficial)** — Embedded Signup ou credenciais | O **envelope nativo** da Meta, com a chave em `entry[].changes[].field` | [Eventos da Meta Cloud API](#eventos-da-meta-cloud-api-envelope-nativo) |
+| **Migrado pela camada Evolution GO** | Nomes **PascalCase** nativos do GO: `Message`, `Receipt`, … | [Camada de migração](#eventos-da-camada-de-migracao-evolution-go-e-v2) |
+| **Migrado pela camada Evolution v2** | Nomes **com ponto** nativos do v2: `messages.upsert`, … | [Camada de migração](#eventos-da-camada-de-migracao-evolution-go-e-v2) |
+
+Três coisas são iguais em todos os vocabulários:
+
+- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.disconnected` e `number.removed` são assináveis em qualquer número, seja qual for o provedor. (O `number.disconnected` só *dispara* em número web nativo — veja [`number.disconnected`](#numberdisconnected).)
+- **Eventos normalizados de chamada** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` em qualquer número com voz habilitada.
+- **`events` nunca é opcional.** Um webhook gravado com `events` vazio entrega **nada**, em qualquer vocabulário, e não avisa: é um `201` silencioso. Assine os nomes que você quer, ou o curinga `"*"`.
+
+<Note>
+  Não sabe de que tipo é o seu número? O `GET /v1/numbers` devolve o `provider` de cada um: `PILOT_STATUS` para web nativo, `META` para Cloud API. Veja [Oficial vs. não oficial](/pt-BR/concepts/official-vs-unofficial).
+</Note>
+
 ## Formato do payload
 
 Todo evento chega como JSON:
@@ -72,10 +93,6 @@ Os eventos de chamada normalizados — `call.ringing`, `call.connected`, `call.e
 - `call.missed` — chamada de entrada encerrada sem ser atendida
 - `call.permission_updated` — (**somente Meta Cloud API**) resposta a uma solicitação de permissão de chamada (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`)
 - `calls` — (**somente Meta Cloud API**) envelope **nativo** `calls` da Meta (bruto `entry[].changes[].value`, carregando SDPs) para sinalização WebRTC personalizada
-
-## Eventos da camada de migração
-
-Se você se conectou pela camada de compatibilidade Evolution GO ou Evolution v2, os eventos **também** são encaminhados ao seu webhook no **formato de evento nativo** desse provedor (não no esquema normalizado acima). Consulte as listas de eventos nas páginas de camada [Evolution GO](/pt-BR/api/layer/evolution-go) e [Evolution V2](/pt-BR/api/layer/evolution-v2).
 
 ## Identificadores e correlação
 
@@ -484,6 +501,104 @@ Diferente de `message.*` / `number.*`, os eventos normalizados `call.*` são **p
 | `duration` | condicional | duração da chamada em segundos (`call.ended`, apenas quando atendida) |
 
 Consulte o [fluxo completo de chamadas](/pt-BR/api/calls/overview).
+
+## Eventos da Meta Cloud API (envelope nativo)
+
+Um número conectado pela Meta Cloud API — [Embedded Signup](/pt-BR/guides/embedded-signup) ou credenciais coladas — **não** envia os eventos canônicos acima. Ele encaminha **o próprio envelope de webhook da Meta, literal**, com a chave no nome do campo que a Meta põe em `entry[].changes[].field`.
+
+<Warning>
+  **`message.received` nunca dispara em número Meta, e `events: ["*"]` não converte o formato.** O nome do evento que você assina é o nome do campo da Meta — `messages` — e o corpo que chega é o envelope da Meta. Um receptor escrito para o esquema canônico (`{ event, data }`) lê `undefined` num payload Meta e não reporta nada, o que parece exatamente com "o cliente nunca escreveu". Escreva o parser para o formato nativo, ou ramifique pelo `provider` do número.
+</Warning>
+
+```json Envelope nativo (como é entregue)
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "987654321098765",
+      "time": 1771000000,
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "5511999999999",
+              "phone_number_id": "123456789012345"
+            },
+            "contacts": [{ "profile": { "name": "João" }, "wa_id": "5585984387245" }],
+            "messages": [
+              {
+                "from": "5585984387245",
+                "id": "wamid.HBgNNTU4NTk4NDM4NzI0NRUCABIYIDc...",
+                "timestamp": "1771000000",
+                "type": "text",
+                "text": { "body": "Oi" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+O `entry[].changes[].value` é o payload da Meta para aquele campo, sem modificação — o mesmo formato que a referência da própria Meta documenta. Nada é acrescentado e nada é removido, então um receptor já escrito para os webhooks da Meta continua funcionando.
+
+**Uma mudança por entrega.** A Meta pode agrupar várias mudanças num mesmo `entry`; cada uma é casada com as assinaturas e entregue sozinha, então `entry` e `entry[0].changes` têm sempre exatamente **um** elemento. Mantenha os laços que o seu parser da Meta já tem — eles simplesmente sempre rodarão uma vez — e nunca assuma que duas mudanças na mesma requisição têm relação entre si.
+
+### Campos assináveis
+
+Estes são os nomes de campo que você pode colocar em `events` no [`POST /v1/webhooks`](/pt-BR/api/webhooks/configure) de um número Meta. São também os nomes que chegam como evento entregue.
+
+| Campo | O que reporta |
+| --- | --- |
+| `messages` | **Mensagens recebidas e status de entrega** — é o campo que você quer para conversas. Os status (`sent` / `delivered` / `read` / `failed`) vêm em `value.statuses`, não num campo separado. |
+| `message_echoes` | Cópia das mensagens **enviadas pela empresa** por qualquer outra ferramenta na mesma WABA. |
+| `smb_message_echoes` | O mesmo, para envios feitos pelo **app** WhatsApp Business (coexistência). |
+| `message_template_status_update` | Um template foi aprovado, rejeitado, pausado ou desabilitado. |
+| `message_template_quality_update` | A nota de qualidade de um template mudou. |
+| `message_template_components_update` | Os componentes de um template foram alterados pela Meta. |
+| `template_category_update` | A categoria de um template mudou (`MARKETING` ⇄ `UTILITY` …). |
+| `template_correct_category_detection` | A Meta detectou que a categoria declarada de um template está errada. |
+| `phone_number_name_update` | A revisão do nome de exibição do número terminou. |
+| `phone_number_quality_update` | A qualidade ou o tier de mensagens do número mudou. |
+| `account_review_update` | A revisão da sua WABA terminou. |
+| `account_update` | Mudança no nível da conta (banimento, restrição, verificação …). |
+| `account_settings_update` | Uma configuração da conta mudou. |
+| `business_capability_update` | Capacidade/limites mudaram (ex.: máximo de conversas por dia). |
+| `business_status_update` | O status de verificação do negócio mudou. |
+| `calls` | O envelope **nativo** `calls` da Meta, com os SDPs — para sinalização WebRTC própria. Os eventos `call.*` normalizados abaixo são a leitura mais fácil. |
+| `flows` | Ciclo de vida e respostas do WhatsApp Flows. |
+| `payment_configuration_update` | Uma configuração de pagamento mudou. |
+| `user_preferences` | Um usuário deu opt-in ou opt-out de mensagens de marketing. |
+| `group_lifecycle_update` | Grupo criado / apagado. **Plano pago.** |
+| `group_participants_update` | Participantes entraram / saíram / foram promovidos. **Plano pago.** |
+| `group_settings_update` | Configurações do grupo mudaram. **Plano pago.** |
+| `group_status_update` | O status do grupo mudou. **Plano pago.** |
+
+Mais as duas famílias compartilhadas com todos os outros vocabulários:
+
+- **Eventos normalizados de chamada** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` e `call.permission_updated` (só Meta). Esses são eventos planos do Pilot Status, não o envelope da Meta — veja [Payload de `call.*`](#payload-de-call).
+- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.removed`. O `number.disconnected` é assinável mas **nunca dispara em número Meta**: uma transição de qualidade/status da Meta emite um evento de saúde do número, e esses só chegam em assinaturas `"*"`.
+
+<Note>
+  **Nove campos da Meta nunca são entregues**, nem para uma assinatura `"*"`: `account_alerts`, `automatic_events`, `history`, `messaging_handovers`, `partner_solutions`, `security`, `smb_app_state_sync`, `standby` e `tracking_events`. São internos (backfill de histórico em massa, sincronia de estado da coexistência) ou tráfego administrativo/de segurança, e também não aparecem no seletor de eventos. Todo o resto que a Meta manda de um campo assinado é encaminhado.
+</Note>
+
+## Eventos da camada de migração (Evolution GO e v2)
+
+Um número que você trouxe por uma camada de compatibilidade mantém o vocabulário de eventos **do próprio provedor** — o objetivo da camada é justamente os seus handlers não mudarem:
+
+- **Evolution GO** — PascalCase nativo (`Message`, `SendMessage`, `Receipt`, `Presence`, …), com os apelidos UPPER\_SNAKE também aceitos. Lista completa na página da [camada Evolution GO](/pt-BR/api/layer/evolution-go#eventos).
+- **Evolution v2** — nomes nativos com ponto (`messages.upsert`, `messages.update`, `connection.update`, …). Lista completa na página da [camada Evolution V2](/pt-BR/api/layer/evolution-v2#eventos).
+
+Os dois também carregam as famílias normalizadas `call.*` e `number.*` descritas acima.
+
+<Note>
+  **Eventos de grupo e canal nesses dois exigem plano pago**: `groups.upsert`, `groups.update`, `group-participants.update` (v2) e `GroupInfo`, `JoinedGroup`, `NewsletterJoin`, `NewsletterLeave` (GO) ficam escondidos do seletor de eventos numa conta gratuita. Os canônicos `message.group` e `message.newsletter` **não** têm essa restrição.
+</Note>
 
 ## Notas importantes
 

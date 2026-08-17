@@ -20,6 +20,10 @@ That's the whole integration. No Meta app of your own, no App Review, no Meta cr
   Prefer a running start? Download the MIT-licensed demo — a Node backend and a React frontend wired to exactly this flow, with ready-made button presets: **[embedded-signup-demo.zip](https://pilotstatus.com.br/downloads/embedded-signup-demo.zip)**. Unzip, set your `ps_` key, `npm run dev` (or `docker compose up`).
 </Note>
 
+<Info>
+  **This page is the step-by-step**: follow the four steps in order and you have a working integration. Its sibling, **[Embed the Connect Page](/integrations/embed-connect)**, is the *reference* — every option, both providers (Cloud API and QR), the full postMessage protocol and the complete `branding.button` field table. This page links there instead of restating it, so you always read one copy.
+</Info>
+
 ## Architecture
 
 ```text
@@ -87,32 +91,25 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
 
     Hand `remotePairingUrl` down to the page you'll embed it on — that is the `connectUrl` in the diagram above. `externalRef` (your own customer id) is signed into the link and echoed back to you on `connect:paired`, so you can join the result to your records.
 
-    **Every `branding.button` field is optional:**
+    <Tip>
+      **Check it in five seconds: paste `remotePairingUrl` into a browser.** Because you sent `branding.button`, that link renders **nothing but your styled button** — the 56 px green WhatsApp button in the example above. That is exactly what your customer sees inside the iframe in step 2. (Top-level you also get the small "secured by pilotstatus.com.br" marker; inside a real iframe it hides itself.)
 
-    | Field | Values | Default |
-    | --- | --- | --- |
-    | `variant` | `"facebook"` \| `"whatsapp"` \| `"dark"` \| `"light"` \| `"outline"` | `"facebook"` |
-    | `label` | Any string, trimmed, max **40** characters | `Continuar com o Facebook` |
-    | `primaryColor` | `#RRGGBB` | the variant's own color |
-    | `textColor` | `#RRGGBB` | the variant's own color |
-    | `radius` | `"sm"` \| `"md"` \| `"lg"` \| `"pill"` | `"lg"` |
-    | `size` | `"sm"` \| `"md"` \| `"lg"` | `"md"` |
-    | `fullWidth` | boolean | `true` |
-    | `icon` | `"facebook"` \| `"whatsapp"` \| `"none"` | derived from `variant` |
-    | `height` | integer px, **24–200** | whatever `size` implies |
-    | `width` | integer px, **64–800** | `fullWidth` / auto |
+      Seeing a full card with a header and explanatory text instead? Then the link carries **no** `branding.button` — check that you nested it under `branding`, not at the top level of the body.
+    </Tip>
 
-    A few behaviors worth knowing:
+    This is the part worth being precise about, because the two halves live in different places:
 
-    - **`variant: "whatsapp"`** paints the button WhatsApp green (`#25D366`) with white text — the closest match to "connect my WhatsApp" wording.
-    - **`icon`** draws a brand glyph inline before the label (an inline SVG, no network request) that inherits the text color. Leave it out and it follows the variant: `facebook` → the Facebook glyph, `whatsapp` → the WhatsApp glyph, **any other variant → no glyph**. Send `"none"` to drop it explicitly.
-    - **`height`** is applied as a **min-height** — the label never clips — and replaces the vertical padding that `size` would have used.
-    - **`width`** **overrides `fullWidth`**: when you send a width, `fullWidth` is ignored.
-    - **Validate the values before you call.** These are hard constraints on the endpoint, not hints: a number outside the range, or a string outside the enum, gets you `400 Validation error` with a `details` object (`formErrors` / `fieldErrors`) carrying the validation messages — **no link is generated and no placeholder is created**. (The button renderer does fall back to the default for a stale value already baked into an older token, but you cannot reach that path by sending a bad value to the API.)
-    - Keep the object small: it travels inside the signed token that sits in the connect URL.
+    - **This call decides the *style* and the *shape*.** `branding.button` is signed into the token, and sending it is also what makes the link render the bare button instead of the full page. One object, both effects.
+    - **The `?embed=1&parentOrigin=…` parameters in step 2 decide the *plumbing*.** They are what turn on the `postMessage` channel back to your page. Without them the button still renders and still works — you just never hear about the result.
+
+    **What `branding.button` accepts.** All ten fields are optional, and the full table — values, defaults, ranges, plus `hideProvenance` — is in the reference: [Button styling](/integrations/embed-connect#button-styling-token-only). The three that trip people up:
+
+    - **`icon` follows `variant` when you omit it.** `facebook` → Facebook glyph, `whatsapp` → WhatsApp glyph, **any other variant → no glyph at all**. Pass `"none"` to drop it deliberately.
+    - **`width` overrides `fullWidth`.** Send a width and `fullWidth` is ignored, whatever you set it to.
+    - **A bad value is rejected, not corrected.** Out-of-range or off-enum gets you `400 Validation error` with a `details` object — and **no link, no placeholder, no slot consumed**. `height: 1000` does not fall back to the default; it fails the whole call.
 
     <Note>
-      `branding.button` controls how the button looks and can **only** be set here, when you generate the link — never through a query param on the iframe URL. That is deliberate: a stranger who sees the iframe URL cannot restyle your button.
+      `branding.button` can **only** be set here, when you mint the link — never through a query param on the iframe URL. That is deliberate: a stranger who sees the iframe URL cannot restyle your button, and every styled page stays attributable to a tenant.
     </Note>
 
     **The placeholder's id is not in the response body.** It lives in the `numberId` claim of the token — the last path segment of `remotePairingUrl`. Decode the base64url payload to read it (a metadata read; no signature check needed) and store it next to your customer record, because that id is what you need for the delete-on-abandon cleanup in step 3, and it lets you register the webhook (step 4) before the customer finishes. The same id arrives again on `connect:paired`. Those two — the decoded claim and the event — are the supported ways to obtain it.
@@ -129,12 +126,20 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
     </Note>
 
     <Warning>
-      **Generating the link already consumes a plan slot.** The call creates a placeholder `WhatsAppNumber` right away. An abandoned link leaks the slot — there is no automatic cleanup routine. Generate the link only after the customer clicks connect, wire the delete-on-abandon cleanup shown in step 3, and remove any leftover placeholders yourself in the `/numbers` panel. This is where the slot is charged — not at complete. With no free slot, this call fails: free a slot in `/numbers` or buy extra numbers before trying again.
+      **Generating the link already consumes a plan slot.** The call creates a placeholder `WhatsAppNumber` right away. An abandoned link leaks the slot — there is no automatic cleanup routine. Generate the link only after the customer clicks connect, wire the delete-on-abandon cleanup shown in step 3, and remove any leftover placeholders yourself in the `/numbers` panel. This is where the slot is charged — not at complete.
+
+      With no fundable slot the call answers **`402`** with `code: "INSUFFICIENT_FUNDS"`, and no link and no placeholder are created. Treat it as a billing condition, not a server fault: free a slot in `/numbers`, or buy extra numbers, before retrying.
     </Warning>
   </Step>
 
   <Step title="Embed the hosted button in an iframe">
     Append `?embed=1&mode=button&parentOrigin=<your page origin>` to the link and drop it in an iframe. `parentOrigin` is your page's `location.origin` — only the browser knows it, so build the `src` in the browser.
+
+    | Parameter | Why it's there |
+    | --- | --- |
+    | `embed=1` | **Required.** Turns on the `postMessage` channel to your page. Leave it out and the button works but you never receive `connect:paired`. |
+    | `parentOrigin` | **Required with `embed=1`.** The only origin the iframe will post to. Must be your page's exact `location.origin`. |
+    | `mode=button` | **Optional here**, because the link already carries `branding.button` from step 1. Keep it anyway — it is one word that makes the shape explicit and keeps working if you later mint a link *without* custom styling. Its opposite, `mode=page`, forces the full card even for a styled link. |
 
     ```html
     <div id="wa-connect"></div>
@@ -289,6 +294,8 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
 
     <Warning>
       **A META number delivers Meta's native envelope, not Pilot Status events.** Inbound messages arrive with `field: "messages"` inside `entry[].changes[]` — exactly as Meta sends them. A META number **never** emits `message.received`; that vocabulary belongs to unofficial (Pilot Status web) numbers. Subscribing with `events: ["*"]` does **not** translate the payload — it delivers the raw envelope. Parse `body.entry[0].changes[0].field` and branch on it.
+
+      Every field name you can subscribe to on a Meta number is listed in [Meta Cloud API events](/api/webhooks/events#meta-cloud-api-events-native-envelope) — `messages` is the one you want for conversations.
     </Warning>
 
     <Warning>
