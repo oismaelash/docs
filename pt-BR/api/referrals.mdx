@@ -23,23 +23,40 @@ outro agregado por anúncio.
 Na prática só números da API oficial (Meta) têm origem de anúncio — o bloco de origem é um campo
 do webhook da Cloud API do WhatsApp, então número conectado por QR code nunca tem.
 
-## O que vem, e o que não vem
+## Nome de campanha, e quando ele vem nulo
+
+A resposta traz os nomes legíveis do anúncio — `adName`, `adsetName`, `campaignName` e os ids
+correspondentes — ao lado do `sourceId` cru.
 
 <Warning>
-  **Não existe nome de campanha nem de conjunto aqui, e isso é proposital.**
+  **Os cinco campos de nome voltam `null` enquanto o anunciante não compartilhar a conta de
+  anúncios com a gente, e `null` é estado suportado, não erro.**
 
-  `sourceId` é o id do anúncio (ou do post) da Meta, exposto como **chave opaca de
-  agrupamento**. Transformar isso em nome de campanha significa ler o objeto do anúncio —
-  `GET /{ad_id}?fields=id,name,adset{id,name},campaign{id,name}` — e essa chamada exige a
-  permissão `ads_read` na **conta de anúncios do anunciante**. O token de usuário de sistema por
-  trás de um número conectado carrega apenas `whatsapp_business_management` e
-  `whatsapp_business_messaging`, então a Meta responde `GraphMethodException` código `100`,
-  subcódigo `33`.
+  Ler o nome de um anúncio exige a permissão `ads_read` na **conta de anúncios do próprio
+  anunciante**. A forma de conceder isso é o **compartilhamento de parceiro** da Meta: o
+  anunciante adiciona o portfólio empresarial da Pilot Status como parceiro na conta de
+  anúncios, com "ver desempenho". Até que ele faça isso, a conversa continua contada e o
+  `sourceId` continua vindo — só os nomes é que são nulos.
 
-  Se você quer os nomes, chame a Marketing API da Meta com um token autorizado naquela conta e
-  use o `sourceId` daqui como chave de busca. Todo o resto — título, texto, URL do criativo e
-  permalink do anúncio — a Meta já nos manda, e está na resposta abaixo.
+  Nada que você envie na requisição muda isso. Consultar **nunca** dispara chamada à Marketing
+  API: a resolução roda de forma assíncrona, fora do caminho da requisição, então um `null` que
+  você vê agora pode ser um nome minutos depois, sem você fazer nada.
 </Warning>
+
+O `namesResolvedAt` é o que torna os três estados distinguíveis, e cada um pede uma resposta
+diferente:
+
+| `namesResolvedAt` | Nomes | O que significa |
+| --- | --- | --- |
+| `null` | nulos | Nunca resolvido. Em geral: a conta de anúncios não foi compartilhada. |
+| data preenchida | preenchidos | Resolvido. Os nomes são os que a Meta devolveu naquele momento. |
+| data preenchida | nulos | Perguntamos e a Meta não devolveu — anúncio apagado, ou compartilhamento ainda ausente. |
+
+<Note>
+  O `sourceId` continua sendo a identidade mesmo com os nomes presentes. Uma campanha pode ser
+  renomeada na Meta a qualquer momento, então quem usa `campaignName` como chave perde o próprio
+  histórico na primeira vez que o anunciante editar.
+</Note>
 
 ## Só a primeira mensagem carrega a origem
 
@@ -89,6 +106,10 @@ resumo é o número que o seu anúncio realmente produziu.
 | `videoUrl` | Vídeo do criativo, quando o anúncio é de vídeo. |
 | `thumbnailUrl` | Miniatura do criativo. |
 | `ctwaClid` | Id daquele clique específico na Meta. Tratado como dado pessoal — veja abaixo. |
+| `adName` | Nome do anúncio no Gerenciador de Anúncios. `null` sem compartilhamento de parceiro. |
+| `adsetId` · `adsetName` | Conjunto a que ele pertence. `null` sem compartilhamento de parceiro. |
+| `campaignId` · `campaignName` | Campanha a que ele pertence. `null` sem compartilhamento de parceiro. |
+| `namesResolvedAt` | ISO 8601 da última tentativa de resolução, ou `null` se nunca houve. Veja a tabela acima. |
 
 ### Exemplo
 
@@ -121,7 +142,13 @@ curl "https://pilotstatus.com.br/v1/referrals?sourceType=ad&startDate=2026-08-01
         "imageUrl": null,
         "videoUrl": "https://video.example/v.mp4",
         "thumbnailUrl": "https://thumb.example/t.jpg",
-        "ctwaClid": "ARAaZ1x..."
+        "ctwaClid": "ARAaZ1x...",
+        "adName": "Ads 01 - Vídeo dos 70%",
+        "adsetId": "120249828053990703",
+        "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+        "campaignId": "120249677595590703",
+        "campaignName": "[CD-01] [WHATSAPP] - MM Design - Sale 70%",
+        "namesResolvedAt": "2026-08-17T21:04:00.000Z"
       }
     }
   ],
@@ -182,7 +209,13 @@ curl "https://pilotstatus.com.br/v1/referrals/summary?startDate=2026-08-01T00:00
       "firstAt": "2026-07-28T10:00:00.000Z",
       "lastAt": "2026-08-16T12:00:00.000Z",
       "lastSourceUrl": "https://www.instagram.com/p/DcJhrlpA3Pl/",
-      "lastHeadline": "SALE MM DESIGN"
+      "lastHeadline": "SALE MM DESIGN",
+      "adName": "Ads 01 - Vídeo dos 70%",
+      "adsetId": "120249828053990703",
+      "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+      "campaignId": "120249677595590703",
+      "campaignName": "[CD-01] [WHATSAPP] - MM Design - Sale 70%",
+      "namesResolvedAt": "2026-08-17T21:04:00.000Z"
     },
     {
       "sourceId": "120249828075420703",
@@ -192,7 +225,13 @@ curl "https://pilotstatus.com.br/v1/referrals/summary?startDate=2026-08-01T00:00
       "firstAt": "2026-08-02T09:00:00.000Z",
       "lastAt": "2026-08-15T18:30:00.000Z",
       "lastSourceUrl": "https://www.instagram.com/p/DcAbcdEfGh/",
-      "lastHeadline": "MM DESIGN — Outlet"
+      "lastHeadline": "MM DESIGN — Outlet",
+      "adName": null,
+      "adsetId": null,
+      "adsetName": null,
+      "campaignId": null,
+      "campaignName": null,
+      "namesResolvedAt": null
     }
   ],
   "total": 2,
