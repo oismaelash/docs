@@ -1,0 +1,269 @@
+---
+title: "GET /v1/referrals — Click-to-WhatsApp attribution"
+description: "Find which ad or post each conversation came from, and group your WhatsApp traffic by ad."
+mode: "wide"
+---
+
+When someone taps a **Click-to-WhatsApp** (CTWA) ad or an organic post and writes to your
+official-API number, Meta attaches the origin of that click to the first inbound message.
+Pilot Status stores it, and these two endpoints read it back: one message by message, one
+aggregated per ad.
+
+## Endpoints
+
+`GET https://pilotstatus.com.br/v1/referrals`
+
+`GET https://pilotstatus.com.br/v1/referrals/summary`
+
+<Note>
+  Both require a **number-scoped** API key (`ps_*`) in the `x-api-key` header. Tenant-scoped
+  keys return `403`.
+</Note>
+
+In practice only official API (Meta) numbers carry an ad origin — the referral block is a
+WhatsApp Cloud API webhook field, so a number connected by QR code never has one.
+
+## Campaign names, and when they are null
+
+The response carries the ad's readable names — `adName`, `adsetName`, `campaignName` and their
+ids — beside the raw `sourceId`.
+
+<Warning>
+  **The five name fields come back `null` until the advertiser shares their ad account with us,
+  and `null` is a supported state, not an error.**
+
+  Reading an ad's name requires the `ads_read` permission on the **advertiser's own ad
+  account**. The way that is granted is Meta **partner sharing**: the advertiser adds the Pilot
+  Status business portfolio as a partner on the ad account, with "view performance". Until they
+  do, the conversation is still counted and `sourceId` is still returned — only the names are
+  null.
+
+  Nothing you can send on the request changes this. Querying **never** triggers a call to the
+  Marketing API: resolution runs asynchronously, off the request path, so a `null` you see now
+  can be a name a few minutes later with nothing done on your side.
+</Warning>
+
+`namesResolvedAt` is what makes the three states distinguishable, and they call for different
+answers:
+
+| `namesResolvedAt` | Names | What it means |
+| --- | --- | --- |
+| `null` | null | Never resolved yet. Usually: the ad account has not been shared. |
+| a timestamp | filled | Resolved. The names are the ones Meta returned at that moment. |
+| a timestamp | null | We asked and Meta returned nothing — the ad was deleted, or the sharing is still missing. |
+
+<Note>
+  `sourceId` stays the identity even when the names are present. A campaign can be renamed in
+  Meta at any time, so anything that keys on `campaignName` loses its own history the first
+  time the advertiser edits it.
+</Note>
+
+## Only the first message carries the origin
+
+Meta sends the referral on the **first message of a conversation** and never repeats it. So a
+row in `GET /v1/referrals` amounts to *one conversation that started from that ad*, and
+`conversations` in the summary is the number your ad actually produced.
+
+## `GET /v1/referrals`
+
+### Query parameters
+
+<ParamField query="sourceId" type="string">
+  Restrict to a single ad/post id.
+</ParamField>
+
+<ParamField query="sourceType" type="string">
+  `ad` or `post`. Anything else returns `400 INVALID_SOURCE_TYPE`.
+</ParamField>
+
+<ParamField query="startDate" type="string">
+  ISO 8601 datetime. Messages **on or after** this instant.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  ISO 8601 datetime. Messages **on or before** this instant.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Page number (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Results per page (1–100).
+</ParamField>
+
+### The `referral` object
+
+| Field | Meaning |
+| --- | --- |
+| `sourceId` | Meta's ad (or post) id. Opaque grouping key — see the warning above. |
+| `sourceType` | `ad` or `post`. |
+| `sourceUrl` | Permalink of the ad/post that was clicked. |
+| `headline` | Ad headline. |
+| `body` | Ad body copy. |
+| `mediaType` | `image` or `video`. |
+| `imageUrl` | Creative image, when the ad is an image ad. |
+| `videoUrl` | Creative video, when the ad is a video ad. |
+| `thumbnailUrl` | Thumbnail of the creative. |
+| `ctwaClid` | Meta's click id for this specific click. Treated as personal data — see below. |
+| `adName` | The ad's name in Ads Manager. `null` without partner sharing. |
+| `adsetId` · `adsetName` | The ad set it belongs to. `null` without partner sharing. |
+| `campaignId` · `campaignName` | The campaign it belongs to. `null` without partner sharing. |
+| `namesResolvedAt` | ISO 8601 of the last resolution attempt, or `null` if never attempted. See the table above. |
+
+### Example
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/referrals?sourceType=ad&startDate=2026-08-01T00:00:00Z" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "referrals": [
+    {
+      "id": "cm_abc123",
+      "conversationId": "conv_abc123",
+      "direction": "INBOUND",
+      "providerKind": "META",
+      "externalMessageId": "wamid.HBgNNTU0Mj...",
+      "messageType": "text",
+      "text": "Oi, vi o anúncio",
+      "providerTimestamp": "2026-08-16T12:00:00.000Z",
+      "referral": {
+        "sourceId": "120249828053880703",
+        "sourceType": "ad",
+        "sourceUrl": "https://www.instagram.com/p/DcJhrlpA3Pl/",
+        "headline": "SALE MM DESIGN",
+        "body": "Seu ambiente pode ficar ainda mais incrível",
+        "mediaType": "video",
+        "imageUrl": null,
+        "videoUrl": "https://video.example/v.mp4",
+        "thumbnailUrl": "https://thumb.example/t.jpg",
+        "ctwaClid": "ARAaZ1x...",
+        "adName": "Ads 01 - Vídeo dos 70%",
+        "adsetId": "120249828053990703",
+        "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+        "campaignId": "120249677595590703",
+        "campaignName": "[CD-01] [WHATSAPP] - MM Design - Sale 70%",
+        "namesResolvedAt": "2026-08-17T21:04:00.000Z"
+      }
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1
+}
+```
+
+</CodeGroup>
+
+## `GET /v1/referrals/summary`
+
+Groups the same data by ad, ordered by conversation count descending.
+
+### Query parameters
+
+<ParamField query="startDate" type="string">
+  ISO 8601 datetime.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  ISO 8601 datetime.
+</ParamField>
+
+### Counting rule
+
+`conversations` counts **distinct conversations**; `messages` counts messages. Two messages in
+the same conversation are 1 conversation and 2 messages — so `conversations` is the lead count
+and `messages` is the volume.
+
+`lastSourceUrl` and `lastHeadline` come from the **newest** message for that ad: ad copy can be
+edited, and the last version Meta sent is the useful one.
+
+### The cap is reported, not hidden
+
+The list stops at **200 ads**. When there are more, `truncated` is `true` and a `notice` says
+so — narrow the window with `startDate`/`endDate` instead of paging.
+
+### Example
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/referrals/summary?startDate=2026-08-01T00:00:00Z" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "ads": [
+    {
+      "sourceId": "120249828053880703",
+      "sourceType": "ad",
+      "conversations": 12,
+      "messages": 31,
+      "firstAt": "2026-07-28T10:00:00.000Z",
+      "lastAt": "2026-08-16T12:00:00.000Z",
+      "lastSourceUrl": "https://www.instagram.com/p/DcJhrlpA3Pl/",
+      "lastHeadline": "SALE MM DESIGN",
+      "adName": "Ads 01 - Vídeo dos 70%",
+      "adsetId": "120249828053990703",
+      "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+      "campaignId": "120249677595590703",
+      "campaignName": "[CD-01] [WHATSAPP] - MM Design - Sale 70%",
+      "namesResolvedAt": "2026-08-17T21:04:00.000Z"
+    },
+    {
+      "sourceId": "120249828075420703",
+      "sourceType": "ad",
+      "conversations": 4,
+      "messages": 9,
+      "firstAt": "2026-08-02T09:00:00.000Z",
+      "lastAt": "2026-08-15T18:30:00.000Z",
+      "lastSourceUrl": "https://www.instagram.com/p/DcAbcdEfGh/",
+      "lastHeadline": "MM DESIGN — Outlet",
+      "adName": null,
+      "adsetId": null,
+      "adsetName": null,
+      "campaignId": null,
+      "campaignName": null,
+      "namesResolvedAt": null
+    }
+  ],
+  "total": 2,
+  "limit": 200,
+  "truncated": false
+}
+```
+
+</CodeGroup>
+
+## Privacy (PII) mode effect
+
+The ad identity and the ad copy are treated differently on purpose: an **ad id identifies a
+creative, never a person**, while `ctwaClid` is a per-click identifier tied to the individual
+and the headline/body are content.
+
+| PII mode | Effect |
+| --- | --- |
+| `STORE_INDEFINITE` (default) | Everything returned. |
+| `STORE_X_DAYS` | Rows older than the retention window keep `sourceId` and `sourceType`; `ctwaClid`, `headline` and `body` are nulled and `redacted: true` is set. |
+| `RELAY_ONLY` | Same split on every row, plus `notice: "PII_RELAY_ONLY"`. In the summary the **counts stay correct** — only `lastSourceUrl` and `lastHeadline` come back null, with `piiNotice: "PII_RELAY_ONLY"`. |
+
+That split is why ad attribution still works on a RELAY_ONLY number instead of returning
+nothing.
+
+## Errors
+
+| Status | Code | Cause |
+| --- | --- | --- |
+| `400` | `INVALID_SOURCE_TYPE` | `sourceType` was not `ad` or `post`. |
+| `400` | `INVALID_DATE_RANGE` | Malformed date, or `startDate` after `endDate`. |
+| `400` | `INVALID_PAGINATION` | `page × pageSize` past the depth limit. Narrow the date range instead. |
+| `400` | `NUMBER_NOT_FOUND` | The key is not bound to a WhatsApp number. |
+| `401` | — | Missing or invalid `x-api-key`. |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | A tenant-scoped key was used. |

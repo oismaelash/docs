@@ -1,0 +1,269 @@
+---
+title: "GET /v1/referrals — atribuição de Click-to-WhatsApp"
+description: "Descubra de qual anúncio ou post veio cada conversa e agrupe seu tráfego do WhatsApp por anúncio."
+mode: "wide"
+---
+
+Quando alguém toca num anúncio **Click-to-WhatsApp** (CTWA) ou num post orgânico e escreve para
+o seu número da API oficial, a Meta anexa a origem daquele clique à primeira mensagem recebida.
+A Pilot Status guarda isso, e estes dois endpoints leem de volta: um mensagem por mensagem,
+outro agregado por anúncio.
+
+## Endpoints
+
+`GET https://pilotstatus.com.br/v1/referrals`
+
+`GET https://pilotstatus.com.br/v1/referrals/summary`
+
+<Note>
+  Os dois exigem uma API key **escopada a número** (`ps_*`) no header `x-api-key`. Keys de
+  tenant recebem `403`.
+</Note>
+
+Na prática só números da API oficial (Meta) têm origem de anúncio — o bloco de origem é um campo
+do webhook da Cloud API do WhatsApp, então número conectado por QR code nunca tem.
+
+## Nome de campanha, e quando ele vem nulo
+
+A resposta traz os nomes legíveis do anúncio — `adName`, `adsetName`, `campaignName` e os ids
+correspondentes — ao lado do `sourceId` cru.
+
+<Warning>
+  **Os cinco campos de nome voltam `null` enquanto o anunciante não compartilhar a conta de
+  anúncios com a gente, e `null` é estado suportado, não erro.**
+
+  Ler o nome de um anúncio exige a permissão `ads_read` na **conta de anúncios do próprio
+  anunciante**. A forma de conceder isso é o **compartilhamento de parceiro** da Meta: o
+  anunciante adiciona o portfólio empresarial da Pilot Status como parceiro na conta de
+  anúncios, com "ver desempenho". Até que ele faça isso, a conversa continua contada e o
+  `sourceId` continua vindo — só os nomes é que são nulos.
+
+  Nada que você envie na requisição muda isso. Consultar **nunca** dispara chamada à Marketing
+  API: a resolução roda de forma assíncrona, fora do caminho da requisição, então um `null` que
+  você vê agora pode ser um nome minutos depois, sem você fazer nada.
+</Warning>
+
+O `namesResolvedAt` é o que torna os três estados distinguíveis, e cada um pede uma resposta
+diferente:
+
+| `namesResolvedAt` | Nomes | O que significa |
+| --- | --- | --- |
+| `null` | nulos | Nunca resolvido. Em geral: a conta de anúncios não foi compartilhada. |
+| data preenchida | preenchidos | Resolvido. Os nomes são os que a Meta devolveu naquele momento. |
+| data preenchida | nulos | Perguntamos e a Meta não devolveu — anúncio apagado, ou compartilhamento ainda ausente. |
+
+<Note>
+  O `sourceId` continua sendo a identidade mesmo com os nomes presentes. Uma campanha pode ser
+  renomeada na Meta a qualquer momento, então quem usa `campaignName` como chave perde o próprio
+  histórico na primeira vez que o anunciante editar.
+</Note>
+
+## Só a primeira mensagem carrega a origem
+
+A Meta envia a origem na **primeira mensagem da conversa** e nunca repete. Então uma linha em
+`GET /v1/referrals` equivale a *uma conversa que nasceu daquele anúncio*, e `conversations` no
+resumo é o número que o seu anúncio realmente produziu.
+
+## `GET /v1/referrals`
+
+### Parâmetros de query
+
+<ParamField query="sourceId" type="string">
+  Restringe a um único id de anúncio/post.
+</ParamField>
+
+<ParamField query="sourceType" type="string">
+  `ad` ou `post`. Qualquer outro valor devolve `400 INVALID_SOURCE_TYPE`.
+</ParamField>
+
+<ParamField query="startDate" type="string">
+  Data-hora ISO 8601. Mensagens **a partir de** (inclusive) este instante.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Data-hora ISO 8601. Mensagens **até** (inclusive) este instante.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Página (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Itens por página (1–100).
+</ParamField>
+
+### O objeto `referral`
+
+| Campo | Significado |
+| --- | --- |
+| `sourceId` | Id do anúncio (ou post) na Meta. Chave opaca — veja o aviso acima. |
+| `sourceType` | `ad` ou `post`. |
+| `sourceUrl` | Permalink do anúncio/post clicado. |
+| `headline` | Título do anúncio. |
+| `body` | Texto do anúncio. |
+| `mediaType` | `image` ou `video`. |
+| `imageUrl` | Imagem do criativo, quando o anúncio é de imagem. |
+| `videoUrl` | Vídeo do criativo, quando o anúncio é de vídeo. |
+| `thumbnailUrl` | Miniatura do criativo. |
+| `ctwaClid` | Id daquele clique específico na Meta. Tratado como dado pessoal — veja abaixo. |
+| `adName` | Nome do anúncio no Gerenciador de Anúncios. `null` sem compartilhamento de parceiro. |
+| `adsetId` · `adsetName` | Conjunto a que ele pertence. `null` sem compartilhamento de parceiro. |
+| `campaignId` · `campaignName` | Campanha a que ele pertence. `null` sem compartilhamento de parceiro. |
+| `namesResolvedAt` | ISO 8601 da última tentativa de resolução, ou `null` se nunca houve. Veja a tabela acima. |
+
+### Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/referrals?sourceType=ad&startDate=2026-08-01T00:00:00Z" \
+  -H "x-api-key: ps_sua_key_aqui"
+```
+
+```json Resposta (200)
+{
+  "referrals": [
+    {
+      "id": "cm_abc123",
+      "conversationId": "conv_abc123",
+      "direction": "INBOUND",
+      "providerKind": "META",
+      "externalMessageId": "wamid.HBgNNTU0Mj...",
+      "messageType": "text",
+      "text": "Oi, vi o anúncio",
+      "providerTimestamp": "2026-08-16T12:00:00.000Z",
+      "referral": {
+        "sourceId": "120249828053880703",
+        "sourceType": "ad",
+        "sourceUrl": "https://www.instagram.com/p/DcJhrlpA3Pl/",
+        "headline": "SALE MM DESIGN",
+        "body": "Seu ambiente pode ficar ainda mais incrível",
+        "mediaType": "video",
+        "imageUrl": null,
+        "videoUrl": "https://video.example/v.mp4",
+        "thumbnailUrl": "https://thumb.example/t.jpg",
+        "ctwaClid": "ARAaZ1x...",
+        "adName": "Ads 01 - Vídeo dos 70%",
+        "adsetId": "120249828053990703",
+        "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+        "campaignId": "120249677595590703",
+        "campaignName": "[CD-01] [WHATSAPP] - MM Design - Sale 70%",
+        "namesResolvedAt": "2026-08-17T21:04:00.000Z"
+      }
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1
+}
+```
+
+</CodeGroup>
+
+## `GET /v1/referrals/summary`
+
+Agrupa os mesmos dados por anúncio, ordenado por número de conversas desc.
+
+### Parâmetros de query
+
+<ParamField query="startDate" type="string">
+  Data-hora ISO 8601.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Data-hora ISO 8601.
+</ParamField>
+
+### Regra de contagem
+
+`conversations` conta **conversas distintas**; `messages` conta mensagens. Duas mensagens na
+mesma conversa são 1 conversa e 2 mensagens — então `conversations` é a contagem de leads e
+`messages` é o volume.
+
+`lastSourceUrl` e `lastHeadline` vêm da mensagem **mais recente** daquele anúncio: a copy pode
+ser editada, e a última versão que a Meta mandou é a útil.
+
+### O teto é informado, não escondido
+
+A lista para em **200 anúncios**. Quando houver mais, `truncated` vem `true` e um `notice`
+avisa — estreite a janela com `startDate`/`endDate` em vez de paginar.
+
+### Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/referrals/summary?startDate=2026-08-01T00:00:00Z" \
+  -H "x-api-key: ps_sua_key_aqui"
+```
+
+```json Resposta (200)
+{
+  "ads": [
+    {
+      "sourceId": "120249828053880703",
+      "sourceType": "ad",
+      "conversations": 12,
+      "messages": 31,
+      "firstAt": "2026-07-28T10:00:00.000Z",
+      "lastAt": "2026-08-16T12:00:00.000Z",
+      "lastSourceUrl": "https://www.instagram.com/p/DcJhrlpA3Pl/",
+      "lastHeadline": "SALE MM DESIGN",
+      "adName": "Ads 01 - Vídeo dos 70%",
+      "adsetId": "120249828053990703",
+      "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+      "campaignId": "120249677595590703",
+      "campaignName": "[CD-01] [WHATSAPP] - MM Design - Sale 70%",
+      "namesResolvedAt": "2026-08-17T21:04:00.000Z"
+    },
+    {
+      "sourceId": "120249828075420703",
+      "sourceType": "ad",
+      "conversations": 4,
+      "messages": 9,
+      "firstAt": "2026-08-02T09:00:00.000Z",
+      "lastAt": "2026-08-15T18:30:00.000Z",
+      "lastSourceUrl": "https://www.instagram.com/p/DcAbcdEfGh/",
+      "lastHeadline": "MM DESIGN — Outlet",
+      "adName": null,
+      "adsetId": null,
+      "adsetName": null,
+      "campaignId": null,
+      "campaignName": null,
+      "namesResolvedAt": null
+    }
+  ],
+  "total": 2,
+  "limit": 200,
+  "truncated": false
+}
+```
+
+</CodeGroup>
+
+## Efeito do modo de privacidade (PII)
+
+A identidade do anúncio e a copy do anúncio são tratadas de forma diferente de propósito: um
+**id de anúncio identifica um criativo, nunca uma pessoa**, enquanto `ctwaClid` é um
+identificador por clique ligado ao indivíduo, e título/texto são conteúdo.
+
+| Modo PII | Efeito |
+| --- | --- |
+| `STORE_INDEFINITE` (padrão) | Tudo é devolvido. |
+| `STORE_X_DAYS` | Linhas mais antigas que a janela de retenção mantêm `sourceId` e `sourceType`; `ctwaClid`, `headline` e `body` vêm nulos e `redacted: true` é marcado. |
+| `RELAY_ONLY` | A mesma divisão em toda linha, mais `notice: "PII_RELAY_ONLY"`. No resumo os **contadores seguem corretos** — só `lastSourceUrl` e `lastHeadline` voltam nulos, com `piiNotice: "PII_RELAY_ONLY"`. |
+
+É essa divisão que mantém a atribuição de anúncio funcionando num número RELAY_ONLY em vez de
+devolver nada.
+
+## Erros
+
+| Status | Código | Causa |
+| --- | --- | --- |
+| `400` | `INVALID_SOURCE_TYPE` | `sourceType` não era `ad` nem `post`. |
+| `400` | `INVALID_DATE_RANGE` | Data malformada, ou `startDate` depois de `endDate`. |
+| `400` | `INVALID_PAGINATION` | `page × pageSize` passou do limite de profundidade. Estreite o período. |
+| `400` | `NUMBER_NOT_FOUND` | A key não está atrelada a um número de WhatsApp. |
+| `401` | — | `x-api-key` ausente ou inválida. |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Foi usada uma key de tenant. |
