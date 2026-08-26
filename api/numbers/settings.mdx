@@ -34,7 +34,7 @@ The same `settings` block comes back on `GET /v1/numbers/{id}`.
 | --- | --- | --- | --- |
 | `piiMode` | `STORE_INDEFINITE` \| `STORE_X_DAYS` \| `RELAY_ONLY` | `STORE_INDEFINITE` | all providers |
 | `piiRetentionDays` | integer 1–3650 | `null` | required with `STORE_X_DAYS` |
-| `settings.historyImportEnabled` | boolean | `true` | all providers |
+| `settings.historyImportEnabled` | boolean | `false` | all providers |
 | `settings.webhookHistoricalMessages` | boolean | `false` | all providers |
 | `settings.ignoreNewsletters` | boolean | `false` | all providers |
 | `settings.alwaysOnline` | boolean \| null | `null` | unofficial numbers |
@@ -69,7 +69,7 @@ On an official Meta number the six advanced fields are accepted and stored, but 
 
 When a number connects, WhatsApp hands the provider the device's message history, and the platform imports up to **30 days** back from the connection moment. Two independent switches control what happens to it:
 
-- **`historyImportEnabled`** — whether that history is stored at all. Turn it off and the number effectively starts existing at the moment it connected.
+- **`historyImportEnabled`** — whether that history is stored at all. **It defaults to `false`**, so a number effectively starts existing at the moment it connected. Turn it on to keep the device's previous conversations.
 - **`webhookHistoricalMessages`** — whether those old messages are **delivered to your webhooks**. Off by default: every reconnect replays the history, and nothing in the payload lets your integration tell it apart from a message that just arrived. Turn it on and they arrive as `message.received` / `message.group` / `message.newsletter`; on the FREE plan they also count against your inbound allowance.
 
 To **read** history, use [`GET /v1/messages/history`](/api/messages/history) with `startDate` / `endDate` — that is the supported path, and it filters on when each message actually happened.
@@ -94,6 +94,31 @@ That is also why this field takes a plain `true` / `false` and never `null`: `nu
 </Note>
 
 An official Meta number never receives channels at all. The field is accepted and stored there, with nothing to drop.
+
+### Ask for the history when you CREATE the number
+
+<Warning>
+**`historyImportEnabled` has to be decided before the number connects, or not at all.** WhatsApp hands the history over in a single burst right after the connection, the flag is read per message as those arrive, and nothing can request them again. Creating the number and then sending a `PATCH` races that burst.
+
+`POST /v1/numbers` accepts the same `settings` block for exactly this reason:
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/numbers \
+  -H "x-api-key: $PILOT_STATUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Support",
+    "number": "5511999999999",
+    "settings": { "historyImportEnabled": true }
+  }'
+```
+
+The `201` echoes back the `settings` the number was created with, defaults included. `POST /v1/numbers/remote-pairing` accepts the block too — it matters most there, because whoever opens the pairing link connects on the spot.
+</Warning>
+
+<Note>
+**Changed on 2026-08-26: the default used to be `true`.** Numbers created before that date keep the value they had — nothing was rewritten. The dashboard asks the question in the connect wizard, next to the phone number.
+</Note>
 
 ## Upstream push
 
