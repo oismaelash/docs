@@ -112,8 +112,38 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/meta" \
 Errors:
 
 - `400` — validation error (missing or invalid body fields).
+- `402 PLAN_NUMBER_LIMIT_REACHED` — your plan's own number allowance is full and you never bought an extra number. Adding credits does **not** clear it: free a slot or move up a plan.
+- `402 INSUFFICIENT_FUNDS` — the number would be a **paid extra** and there is neither wallet balance nor a saved card.
 - `403 NUMBERS_GRANT_NOT_ALLOWED` — per-number OAuth grants cannot provision numbers.
 - `409` — "Number already exists".
+
+### Capacity errors and what fixes them
+
+Both provisioning routes on this page (`POST /v1/numbers` and `POST /v1/numbers/meta`) check capacity **before** the number row is written, and both refuse with **`402`**. The status alone does not tell you what to do — the `error` field does. On these two routes the discriminator arrives in `error` **only**; `POST /v1/numbers/remote-pairing` sends the same values in both `error` and `code`.
+
+| `error` | What it means | What fixes it |
+| --- | --- | --- |
+| `PLAN_NUMBER_LIMIT_REACHED` | The ceiling is your plan's own allowance, and no extra number was ever bought or granted. | Free a slot (`DELETE /v1/numbers/{id}`) or move up a plan. **Money does not fix this one.** |
+| `INSUFFICIENT_FUNDS` | The next number is a **paid extra** — either a plan that bills per number, or an account that already bought extras — and it cannot be funded. | Add credits or save a card, then retry. |
+
+The body carries the numbers behind the refusal, so you never have to guess:
+
+```json
+{
+  "error": "PLAN_NUMBER_LIMIT_REACHED",
+  "plan": "FREE",
+  "maxNumbers": 1,
+  "currentNumberCount": 1,
+  "extras": 1,
+  "proratedTotal": 14.95,
+  "walletBalance": 0,
+  "currency": "BRL"
+}
+```
+
+<Note>
+  **Changed.** A plan whose allowance was simply full used to answer `INSUFFICIENT_FUNDS` as well — so an account with one number on a one-number plan was told it had no money, and went looking for a balance that was never the problem. The status is unchanged (`402`); what is new is the value in `error`, and the fields alongside it.
+</Note>
 
 #### Webhook delivery (inbound)
 

@@ -15,7 +15,7 @@ São só duas peças:
 2. Sua **tela** desenha esse QR, renova quando ele vence e descobre que conectou (por polling ou por webhook).
 
 <Note>
-  Quer um ponto de partida pronto pra rodar? Baixe o demo (licença MIT) — backend Node/Express que guarda a chave `ps_` e frontend React/Vite ligados exatamente a este fluxo: **[public-api-demo.zip](https://pilotstatus.com.br/downloads/public-api-demo.zip)**. Descompacte, ponha a sua chave, `npm run dev` (ou `docker compose up`). Ele tem três telas — **Números** (criar, modal de QR e status ao vivo), **Enviar** (texto livre ou template, com um modal "Ver cURL") e **Webhooks** (entregas e eventos recebidos localmente).
+  Quer um ponto de partida pronto pra rodar? Baixe o demo (licença MIT) — backend Node/Express que guarda a chave `ps_` e frontend React/Vite ligados exatamente a este fluxo: [**public-api-demo.zip**](https://pilotstatus.com.br/downloads/public-api-demo.zip). Descompacte, ponha a sua chave, `npm run dev` (ou `docker compose up`). Ele tem três telas — **Números** (criar, modal de QR e status ao vivo), **Enviar** (texto livre ou template, com um modal "Ver cURL") e **Webhooks** (entregas e eventos recebidos localmente).
 </Note>
 
 ## Arquitetura
@@ -115,14 +115,13 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
     Guarde `instance.id`: é o id da **instância WhatsApp**, e é ele que todas as chamadas seguintes deste guia usam.
 
     <Warning>
-      **Criar o número já consome capacidade do plano.** A checagem acontece **antes** de a linha ser gravada. Se você passar do teto contratado e não houver como custear, a chamada falha com `402 { "error": "INSUFFICIENT_FUNDS" }`. Dentro do teto já custeado, é liberado sem cobrança extra. É a mesma forma do fluxo Meta — "custa um slot no momento em que você cria" — só muda o erro.
+      **Criar o número já consome capacidade do plano.** A checagem acontece **antes** de a linha ser gravada. Passando do teto, a chamada falha com **`402`** — e o campo `error` diz em qual parede você bateu: `PLAN_NUMBER_LIMIT_REACHED` quando a cota do próprio plano está cheia e você nunca comprou extra (libere um slot ou suba de plano; **crédito não resolve**), ou `INSUFFICIENT_FUNDS` quando o número é um extra pago que você não consegue custear (adicione créditos ou salve um cartão). O corpo traz `plan`, `maxNumbers`, `currentNumberCount`, `proratedTotal` e `walletBalance` — veja [erros de capacidade](/pt-BR/api/numbers/create#erros-de-capacidade-e-como-resolver). Dentro do teto já custeado, é liberado sem cobrança extra. É a mesma forma do fluxo Meta — "custa um slot no momento em que você cria" — só muda o erro.
     </Warning>
 
     Outros erros: `400 { "error": "Validation error", "details" }`, `409 { "error": "Number already exists" }`, `502 { "error": "Failed to create instance", "details" }` e `401` quando não há credencial.
 
     O 409 é comparação exata dos dígitos, dentro da sua própria conta: `+5511999999999` e `5511999999999` são o mesmo número, mas `5511987654321` e `551187654321` (o nono dígito opcional brasileiro) são números diferentes — os dois podem ser criados e cada um consome um slot do plano. Um número já conectado em **outra** conta Pilot Status não devolve 409, e sim outro erro 4xx; trate qualquer 4xx na criação como "número indisponível". Se você precisa de tolerância ao nono dígito, use `POST /v1/numbers/check`, que é o único endpoint que testa as duas variantes.
   </Step>
-
   <Step title="Desenhe o QR na sua tela e renove quando precisar">
     O `qrcodeBase64` é um PNG e chega como **data URL completa** (`data:image/png;base64,iVBORw0KGgo…`), pronta para ir direto no `<img src={qr}>` — é assim que o demo faz. A Pilot Status **não monta nem normaliza** essa string: ela é o campo do próprio provedor não-oficial, repassado byte a byte (só com `trim`). O prefixo é garantia do provedor, não nossa — por isso a própria interface da Pilot Status ainda checa antes de renderizar. Mantenha a checagem:
 
@@ -135,6 +134,7 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
     QR Code do WhatsApp expira rápido. Para pegar um novo (ou um novo código de pareamento), chame `GET /v1/numbers/{id}/connect` com o `instance.id`:
 
     <CodeGroup>
+
     ```bash cURL
     curl "https://pilotstatus.com.br/v1/numbers/cmm04obm46zz0qv4ycjp8x6r2/connect" \
       -H "x-api-key: ps_sua_chave"
@@ -147,6 +147,7 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
     );
     const { qrcodeBase64, pairingCode } = await r.json();
     ```
+
     </CodeGroup>
 
     A resposta tem **exatamente** dois campos, ambos `string | null`:
@@ -169,7 +170,6 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
 
     Erros: `409 { "error": "Instance already connected", "state": "OPEN" }`, `404 { "error": "Not found" }` quando o id não é do seu tenant, `502 { "error": "Failed to generate QR code", "details": "WhatsApp provider returned no QR code and no pairing code", "code": "EMPTY_CONNECT_BUNDLE" }` quando nem QR nem código voltaram, `502` em falha do provedor e `{ "error": "WhatsApp provider not configured" }` — **500** quando o provedor não-oficial não está configurado, **502** quando a própria chamada de connect reporta isso.
   </Step>
-
   <Step title="Saiba quando conectou">
     Dois caminhos, e eles servem a situações diferentes.
 
@@ -206,7 +206,7 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
 
     **Webhook** — pegue o `number.connected` também. Ele é disparado no tratador de conexão do provedor, ou seja, cobre este caminho não-oficial, e chega mesmo com ninguém olhando a sua tela. Três coisas para desenhar em volta dele.
 
-    Ele dispara **só no primeiro pareamento bem-sucedido daquele número** — um novo pareamento do mesmo número depois é suprimido pela camada de deduplicação de ingestão, então nunca trate a ausência de `number.connected` como "não conectou"; o `GET /v1/numbers/{id}/status` é a fonte da verdade. Ele é entregue **uma única vez, sem reentrega** — se o seu endpoint responder 5xx ou estourar o tempo, o evento não é reenviado (a tentativa falha fica registrada no log de entregas). E agora ele **tem** um par funcional para quedas: o `number.disconnected` passou a disparar para números não-oficiais (web / EVO_GO). Antes disso, um número web que caía não gerava webhook assinável nenhum. Ele é emitido pela transição de saúde do número, que é quem controla o anti-flap e a deduplicação de um alerta por transição — ou seja, **não** é um evento por oscilação de socket. Você ainda pode assinar com `"events": ["*"]` para receber também `number.health_blocked` (todas as conexões do número fora do ar, detectado por um healthcheck periódico — espere minutos, não segundos) e `number.recovered`. Esses dois nomes são recusados se você listá-los explicitamente: só o curinga `*` os entrega.
+    Ele dispara **só no primeiro pareamento bem-sucedido daquele número** — um novo pareamento do mesmo número depois é suprimido pela camada de deduplicação de ingestão, então nunca trate a ausência de `number.connected` como "não conectou"; o `GET /v1/numbers/{id}/status` é a fonte da verdade. Ele é entregue **uma única vez, sem reentrega** — se o seu endpoint responder 5xx ou estourar o tempo, o evento não é reenviado (a tentativa falha fica registrada no log de entregas). E agora ele **tem** um par funcional para quedas: o `number.disconnected` passou a disparar para números não-oficiais (web / EVO\_GO). Antes disso, um número web que caía não gerava webhook assinável nenhum. Ele é emitido pela transição de saúde do número, que é quem controla o anti-flap e a deduplicação de um alerta por transição — ou seja, **não** é um evento por oscilação de socket. Você ainda pode assinar com `"events": ["*"]` para receber também `number.health_blocked` (todas as conexões do número fora do ar, detectado por um healthcheck periódico — espere minutos, não segundos) e `number.recovered`. Esses dois nomes são recusados se você listá-los explicitamente: só o curinga `*` os entrega.
 
     O corpo que você recebe:
 
@@ -233,12 +233,11 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
     </Warning>
 
     <Note>
-      **Regra de bolso:** faça polling do `GET /v1/numbers/{id}/status` para conduzir um modal que está na frente da pessoa *e* como fonte da verdade do estado conectado/desconectado; use o webhook para acordar trabalho quando ninguém estiver com a sua tela aberta.
+      **Regra de bolso:** faça polling do `GET /v1/numbers/{id}/status` para conduzir um modal que está na frente da pessoa _e_ como fonte da verdade do estado conectado/desconectado; use o webhook para acordar trabalho quando ninguém estiver com a sua tela aberta.
     </Note>
 
     Para números criados por `POST /v1/numbers`, os únicos eventos de conexão assináveis são `number.created`, `number.connected`, `number.disconnected` e `number.removed` (além de `message.*` e `call.*`). O `connection.update` e os nomes nativos da Evolution (`Connected`, `LoggedOut`) **não** são assináveis para esses números e são descartados em silêncio se você os pedir no array `events`.
   </Step>
-
   <Step title="Envie por esse número">
     `POST /v1/messages/send` age sobre **um** número, então ele exige uma chave com **escopo de número**. Uma chave de tenant sozinha leva `403`:
 
@@ -278,7 +277,7 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
     }
     ```
 
-    `id` é um cuid (sem prefixo `msg_`), `correlationId` é sempre `cid_` + 32 caracteres hexadecimais, `status` no 202 é sempre `QUEUED`, `sourceNumber` é o número remetente em dígitos puros — **sem `+`** —, e `origin` é apenas um rótulo legível da instância usada (nunca a string `"API"`); para identificar o remetente use `sourceNumber`, não `origin`.
+    `id` é um cuid (sem prefixo `msg_`), `correlationId` é sempre `cid_` \+ 32 caracteres hexadecimais, `status` no 202 é sempre `QUEUED`, `sourceNumber` é o número remetente em dígitos puros — **sem `+`** —, e `origin` é apenas um rótulo legível da instância usada (nunca a string `"API"`); para identificar o remetente use `sourceNumber`, não `origin`.
 
     O campo `media` só vale no modo de **mídia direta** (nunca junto com `text`) e aceita uma URL http(s) **ou** um data URI base64 (`data:<mime>;base64,…`) de até 16 MB decodificados.
 
@@ -311,7 +310,6 @@ Se ainda estiver decidindo entre número oficial e não-oficial, leia [Oficial v
       **`POST /v1/api-keys` não rotaciona a chave no lugar** — cria uma chave **nova** (novo `keyId`) e depois apaga **todas as outras** chaves de número daquele número, inclusive as criadas pelo painel ou pelos testes de template. Elas param de funcionar na requisição seguinte, sem carência. Se o número tiver uma inbox nativa do Chatwoot e o envio da chave nova para ela falhar, as antigas são mantidas de propósito para a inbox não quebrar — então, após uma rotação que falhou nesse passo, mais de uma chave pode continuar valendo. Aceita o id do número ou o id da instância e devolve o `numberId` canônico. Use como plano B, não como rotina.
     </Warning>
   </Step>
-
   <Step title="Receba mensagens">
     Recepção é a mesma história de sempre: registre um webhook por número e trate as entregas. Não vamos repetir aqui — o assunto inteiro (lista de eventos, formato, reentregas) está em [Receber mensagens](/pt-BR/guides/receive-messages) e em [Webhooks](/pt-BR/concepts/webhooks).
 
@@ -331,8 +329,8 @@ Alguns pontos que importam:
 - A resposta **201** traz `{ provider: "PILOT_STATUS", instance: { id, instanceName, number, displayName, state: "CLOSE" }, remotePairingUrl, maskedNumber, linkedApiKeyId: null }`, mais um array `warnings` quando há algo a reportar (veja abaixo). **Não há `expiresAt`** neste ramo — só o ramo Meta devolve esse campo.
 - **A entrega do link é sua.** O endpoint devolve a `remotePairingUrl` e nada acontece automaticamente: mande esse link para quem está com o celular pelo canal que fizer sentido no seu produto (SMS, e-mail, dentro do app).
 - Ele cria um `WhatsAppNumber` **real** e uma instância real no provedor (nada de placeholder no estilo Meta) e dispara `number.created`.
-- **Consome capacidade do plano, igual ao `POST /v1/numbers`** — a linha do número passa pela mesma checagem de fundos antes de ser gravada. Acima do teto já custeado e sem como custear, você recebe `402 { "error": "INSUFFICIENT_FUNDS", "code": "INSUFFICIENT_FUNDS" }` — **mesmo status e mesmo código** do `POST /v1/numbers` (esta rota respondia `500` antes).
-- **Parear um número que você já tem não custa nada.** Se já existir um número com os mesmos dígitos no seu tenant, ele é reaproveitado: nenhuma capacidade é consumida e `INSUFFICIENT_FUNDS` não acontece. Mesmo assim uma nova conexão e um novo token de 24 h são criados, e o `number.created` dispara de novo — então trate esse evento como *pelo menos uma vez por link de pareamento*, não como prova de número novo.
+- **Consome capacidade do plano, igual ao `POST /v1/numbers`** — a linha do número passa pela mesma checagem de capacidade antes de ser gravada. Acima do teto você recebe **o mesmo `402` e os mesmos códigos** do `POST /v1/numbers` (esta rota respondia `500` antes): `PLAN_NUMBER_LIMIT_REACHED` quando a parede é a cota do próprio plano, `INSUFFICIENT_FUNDS` quando o número é um extra pago que não dá para custear. O corpo carrega junto `plan`, `maxNumbers`, `currentNumberCount`, `extras`, `proratedTotal`, `walletBalance` e `currency`.
+- **Parear um número que você já tem não custa nada.** Se já existir um número com os mesmos dígitos no seu tenant, ele é reaproveitado: nenhuma capacidade é consumida e nenhum `402` de capacidade acontece. Mesmo assim uma nova conexão e um novo token de 24 h são criados, e o `number.created` dispara de novo — então trate esse evento como _pelo menos uma vez por link de pareamento_, não como prova de número novo.
 - Aceita `branding`. Já o `linkToApiKey` é **descontinuado e sem efeito** aqui, exatamente como no `POST /v1/numbers`: ele é aceito, nada é vinculado e o `linkedApiKeyId` volta `null` sempre.
 - **`externalRef` e `redirectUrl` voltam reportados em `warnings`.** Eles viajam na sessão assinada da Meta, e o link de QR não tem sessão nenhuma — então, com `provider=PILOT_STATUS`, são aceitos mas não têm como ser honrados. Cada um que você mandar volta como uma string no array `warnings` (`"externalRef is only supported for provider=META and was ignored"`), e o pareamento acontece do mesmo jeito. Isso **não** é `400`: mandar esses campos não é erro; antes eles eram descartados em silêncio e agora são anunciados. Quando não há nada a reportar, a chave simplesmente não vem.
 - Se a sua credencial veio de OAuth por número, esta rota devolve o mesmo `code` da criação com outra mensagem: `403 { "error": "Pairing a new number is not available for a per-number connection", "code": "NUMBERS_GRANT_NOT_ALLOWED" }`.
@@ -381,8 +379,19 @@ Remover libera a vaga, não o dinheiro. O número some e a vaga fica imediatamen
 ## Problemas comuns
 
 <AccordionGroup>
-  <Accordion title="402 INSUFFICIENT_FUNDS ao criar o número">
-    A capacidade do plano é consumida **na criação**, antes de a linha ser gravada. Você passou do teto já custeado e não havia como custear o número extra. Libere capacidade removendo um número que não usa mais, ou contrate números adicionais, e tente de novo. A vaga liberada por um `DELETE` é reutilizável **sem custo adicional dentro do mesmo ciclo** — mas remover o número **não** interrompe a cobrança recorrente da capacidade extra; para isso é preciso reduzir a capacidade explicitamente.
+  <Accordion title="402 ao criar o número — PLAN_NUMBER_LIMIT_REACHED ou INSUFFICIENT_FUNDS">
+    A capacidade do plano é consumida **na criação**, antes de a linha ser gravada. As duas recusas são `402`; o campo `error` é o que diz a saída, e só uma das duas é sobre dinheiro.
+
+    - **`PLAN_NUMBER_LIMIT_REACHED`** — o teto é a cota do próprio plano e você nunca comprou nem ganhou um número extra. Adicionar créditos ou salvar cartão não muda nada. Libere um número que não usa mais, ou suba de plano.
+    - **`INSUFFICIENT_FUNDS`** — o próximo número é um extra pago (plano que cobra por número, ou conta que já comprou extras) e não deu para custeá-lo. Adicione créditos ou salve um cartão e tente de novo.
+
+    O corpo traz `plan`, `maxNumbers` e `currentNumberCount`, mais `proratedTotal`, `walletBalance` e `currency` quando há preço a cotar — confira `currentNumberCount` contra `maxNumbers` antes de concluir qualquer coisa só pelo código.
+
+    A vaga liberada por um `DELETE` é reutilizável **sem custo adicional dentro do mesmo ciclo** — mas remover o número **não** interrompe a cobrança recorrente da capacidade extra; para isso é preciso reduzir a capacidade explicitamente.
+
+    <Note>
+      **Mudou.** Uma cota de plano simplesmente cheia também respondia `INSUFFICIENT_FUNDS`, o que mandava contas com carteira zerada procurar um dinheiro que não precisavam gastar. Mesmo status, código novo.
+    </Note>
   </Accordion>
 
   <Accordion title="409 Number already exists">
@@ -394,7 +403,7 @@ Remover libera a vaga, não o dinheiro. O número some e a vaga fica imediatamen
   </Accordion>
 
   <Accordion title="502 Failed to generate QR code — EMPTY_CONNECT_BUNDLE">
-    O provedor respondeu sem QR **e** sem código de pareamento. A Pilot Status não conta nem limita chamadas a `/connect`, então chamar de novo é o caminho certo — e depois que a sessão de pareamento expira, é o caminho *obrigatório*. Uma sessão de pareamento rotaciona um número limitado de QR codes; quando esgota, o provedor desconecta a instância e limpa o QR, e o `/connect` seguinte inicia uma sessão nova. Chame `GET /v1/numbers/{id}/connect` de novo; se persistir, verifique o estado pelo `/status`. Um `/connect` "frio" pode levar alguns segundos, então faça polling em vez de um laço apertado.
+    O provedor respondeu sem QR **e** sem código de pareamento. A Pilot Status não conta nem limita chamadas a `/connect`, então chamar de novo é o caminho certo — e depois que a sessão de pareamento expira, é o caminho _obrigatório_. Uma sessão de pareamento rotaciona um número limitado de QR codes; quando esgota, o provedor desconecta a instância e limpa o QR, e o `/connect` seguinte inicia uma sessão nova. Chame `GET /v1/numbers/{id}/connect` de novo; se persistir, verifique o estado pelo `/status`. Um `/connect` "frio" pode levar alguns segundos, então faça polling em vez de um laço apertado.
 
     Um `/connect` que devolve QR com `pairingCode: null` não se conserta sozinho: o fallback interno que roda quando falta um dos dois campos só consegue buscar o QR de novo, nunca o código de pareamento. Se você precisa do código, chame `/connect` mais uma vez.
   </Accordion>
@@ -451,12 +460,15 @@ Remover libera a vaga, não o dinheiro. O número some e a vaga fica imediatamen
   <Card title="Criar número (referência)" icon="plus" href="/pt-BR/api/numbers/create">
     Corpo completo, campos opcionais e todos os códigos de retorno.
   </Card>
+
   <Card title="Status do número" icon="signal" href="/pt-BR/api/numbers/status">
     O endpoint de estado e o vocabulário completo.
   </Card>
+
   <Card title="Pareamento remoto" icon="link" href="/pt-BR/api/numbers/remote-pairing">
     A alternativa hospedada, com todas as opções do corpo.
   </Card>
+
   <Card title="Receber mensagens" icon="webhook" href="/pt-BR/guides/receive-messages">
     Webhooks por número, eventos e tratamento das entregas.
   </Card>
