@@ -77,6 +77,40 @@ Comportamento:
   Mantenha créditos ou um cartão salvo disponíveis. Se a cobrança de um ciclo não puder ser paga, você tem **2 dias** para adicionar créditos ou atualizar o cartão antes que seus números parem de **enviar** (o recebimento continua). Adicionar saldo reativa na hora.
 </Note>
 
+## Quando o pagamento não passa
+
+`POST /v1/subscription/extra-numbers` distingue **três** falhas, e elas não dividem a mesma solução. Decida pelo `code`, nunca pelo status HTTP: duas das três são `402`.
+
+| Status | `code` | O que aconteceu | O que fazer |
+| --- | --- | --- | --- |
+| `402` | `INSUFFICIENT_FUNDS` | A carteira não cobriu a cobrança **e** não há cartão salvo utilizável. É o único caso que realmente é sobre o seu saldo. | Recarregue a carteira (`POST /v1/billing/checkout`, `wallet_topup` — aceita PIX) ou salve um cartão. Depois tente de novo. |
+| `402` | `PAYMENT_FAILED` | A cobrança foi tentada e não se concluiu. Ou o emissor recusou o cartão, ou a tentativa falhou por um motivo que não conseguimos atribuir ao seu saldo. | Corrija ou troque o cartão e tente de novo. Adicionar créditos também pode resolver, já que os créditos são gastos antes do cartão. |
+| `502` | `PAYMENT_PROVIDER_ERROR` | Não conseguimos obter resposta do processador de pagamento. | **Confira seu extrato antes de tentar de novo** — veja o aviso abaixo. |
+
+Todos esses corpos trazem `proratedTotal` e `currency`, então dá para mostrar o valor que foi tentado. O `INSUFFICIENT_FUNDS` traz também `walletReason` (`NO_CARD` ou `INSUFFICIENT_CREDITS`).
+
+<Note>
+  **Nos três casos o número extra _não_ foi adicionado.** Seu `paidExtraNumbers` continua igual e nenhum slot foi liberado — toda escrita acontece depois de uma cobrança bem-sucedida.
+</Note>
+
+<Warning>
+  **`502 PAYMENT_PROVIDER_ERROR` não quer dizer "nada foi cobrado".** Quer dizer que a requisição ao processador falhou _ou_ que a resposta dele se perdeu — a cobrança pode ter se concluído do lado dele sem que a gente ficasse sabendo. A contagem não mudou, então repetir às cegas pode pagar duas vezes. Confira o extrato primeiro.
+</Warning>
+
+### O campo `declineCode`
+
+O `PAYMENT_FAILED` **às vezes** traz `declineCode`. Quando vem, é o próprio código de recusa da bandeira, literal (`insufficient_funds`, `expired_card`, `card_not_supported`, …) — pode ser mostrado ao titular do cartão ou usado para decidir.
+
+⚠️ **A ausência dele não diz nada.** Um `PAYMENT_FAILED` sem `declineCode` é um pagamento que não passou por um motivo que não conseguimos atribuir ao cartão — um rate limit na requisição, uma chave de integração expirada, um payment intent que ficou num estado diferente de sucesso. Não inventamos um código para preencher o campo. Portanto:
+
+- Decida pelo `code: "PAYMENT_FAILED"`. Ele está sempre presente e sempre significa a mesma coisa.
+- Use o `declineCode` só para _refinar a mensagem_ quando ele existir.
+- Nunca leia "sem `declineCode`" como "não foi recusa" — e nunca como "o cartão está bom".
+
+<Note>
+  O `declineCode` nunca aparece no `INSUFFICIENT_FUNDS` nem no `PAYMENT_PROVIDER_ERROR`. Nenhum dos dois é recusa de cartão.
+</Note>
+
 ## A capacidade paga é um direito de 30 dias
 
 Ao comprar números extras, essa **capacidade é sua durante todo o ciclo de 30 dias**. Duas consequências:

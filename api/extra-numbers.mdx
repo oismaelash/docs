@@ -81,6 +81,40 @@ Behaviour:
   To lower your paid capacity, see the scheduled-reduction section below.
 </Note>
 
+## When the payment does not go through
+
+`POST /v1/subscription/extra-numbers` distinguishes **three** failures, and they do not share a remedy. Branch on `code`, never on the HTTP status: two of the three are `402`.
+
+| Status | `code` | What happened | What to do |
+| --- | --- | --- | --- |
+| `402` | `INSUFFICIENT_FUNDS` | The wallet could not cover the charge **and** there is no usable saved card. This is the only bucket that is genuinely about your balance. | Top the wallet up (`POST /v1/billing/checkout`, `wallet_topup` — PIX works) or save a card. Then retry. |
+| `402` | `PAYMENT_FAILED` | The charge was attempted and did not complete. Either the issuer declined the card, or the attempt failed for a reason we cannot attribute to your balance. | Fix or replace the card, then retry. Adding credits may also clear it, since credits are spent before the card. |
+| `502` | `PAYMENT_PROVIDER_ERROR` | We could not get an answer out of the payment processor. | **Check your statement before retrying** — see the note below. |
+
+Every one of these bodies carries `proratedTotal` and `currency`, so you can show the amount that was attempted. `INSUFFICIENT_FUNDS` also carries `walletReason` (`NO_CARD` or `INSUFFICIENT_CREDITS`).
+
+<Note>
+  **In all three cases the extra number was _not_ added.** Your `paidExtraNumbers` is unchanged and no slot was unlocked — every write is downstream of a successful charge.
+</Note>
+
+<Warning>
+  **`502 PAYMENT_PROVIDER_ERROR` does not mean "nothing was charged".** It means the request to the processor failed _or_ its response was lost — the charge may have completed on the processor's side while we never heard back. The count did not move, so a blind retry can pay twice. Check your statement first.
+</Warning>
+
+### The `declineCode` field
+
+`PAYMENT_FAILED` **sometimes** carries `declineCode`. When present, it is the card network's own decline code, verbatim (`insufficient_funds`, `expired_card`, `card_not_supported`, …) — safe to show to the cardholder or to branch on.
+
+⚠️ **Its absence tells you nothing.** A `PAYMENT_FAILED` with no `declineCode` is a payment that did not go through for a reason we could not attribute to the card — a rate limit on the request, an expired integration key, a payment intent left in a non-succeeded state. We do not invent a code to fill the field. So:
+
+- Treat `code: "PAYMENT_FAILED"` as the decision. It is always present and always means the same thing.
+- Use `declineCode` only to _refine the message_ when it is there.
+- Never read "no `declineCode`" as "not a decline" — and never as "the card is fine".
+
+<Note>
+  `declineCode` never appears on `INSUFFICIENT_FUNDS` or `PAYMENT_PROVIDER_ERROR`. Neither is a card decline.
+</Note>
+
 ## Paid capacity is a 30-day entitlement
 
 When you buy extra numbers, that **capacity is yours for the full 30-day cycle**. Two consequences:
