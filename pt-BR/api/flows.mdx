@@ -10,7 +10,11 @@ Todo endpoint abaixo autentica com uma **chave de API com escopo de número** (`
 | Permissão | Cobre |
 | --- | --- |
 | `flows:read` | Listar Flows e ler as respostas dos formulários |
-| `flows:manage` | Toda escrita: criar, atualizar, subir JSON, publicar, depreciar, apagar |
+| `flows:manage` | Toda escrita — criar, atualizar, subir JSON, publicar, depreciar, apagar — **e os dois endpoints da chave, inclusive o que só lê** |
+
+<Warning>
+  **Ler a chave do endpoint exige `flows:manage`, não `flows:read`**, mesmo sendo um `GET`. A resposta carrega `endpointUrl`, e o token dessa URL é uma **credencial**: a Meta se autentica no endpoint DECIFRANDO, e a pública correspondente é pública por construção. Quem tiver as duas consegue forjar uma requisição que o Pilot Status decifra e repassa ao seu webhook **com a nossa assinatura**. Credencial só de leitura continua sendo credencial.
+</Warning>
 
 <Note>
   `flows:read` é um slug próprio e **não** é `templates:read`. A listagem de templates devolve texto que o seu workspace escreveu; a resposta de um Flow devolve o que um **cliente** digitou num formulário — um nome, um telefone, às vezes um documento. As duas coisas são gateadas separadamente de propósito.
@@ -159,10 +163,55 @@ Devolve o que os clientes enviaram, ligado ao contato que respondeu, dentro da j
 ## Chave do endpoint `data_exchange`
 
 <Note>
-  **Ainda não exposta na API pública.** A gestão da chave do endpoint `data_exchange` — gerar o par, registrar a metade pública na Meta e conferir se a Meta ainda tem a nossa — está construída, mas ainda não tem rota REST. Esta seção lista os endpoints no dia em que existirem.
-
-  O que o recurso faz, e o desenho por trás dele, está em [Flows](/pt-BR/concepts/flows). Se você precisar antes de estar exposto, fale com o suporte.
+  Só é necessária para Flows cujas telas chamam o seu backend — veja [Flows](/pt-BR/concepts/flows) para o quadro completo. `{numberId}` é o número ao qual a sua chave está amarrada. A chave privada nunca sai do Pilot Status e não é devolvida por endpoint nenhum; `endpointUrl` é a base para registrar no seu Flow, com o id do Flow acrescentado como segmento final.
 </Note>
+
+### Ler o estado atual
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+```json
+{
+  "configured": true,
+  "publicKey": "-----BEGIN PUBLIC KEY-----\n...",
+  "uploadedAt": "2026-09-02T10:00:00.000Z",
+  "endpointUrl": "https://pilotstatus.com.br/api/flows/endpoint/AbC123...",
+  "metaStatus": "VALID"
+}
+```
+
+| `metaStatus` | Significado |
+| --- | --- |
+| `VALID` | A Meta tem a chave que nós temos. Nada a fazer. |
+| `MISMATCH` | A Meta tem uma chave **diferente**. Todo Flow `data_exchange` deste número está falhando — rotacione. |
+| `NOT_SET` | A Meta ainda não tem chave para este número. |
+| `UNKNOWN` | Não conseguimos ler o lado da Meta. |
+
+<Warning>
+  **`UNKNOWN` não é `NOT_SET`, e juntar os dois sai caro.** Uma chamada que falhou não diz nada sobre o que a Meta tem. Tratá-la como "sem chave" leva a rotacionar — e rotacionar substitui uma chave que provavelmente estava boa.
+</Warning>
+
+### Gerar ou rotacionar
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_sua_chave_aqui" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+A resposta é a de cima mais `"replaced"`, que diz qual das três coisas aconteceu: criação inicial, retentativa de um par que a Meta nunca aceitou, ou **substituição de uma chave que estava viva**.
+
+<Warning>
+  **Substituir uma chave VIVA é destrutivo e exige `{"confirm": true}`.**
+
+  A Meta guarda exatamente uma pública por número, então registrar outra substitui a anterior — e a privada antiga é sobrescrita aqui no mesmo instante. Não dá para restaurar, e toda troca `data_exchange` em voo naquele número para de decifrar. Sem a flag, a requisição é recusada com `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION`.
+
+  ⚠️ A **primeira** configuração NÃO pede confirmação, e retentar uma chave que a Meta nunca aceitou também não — não há o que destruir em nenhum dos dois casos. Confirmação exigida onde nada se perde treina o reflexo que a desarma no único caso em que ela protege.
+</Warning>
 
 ## Erros
 
@@ -190,6 +239,11 @@ Toda falha desta superfície responde o mesmo envelope — existe exatamente uma
 | `FLOW_UNKNOWN_FIELDS` | 400 | O corpo trouxe campo que a rota não aceita |
 | `FLOW_PUBLISH_REQUIRES_CONFIRMATION` | 400 | `publish` sem `"confirm": true` |
 | `FLOW_DEPRECATE_INVALID_SUCCESSOR` | 400 | `supersededByFlowId` presente mas em branco ou desconhecido |
+| `FLOW_CLONE_SOURCE_NOT_ON_META` | 409 | A origem existe aqui mas não chegou à Meta — não há o que clonar |
+| `FLOW_PREVIEW_UNAVAILABLE` | 502 | A Meta respondeu sem link de preview. Não é nosso — tente de novo |
+| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Rotacionar sobre chave VIVA sem `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | O par de chaves não pôde ser gerado ou gravado |
+| `FLOW_NUMBER_NOT_FOUND` | 404 | O número do caminho não é o número desta chave |
 | `FLOW_BODY_INVALID` | 400 | Corpo malformado, ou campo obrigatório faltando |
 | `INVALID_PAGINATION` | 400 | `page` × `pageSize` além do teto de offset profundo |
 | `INTERNAL_ERROR` | 500 | Nosso. Tente de novo e informe o código ao suporte |
