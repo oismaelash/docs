@@ -10,7 +10,11 @@ Every endpoint below authenticates with a **number-scoped API key** (`x-api-key`
 | Permission | Covers |
 | --- | --- |
 | `flows:read` | Listing Flows and reading form responses |
-| `flows:manage` | Every write: create, update, upload JSON, publish, deprecate, delete |
+| `flows:manage` | Every write — create, update, upload JSON, publish, deprecate, delete — **and both endpoint-key endpoints, including the one that only reads** |
+
+<Warning>
+  **Reading the endpoint key needs `flows:manage`, not `flows:read`**, even though it is a `GET`. Its response carries `endpointUrl`, and the token in that URL is a **credential**: Meta authenticates to the endpoint by decrypting, and the matching public key is public by construction. Whoever holds both can forge a request Pilot Status will decrypt and forward to your webhook under our signature. A read-only credential is still a credential.
+</Warning>
 
 <Note>
   `flows:read` is a slug of its own and is **not** `templates:read`. A template listing returns text your workspace wrote; a Flow response returns what a **customer** typed into a form — a name, a phone, sometimes a document number. The two are gated separately on purpose.
@@ -159,10 +163,55 @@ Returns what customers submitted, joined to the contact who answered, within the
 ## `data_exchange` endpoint key
 
 <Note>
-  **Not yet exposed on the public API.** The key management for the `data_exchange` endpoint — generating the keypair, registering the public half with Meta, and reading back whether Meta still holds ours — is built, but has no REST endpoint yet. This section will list it here the day it does.
-
-  What the feature does, and the design behind it, is described in [Flows](/concepts/flows). If you need it before it is exposed, talk to support.
+  Only needed for Flows whose screens call your backend — see [Flows](/concepts/flows) for the full picture. `{numberId}` is the number your API key is bound to. The private key never leaves Pilot Status and is returned by no endpoint; `endpointUrl` is the base to register on your Flow, with the Flow id appended as a final segment.
 </Note>
+
+### Read the current state
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json
+{
+  "configured": true,
+  "publicKey": "-----BEGIN PUBLIC KEY-----\n...",
+  "uploadedAt": "2026-09-02T10:00:00.000Z",
+  "endpointUrl": "https://pilotstatus.com.br/api/flows/endpoint/AbC123...",
+  "metaStatus": "VALID"
+}
+```
+
+| `metaStatus` | Meaning |
+| --- | --- |
+| `VALID` | Meta holds the key we hold. Nothing to do. |
+| `MISMATCH` | Meta holds a **different** key. Every `data_exchange` Flow on this number is failing — rotate. |
+| `NOT_SET` | Meta holds no key for this number yet. |
+| `UNKNOWN` | We could not read Meta's side. |
+
+<Warning>
+  **`UNKNOWN` is not `NOT_SET`, and collapsing them is expensive.** A Graph call that failed says nothing about what Meta holds. Treating it as "no key" means rotating — and rotating replaces a key that was probably fine.
+</Warning>
+
+### Generate or rotate
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+The response is the one above plus `"replaced"`, which says which of three things happened: a first-time creation, a retry of a pair Meta never accepted, or a **replacement of a key that was live**.
+
+<Warning>
+  **Replacing a LIVE key is destructive and requires `{"confirm": true}`.**
+
+  Meta holds exactly one public key per phone number, so registering a new one replaces the old — and the previous private half is overwritten here at the same moment. It cannot be restored, and every `data_exchange` exchange in flight on that number stops decrypting. Without the flag the request is refused with `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION`.
+
+  ⚠️ The **first** setup does not ask for confirmation, and neither does retrying a key Meta never accepted — there is nothing to destroy in either case. A confirmation demanded where nothing can be lost trains the reflex that disarms it in the one case where it protects.
+</Warning>
 
 ## Errors
 
@@ -190,6 +239,16 @@ Every failure of this surface answers the same envelope — there is exactly one
 | `FLOW_UNKNOWN_FIELDS` | 400 | The body carried a field the route does not accept |
 | `FLOW_PUBLISH_REQUIRES_CONFIRMATION` | 400 | `publish` without `"confirm": true` |
 | `FLOW_DEPRECATE_INVALID_SUCCESSOR` | 400 | `supersededByFlowId` present but blank or unknown |
+| `FLOW_CLONE_SOURCE_NOT_ON_META` | 409 | The source Flow exists here but has not reached Meta, so there is nothing to clone from |
+| `FLOW_PREVIEW_UNAVAILABLE` | 502 | Meta answered without a preview link. Not ours — retry |
+| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Rotating over a LIVE key without `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | The keypair could not be generated or stored |
+| `FLOW_NUMBER_NOT_FOUND` | 404 | The number in the path is not this key's number |
+| `FLOW_CLONE_SOURCE_NOT_ON_META` | 409 | The source exists here but has not reached Meta — nothing to clone from |
+| `FLOW_PREVIEW_UNAVAILABLE` | 502 | Meta answered without a preview link. Not ours — retry |
+| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Rotating over a LIVE key without `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | The keypair could not be generated or stored |
+| `FLOW_NUMBER_NOT_FOUND` | 404 | The number in the path is not this key's number |
 | `FLOW_BODY_INVALID` | 400 | Malformed body, or a required field missing |
 | `INVALID_PAGINATION` | 400 | `page` × `pageSize` past the deep-offset ceiling |
 | `INTERNAL_ERROR` | 500 | Ours. Retry, then tell support the code |
