@@ -160,10 +160,22 @@ curl "https://pilotstatus.com.br/v1/flows/flw_local_1/responses?page=1&pageSize=
 
 Devolve o que os clientes enviaram, ligado ao contato que respondeu, dentro da janela de retenção. Resposta vencida nunca é servida.
 
+<Warning>
+  **Uma página curta pode ser uma página truncada — e ela avisa.** `FlowResponse` não tem coluna `flowId` — a única aresta do Flow para as respostas passa pelo token da sessão — então uma requisição correlaciona no máximo **10.000** envios daquele Flow. Passando desse teto, o payload traz `"notice": "FLOW_RESPONSES_WINDOW_TRUNCATED"` ao lado dos normais `responses`/`total`/`page`/`pageSize`/`totalPages`.
+
+  É um **`200`**, não um erro, e o campo some quando nada foi cortado. Leia: quem reconcilia contra uma página curta sem olhar o `notice` conclui que perdeu envios.
+</Warning>
+
 ## Chave do endpoint `data_exchange`
 
 <Note>
   Só é necessária para Flows cujas telas chamam o seu backend — veja [Flows](/pt-BR/concepts/flows) para o quadro completo. `{numberId}` é o número ao qual a sua chave está amarrada. A chave privada nunca sai do Pilot Status e não é devolvida por endpoint nenhum; `endpointUrl` é a base para registrar no seu Flow, com o id do Flow acrescentado como segmento final.
+</Note>
+
+<Note>
+  **As duas rotas agem sobre o número da própria chave, e o `{numberId}` do caminho tem de bater com ele.** Uma chave escopada por número já nomeia o seu; uma chave de conta precisa estreitar com `x-whatsapp-number-id`. Um id de caminho que não bate responde `404` `FLOW_NUMBER_NOT_FOUND` — nunca `403`, e o mesmo corpo quer o id seja de outro tenant, quer seja de outro número seu, para que um palpite errado não aprenda nada.
+
+  `uploadedAt` é `null` quando um par foi gerado aqui mas a Meta nunca aceitou. Isso não é o mesmo que não ter chave, e é o estado que um `POST` repetido RETOMA em vez de substituir.
 </Note>
 
 ### Ler o estado atual
@@ -228,7 +240,7 @@ Toda falha desta superfície responde o mesmo envelope — existe exatamente uma
 | `FLOW_NOT_FOUND` | 404 | Nenhum Flow com esse id dentro da WABA da sua chave |
 | `FLOW_NOT_DRAFT` | 409 | O Flow saiu de `DRAFT` — clone para começar nova versão |
 | `FLOW_REQUIRES_META_NUMBER` | 422 | O número da chave não é Meta, ou não tem WABA |
-| `FLOW_NUMBER_FROM_KEY` | 422 | Não foi possível derivar o número a partir da chave |
+| `FLOW_NUMBER_FROM_KEY` | 400 | A requisição nomeou o número (`whatsappNumberId`, `numberId` ou `wabaId`, no corpo ou na query) — ele vem da chave, e nunca é aceito ao lado dela |
 | `FLOW_JSON_INVALID` | 422 | A Meta recusou o documento — leia `validationErrors` |
 | `FLOW_JSON_REQUIRED` | 400 | `flowJson` ausente ou vazio |
 | `FLOW_NAME_REQUIRED` | 400 | `name` faltando na criação |
@@ -239,11 +251,9 @@ Toda falha desta superfície responde o mesmo envelope — existe exatamente uma
 | `FLOW_UNKNOWN_FIELDS` | 400 | O corpo trouxe campo que a rota não aceita |
 | `FLOW_PUBLISH_REQUIRES_CONFIRMATION` | 400 | `publish` sem `"confirm": true` |
 | `FLOW_DEPRECATE_INVALID_SUCCESSOR` | 400 | `supersededByFlowId` presente mas em branco ou desconhecido |
-| `FLOW_CLONE_SOURCE_NOT_ON_META` | 409 | A origem existe aqui mas não chegou à Meta — não há o que clonar |
-| `FLOW_PREVIEW_UNAVAILABLE` | 502 | A Meta respondeu sem link de preview. Não é nosso — tente de novo |
 | `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Rotacionar sobre chave VIVA sem `"confirm": true` |
-| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | O par de chaves não pôde ser gerado ou gravado |
-| `FLOW_NUMBER_NOT_FOUND` | 404 | O número do caminho não é o número desta chave |
+| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | Nosso. A metade privada não pode ser guardada cifrada, e recusamos gerar em vez de guardá-la em claro |
+| `FLOW_NUMBER_NOT_FOUND` | 404 | O número do caminho não é o número ao qual esta chave está amarrada |
 | `FLOW_BODY_INVALID` | 400 | Corpo malformado, ou campo obrigatório faltando |
 | `INVALID_PAGINATION` | 400 | `page` × `pageSize` além do teto de offset profundo |
 | `INTERNAL_ERROR` | 500 | Nosso. Tente de novo e informe o código ao suporte |
