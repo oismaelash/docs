@@ -160,10 +160,22 @@ curl "https://pilotstatus.com.br/v1/flows/flw_local_1/responses?page=1&pageSize=
 
 Returns what customers submitted, joined to the contact who answered, within the retention window. Responses past their expiry are never served.
 
+<Warning>
+  **A short page can be a truncated page, and it says so.** `FlowResponse` carries no `flowId` column — the only edge from a Flow to its answers runs through the session token — so one request correlates at most **10,000** of that Flow's sends. Past that ceiling the payload carries `"notice": "FLOW_RESPONSES_WINDOW_TRUNCATED"` alongside the normal `responses`/`total`/`page`/`pageSize`/`totalPages`.
+
+  It is a **`200`**, not an error, and the field is absent whenever nothing was cut. Read it: a caller that reconciles against a short page without checking `notice` concludes submissions were lost.
+</Warning>
+
 ## `data_exchange` endpoint key
 
 <Note>
   Only needed for Flows whose screens call your backend — see [Flows](/concepts/flows) for the full picture. `{numberId}` is the number your API key is bound to. The private key never leaves Pilot Status and is returned by no endpoint; `endpointUrl` is the base to register on your Flow, with the Flow id appended as a final segment.
+</Note>
+
+<Note>
+  **Both endpoints act on the key's own number, and `{numberId}` in the path must agree with it.** A number-scoped key names its number by itself; an account-wide key must narrow with `x-whatsapp-number-id`. A path id that does not match answers `404` `FLOW_NUMBER_NOT_FOUND` — never `403`, and the same body whether the id belongs to another tenant or to another of your own numbers, so that a wrong guess learns nothing.
+
+  `uploadedAt` is `null` when a pair was generated here but Meta never accepted it. That is not the same as no key at all, and it is the state a repeat `POST` resumes rather than replaces.
 </Note>
 
 ### Read the current state
@@ -228,7 +240,7 @@ Every failure of this surface answers the same envelope — there is exactly one
 | `FLOW_NOT_FOUND` | 404 | No Flow with that id inside your key's WABA |
 | `FLOW_NOT_DRAFT` | 409 | The Flow left `DRAFT` — clone it to start a new version |
 | `FLOW_REQUIRES_META_NUMBER` | 422 | The key's number is not a Meta number, or has no WABA |
-| `FLOW_NUMBER_FROM_KEY` | 422 | The number could not be derived from the key |
+| `FLOW_NUMBER_FROM_KEY` | 400 | The request named the number (`whatsappNumberId`, `numberId` or `wabaId`, in body or query) — it comes from the key, and is never accepted alongside it |
 | `FLOW_JSON_INVALID` | 422 | Meta refused the document — read `validationErrors` |
 | `FLOW_JSON_REQUIRED` | 400 | `flowJson` absent or empty |
 | `FLOW_NAME_REQUIRED` | 400 | `name` missing on create |
@@ -239,16 +251,9 @@ Every failure of this surface answers the same envelope — there is exactly one
 | `FLOW_UNKNOWN_FIELDS` | 400 | The body carried a field the route does not accept |
 | `FLOW_PUBLISH_REQUIRES_CONFIRMATION` | 400 | `publish` without `"confirm": true` |
 | `FLOW_DEPRECATE_INVALID_SUCCESSOR` | 400 | `supersededByFlowId` present but blank or unknown |
-| `FLOW_CLONE_SOURCE_NOT_ON_META` | 409 | The source Flow exists here but has not reached Meta, so there is nothing to clone from |
-| `FLOW_PREVIEW_UNAVAILABLE` | 502 | Meta answered without a preview link. Not ours — retry |
 | `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Rotating over a LIVE key without `"confirm": true` |
-| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | The keypair could not be generated or stored |
-| `FLOW_NUMBER_NOT_FOUND` | 404 | The number in the path is not this key's number |
-| `FLOW_CLONE_SOURCE_NOT_ON_META` | 409 | The source exists here but has not reached Meta — nothing to clone from |
-| `FLOW_PREVIEW_UNAVAILABLE` | 502 | Meta answered without a preview link. Not ours — retry |
-| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Rotating over a LIVE key without `"confirm": true` |
-| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | The keypair could not be generated or stored |
-| `FLOW_NUMBER_NOT_FOUND` | 404 | The number in the path is not this key's number |
+| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | Ours. The private half cannot be stored encrypted, and we refuse to generate rather than store it in the clear |
+| `FLOW_NUMBER_NOT_FOUND` | 404 | The number in the path is not the number this key is bound to |
 | `FLOW_BODY_INVALID` | 400 | Malformed body, or a required field missing |
 | `INVALID_PAGINATION` | 400 | `page` × `pageSize` past the deep-offset ceiling |
 | `INTERNAL_ERROR` | 500 | Ours. Retry, then tell support the code |
