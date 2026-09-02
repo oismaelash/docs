@@ -1,0 +1,190 @@
+---
+mode: "wide"
+title: "Referência da API de Flows"
+sidebarTitle: "Flows"
+description: "Endpoints REST para criar, editar, publicar, clonar e depreciar WhatsApp Flows, ler as respostas dos formulários e configurar a chave do endpoint data_exchange."
+---
+
+Todo endpoint abaixo autentica com uma **chave de API com escopo de número** (`x-api-key`) cujo número seja **Meta (API Oficial)**. A WABA é DERIVADA desse número — não existe parâmetro para nomear uma, de propósito.
+
+| Permissão | Cobre |
+| --- | --- |
+| `flows:read` | Listar Flows e ler as respostas dos formulários |
+| `flows:manage` | Toda escrita: criar, atualizar, subir JSON, publicar, depreciar, apagar |
+
+<Note>
+  `flows:read` é um slug próprio e **não** é `templates:read`. A listagem de templates devolve texto que o seu workspace escreveu; a resposta de um Flow devolve o que um **cliente** digitou num formulário — um nome, um telefone, às vezes um documento. As duas coisas são gateadas separadamente de propósito.
+</Note>
+
+## Listar Flows
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows?page=1&pageSize=30" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+```json
+{
+  "flows": [
+    {
+      "id": "flw_local_1",
+      "metaFlowId": "1122334455",
+      "name": "Agendamento",
+      "metaStatus": "PUBLISHED",
+      "categories": ["APPOINTMENT_BOOKING"],
+      "jsonVersion": "7.1",
+      "healthStatus": "AVAILABLE",
+      "clonedFromFlowId": null,
+      "supersededByFlowId": null,
+      "createdAt": "2026-08-30T12:00:00.000Z",
+      "updatedAt": "2026-09-01T09:12:00.000Z"
+    }
+  ],
+  "total": 1, "page": 1, "pageSize": 30
+}
+```
+
+<Note>
+  `id` é o **id local** e é o único id que você manda de volta para nós. `metaFlowId` é o da Meta e é somente leitura — vem `null` enquanto o Flow existe aqui e ainda não chegou à Meta.
+</Note>
+
+## Criar ou clonar
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows" \
+  -H "x-api-key: ps_sua_chave_aqui" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Agendamento v2",
+    "categories": ["APPOINTMENT_BOOKING"],
+    "cloneFromFlowId": "flw_local_1"
+  }'
+```
+
+Devolve `201` com o Flow novo em `DRAFT`. Omita `cloneFromFlowId` para começar do zero.
+
+<Warning>
+  `cloneFromFlowId` é o **id local** do Flow de origem — o campo `id`, não o `metaFlowId`. Clonar é a única forma de mudar um Flow que já foi publicado.
+</Warning>
+
+## Renomear e recategorizar
+
+```bash
+curl -X PATCH "https://pilotstatus.com.br/v1/flows/flw_local_1" \
+  -H "x-api-key: ps_sua_chave_aqui" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "Agendamento (matriz)", "categories": ["APPOINTMENT_BOOKING"] }'
+```
+
+Aceita **apenas** `name` e `categories`. Nunca publica e nunca deprecia — essas têm endpoint próprio, para um engano num formulário não alcançar uma operação irreversível.
+
+## Subir o Flow JSON
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/flw_local_1/json" \
+  -H "x-api-key: ps_sua_chave_aqui" \
+  -H "Content-Type: application/json" \
+  -d '{ "flowJson": "{\"version\":\"7.1\",\"screens\":[...]}" }'
+```
+
+```json
+{ "validationErrors": [] }
+```
+
+<Warning>
+  **Um `200` aqui não significa que o documento compilou.** A Meta responde `200` com os problemas listados **dentro** do payload. Leia sempre `validationErrors` — array vazio é o único sucesso.
+
+  `flowJson` é uma **string**, nunca um objeto aninhado: a Meta compila os bytes exatos, e re-serializar reordenaria em silêncio o que você escreveu.
+</Warning>
+
+## Publicar
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/flw_local_1/publish" \
+  -H "x-api-key: ps_sua_chave_aqui" \
+  -H "Content-Type: application/json" \
+  -d '{ "confirm": true }'
+```
+
+<Warning>
+  **Irreversível na Meta.** Um Flow publicado nunca mais pode ser editado nem despublicado — só clonado num novo. `"confirm": true` é obrigatório; sem ele a requisição é recusada com `400`.
+</Warning>
+
+## Depreciar
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/flw_local_1/deprecate" \
+  -H "x-api-key: ps_sua_chave_aqui" \
+  -H "Content-Type: application/json" \
+  -d '{ "supersededByFlowId": "flw_local_2" }'
+```
+
+Aposenta o Flow sem apagar, e sem apagar as respostas já enviadas. `supersededByFlowId` é opcional — mas, se você mandar, tem de nomear um Flow real seu: string vazia é recusada em vez de ignorada em silêncio, porque cadeia de versões rompida é invisível depois.
+
+## Apagar
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/flows/flw_local_1" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+Só um `DRAFT` pode ser apagado. Qualquer outro estado devolve `409`.
+
+## Ler as respostas dos formulários
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows/flw_local_1/responses?page=1&pageSize=30" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+Devolve o que os clientes enviaram, ligado ao contato que respondeu, dentro da janela de retenção. Resposta vencida nunca é servida.
+
+## Chave do endpoint `data_exchange`
+
+Só é necessária para Flows cujas telas chamam o seu backend. Veja [Flows](/pt-BR/concepts/flows) para o quadro completo.
+
+```bash
+# Gera o par e registra a metade pública na Meta
+curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_sua_chave_aqui"
+
+# Confere se a Meta ainda tem a NOSSA chave
+curl "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+```json
+{
+  "configured": true,
+  "publicKey": "-----BEGIN PUBLIC KEY-----\n...",
+  "uploadedAt": "2026-09-02T10:00:00.000Z",
+  "endpointUrl": "https://pilotstatus.com.br/api/flows/endpoint/AbC123...",
+  "metaStatus": "VALID"
+}
+```
+
+| `metaStatus` | Significado |
+| --- | --- |
+| `VALID` | A Meta tem a chave que nós temos. Nada a fazer. |
+| `MISMATCH` | A Meta tem uma chave **diferente**. Todo Flow `data_exchange` deste número está falhando — rotacione. |
+| `NOT_SET` | A Meta ainda não tem chave para este número. |
+| `UNKNOWN` | Não conseguimos ler o lado da Meta. **Não** é o mesmo que `NOT_SET` — não rotacione por causa disso. |
+
+A chave privada nunca sai do Pilot Status e nunca é devolvida por endpoint nenhum. `endpointUrl` é a base para registrar no seu Flow, com o id do Flow acrescentado como segmento final.
+
+## Erros
+
+| Código | Status | Significado |
+| --- | --- | --- |
+| `FLOW_NOT_FOUND` | 404 | Nenhum Flow com esse id dentro da WABA da sua chave |
+| `FLOW_NOT_DRAFT` | 409 | O Flow saiu de `DRAFT` — clone para começar nova versão |
+| `FLOW_CATEGORY_INVALID` | 400 | Categoria fora do conjunto que a Meta aceita |
+| `FLOW_JSON_REQUIRED` | 400 | `flowJson` ausente ou vazio |
+| `FLOW_BODY_INVALID` | 400 | Corpo malformado, ou campo obrigatório faltando |
+| `FLOW_REQUIRES_META_NUMBER` | 422 | O número da chave não é Meta, ou não tem WABA |
+
+## Relacionado
+
+- [Flows](/pt-BR/concepts/flows)
+- [Templates](/pt-BR/concepts/templates)
+- [Visão geral da API](/pt-BR/api/overview)

@@ -1,0 +1,148 @@
+---
+mode: "wide"
+title: "WhatsApp Flows: formulários dentro da conversa"
+sidebarTitle: "Flows"
+description: "Crie e publique WhatsApp Flows no Pilot Status — formulários que abrem dentro do chat. Inclui data_exchange, em que o Pilot Status cuida da criptografia da Meta e repassa JSON puro ao seu webhook."
+---
+
+Um **Flow** é um formulário que abre dentro da conversa do WhatsApp — uma tela de agendamento, um formulário de lead, uma triagem de suporte — em vez de uma conversa que o cliente precisa digitar inteira. O Pilot Status cuida do ciclo completo: criar e editar no painel (`/flows`), pela API REST (`/v1/flows`), ou anexar um Flow a um template com um **botão FLOW**.
+
+Flows existem **apenas em números Meta (API Oficial)**. Eles pertencem à conta WhatsApp Business (WABA), não a um número — então todo número daquela WABA envia os mesmos Flows.
+
+## Dois tipos de Flow
+
+A diferença é se o seu backend participa enquanto o formulário está aberto.
+
+|  | **NAVIGATE** | **`data_exchange`** |
+| --- | --- | --- |
+| Telas | Fixas, definidas no Flow JSON | Decididas pelo seu servidor, tela a tela |
+| Seu backend | Não é chamado durante o formulário | É chamado a cada tela |
+| Precisa de endpoint | Não | Sim |
+| Uso típico | Captura de lead, pesquisa, cadastro | Agendamento com disponibilidade real, consultas, validação |
+
+Um Flow `NAVIGATE` é entregue, preenchido e enviado uma vez. Você recebe a resposta inteira no fim. **A maioria dos Flows é assim, e não precisa de nada além do Flow JSON.**
+
+Um Flow `data_exchange` responde no meio do formulário: o cliente escolhe a data e a tela seguinte mostra os horários que estão _de fato_ livres. Isso exige um endpoint HTTPS que a Meta chama a cada tela — e a Meta cifra cada uma dessas chamadas.
+
+## Ciclo de vida
+
+<Steps>
+  <Step title="Criar">
+    O Flow nasce em `DRAFT`. Dê um nome e uma ou mais categorias (`SIGN_UP`, `SIGN_IN`, `APPOINTMENT_BOOKING`, `LEAD_GENERATION`, `CONTACT_US`, `CUSTOMER_SUPPORT`, `SURVEY`, `OTHER`).
+  </Step>
+  <Step title="Subir o Flow JSON">
+    As telas são um documento JSON. A Meta responde `200` **com a lista de erros de validação** em vez de recusar — então resposta verde não significa que o documento compilou. Leia sempre `validationErrors`.
+  </Step>
+  <Step title="Publicar">
+    Publicar torna o Flow enviável — e é **irreversível do lado da Meta**. Um Flow publicado nunca mais pode ser editado.
+  </Step>
+  <Step title="Clonar para fazer uma nova versão">
+    Como publicar é definitivo, a forma de mudar um Flow no ar é **clonar**. O clone é um Flow novo, com id novo, e o Pilot Status grava a linhagem para você seguir a cadeia de uma versão à seguinte.
+  </Step>
+  <Step title="Depreciar">
+    Aposentar um Flow **não** o apaga, e não apaga as respostas que já foram enviadas. Você pode nomear o Flow que o substitui, que é o que mantém a cadeia de versões legível.
+  </Step>
+</Steps>
+
+<Warning>
+  **Publicar não tem volta.** Não existe editar nem despublicar — só clonar. O painel pede uma confirmação explícita, e a API exige `"confirm": true` no corpo, justamente para um clique errado não conseguir fazer isso.
+</Warning>
+
+## Enviar um Flow
+
+Anexe o Flow a um template usando um **botão FLOW**. O botão amarra por `flow_id`, por `flow_name` ou por `flow_json` embutido. Todo envio cunha um **`flow_token`** novo — um valor de uso único que liga aquele envio específico à resposta que chega depois.
+
+## Receber a resposta
+
+Quando o cliente envia, a Meta manda um `nfm_reply` com o `flow_token` e o formulário preenchido como **string** JSON. O Pilot Status guarda e expõe em `GET /v1/flows/{id}/responses`, já ligado ao contato que respondeu.
+
+<Note>
+  As respostas ficam guardadas por uma janela de retenção e são podadas depois. A janela é aplicada **na leitura**, então uma resposta vencida nunca é servida — mesmo que o podador ainda não tenha chegado nela.
+</Note>
+
+## `data_exchange`: o Pilot Status cuida da criptografia
+
+Essa é a parte que costuma impedir os times de colocar um Flow interativo no ar.
+
+A Meta cifra cada chamada ao endpoint: um payload AES-GCM cuja chave chega embrulhada em RSA-2048/OAEP-SHA-256 sob a sua chave pública, e a resposta tem de voltar cifrada com **a mesma chave AES sob um IV invertido bit a bit**. Errar qualquer detalhe disso produz um Flow que simplesmente não avança, sem erro nenhum dos dois lados.
+
+**Então o endpoint é o Pilot Status.** A gente guarda a chave, decifra a requisição da Meta e repassa **JSON puro por HTTPS** para um webhook seu. A sua resposta é cifrada na volta. Você nunca implementa RSA, AES-GCM nem o IV invertido.
+
+<Steps>
+  <Step title="Registrar uma chave para o número">
+    O Pilot Status gera um par RSA-2048, guarda a metade privada cifrada e registra a pública na Meta para aquele número. Você recebe de volta a URL do endpoint.
+  </Step>
+  <Step title="Apontar o Flow para ela">
+    Registre essa URL como o endpoint do Flow. Ela tem dois segmentos — um identificando o número, outro identificando o Flow — porque a requisição da Meta não diz a qual Flow ela pertence.
+  </Step>
+  <Step title="Configurar a URL do seu webhook no Flow">
+    É para onde repassamos o JSON decifrado. Fica configurado **por Flow**, porque um número serve vários formulários e cada um costuma ser um serviço diferente do seu lado.
+  </Step>
+</Steps>
+
+### O que o seu webhook recebe
+
+```json
+{
+  "version": "3.0",
+  "action": "data_exchange",
+  "screen": "PICK_SLOT",
+  "data": { "day": "2026-09-10" },
+  "flow_token": "a1b2c3...",
+  "flow_id": "1122334455",
+  "number_id": "wn_abc123"
+}
+```
+
+`action` é `INIT` quando o formulário abre, `BACK` quando o cliente volta, e `data_exchange` quando ele envia uma tela.
+
+A requisição vai assinada com HMAC-SHA256 do corpo cru no cabeçalho **`x-pilot-status-signature`** — o mesmo cabeçalho e o mesmo esquema dos webhooks de saída do Pilot Status, então quem já valida aqueles não precisa de um segundo caminho.
+
+### O que o seu webhook precisa devolver
+
+JSON puro, nomeando a próxima tela e os dados dela:
+
+```json
+{
+  "screen": "CONFIRM",
+  "data": { "slots": ["09:00", "11:30", "16:00"] }
+}
+```
+
+Para encerrar o Flow, devolva a tela reservada `SUCCESS`:
+
+```json
+{
+  "screen": "SUCCESS",
+  "data": { "extension_message_response": { "params": { "flow_token": "a1b2c3..." } } }
+}
+```
+
+<Note>
+  **Responda em poucos segundos.** A Meta segura a requisição aberta enquanto uma pessoa olha para um spinner, e não há retentativa — resposta lenta é tela falhada. Faça o trabalho demorado depois de responder, não antes.
+</Note>
+
+### Quando o seu webhook falha
+
+Se o seu servidor está fora, estoura o tempo ou responde algo inutilizável, o Pilot Status **não** repassa a falha como tela quebrada. O cliente vê um erro genérico na tela em que já está, e pode tentar de novo — nada do que ele digitou se perde, e nada sobre a sua infraestrutura é mostrado a ele.
+
+<Warning>
+  Duas verificações de saúde são tratadas por nós e nunca chegam ao seu webhook:
+
+  - O **`ping`** da Meta — respondido pelo Pilot Status, para o seu servidor estar dormindo não fazer a Meta marcar o endpoint como doente para todo Flow do número.
+  - **Chave divergente** — se a cópia da Meta um dia sair de sincronia com a nossa, o endpoint manda a Meta rebuscá-la. Esse é o _único_ significado daquela resposta, então falha do seu lado nunca é reportada como problema de chave.
+</Warning>
+
+## Saúde e estado
+
+Cada Flow carrega um estado (`DRAFT`, `PUBLISHED`, `DEPRECATED`, `BLOCKED`, `THROTTLED`), a versão do Flow JSON que a Meta compilou, e um veredito de saúde.
+
+<Note>
+  A Meta descontinuou a Flows Metrics API em **30/04/2026**, sem sucessor. O webhook `flows` passou a ser o único canal que reporta um Flow sendo limitado ou uma chave pública vencendo — o Pilot Status assina esse webhook e grava o que ele diz no Flow, para o sinal sobreviver à janela dos logs.
+</Note>
+
+## Relacionado
+
+- [API de Flows](/pt-BR/api/flows)
+- [Templates](/pt-BR/concepts/templates)
+- [Webhooks](/pt-BR/concepts/webhooks)
