@@ -10,10 +10,10 @@ Every endpoint below authenticates with a **number-scoped API key** (`x-api-key`
 | Permission | Covers |
 | --- | --- |
 | `flows:read` | Listing Flows and reading form responses |
-| `flows:manage` | Every write — create, update, upload JSON, publish, deprecate, delete — **and both endpoint-key endpoints, including the one that only reads** |
+| `flows:manage` | Every write — create, update, upload JSON, publish, deprecate, delete — **and the whole `data_exchange` surface (the endpoint key and the Flow endpoint), reads included** |
 
 <Warning>
-  **Reading the endpoint key needs `flows:manage`, not `flows:read`**, even though it is a `GET`. Its response carries `endpointUrl`, and the token in that URL is a **credential**: Meta authenticates to the endpoint by decrypting, and the matching public key is public by construction. Whoever holds both can forge a request Pilot Status will decrypt and forward to your webhook under our signature. A read-only credential is still a credential.
+  **Reading the endpoint key or the Flow endpoint needs `flows:manage`, not `flows:read`**, even though both are `GET`s. Their responses carry `endpointUrl` / `endpointUri` / `metaEndpointUri`, and the token inside those URLs is a **credential**: Meta authenticates to the endpoint by decrypting, and the matching public key is public by construction. Whoever holds both can forge a request Pilot Status will decrypt and forward to your webhook under our signature. A read-only credential is still a credential — which is also why the value never appears on `GET /v1/flows`.
 </Warning>
 
 <Note>
@@ -160,6 +160,10 @@ curl "https://pilotstatus.com.br/v1/flows/flw_local_1/responses?page=1&pageSize=
 
 Returns what customers submitted, joined to the contact who answered, within the retention window. Responses past their expiry are never served.
 
+<Note>
+  **This is the stored copy, not the live one.** For submissions as they arrive, subscribe to the `flow.response_received` webhook event — the answers come with it, already parsed. The chat message that carries a submission holds only Meta's label (`Sent` / `Enviado`), so a webhook subscribed to `messages` alone sees nothing. See [Receive Flow responses](/guides/flow-responses).
+</Note>
+
 <Warning>
   **A short page can be a truncated page, and it says so.** `FlowResponse` carries no `flowId` column — the only edge from a Flow to its answers runs through the session token — so one request correlates at most **10,000** of that Flow's sends. Past that ceiling the payload carries `"notice": "FLOW_RESPONSES_WINDOW_TRUNCATED"` alongside the normal `responses`/`total`/`page`/`pageSize`/`totalPages`.
 
@@ -169,7 +173,9 @@ Returns what customers submitted, joined to the contact who answered, within the
 ## `data_exchange` endpoint key
 
 <Note>
-  Only needed for Flows whose screens call your backend — see [Flows](/concepts/flows) for the full picture. `{numberId}` is the number your API key is bound to. The private key never leaves Pilot Status and is returned by no endpoint; `endpointUrl` is the base to register on your Flow, with the Flow id appended as a final segment.
+  Only needed for Flows whose screens call your backend — see [Connect your API to a Flow](/guides/flow-data-exchange) for the full picture. `{numberId}` is the number your API key is bound to. The private key never leaves Pilot Status and is returned by no endpoint; `endpointUrl` is the base to register on your Flow, with the Flow id appended as a final segment.
+
+  **The key is per number; the forwarding URL is per Flow.** Both have a surface here — the key below, the URL under [Flow endpoint](#flow-endpoint) — and neither appears on `GET /v1/flows`, deliberately: an API key can be a third-party application, and the address of your internal webhook is not something a read-only integration is owed.
 </Note>
 
 <Note>
@@ -206,24 +212,106 @@ curl "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
   **`UNKNOWN` is not `NOT_SET`, and collapsing them is expensive.** A Graph call that failed says nothing about what Meta holds. Treating it as "no key" means rotating — and rotating replaces a key that was probably fine.
 </Warning>
 
-### Generate or rotate
+### Generate, rotate, or import
+
+One `POST`, two verbs. **The presence of `privateKey` decides which**, and they are not interchangeable: generating registers a new public key at Meta and replaces whatever was there; importing registers nothing.
+
+| Body | What it does |
+| --- | --- |
+| `{}` | **Generate** — mint an RSA-2048 pair, store the private half encrypted, register the public half with Meta. |
+| `{"privateKey": "-----BEGIN PRIVATE KEY-----\n…"}` | **Import** — store the key you already own. Nothing is registered with Meta. |
+| `{"privateKey": "…", "passphrase": "…"}` | Import a passphrase-protected PEM. |
+| `{…, "confirm": true}` | Required when either verb would replace a key that is **live** at Meta. |
+
+Only `confirm`, `privateKey` and `passphrase` are accepted; anything else is refused, never ignored. The response is the read shape above plus `"replaced"`, which says whether a key that was live has just been displaced — a `200` alone does not.
 
 ```bash
+# Generate
 curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
   -H "x-api-key: ps_your_key_here" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
 
-The response is the one above plus `"replaced"`, which says which of three things happened: a first-time creation, a retry of a pair Meta never accepted, or a **replacement of a key that was live**.
+```bash
+# Import
+curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "privateKey": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN...\n-----END PRIVATE KEY-----\n" }'
+```
 
 <Warning>
-  **Replacing a LIVE key is destructive and requires `{"confirm": true}`.**
+  **Replacing a LIVE key requires `{"confirm": true}`, on both verbs.**
 
-  Meta holds exactly one public key per phone number, so registering a new one replaces the old — and the previous private half is overwritten here at the same moment. It cannot be restored, and every `data_exchange` exchange in flight on that number stops decrypting. Without the flag the request is refused with `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION`.
+  Generating is destructive at Meta: Meta holds exactly one public key per phone number, so registering a new one replaces the old — and the previous private half is overwritten here at the same moment. It cannot be restored, and every `data_exchange` exchange in flight on that number stops decrypting.
 
-  ⚠️ The **first** setup does not ask for confirmation, and neither does retrying a key Meta never accepted — there is nothing to destroy in either case. A confirmation demanded where nothing can be lost trains the reflex that disarms it in the one case where it protects.
+  Importing is destructive **here**: nothing at Meta changes, but the stored private half is replaced, and if Meta cannot confirm the new one the number is left holding a key that may decrypt nothing. The two are refused with different codes for that reason — `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` and `FLOW_ENDPOINT_KEY_IMPORT_REQUIRES_CONFIRMATION` — because a caller who read "this replaces your Meta registration" after an import would go checking Meta for a change that never happened.
+
+  ⚠️ The **first** setup does not ask, and neither does retrying a key Meta never accepted (`uploadedAt: null`) — there is nothing to destroy in either case. A confirmation demanded where nothing can be lost trains the reflex that disarms it in the one case where it protects.
 </Warning>
+
+<Note>
+  **An import is verified before it is stored.** We derive the public half from the key you sent and compare it with Meta's: a match is stored and stamped (`metaStatus: "VALID"`); a **mismatch is refused outright** with `FLOW_ENDPOINT_KEY_IMPORT_MISMATCH` and nothing is written; a Graph call we could not make leaves the key stored with `uploadedAt: null` and `metaStatus` `UNKNOWN`/`NOT_SET`, which is the "not confirmed" state, not a failure.
+</Note>
+
+<Warning>
+  **`passphrase` is used once and is not stored.** It opens the PEM; the key is then kept normalised and encrypted at rest, and the passphrase has no reader afterwards. Keep your own copy — we cannot return it. Send it only when the key has one (an empty string is a passphrase, not the absence of one), and never on its own: `passphrase` without `privateKey` is refused with `FLOW_ENDPOINT_KEY_PASSPHRASE_ORPHAN`, because that same request would otherwise **generate** a pair and replace your registration at Meta.
+</Warning>
+
+## Flow endpoint
+
+Where a `data_exchange` Flow's decrypted exchanges are forwarded. Per **Flow**, `flows:manage` on every verb including the `GET`, and `{flowId}` is the **local** id from `GET /v1/flows`.
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```bash
+curl -X PUT "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://api.your-company.com/flows/booking" }'
+```
+
+```json
+{
+  "flowId": "flw_local_1",
+  "url": "https://api.your-company.com/flows/booking",
+  "hasSecret": true,
+  "endpointUri": "https://pilotstatus.com.br/api/flows/endpoint/AbC123.../1122334455",
+  "metaEndpointUri": null,
+  "drift": false,
+  "numberHasKey": true,
+  "numberKeyUploadedAt": "2026-09-02T10:00:00.000Z",
+  "warnings": ["FLOW_ENDPOINT_META_URI_UNKNOWN"],
+  "secret": "9f2c…"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `url` | Your destination. `null` when the Flow has none. |
+| `hasSecret` | Whether a signing secret exists. The secret itself is never readable. |
+| `endpointUri` | **Our** proxy URL for this Flow — the value Meta's `endpoint_uri` must hold. |
+| `metaEndpointUri` | What Meta has registered, as the hourly sync last read it. |
+| `drift` | `true` only when both are known and differ — Meta is calling someone else. |
+| `numberHasKey` / `numberKeyUploadedAt` | The key state of the number this credential is bound to. |
+| `warnings` | Every reason this Flow will not work. Treat the set as open. |
+| `secret` | **Only on the response that minted it**, and never again. |
+
+<Note>
+  Body fields: `url` (required, `https://` or an explicit `null` to clear — never omitted) and `rotateSecret` (boolean). `PUT` and `PATCH` are the same operation. The number comes from the credential and is refused in the body (`FLOW_NUMBER_FROM_KEY`).
+
+  **Saving the URL does not register anything at Meta** — that is a separate act against a separate system, so that a rename cannot silently hijack a Flow already pointed at someone else's endpoint. `metaEndpointUri`, `drift` and `warnings` are how you see the difference.
+</Note>
+
+<Warning>
+  **`secret` is shown exactly once, on the request that minted it.** It is stored encrypted with no read path back. `secret: null` on a later save means one already existed and was kept — `hasSecret` is what says whether there is one at all. `{"rotateSecret": true}` mints a fresh one, and is the only exit from a secret that leaked.
+</Warning>
+
+Full walkthrough, including the contract your endpoint must satisfy: [Connect your API to a Flow](/guides/flow-data-exchange).
 
 ## Errors
 
@@ -251,8 +339,20 @@ Every failure of this surface answers the same envelope — there is exactly one
 | `FLOW_UNKNOWN_FIELDS` | 400 | The body carried a field the route does not accept |
 | `FLOW_PUBLISH_REQUIRES_CONFIRMATION` | 400 | `publish` without `"confirm": true` |
 | `FLOW_DEPRECATE_INVALID_SUCCESSOR` | 400 | `supersededByFlowId` present but blank or unknown |
-| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Rotating over a LIVE key without `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Generating over a LIVE key without `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_IMPORT_REQUIRES_CONFIRMATION` | 400 | Importing over a LIVE key without `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_IMPORT_MISMATCH` | 400 | The imported key is not the one Meta has registered. **Nothing was written** |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_REQUIRED` | 400 | The PEM is passphrase-protected and none was sent |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_WRONG` | 400 | The passphrase does not open the key — the key itself was not rejected |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_ORPHAN` | 400 | `passphrase` with no `privateKey`. Refused, not ignored: without the key this request would **generate** a pair |
+| `FLOW_ENDPOINT_KEY_PEM_INVALID` | 400 | `privateKey` is unreadable as PEM, is not RSA, or is under 2048 bits |
+| `FLOW_ENDPOINT_KEY_IMPORT_INVALID` | 400 | `privateKey` or `passphrase` present but not a string |
 | `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | Ours. The private half cannot be stored encrypted, and we refuse to generate rather than store it in the clear |
+| `FLOW_ENDPOINT_URL_REQUIRED` | 400 | `url` absent or unusable. It may be `null` **explicitly**, never by omission |
+| `FLOW_ENDPOINT_URL_NOT_HTTPS` | 400 | The destination is not `https://`. The refused URL is not echoed back |
+| `FLOW_ENDPOINT_ROTATE_INVALID` | 400 | `rotateSecret` is not a boolean. `"true"` is not coerced |
+| `FLOW_ENDPOINT_SECRET_UNAVAILABLE` | 500 | Ours. The signing secret cannot be stored encrypted, and forwarding unsigned is not an option |
+| `FLOW_NUMBER_WABA_MISMATCH` | 422 | The key's number is not in the WABA that owns this Flow and can never send it |
 | `FLOW_NUMBER_NOT_FOUND` | 404 | The number in the path is not the number this key is bound to |
 | `FLOW_BODY_INVALID` | 400 | Malformed body, or a required field missing |
 | `INVALID_PAGINATION` | 400 | `page` × `pageSize` past the deep-offset ceiling |
@@ -265,5 +365,7 @@ Every failure of this surface answers the same envelope — there is exactly one
 ## Related
 
 - [Flows](/concepts/flows)
+- [Receive Flow responses](/guides/flow-responses)
+- [Connect your API to a Flow](/guides/flow-data-exchange)
 - [Templates](/concepts/templates)
 - [API Overview](/api/overview)

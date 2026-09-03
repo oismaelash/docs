@@ -1,0 +1,191 @@
+---
+title: "Receive WhatsApp Flow Responses on Your Webhook"
+sidebarTitle: "Flow responses"
+description: "A submitted Flow arrives as interactive.nfm_reply and the chat bubble only says Sent. The answers travel on the flow.response_received webhook event — which you have to subscribe to."
+mode: "wide"
+---
+
+A customer opens your Flow, fills it in, taps **Submit** — and the webhook that reaches you looks empty. The message is there, but its text is the single word `Sent`.
+
+Nothing was lost. The answers travel on a **different event**, and that event has to be subscribed to explicitly.
+
+## What Meta actually delivers
+
+A submitted Flow does not arrive as a text message. It arrives as an interactive reply of type `nfm_reply`, with three fields:
+
+| Field | What it is |
+| --- | --- |
+| `response_json` | **The answers** — a JSON **string**, not an object. |
+| `body` | A short label Meta renders in the chat bubble: `Sent`, or `Enviado` in Portuguese. |
+| `name` | The Flow's name. |
+
+## Why the message text says `Sent`
+
+Because that is the only thing in the payload that is message text. The chat bubble, `chat_messages.text`, `content` on `message.*` events and `GET /v1/messages` all carry the same value, and that value is Meta's `body` (falling back to the Flow name when `body` is blank).
+
+<Note>
+  **The answers are deliberately not folded into `content`.** It is a public contract: an integrator reading `content` is promised message *text*. Putting a JSON blob there would break every consumer that renders or matches on it, and would spill names, phone numbers and document numbers into a plain-text field with no schema — irreversibly, once a customer has started parsing it.
+
+  The answers get a surface of their own instead, where they are structured, correlatable by `flow_token`, and pruned on a retention window.
+</Note>
+
+## The answers arrive on `flow.response_received`
+
+<Warning>
+  **You have to subscribe to the event. A webhook whose `events` list contains only `messages` never receives it** — and nothing reports an error, which is exactly what "my webhook arrives empty" looks like from the outside.
+
+  Flows run on **Meta (Cloud API)** numbers, whose webhooks are subscribed by Meta's own field names (`messages`, `flows`, …). `flow.response_received` is a Pilot Status event delivered alongside them, in the canonical `{ event, data }` shape — like the normalized `call.*` events. Add it to the list.
+</Warning>
+
+<Tabs>
+  <Tab title="Dashboard">
+    Open **Webhooks** (`/webhooks`), edit the webhook attached to the Flow's number, and tick `flow.response_received` in the event picker. `events` is replaced wholesale when you save, so keep the events you already had.
+  </Tab>
+  <Tab title="API">
+    ```bash
+    curl -X PATCH "https://pilotstatus.com.br/v1/webhooks/wh_01HZX..." \
+      -H "x-api-key: ps_your_key_here" \
+      -H "Content-Type: application/json" \
+      -d '{ "events": ["messages", "flow.response_received"] }'
+    ```
+
+    `events` **replaces** the whole list on `PATCH` — there is no merge. Send every event you want, not just the new one.
+  </Tab>
+</Tabs>
+
+### The payload
+
+```json
+{
+  "event": "flow.response_received",
+  "data": {
+    "event": "flow.response_received",
+    "flowId": "flw_local_1",
+    "metaFlowId": "1122334455",
+    "flowToken": "a1b2c3d4e5f6...",
+    "messageId": "wamid.HBgNNTU2Nzk5...",
+    "whatsappNumberId": "cmm0abc123",
+    "from": "+5567999999999",
+    "receivedAt": "2026-09-03T14:21:07.000Z",
+    "response": {
+      "resolucao": "resolvido",
+      "nota_atendimento": "9",
+      "comentario": "Teste",
+      "nome_indicado": "Bruno",
+      "telefone_indicado": "6799..."
+    },
+    "responseRaw": null
+  }
+}
+```
+
+| Field | Presence | Description |
+| --- | --- | --- |
+| `flowId` | nullable | The **local** Flow id — the same `id` used everywhere in [`/v1/flows`](/api/flows). `null` when the submission cannot be tied back to a Flow we know. |
+| `metaFlowId` | nullable | Meta's own Flow id. |
+| `flowToken` | nullable | The one-time token minted when the Flow was sent, when it can be read. |
+| `messageId` | always | The **wamid** of the message carrying the submission. |
+| `whatsappNumberId` | always | The Pilot Status id of the number that received it. |
+| `from` | always | Who answered, in E.164. |
+| `receivedAt` | always | ISO 8601. |
+| `response` | nullable | **The answers, already parsed.** An object. |
+| `responseRaw` | nullable | The raw bytes — **only** when the parse failed. |
+
+<Warning>
+  **`response` and `responseRaw` are two halves of one field, and the failing half is the one worth handling.** Meta sends the answers as a JSON *string*; when that string parses, you get `response` and `responseRaw` is `null`. When it does not, you get `responseRaw` with the bytes exactly as they arrived and `response` is `null`.
+
+  The submission is never dropped for being unparseable — losing what a customer typed is worse than handing you something you have to look at. So read both, and do not assume `response` is an object without checking.
+</Warning>
+
+## Chatwoot shows `content: null` — that is Chatwoot
+
+<Warning>
+  **Chatwoot has no reader for `nfm_reply`.** A Flow submission that reaches Chatwoot through its **own native WhatsApp Cloud channel** lands as a message with `content: null` — no text, no answers. It is a limitation of Chatwoot's WhatsApp parser, not of the number or of the Flow, and no setting on our side changes what its parser understands. On that channel Pilot Status is not in the path at all, so there is nothing we can add to the thread: **this event is the way to read those answers.**
+</Warning>
+
+<Note>
+  **On the API-mirror channel, we do add them.** When the conversation is mirrored by Pilot Status, a submission is posted twice: the public bubble is replaced with a short fixed line (`📋 Formulário respondido`) instead of Meta's label, and the answers go into a **private note** on the same conversation — one `field: value` line per answer, agents only, never shown to the customer.
+
+  The note is a convenience for humans and is capped per value; the event is the machine-readable copy and is never truncated. See [Chatwoot](/integrations/chatwoot).
+</Note>
+
+## Reading answers later
+
+The event is the live channel. The stored copy is at [`GET /v1/flows/{id}/responses`](/api/flows#read-form-responses), joined to the contact who answered, and kept for **30 days**.
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows/flw_local_1/responses?page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+<Note>
+  The retention window is enforced **on read**, so a submission past its expiry is never served — pull what you need to keep into your own store rather than treating this endpoint as the archive.
+</Note>
+
+## Minimal example
+
+Node + Express. It verifies the signature over the **raw** body, then reads the answers.
+
+```javascript
+const express = require("express");
+const crypto = require("node:crypto");
+
+const app = express();
+
+// Raw body: the signature is over the bytes we sent. `JSON.stringify(req.body)`
+// reorders keys and fails verification on legitimate requests.
+app.post("/hooks/whatsapp", express.raw({ type: "application/json" }), (req, res) => {
+  const expected = crypto
+    .createHmac("sha256", process.env.WEBHOOK_SECRET)
+    .update(req.body)
+    .digest("hex");
+  const got = req.get("x-pilot-status-signature") ?? "";
+  if (expected.length !== got.length ||
+      !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(got))) {
+    return res.sendStatus(401);
+  }
+
+  const { event, data } = JSON.parse(req.body.toString("utf8"));
+  if (event !== "flow.response_received") return res.sendStatus(200);
+
+  const answers = data.response ?? safeParse(data.responseRaw);
+  console.log("flow answers from", data.from, answers);
+
+  // Answer fast; do the slow work after.
+  res.sendStatus(200);
+});
+
+function safeParse(raw) {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return { unparsed: raw }; }
+}
+
+app.listen(3000);
+```
+
+## Still empty? Check these, in order
+
+<Steps>
+  <Step title="Is `flow.response_received` in the webhook's `events`?">
+    `GET /v1/webhooks` and read the list back. A webhook with `["messages"]` receives inbound messages and nothing else.
+  </Step>
+  <Step title="Is the webhook on the right number?">
+    Webhooks are scoped per number, and a Flow is answered on the number that sent it.
+  </Step>
+  <Step title="Is the webhook active, and is the delivery being attempted?">
+    `GET /v1/webhooks/{id}/logs` shows recent attempts. A paused webhook (`active: false`) delivers nothing.
+  </Step>
+  <Step title="Are you reading `content` instead of `data.response`?">
+    `content` is Meta's label and always will be. The answers are in `data.response`.
+  </Step>
+  <Step title="Are you reading the delivery LOG rather than the delivery?">
+    On a number configured to keep no customer content, the answers are still **delivered** to your endpoint in full — it is the stored copy of the payload that is blanked (`from`, `response` and `responseRaw` nulled). A log entry that looks empty next to a `200` is that redaction, not a failed delivery.
+  </Step>
+</Steps>
+
+## Related
+
+- [Flows](/concepts/flows) — lifecycle, publishing, cloning
+- [Connect your API to a Flow](/guides/flow-data-exchange) — the `data_exchange` half
+- [Webhook events](/api/webhooks/events)
+- [Flows API](/api/flows)
