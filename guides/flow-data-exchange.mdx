@@ -1,0 +1,418 @@
+---
+title: "Connect Your API to a WhatsApp Flow (data_exchange)"
+sidebarTitle: "Connect your API to a Flow"
+description: "Serve a Flow's screens from your own backend. Pilot Status is the encrypted endpoint Meta calls, and forwards plain signed JSON to your API — the exact request and response contract."
+mode: "wide"
+---
+
+**Yes — a Flow can read from your API while the customer is filling it in.** That is what a `data_exchange` Flow is: the customer picks a date and the next screen shows the slots that are *actually* free, because your backend decided them.
+
+You do not implement any of Meta's cryptography. **Pilot Status is the endpoint Meta calls.** We decrypt the request, `POST` plain JSON to a URL you control, and encrypt your answer on the way back.
+
+<Note>
+  A `NAVIGATE` Flow — one whose screens are all fixed in the Flow JSON — needs none of this. Everything on this page is only for Flows whose screens call your backend. See [Flows](/concepts/flows) for the difference.
+</Note>
+
+## The shape of one exchange
+
+<Steps>
+  <Step title="The customer fills a screen">
+    Meta sends an **encrypted** request — AES-GCM, key RSA-OAEP-wrapped under the public key registered for that phone number — to the endpoint registered on the Flow, which is us.
+  </Step>
+  <Step title="We decrypt and forward">
+    A plain JSON `POST` to your URL, with an HMAC signature header. No RSA, no AES-GCM, no inverted IV on your side.
+  </Step>
+  <Step title="You answer with the next screen">
+    `200` with `{ "screen": "...", "data": { ... } }`.
+  </Step>
+  <Step title="We encrypt the reply">
+    Meta renders the screen you named.
+  </Step>
+</Steps>
+
+## What we `POST` to you
+
+```json
+{
+  "version": "3.0",
+  "action": "data_exchange",
+  "screen": "PICK_SLOT",
+  "data": { "day": "2026-09-10" },
+  "flow_token": "a1b2c3...",
+  "flow_id": "1122334455",
+  "number_id": "cmm0abc123"
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `version` | Meta's protocol version, echoed from its request. |
+| `action` | `INIT` when the form opens, `BACK` when the customer steps back, `data_exchange` when they submit a screen. |
+| `screen` | The screen they were on. **Can be `null`** — Meta does not populate it on `INIT`, because no screen has been shown yet. |
+| `data` | What that screen collected. `{}` when there is nothing. |
+| `flow_token` | The one-time token minted when the Flow was sent. `null` when absent. |
+| `flow_id` | **Meta's** Flow id — the same value the endpoint URL was registered with. |
+| `number_id` | The Pilot Status id of the number the Flow is running on. |
+
+<Note>
+  **`action` is never `null`, and a request without one is never forwarded.** Every call Meta makes carries `INIT`, `BACK`, `data_exchange` or `ping`. A decrypted payload that carries none of them is dropped before it reaches you, because forwarding it would put our signature on something that is not a Flow exchange — and your endpoint would have no way to tell it apart from one we vouched for on purpose.
+</Note>
+
+### The signature
+
+When the Flow has a signing secret, the forward carries **`x-pilot-status-signature`**: the hex-encoded HMAC-SHA256 of the **raw request body**, keyed with that secret.
+
+It is the same header and the same scheme as [Pilot Status outbound webhooks](/api/webhooks/configure#verify-the-signature) — if you already verify those, you need no second code path. Compute the HMAC over the bytes as received, before any JSON parsing.
+
+<Warning>
+  **No secret configured means no header.** The forward still happens, unsigned, and anyone who can reach your URL can then post a plausible body to it. Set the secret.
+</Warning>
+
+## What you must return
+
+Plain JSON, `2xx`, naming the **next screen**:
+
+```json
+{
+  "screen": "CONFIRM",
+  "data": { "slots": ["09:00", "11:30", "16:00"] }
+}
+```
+
+| Rule | Detail |
+| --- | --- |
+| Status | Must be `2xx`. Anything else is treated as a failure. |
+| Body | Must be **valid JSON**. |
+| `screen` | **Required.** The name of the next screen, as it appears in your Flow JSON. |
+| `data` | Optional. Omitted or `{}` is fine. |
+| `version` | **Do not send it.** We echo Meta's own version; yours is ignored. |
+
+To finish the Flow, return the reserved `SUCCESS` screen. ⚠️ This shape is **Meta's** own convention, not ours: we forward `screen` and `data` to Meta untouched, so `extension_message_response` never appears anywhere in Pilot Status — do not look for it in our API reference.
+
+```json
+{
+  "screen": "SUCCESS",
+  "data": { "extension_message_response": { "params": { "flow_token": "a1b2c3..." } } }
+}
+```
+
+<Warning>
+  **A `200` that names no `screen` is refused on purpose.** It is the one failure mode that looks like success from your side and is invisible from the customer's: Meta renders a payload without a screen as *nothing at all*, so the person sits in front of a form that never advances and never errs.
+
+  We treat it exactly like a failed call instead — the customer gets a retryable error on the screen they are already looking at, and the exchange is recorded as a failure you can find.
+</Warning>
+
+## Answer fast
+
+Meta holds the request open while a person watches a spinner, and **there is no retry** — a slow answer is a failed screen, not a delayed one. Our forward is abandoned after a few seconds (8 s by default), which is deliberately tighter than the budget for ordinary webhooks: those are notifications nobody is waiting for.
+
+Do the slow work *after* you reply.
+
+## What we handle without calling you
+
+<Warning>
+  **Meta's `ping` never reaches your endpoint.** It is Meta's health check, and we answer it ourselves. A health check that depends on a third party being awake reports the wrong thing to the wrong party — your server being down for a deploy would make Meta mark the endpoint unhealthy for *every* Flow on that number.
+
+  So: do not implement `ping`, and do not expect to see it in your logs.
+</Warning>
+
+## When your API fails
+
+Whatever the cause — down, timed out, non-`2xx`, unparseable body, no `screen` — the customer never sees your infrastructure and never sees a broken screen.
+
+| What happened | What the customer sees |
+| --- | --- |
+| Your API failed, and we know which screen they were on | The **same** screen, with a generic retryable error over it. Nothing they typed is lost. |
+| Your API failed on `INIT` or `BACK`, where Meta sent no screen name | Meta's own failure screen. There is no screen to echo, and the only always-valid name is `SUCCESS` — which would *close* the form and tell them they submitted something you never processed. |
+
+<Note>
+  **A failure on your side is never reported to Meta as a key problem.** The `421` response that tells Meta "re-download my public key" is returned for exactly one thing: we could not decrypt. Meta caches that fetch, so using it for an outage of yours would make the lie outlive the outage.
+</Note>
+
+### Seeing what happened
+
+The Flow's screen in the dashboard lists the recent exchanges: the action, the screen, the outcome, your HTTP status and how long you took. Bodies are recorded **only on a failure** — a successful exchange keeps timing and shape and nothing the customer typed — and the whole record expires after 24 hours.
+
+## Setting it up, in order
+
+Three things have to be true before Meta calls your API, and they become true in this order. Skip one and you get a Flow that looks configured, raises no error anywhere, and is never called.
+
+<Steps>
+  <Step title="1. The key — on the NUMBER">
+    Generate one with us, or import the one you already use. Meta stores exactly **one** public key per phone number, so this is a property of the number and never of a Flow.
+  </Step>
+  <Step title="2. The forwarding URL — on the FLOW">
+    Where we `POST` the decrypted exchange. One number serves several forms, and each form is usually a different service on your side, so this is per Flow.
+  </Step>
+  <Step title="3. `endpoint_uri` — at Meta, on the Flow">
+    Meta only calls an endpoint it has registered. **Saving the URL with us registers nothing at Meta**, on purpose: doing it as a side effect of a rename would hijack the Flow of someone already running their own endpoint. Read the endpoint back and compare `endpointUri` (ours) with `metaEndpointUri` (Meta's) — `drift: true` means Meta is calling someone else.
+  </Step>
+</Steps>
+
+|  | Level | Where it is set |
+| --- | --- | --- |
+| **Key** — what decrypts Meta's request | Per **number** | `POST /v1/numbers/{numberId}/flow-endpoint-key`, or the **Flows** screen in the dashboard |
+| **Endpoint URL** — where we forward | Per **Flow** | `PUT /v1/flows/{flowId}/endpoint`, or the **Flows** screen in the dashboard |
+
+<Warning>
+  **The key is per NUMBER, however it is presented next to a Flow.** Changing it changes decryption for every `data_exchange` Flow on that phone number, not just the one you were looking at.
+</Warning>
+
+<Warning>
+  **A destination saved on a number with no key is a Flow that will never be called.** Meta has nothing to encrypt with, so it never reaches us, so the destination is never used — and nothing on either side reports it. That is what `numberHasKey` and the `warnings` list exist for; `FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` is the one that matters.
+</Warning>
+
+<Note>
+  **Every one of these endpoints requires `flows:manage` — including the reads.** `endpointUri` and `metaEndpointUri` embed the number's endpoint token, and that token is the only thing the public endpoint authenticates on, while the matching public key is published by Meta. Whoever holds both can forge a request we will decrypt and forward to your webhook under our signature. That is also why the value is deliberately absent from `GET /v1/flows`: a read-only credential is still a credential.
+</Note>
+
+### Step 1 — the key: generate, or import your own
+
+<Tabs>
+  <Tab title="Generate (we mint the pair)">
+    We create an RSA-2048 pair, store the private half encrypted, and register the public half with Meta for that number.
+
+    ```bash
+    curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+      -H "x-api-key: ps_your_key_here" \
+      -H "Content-Type: application/json" \
+      -d '{}'
+    ```
+
+    <Warning>
+      **Generating REPLACES the key Meta holds for that phone number.** Meta stores one public key per number — registering ours overwrites whatever was there.
+
+      If you already run your own `data_exchange` endpoint on that number, it stops decrypting the moment we register. That is why replacing a **live** key requires `{"confirm": true}` and is otherwise refused with `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION`.
+
+      First-time setup does not ask, and neither does retrying a pair Meta never accepted (`uploadedAt: null`) — a retry re-uploads the **same** stored public half rather than minting another, so there is nothing to destroy in either case.
+    </Warning>
+  </Tab>
+  <Tab title="Import (you already have one)">
+    Hand us the private key you already use. **Nothing changes at Meta** — the public key registered there stays exactly as it is, which is what makes importing the safe option when a setup of yours is already working. The only Graph call on this path is a read.
+
+    ```bash
+    curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+      -H "x-api-key: ps_your_key_here" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "privateKey": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN...\n-----END PRIVATE KEY-----\n"
+      }'
+    ```
+
+    We derive the public half from the key you sent and compare it with the one Meta reports. The three outcomes are **not** symmetric:
+
+    | What Meta reports | What happens |
+    | --- | --- |
+    | It holds **exactly this key** | Stored, `uploadedAt` stamped with the moment we proved it, `metaStatus: "VALID"`. |
+    | It holds a **different** key | **Refused, and nothing is written** — `400 FLOW_ENDPOINT_KEY_IMPORT_MISMATCH`. Storing it would leave a number reporting `configured: true` that decrypts nothing, and the symptom would land days later on your customer's phone as a form that never advances. |
+    | It could not be asked, or holds nothing | **Stored anyway**, with `uploadedAt: null` and `metaStatus` `UNKNOWN` / `NOT_SET`. An import that vanishes because a Graph call failed is worse than one you can see and re-check. |
+
+    <Note>
+      **`uploadedAt: null` is the "not confirmed" signal, and a `200` alone does not say it.** Read the field. The same null on a generated key means "we hold a pair Meta has never accepted", and both are repaired the same way: `POST` again to upload the stored public half.
+    </Note>
+
+    <Warning>
+      **A passphrase is used ONCE and is NOT stored.** We open the PEM with it, store the key normalised and encrypted at rest, and after that the passphrase has no reader — there is nothing left for it to open. Storing the armoured bytes instead would fail to open on **every** request Meta makes, surfacing as a `421` that blames a stale Meta key.
+
+      Keep your own copy. We cannot give it back, and we never ask for it again.
+    </Warning>
+
+    ```bash
+    -d '{ "privateKey": "...", "passphrase": "the passphrase that opens it" }'
+    ```
+
+    Send `passphrase` only when the key actually has one — an empty string is not "no passphrase" to a PEM reader, and offering one for an unprotected key fails the parse. A `passphrase` with no `privateKey` is refused (`FLOW_ENDPOINT_KEY_PASSPHRASE_ORPHAN`) rather than ignored: without the key, that same request **generates** a fresh pair and replaces your registration at Meta.
+  </Tab>
+</Tabs>
+
+Read the state back at any time — what we hold, when Meta last confirmed it, and whether Meta's copy still agrees with ours:
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json
+{
+  "configured": true,
+  "publicKey": "-----BEGIN PUBLIC KEY-----\n...",
+  "uploadedAt": "2026-09-02T10:00:00.000Z",
+  "endpointUrl": "https://pilotstatus.com.br/api/flows/endpoint/AbC123...",
+  "metaStatus": "VALID"
+}
+```
+
+<Warning>
+  **`UNKNOWN` is not `NOT_SET`.** A Graph call that failed says nothing about what Meta holds. Reading it as "no key" leads to rotating — and rotating replaces a key that was probably fine.
+</Warning>
+
+<Note>
+  `endpointUrl` stops **before** the Flow id: the token segment identifies the number, and the segment after it identifies the Flow. The full address Meta must call is `{endpointUrl}/{metaFlowId}`, which is what `endpointUri` on the endpoint resource already spells out for you.
+</Note>
+
+### Step 2 — the forwarding URL, on the Flow
+
+```bash
+curl -X PUT "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://api.your-company.com/flows/booking" }'
+```
+
+```json
+{
+  "flowId": "flw_local_1",
+  "url": "https://api.your-company.com/flows/booking",
+  "hasSecret": true,
+  "endpointUri": "https://pilotstatus.com.br/api/flows/endpoint/AbC123.../1122334455",
+  "metaEndpointUri": null,
+  "drift": false,
+  "numberHasKey": true,
+  "numberKeyUploadedAt": "2026-09-02T10:00:00.000Z",
+  "warnings": ["FLOW_ENDPOINT_META_URI_UNKNOWN"],
+  "secret": "9f2c…"
+}
+```
+
+<Warning>
+  **`secret` comes back on exactly one response in the life of a secret: the request that minted it.** It is stored encrypted and there is no read path back. Copy it now — `secret: null` on a later save means "one already existed and was kept", not "there is none". `hasSecret` answers that question.
+
+  Lost it? `{"url": "...", "rotateSecret": true}` mints a fresh one, which is also the only exit from a secret that leaked.
+</Warning>
+
+<Note>
+  The URL must be `https://` — refused otherwise, with no flag to allow `http://`. The body we forward is your end user's form answers, decrypted by us one hop earlier; over `http://` that is personal data in the clear, put there by the only participant that had already removed the encryption.
+
+  `{"url": null}` clears the destination and **keeps** the secret, so re-pointing the Flow later does not force you to redeploy a verifier for a value that never leaked.
+</Note>
+
+<Note>
+  `PUT` and `PATCH` are the same operation here — the resource has one settable field, so there is nothing for "replace" and "merge" to disagree about. `GET` the same path for the state without writing.
+
+  The number is not a parameter: it comes from the API key (a number-scoped key names its own; an account-wide key narrows with `x-whatsapp-number-id`). Naming it in the body is refused with `FLOW_NUMBER_FROM_KEY`, and a key bound to a number outside the Flow's WABA gets `422 FLOW_NUMBER_WABA_MISMATCH` rather than an answer about a number that could never send this Flow.
+</Note>
+
+### Step 3 — point Meta at us
+
+Register `endpointUri` as the Flow's `endpoint_uri` in Meta's Flow Manager. Then read the endpoint back:
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+| Field | Read it as |
+| --- | --- |
+| `endpointUri` | Where Meta **should** call — ours, for this Flow. |
+| `metaEndpointUri` | Where Meta **is** calling, as the hourly sync last read it. |
+| `drift` | `true` only when both are known and differ: Meta is calling someone else and every exchange bypasses us silently. |
+| `warnings` | Every reason this Flow will not work, as stable codes. |
+
+| Warning | Meaning |
+| --- | --- |
+| `FLOW_ENDPOINT_NO_DESTINATION` | Nothing to forward to. Normal for a `NAVIGATE`-only Flow. |
+| `FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` | **The one that silences a Flow.** No keypair on the number. Meta has nothing to encrypt with, so we are unreachable **by construction**. |
+| `FLOW_ENDPOINT_KEY_NOT_AT_META` | A pair is stored here and Meta never accepted it (`uploadedAt: null`). The endpoint answers `421` to everything until the upload is retried. |
+| `FLOW_ENDPOINT_META_URI_UNKNOWN` | Meta has no `endpoint_uri` on this Flow — **or** the hourly sync has not written this row yet. The column cannot tell the two apart, and inventing the distinction would be worse than naming the ambiguity. |
+| `FLOW_ENDPOINT_META_DRIFT` | Meta has an `endpoint_uri` and it is not ours. |
+
+<Note>
+  Treat the list as **open**, not closed: keep any code you do not recognise on screen. A warning you cannot spell is still a warning, and dropping it is how a screen reports "everything is fine" over a server that just said otherwise.
+</Note>
+
+## Error codes
+
+Every failure of these endpoints answers the same envelope — one shape, one spelling:
+
+```json
+{ "error": "<Portuguese>", "errorEN": "<English>", "code": "<CODE>" }
+```
+
+**The key** (`/v1/numbers/{numberId}/flow-endpoint-key`):
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Generating over a key that is **live** at Meta. Send `{"confirm": true}`. |
+| `FLOW_ENDPOINT_KEY_IMPORT_REQUIRES_CONFIRMATION` | 400 | Importing over a key that is **live**. Nothing is registered at Meta by an import, but the private half stored here is replaced — and if Meta cannot confirm the new one, the number is left holding a key that may decrypt nothing. |
+| `FLOW_ENDPOINT_KEY_IMPORT_MISMATCH` | 400 | The key you sent is not the one Meta has registered. **Nothing was written.** |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_REQUIRED` | 400 | The PEM is passphrase-protected and no `passphrase` came with it. |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_WRONG` | 400 | The passphrase does not open the key. The key itself was not rejected — it simply was not opened. |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_ORPHAN` | 400 | `passphrase` with no `privateKey`. Refused rather than ignored: without the key, this request **generates** a pair and replaces your registration at Meta. |
+| `FLOW_ENDPOINT_KEY_PEM_INVALID` | 400 | `privateKey` is not a readable PEM, is not RSA, or is under 2048 bits. Send the whole `.pem`, `-----BEGIN …-----` lines included. |
+| `FLOW_ENDPOINT_KEY_IMPORT_INVALID` | 400 | `privateKey` or `passphrase` is present but not a string. |
+| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | Ours. The private half cannot be stored encrypted, and we refuse to generate rather than store it in the clear. |
+| `FLOW_NUMBER_NOT_FOUND` | 404 | The number in the path is not the one this key is bound to. Never `403`, and the same body whether the id is another tenant's or another of yours. |
+
+**The forwarding URL** (`/v1/flows/{flowId}/endpoint`):
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `FLOW_ENDPOINT_URL_REQUIRED` | 400 | `url` absent, or present and unusable. It may be `null` **explicitly** — never by omission, because a forgotten field would otherwise wipe a working configuration. |
+| `FLOW_ENDPOINT_URL_NOT_HTTPS` | 400 | The destination is not `https://`. The refused URL is not echoed back — it may carry a token in its query string. |
+| `FLOW_ENDPOINT_ROTATE_INVALID` | 400 | `rotateSecret` is not a boolean. `"true"` is not coerced: reading it as `false` would answer `200` to someone rotating a leaked secret while the old one stayed live. |
+| `FLOW_ENDPOINT_SECRET_UNAVAILABLE` | 500 | Ours. The signing secret cannot be stored encrypted, and forwarding unsigned is not an option we take. |
+| `FLOW_NUMBER_WABA_MISMATCH` | 422 | Your key's number is not in the WABA that owns this Flow and can never send it. |
+| `FLOW_NOT_FOUND` | 404 | No Flow with that id for this credential. |
+
+Shared by both: `FLOW_BODY_INVALID` (400, malformed body — a truncated one is never treated as empty), `FLOW_UNKNOWN_FIELDS` (400), `FLOW_NUMBER_FROM_KEY` (400, the body named the number), `FLOW_REQUIRES_META_NUMBER` (422), `INTERNAL_ERROR` (500).
+
+<Note>
+  Never assume the set is closed — branch on the codes you handle and fall through to `code` for the rest.
+</Note>
+
+## Minimal example
+
+Node + Express. One screen that answers with the slots for a chosen day.
+
+```javascript
+const express = require("express");
+const crypto = require("node:crypto");
+
+const app = express();
+
+app.post("/flows/booking", express.raw({ type: "application/json" }), (req, res) => {
+  // 1. Verify the signature over the RAW body.
+  const expected = crypto
+    .createHmac("sha256", process.env.FLOW_ENDPOINT_SECRET)
+    .update(req.body)
+    .digest("hex");
+  const got = req.get("x-pilot-status-signature") ?? "";
+  if (expected.length !== got.length ||
+      !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(got))) {
+    return res.sendStatus(401);
+  }
+
+  const { action, screen, data } = JSON.parse(req.body.toString("utf8"));
+
+  // 2. `screen` is null on INIT — there is no screen yet.
+  if (action === "INIT") {
+    return res.json({ screen: "PICK_DAY", data: { days: nextSevenDays() } });
+  }
+
+  if (screen === "PICK_DAY") {
+    return res.json({ screen: "PICK_SLOT", data: { slots: slotsFor(data.day) } });
+  }
+
+  if (screen === "PICK_SLOT") {
+    // Reply first; book after. Meta is holding this request open.
+    res.json({ screen: "SUCCESS", data: {} });
+    queueBooking(data);
+    return;
+  }
+
+  // Never return 200 without a `screen` — we refuse it, and rightly.
+  return res.status(400).json({ error: "unexpected screen" });
+});
+
+app.listen(3000);
+```
+
+<Note>
+  Never send `version` back. It is Meta's protocol version, echoed from its request — a wrong one fails the whole exchange rather than one field.
+</Note>
+
+## Related
+
+- [Flows](/concepts/flows) — lifecycle, publishing, cloning
+- [Receive Flow responses](/guides/flow-responses) — the submitted answers, on a webhook
+- [Flows API](/api/flows)

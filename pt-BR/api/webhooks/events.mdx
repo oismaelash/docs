@@ -94,6 +94,10 @@ Os eventos de chamada normalizados — `call.ringing`, `call.connected`, `call.e
 - `call.permission_updated` — (**somente Meta Cloud API**) resposta a uma solicitação de permissão de chamada (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`)
 - `calls` — (**somente Meta Cloud API**) envelope **nativo** `calls` da Meta (bruto `entry[].changes[].value`, carregando SDPs) para sinalização WebRTC personalizada
 
+**WhatsApp Flows** (somente números Meta Cloud API, veja [Flows](/pt-BR/concepts/flows)):
+
+- `flow.response_received` — um cliente enviou um Flow, com as respostas dentro. Veja [Payload de `flow.*`](#payload-de-flow).
+
 ## Identificadores e correlação
 
 Todo evento de mensagem carrega dois IDs distintos:
@@ -502,6 +506,65 @@ Diferente de `message.*` / `number.*`, os eventos normalizados `call.*` são **p
 
 Consulte o [fluxo completo de chamadas](/pt-BR/api/calls/overview).
 
+## Payload de `flow.*`
+
+O `flow.response_received` dispara quando um cliente envia um [Flow](/pt-BR/concepts/flows). Usa o envelope canônico `{ event, data }` mesmo em número Meta, e está disponível **apenas** em números Meta Cloud API, porque Flows só existem lá.
+
+```json
+{
+  "event": "flow.response_received",
+  "data": {
+    "event": "flow.response_received",
+    "flowId": "flw_local_1",
+    "metaFlowId": "1122334455",
+    "flowToken": "a1b2c3d4e5f6...",
+    "messageId": "wamid.HBgNNTU2Nzk5...",
+    "whatsappNumberId": "cmm0abc123",
+    "from": "+5567999999999",
+    "receivedAt": "2026-09-03T14:21:07.000Z",
+    "response": {
+      "resolucao": "resolvido",
+      "nota_atendimento": "9",
+      "comentario": "Teste"
+    },
+    "responseRaw": null
+  }
+}
+```
+
+| Campo | Presença | Descrição |
+| --- | --- | --- |
+| `event` | sempre | `flow.response_received` — repetido dentro de `data`, além do envelope |
+| `flowId` | pode ser nulo | id **local** do Flow no Pilot Status, quando a submissão pode ser ligada a um Flow conhecido |
+| `metaFlowId` | pode ser nulo | o id do Flow na Meta |
+| `flowToken` | pode ser nulo | o token de uso único cunhado no envio do Flow, quando dá para lê-lo |
+| `messageId` | sempre | o **wamid** da mensagem que carrega a submissão |
+| `whatsappNumberId` | sempre | id Pilot Status do número que recebeu |
+| `from` | sempre | quem respondeu, em E.164 |
+| `receivedAt` | sempre | ISO 8601 |
+| `response` | pode ser nulo | as respostas enviadas, **já parseadas** |
+| `responseRaw` | pode ser nulo | os bytes crus — **só** quando o parse falhou |
+
+<Warning>
+  **O lado `message.*` de uma submissão não carrega resposta nenhuma, e isso é deliberado.** A Meta entrega um Flow enviado como resposta interativa do tipo `nfm_reply`, cujo `body` legível é um rótulo seco — `Enviado` / `Sent`. É esse rótulo que cai em `content`, em `chat_messages.text` e no `GET /v1/messages`; as respostas nunca vão para lá, porque `content` tem a promessa de ser *texto* de mensagem e um blob JSON ali quebraria todo consumidor que renderiza ou casa em cima dele.
+
+  Assine o `flow.response_received` — um webhook cuja lista de `events` contém só `messages` recebe o rótulo e mais nada, sem erro em lugar nenhum. Veja [Receber as respostas de um Flow](/pt-BR/guides/flow-responses).
+</Warning>
+
+<Note>
+  **Ou `response`, ou `responseRaw`, nunca os dois.** A Meta manda as respostas como *string* JSON. Quando parseia, você recebe `response`; quando não parseia, recebe `responseRaw` com os bytes como chegaram. A submissão nunca é descartada por não parsear, então confira qual dos dois veio.
+</Note>
+
+<Note>
+  **Sem respostas nenhuma, não sai evento.** Uma submissão que não carrega nada não dispara — um corpo vazio seria indistinguível, do seu lado, de um formulário enviado em branco.
+
+  O evento também só dispara para uma submissão que foi **gravada**. Uma reentrega da Meta de algo já guardado é silenciosa, que é a deduplicação que você quer; e também é silenciosa uma segunda submissão, distinta, que colidiu no mesmo literal de `flow_token` — o único caso em que o silêncio custa uma resposta. Tokens criados pelo Pilot Status nunca colidem; um Flow montado no Flow Manager da Meta com `flow_token` fixo pode.
+</Note>
+
+<Warning>
+  **Num número configurado para não guardar conteúdo do cliente, a entrega é completa e a cópia guardada não é.** O seu endpoint recebe o corpo inteiro; o payload guardado no log do webhook tem `from`, `response` e `responseRaw` apagados. Um registro que parece vazio ao lado de um `200` é essa ocultação, não uma entrega falhada.
+</Warning>
+
 ## Eventos da Meta Cloud API (envelope nativo)
 
 Um número conectado pela Meta Cloud API — [Embedded Signup](/pt-BR/guides/embedded-signup) ou credenciais coladas — **não** envia os eventos canônicos acima. Ele encaminha **o próprio envelope de webhook da Meta, literal**, com a chave no nome do campo que a Meta põe em `entry[].changes[].field`.
@@ -570,7 +633,7 @@ Estes são os nomes de campo que você pode colocar em `events` no [`POST /v1/we
 | `business_capability_update` | Capacidade/limites mudaram (ex.: máximo de conversas por dia). |
 | `business_status_update` | O status de verificação do negócio mudou. |
 | `calls` | O envelope **nativo** `calls` da Meta, com os SDPs — para sinalização WebRTC própria. Os eventos `call.*` normalizados abaixo são a leitura mais fácil. |
-| `flows` | Ciclo de vida e respostas do WhatsApp Flows. |
+| `flows` | Envelope **nativo** `flows` da Meta — sinais de ciclo de vida do Flow (throttling, chave pública desatualizada). **Não** é por onde chegam as respostas enviadas; isso é o `flow.response_received` abaixo. |
 | `payment_configuration_update` | Uma configuração de pagamento mudou. |
 | `user_preferences` | Um usuário deu opt-in ou opt-out de mensagens de marketing. |
 | `group_lifecycle_update` | Grupo criado / apagado. **Plano pago.** |
@@ -578,8 +641,9 @@ Estes são os nomes de campo que você pode colocar em `events` no [`POST /v1/we
 | `group_settings_update` | Configurações do grupo mudaram. **Plano pago.** |
 | `group_status_update` | O status do grupo mudou. **Plano pago.** |
 
-Mais as duas famílias compartilhadas com todos os outros vocabulários:
+Mais as famílias que **não** são o envelope da Meta:
 
+- **Respostas de Flow** — `flow.response_received`, só em números Meta, no formato canônico `{ event, data }`. Veja [Payload de `flow.*`](#payload-de-flow).
 - **Eventos normalizados de chamada** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` e `call.permission_updated` (só Meta). Esses são eventos planos do Pilot Status, não o envelope da Meta — veja [Payload de `call.*`](#payload-de-call).
 - **Ciclo de vida do número** — `number.created`, `number.connected`, `number.removed`. O `number.disconnected` é assinável mas **nunca dispara em número Meta**: uma transição de qualidade/status da Meta emite um evento de saúde do número, e esses só chegam em assinaturas `"*"`.
 

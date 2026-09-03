@@ -6,6 +6,69 @@ icon: "clock-rotate-left"
 
 What's new on the Pilot Status platform — API additions, changes and notable fixes. Subscribe via the RSS icon above.
 
+<Update label="2026-09-03" tags={["Flows", "Webhooks", "Chatwoot"]}>
+  ## Flow answers reach you: `flow.response_received`, and a `data_exchange` endpoint anyone can actually turn on
+
+  Two halves of the same hole, closed together.
+
+  ### The answers were stored and nowhere else
+
+  A submitted Flow arrives from Meta as `interactive.nfm_reply`, and the only human-readable thing in it is a label — `Sent` / `Enviado`. That label is what lands in `content`, in `GET /v1/messages` and in the Chatwoot mirror. The answers were written to storage and readable at `GET /v1/flows/{id}/responses`, but **no live surface carried them**: a webhook looked, for all practical purposes, empty.
+
+  **New event: `flow.response_received`**, carrying the answers already parsed.
+
+  ```json
+  {
+    "event": "flow.response_received",
+    "data": {
+      "event": "flow.response_received",
+      "flowId": "flw_local_1",
+      "metaFlowId": "1122334455",
+      "flowToken": "a1b2c3...",
+      "messageId": "wamid.HBgNNTU2Nzk5...",
+      "whatsappNumberId": "cmm0abc123",
+      "from": "+5567999999999",
+      "receivedAt": "2026-09-03T14:21:07.000Z",
+      "response": { "nota_atendimento": "9", "comentario": "Teste" },
+      "responseRaw": null
+    }
+  }
+  ```
+
+  **You have to subscribe to it.** A webhook whose `events` list contains only `messages` does not receive it, and nothing reports an error — which is exactly what the original report looked like.
+
+  ```bash
+  curl -X PATCH https://pilotstatus.com.br/v1/webhooks/wh_01HZX... \
+    -H "x-api-key: $PILOT_STATUS_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{ "events": ["messages", "flow.response_received"] }'
+  ```
+
+  `response` holds the parsed answers; `responseRaw` holds the raw bytes and is populated **only** when the parse failed. A submission is never dropped for being unparseable.
+
+  **Chatwoot.** Chatwoot's own WhatsApp parser does not know `nfm_reply` and renders a submission with `content: null`. That is Chatwoot's limitation, not the number's. On conversations **mirrored by Pilot Status** the answers are now posted as a **private note** — visible to agents, invisible to the customer — and the public bubble is replaced with a short fixed line instead of Meta's label. On Chatwoot's **native** Cloud channel we are not in the path at all, so the event is the only way to read them there.
+
+  ### `data_exchange`: the proxy is now reachable
+
+  Pilot Status has been the encrypted endpoint Meta calls for `data_exchange` Flows — we decrypt, forward plain JSON to your API, and encrypt your reply. Until today **there was no way to turn it on**: the forwarding URL had no writer, and no number had a key.
+
+  Both are configurable now — on the **Flows** screen, and on the public API: `POST /v1/numbers/{id}/flow-endpoint-key` for the key, `PUT /v1/flows/{id}/endpoint` for the URL, both gated at `flows:manage`. They sit at different levels, and the surfaces say so: the **URL is per Flow** (one number serves several forms), the **key is per number** (Meta stores exactly one public key per phone number).
+
+  **You can generate a key or import your own.**
+
+  - **Generate** — we create an RSA-2048 pair, store the private half encrypted, and register the public half with Meta. ⚠️ This **replaces** the key Meta holds for that number: if you already run your own `data_exchange` endpoint there, it stops decrypting. Rotating over a live key needs an explicit confirmation; a first-time setup does not, because there is nothing to destroy.
+  - **Import** — hand us the key you already use. **Nothing changes at Meta**; the only Graph call on that path is a read. We derive the public half from what you sent and compare it with Meta's: a match is stored and stamped; a **mismatch is refused outright** (`FLOW_ENDPOINT_KEY_IMPORT_MISMATCH`) with nothing written, because storing it would leave a number that reports `configured: true` and decrypts nothing; and a Graph call we could not make leaves the key **saved with `uploadedAt: null`** — marked unverified rather than lost. ⚠️ A passphrase-protected PEM is accepted, and the passphrase is used **once** to open it and is **not stored** — keep your own copy.
+
+  **The endpoint contract, unchanged and now documented.** We `POST` `{version, action, screen, data, flow_token, flow_id, number_id}` with an `x-pilot-status-signature` header — HMAC-SHA256 over the raw body, the same scheme as our outbound webhooks. You answer `2xx`, valid JSON, containing **`screen`**; `data` is optional; do **not** send `version` (we echo Meta's). Meta's `ping` is answered by us and never forwarded.
+
+  **A `200` without `screen` is refused on purpose.** Passed through, Meta renders it as nothing at all — the customer sits on a form that never advances and never errs. It is treated as a failed call instead: a retryable error over the screen they are already on.
+
+  **Saving the URL registers nothing at Meta** — pointing Meta's `endpoint_uri` at us stays a separate, deliberate act, so a rename cannot hijack a Flow already served by someone else's endpoint. The endpoint resource reports `metaEndpointUri`, `drift` and a `warnings` list (`FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` is the one that matters) so a save that changed nothing at Meta cannot look like one that did.
+
+  **New guides:** [Receive Flow responses](/guides/flow-responses) and [Connect your API to a Flow](/guides/flow-data-exchange).
+
+</Update>
+
 <Update label="2026-08-26" tags={["API", "Numbers", "Breaking"]}>
   ## Default changed: a new number no longer imports the device's history
 
