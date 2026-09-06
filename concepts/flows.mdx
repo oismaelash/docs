@@ -54,7 +54,14 @@ Attach the Flow to a template using a **FLOW button**. The button binds by `flow
 
 ## Receiving the answer
 
-When the customer submits, Meta sends an `nfm_reply` carrying the `flow_token` and the submitted form as a JSON **string**. Pilot Status stores it and exposes it at `GET /v1/flows/{id}/responses`, joined back to the contact who answered.
+When the customer submits, Meta sends an `nfm_reply` carrying the `flow_token` and the submitted form as a JSON **string**. There are two ways to read it:
+
+- **Live** — the `flow.response_received` webhook event, carrying the parsed answers. See [Receive Flow responses](/guides/flow-responses).
+- **Later** — `GET /v1/flows/{id}/responses`, joined back to the contact who answered.
+
+<Warning>
+  **The chat message that carries a submission has no answers in it, and the event has to be subscribed to.** Meta's `nfm_reply` puts a bare label in the message body — `Sent` / `Enviado` — and that label is what reaches `content`, `GET /v1/messages` and the Chatwoot mirror. A webhook subscribed only to `messages` therefore receives a message that looks empty, with no error anywhere. Add `flow.response_received` to its `events`.
+</Warning>
 
 <Note>
   Responses are kept for a retention window and pruned afterwards. The window is enforced **on read**, so a response past its expiry is never served — even if the pruner has not reached it yet.
@@ -69,18 +76,18 @@ Meta encrypts every endpoint call: an AES-GCM payload whose key arrives RSA-2048
 **So Pilot Status is the endpoint.** We hold the key, decrypt Meta's request, and forward **plain JSON over HTTPS** to a webhook you control. Your reply is encrypted on the way back. You never implement RSA, AES-GCM, or the inverted IV.
 
 <Note>
-  **Key setup lives on the public API** — see [Flows API](/api/flows). There is no dashboard screen for it yet, and `NAVIGATE` Flows need none of it. Step 1 below is `POST /v1/numbers/{id}/flow-endpoint-key`; steps 2 and 3 are set on the Flow itself.
+  **Two settings at two levels** — the key belongs to the **number**, the forwarding URL to the **Flow**. `NAVIGATE` Flows need neither. Both are set on the **Flows** screen in the dashboard, and both have a public-API surface of their own: `GET` / `POST /v1/numbers/{id}/flow-endpoint-key` and `GET` / `PUT` / `PATCH /v1/flows/{id}/endpoint`, all four gated at `flows:manage`. Neither URL appears on `GET /v1/flows`, because the token inside it is a credential — see [Connect your API to a Flow](/guides/flow-data-exchange).
 </Note>
 
 <Steps>
-  <Step title="Register a key for the number">
-    Pilot Status generates an RSA-2048 keypair, stores the private half encrypted, and registers the public half with Meta for that phone number. You get back the endpoint URL to use.
+  <Step title="1. Register a key for the number">
+    Either **generate** one — Pilot Status creates an RSA-2048 pair, stores the private half encrypted, and registers the public half with Meta for that phone number — or **import** the private key you already use, which changes nothing at Meta. Generating **replaces** the key Meta holds, because Meta stores exactly one per number.
   </Step>
-  <Step title="Point the Flow at it">
-    Set that URL as the Flow's endpoint. It carries two segments — one identifying the number, one identifying the Flow — because Meta's request does not say which Flow it belongs to.
-  </Step>
-  <Step title="Set your webhook URL on the Flow">
+  <Step title="2. Set your webhook URL on the Flow">
     This is where we forward the decrypted JSON. It is configured **per Flow**, because one number can serve several forms and each one is usually a different service on your side.
+  </Step>
+  <Step title="3. Point Meta at us">
+    Register our endpoint URL as the Flow's `endpoint_uri`. It carries two segments — one identifying the number, one identifying the Flow — because Meta's request does not say which Flow it belongs to. **Saving the URL with us does not do this for you**, deliberately: it would hijack a Flow already pointed at someone else's endpoint.
   </Step>
 </Steps>
 
@@ -147,6 +154,8 @@ Each Flow carries a status (`DRAFT`, `PUBLISHED`, `DEPRECATED`, `BLOCKED`, `THRO
 
 ## Related
 
+- [Receive Flow responses](/guides/flow-responses)
+- [Connect your API to a Flow](/guides/flow-data-exchange)
 - [Flows API](/api/flows)
 - [Templates](/concepts/templates)
 - [Webhooks](/concepts/webhooks)

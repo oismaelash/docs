@@ -10,10 +10,10 @@ Todo endpoint abaixo autentica com uma **chave de API com escopo de número** (`
 | Permissão | Cobre |
 | --- | --- |
 | `flows:read` | Listar Flows e ler as respostas dos formulários |
-| `flows:manage` | Toda escrita — criar, atualizar, subir JSON, publicar, depreciar, apagar — **e os dois endpoints da chave, inclusive o que só lê** |
+| `flows:manage` | Toda escrita — criar, atualizar, subir JSON, publicar, depreciar, apagar — **e toda a superfície `data_exchange` (a chave do endpoint e o endpoint do Flow), leituras incluídas** |
 
 <Warning>
-  **Ler a chave do endpoint exige `flows:manage`, não `flows:read`**, mesmo sendo um `GET`. A resposta carrega `endpointUrl`, e o token dessa URL é uma **credencial**: a Meta se autentica no endpoint DECIFRANDO, e a pública correspondente é pública por construção. Quem tiver as duas consegue forjar uma requisição que o Pilot Status decifra e repassa ao seu webhook **com a nossa assinatura**. Credencial só de leitura continua sendo credencial.
+  **Ler a chave do endpoint ou o endpoint do Flow exige `flows:manage`, não `flows:read`**, mesmo os dois sendo `GET`. As respostas carregam `endpointUrl` / `endpointUri` / `metaEndpointUri`, e o token dentro dessas URLs é uma **credencial**: a Meta se autentica no endpoint DECIFRANDO, e a pública correspondente é pública por construção. Quem tiver as duas consegue forjar uma requisição que o Pilot Status decifra e repassa ao seu webhook **com a nossa assinatura**. Credencial só de leitura continua sendo credencial — e é também por isso que o valor nunca aparece no `GET /v1/flows`.
 </Warning>
 
 <Note>
@@ -160,6 +160,10 @@ curl "https://pilotstatus.com.br/v1/flows/flw_local_1/responses?page=1&pageSize=
 
 Devolve o que os clientes enviaram, ligado ao contato que respondeu, dentro da janela de retenção. Resposta vencida nunca é servida.
 
+<Note>
+  **Esta é a cópia armazenada, não a ao vivo.** Para receber as submissões conforme chegam, assine o evento de webhook `flow.response_received` — as respostas vêm nele, já parseadas. A mensagem de chat que carrega uma submissão traz só o rótulo da Meta (`Enviado` / `Sent`), então um webhook assinado apenas em `messages` não vê nada. Veja [Receber as respostas de um Flow](/pt-BR/guides/flow-responses).
+</Note>
+
 <Warning>
   **Uma página curta pode ser uma página truncada — e ela avisa.** `FlowResponse` não tem coluna `flowId` — a única aresta do Flow para as respostas passa pelo token da sessão — então uma requisição correlaciona no máximo **10.000** envios daquele Flow. Passando desse teto, o payload traz `"notice": "FLOW_RESPONSES_WINDOW_TRUNCATED"` ao lado dos normais `responses`/`total`/`page`/`pageSize`/`totalPages`.
 
@@ -169,7 +173,9 @@ Devolve o que os clientes enviaram, ligado ao contato que respondeu, dentro da j
 ## Chave do endpoint `data_exchange`
 
 <Note>
-  Só é necessária para Flows cujas telas chamam o seu backend — veja [Flows](/pt-BR/concepts/flows) para o quadro completo. `{numberId}` é o número ao qual a sua chave está amarrada. A chave privada nunca sai do Pilot Status e não é devolvida por endpoint nenhum; `endpointUrl` é a base para registrar no seu Flow, com o id do Flow acrescentado como segmento final.
+  Só é necessária para Flows cujas telas chamam o seu backend — veja [Conecte a sua API a um Flow](/pt-BR/guides/flow-data-exchange) para o quadro completo. `{numberId}` é o número ao qual a sua chave está amarrada. A chave privada nunca sai do Pilot Status e não é devolvida por endpoint nenhum; `endpointUrl` é a base para registrar no seu Flow, com o id do Flow acrescentado como segmento final.
+
+  **A chave é por número; a URL de encaminhamento é por Flow.** As duas têm superfície aqui — a chave logo abaixo, a URL em [Endpoint do Flow](#endpoint-do-flow) — e nenhuma das duas aparece no `GET /v1/flows`, de propósito: uma chave de API pode ser uma aplicação de terceiros, e o endereço do seu webhook interno não é algo que uma integração somente-leitura tenha direito de receber.
 </Note>
 
 <Note>
@@ -206,24 +212,106 @@ curl "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
   **`UNKNOWN` não é `NOT_SET`, e juntar os dois sai caro.** Uma chamada que falhou não diz nada sobre o que a Meta tem. Tratá-la como "sem chave" leva a rotacionar — e rotacionar substitui uma chave que provavelmente estava boa.
 </Warning>
 
-### Gerar ou rotacionar
+### Gerar, rotacionar ou importar
+
+Um `POST`, dois verbos. **A presença de `privateKey` decide qual**, e eles não são intercambiáveis: gerar registra uma chave pública nova na Meta e substitui o que estava lá; importar não registra nada.
+
+| Corpo | O que faz |
+| --- | --- |
+| `{}` | **Gerar** — cria um par RSA-2048, guarda a metade privada cifrada e registra a pública na Meta. |
+| `{"privateKey": "-----BEGIN PRIVATE KEY-----\n…"}` | **Importar** — guarda a chave que você já tem. Nada é registrado na Meta. |
+| `{"privateKey": "…", "passphrase": "…"}` | Importa um PEM protegido por passphrase. |
+| `{…, "confirm": true}` | Obrigatório quando qualquer um dos dois verbos substituiria uma chave **viva** na Meta. |
+
+Só `confirm`, `privateKey` e `passphrase` são aceitos; qualquer outro campo é recusado, nunca ignorado. A resposta é a forma de leitura acima mais `"replaced"`, que diz se uma chave que estava viva acabou de ser deslocada — um `200` sozinho não diz.
 
 ```bash
+# Gerar
 curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
   -H "x-api-key: ps_sua_chave_aqui" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
 
-A resposta é a de cima mais `"replaced"`, que diz qual das três coisas aconteceu: criação inicial, retentativa de um par que a Meta nunca aceitou, ou **substituição de uma chave que estava viva**.
+```bash
+# Importar
+curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_sua_chave_aqui" \
+  -H "Content-Type: application/json" \
+  -d '{ "privateKey": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN...\n-----END PRIVATE KEY-----\n" }'
+```
 
 <Warning>
-  **Substituir uma chave VIVA é destrutivo e exige `{"confirm": true}`.**
+  **Substituir uma chave VIVA exige `{"confirm": true}`, nos dois verbos.**
 
-  A Meta guarda exatamente uma pública por número, então registrar outra substitui a anterior — e a privada antiga é sobrescrita aqui no mesmo instante. Não dá para restaurar, e toda troca `data_exchange` em voo naquele número para de decifrar. Sem a flag, a requisição é recusada com `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION`.
+  Gerar é destrutivo na Meta: ela guarda exatamente uma pública por número, então registrar outra substitui a anterior — e a privada antiga é sobrescrita aqui no mesmo instante. Não dá para restaurar, e toda troca `data_exchange` em voo naquele número para de decifrar.
 
-  ⚠️ A **primeira** configuração NÃO pede confirmação, e retentar uma chave que a Meta nunca aceitou também não — não há o que destruir em nenhum dos dois casos. Confirmação exigida onde nada se perde treina o reflexo que a desarma no único caso em que ela protege.
+  Importar é destrutivo **aqui**: nada muda na Meta, mas a metade privada guardada é substituída, e se a Meta não conseguir confirmar a nova o número fica com uma chave que pode não decifrar nada. Por isso os dois são recusados com códigos diferentes — `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` e `FLOW_ENDPOINT_KEY_IMPORT_REQUIRES_CONFIRMATION` — porque quem lesse "isto substitui o seu registro na Meta" depois de uma importação iria conferir na Meta uma mudança que nunca aconteceu.
+
+  ⚠️ A **primeira** configuração NÃO pede confirmação, e retentar uma chave que a Meta nunca aceitou (`uploadedAt: null`) também não — não há o que destruir em nenhum dos dois casos. Confirmação exigida onde nada se perde treina o reflexo que a desarma no único caso em que ela protege.
 </Warning>
+
+<Note>
+  **Uma importação é verificada antes de ser guardada.** Derivamos a metade pública da chave enviada e comparamos com a da Meta: coincidiu, é guardada e carimbada (`metaStatus: "VALID"`); **divergiu, é recusada de saída** com `FLOW_ENDPOINT_KEY_IMPORT_MISMATCH` e nada é gravado; se não conseguimos fazer a chamada ao Graph, a chave fica guardada com `uploadedAt: null` e `metaStatus` `UNKNOWN`/`NOT_SET` — que é o estado "não confirmada", não uma falha.
+</Note>
+
+<Warning>
+  **`passphrase` é usada uma vez e não é guardada.** Ela abre o PEM; a chave passa a ser mantida normalizada e cifrada em repouso, e depois disso a passphrase não tem mais leitor. Guarde a sua própria cópia — não conseguimos devolvê-la. Envie só quando a chave tiver uma (string vazia é uma passphrase, não a ausência de uma), e nunca sozinha: `passphrase` sem `privateKey` é recusada com `FLOW_ENDPOINT_KEY_PASSPHRASE_ORPHAN`, porque senão essa mesma requisição **geraria** um par e substituiria o seu registro na Meta.
+</Warning>
+
+## Endpoint do Flow
+
+Para onde as trocas já decifradas de um Flow `data_exchange` são encaminhadas. Por **Flow**, `flows:manage` em todos os verbos inclusive no `GET`, e `{flowId}` é o id **local** do `GET /v1/flows`.
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+```bash
+curl -X PUT "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_sua_chave_aqui" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://api.sua-empresa.com/flows/agendamento" }'
+```
+
+```json
+{
+  "flowId": "flw_local_1",
+  "url": "https://api.sua-empresa.com/flows/agendamento",
+  "hasSecret": true,
+  "endpointUri": "https://pilotstatus.com.br/api/flows/endpoint/AbC123.../1122334455",
+  "metaEndpointUri": null,
+  "drift": false,
+  "numberHasKey": true,
+  "numberKeyUploadedAt": "2026-09-02T10:00:00.000Z",
+  "warnings": ["FLOW_ENDPOINT_META_URI_UNKNOWN"],
+  "secret": "9f2c…"
+}
+```
+
+| Campo | Significado |
+| --- | --- |
+| `url` | O seu destino. `null` quando o Flow não tem nenhum. |
+| `hasSecret` | Se existe um segredo de assinatura. O segredo em si nunca é legível. |
+| `endpointUri` | A **nossa** URL de proxy para este Flow — o valor que o `endpoint_uri` da Meta precisa ter. |
+| `metaEndpointUri` | O que a Meta tem registrado, como a sincronização horária leu pela última vez. |
+| `drift` | `true` só quando os dois são conhecidos e diferem — a Meta está chamando outra pessoa. |
+| `numberHasKey` / `numberKeyUploadedAt` | O estado da chave do número ao qual esta credencial está vinculada. |
+| `warnings` | Toda razão pela qual este Flow não vai funcionar. Trate o conjunto como aberto. |
+| `secret` | **Só na resposta que o criou**, e nunca mais. |
+
+<Note>
+  Campos do corpo: `url` (obrigatório, `https://` ou um `null` explícito para limpar — nunca omitido) e `rotateSecret` (booleano). `PUT` e `PATCH` são a mesma operação. O número vem da credencial e é recusado no corpo (`FLOW_NUMBER_FROM_KEY`).
+
+  **Salvar a URL não registra nada na Meta** — isso é um ato separado sobre um sistema separado, para que um rename não sequestre em silêncio um Flow já apontado para o endpoint de outra pessoa. `metaEndpointUri`, `drift` e `warnings` são como você enxerga a diferença.
+</Note>
+
+<Warning>
+  **`secret` é mostrado exatamente uma vez, na requisição que o criou.** Ele é guardado cifrado e não há caminho de leitura de volta. `secret: null` numa gravação posterior quer dizer que já existia um e foi mantido — quem diz se existe algum é `hasSecret`. `{"rotateSecret": true}` cria um novo, e é a única saída para um segredo que vazou.
+</Warning>
+
+Passo a passo completo, incluindo o contrato que o seu endpoint precisa cumprir: [Conecte a sua API a um Flow](/pt-BR/guides/flow-data-exchange).
 
 ## Erros
 
@@ -251,8 +339,20 @@ Toda falha desta superfície responde o mesmo envelope — existe exatamente uma
 | `FLOW_UNKNOWN_FIELDS` | 400 | O corpo trouxe campo que a rota não aceita |
 | `FLOW_PUBLISH_REQUIRES_CONFIRMATION` | 400 | `publish` sem `"confirm": true` |
 | `FLOW_DEPRECATE_INVALID_SUCCESSOR` | 400 | `supersededByFlowId` presente mas em branco ou desconhecido |
-| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Rotacionar sobre chave VIVA sem `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Gerar por cima de uma chave VIVA sem `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_IMPORT_REQUIRES_CONFIRMATION` | 400 | Importar por cima de uma chave VIVA sem `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_IMPORT_MISMATCH` | 400 | A chave importada não é a que a Meta tem registrada. **Nada foi gravado** |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_REQUIRED` | 400 | O PEM está protegido por passphrase e nenhuma foi enviada |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_WRONG` | 400 | A passphrase não abre a chave — a chave em si não foi rejeitada |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_ORPHAN` | 400 | `passphrase` sem `privateKey`. Recusada, não ignorada: sem a chave, esta requisição **geraria** um par |
+| `FLOW_ENDPOINT_KEY_PEM_INVALID` | 400 | `privateKey` ilegível como PEM, não é RSA, ou tem menos de 2048 bits |
+| `FLOW_ENDPOINT_KEY_IMPORT_INVALID` | 400 | `privateKey` ou `passphrase` presentes mas não são string |
 | `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | Nosso. A metade privada não pode ser guardada cifrada, e recusamos gerar em vez de guardá-la em claro |
+| `FLOW_ENDPOINT_URL_REQUIRED` | 400 | `url` ausente ou inutilizável. Ela pode ser `null` **explicitamente**, nunca por omissão |
+| `FLOW_ENDPOINT_URL_NOT_HTTPS` | 400 | O destino não é `https://`. A URL recusada não é ecoada de volta |
+| `FLOW_ENDPOINT_ROTATE_INVALID` | 400 | `rotateSecret` não é booleano. `"true"` não é convertido |
+| `FLOW_ENDPOINT_SECRET_UNAVAILABLE` | 500 | Nosso. O segredo de assinatura não pode ser guardado cifrado, e encaminhar sem assinar não é opção |
+| `FLOW_NUMBER_WABA_MISMATCH` | 422 | O número da chave não está na WABA dona deste Flow e nunca poderá enviá-lo |
 | `FLOW_NUMBER_NOT_FOUND` | 404 | O número do caminho não é o número ao qual esta chave está amarrada |
 | `FLOW_BODY_INVALID` | 400 | Corpo malformado, ou campo obrigatório faltando |
 | `INVALID_PAGINATION` | 400 | `page` × `pageSize` além do teto de offset profundo |
@@ -265,5 +365,7 @@ Toda falha desta superfície responde o mesmo envelope — existe exatamente uma
 ## Relacionado
 
 - [Flows](/pt-BR/concepts/flows)
+- [Receber as respostas de um Flow](/pt-BR/guides/flow-responses)
+- [Conecte a sua API a um Flow](/pt-BR/guides/flow-data-exchange)
 - [Templates](/pt-BR/concepts/templates)
 - [Visão geral da API](/pt-BR/api/overview)
