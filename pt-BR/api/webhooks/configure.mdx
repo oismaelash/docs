@@ -64,6 +64,47 @@ curl "https://pilotstatus.com.br/v1/webhooks/wh_abc/logs?limit=20&event=message.
 
 </CodeGroup>
 
+## Ler os logs de entrega
+
+`GET /v1/webhooks/{id}/logs` devolve as tentativas recentes, da mais nova para a mais antiga.
+Dois campos juntos dizem *onde* a tentativa morreu:
+
+| `status` | `statusCode` | `response` |
+| --- | --- | --- |
+| `SUCCESS` | o status HTTP (2xx) | o corpo do seu endpoint, cortado em 1000 caracteres |
+| `FAILED` | o status HTTP | o corpo do seu endpoint — ele respondeu, mas não com 2xx |
+| `FAILED` | `null` | a requisição nunca se completou; `response` traz a cadeia de causas |
+
+O `statusCode` `null` é o caso que vale ler com atenção: nada chegou ao seu servidor, então
+não existe status. O `response` traz então a cadeia de causas, da mais externa para a mais
+interna, unidas por `<-` e marcadas com o código de erro do sistema:
+
+```
+fetch failed <- getaddrinfo EAI_AGAIN hooks.example.com [EAI_AGAIN]
+fetch failed <- connect ECONNREFUSED 203.0.113.10:443 [ECONNREFUSED]
+The operation was aborted due to timeout
+```
+
+Os códigos mais frequentes:
+
+| Código | O que significa |
+| --- | --- |
+| `EAI_AGAIN`, `ENOTFOUND` | o seu hostname não resolveu |
+| `ECONNREFUSED` | o host respondeu, mas nada escuta naquela porta |
+| `ECONNRESET` | a conexão fechou no meio da requisição |
+| `CERT_HAS_EXPIRED`, `DEPTH_ZERO_SELF_SIGNED_CERT` | o TLS foi recusado |
+| *(sem código, "aborted due to timeout")* | o seu endpoint não respondeu a tempo |
+
+<Note>
+  Trate o `response` como **string de diagnóstico, não como contrato**. O texto vem do runtime
+  e pode mudar entre versões; decida pelo `status` e pelo `statusCode`, e leia o `response`
+  quando precisar saber o porquê.
+</Note>
+
+Uma tentativa falha é retentada com backoff exponencial antes de ser desistida, então uma
+linha `FAILED` sozinha não quer dizer que o evento se perdeu — procure um `SUCCESS` posterior
+no mesmo evento.
+
 ## Controle de eventos
 
 <Warning>
