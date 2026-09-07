@@ -510,7 +510,7 @@ See the [full calling flow](/api/calls/overview).
 
 `flow.response_received` fires when a customer submits a [Flow](/concepts/flows). It uses the canonical `{ event, data }` envelope even on a Meta number, and it is **only** available on Meta Cloud API numbers, because Flows only exist there.
 
-```json
+```json Plain Flow — no endpoint, answers in response
 {
   "event": "flow.response_received",
   "data": {
@@ -527,7 +527,46 @@ See the [full calling flow](/api/calls/overview).
       "nota_atendimento": "9",
       "comentario": "Teste"
     },
-    "responseRaw": null
+    "responseRaw": null,
+    "submitted": null,
+    "flowMedia": null
+  }
+}
+```
+
+```json data_exchange Flow — answers in submitted, attachment still transferring
+{
+  "event": "flow.response_received",
+  "data": {
+    "event": "flow.response_received",
+    "flowId": "flw_local_2",
+    "metaFlowId": "1122334455",
+    "flowToken": "2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM",
+    "messageId": "wamid.HBgNNTU2Nzk5...",
+    "whatsappNumberId": "cmm0abc123",
+    "from": "+5567999999999",
+    "receivedAt": "2026-09-06T16:10:44.000Z",
+    "response": {
+      "flow_token": "2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM"
+    },
+    "responseRaw": null,
+    "submitted": [
+      {
+        "screen": "WELCOME_SCREEN",
+        "at": "2026-09-06T16:08:12.616Z",
+        "data": { "observacao": "Aobaaa" },
+        "omitted": null
+      }
+    ],
+    "flowMedia": [
+      {
+        "field": "foto",
+        "fileName": "comprovante.jpg",
+        "mimeType": null,
+        "status": "PENDING",
+        "url": "https://pilotstatus.com.br/api/flows/media/eyJ0IjoiY21xc2N4MXczIiwiayI6ImZvdG8ifQ.9f2c1a4b8e0d6c73"
+      }
+    ]
   }
 }
 ```
@@ -542,8 +581,53 @@ See the [full calling flow](/api/calls/overview).
 | `whatsappNumberId` | always | Pilot Status id of the number that received it |
 | `from` | always | who answered, E.164 |
 | `receivedAt` | always | ISO 8601 |
-| `response` | nullable | the submitted answers, **already parsed** |
+| `response` | nullable | Meta's `nfm_reply` payload, **already parsed**. On a Flow with no endpoint this is where the answers are; on a `data_exchange` Flow it carries the `flow_token` and nothing else |
 | `responseRaw` | nullable | the raw bytes — **only** when the parse failed |
+| `submitted` | nullable | the `data_exchange` exchanges captured while the form was being filled, oldest first — **this is where a `data_exchange` Flow's answers are**. `null`, **never `[]`** |
+| `flowMedia` | nullable, and may be absent | the files attached inside the form. `null` is us saying nothing is listed — **never `[]`**; an *absent* key is a deployment older than the field. Read the two the same way, and do not require the key to be present |
+
+<Warning>
+  **In a `data_exchange` Flow, `data.response` is the empty place.** It is Meta's `nfm_reply`, and when the Flow is served by an endpoint that reply carries the token and nothing else — measured three times in production as `{"flow_token":"2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM"}`, while the same submission had already handed the customer's own endpoint `{"observacao":"Aobaaa","foto":[…]}`. What the person typed is in **`data.submitted`**; a handler that goes to `response` for it reports an empty form on every Flow you connect to an API.
+
+  **In a plain Flow — one with no endpoint — free-text components do arrive in `response`.** Nothing intercepts those screens, so there is nothing to capture on the way and `submitted` is `null`. Which field holds the answers is decided by the Flow you sent, not by the payload: read `submitted` on a `data_exchange` Flow, `response` on a plain one. See [Connect your API to a Flow](/guides/flow-data-exchange).
+</Warning>
+
+<Note>
+  **`submitted` is the list of `data_exchange` exchanges, oldest first.** Each entry is `screen` (a string, or `null`), `at` (ISO 8601), `data` (the parsed object, or `null`) and `omitted`. The field is `null` — **never `[]`** — both when there is nothing to show and when the content was redacted, because `[]` would read as "there were answers and we hid them".
+
+  **Only `data_exchange` exchanges are captured.** An `INIT` hands back the state *we* seeded when the Flow was sent, and a `BACK` is navigation; neither is something the person answered, so neither is kept. The list is therefore legitimately **shorter** than your endpoint's traces for the same session — an `INIT` that is missing from it is not a lost exchange.
+
+  **It captures the request Meta sends us, never what your endpoint replied.** The `extension_message_response` your API returns to finish the Flow still appears nowhere in Pilot Status, and this field does not change that — see [Connect your API to a Flow](/guides/flow-data-exchange).
+
+  **Append-only, with no de-duplication.** Someone who walks back a screen and submits it again produces a second, genuine entry instead of overwriting the first; `at` is what separates two runs under the same token.
+</Note>
+
+<Warning>
+  **Nothing is ever silently truncated — an entry that could not keep its content says so, in place.** An entry either has `data` with `omitted: null`, or `data: null` and a reason in `omitted`. There is no third shape, and `omitted` is exactly one of three values.
+
+  | `omitted` | What it means |
+  | --- | --- |
+  | `DATA_TOO_LARGE` | that one exchange was over the ceiling. It keeps its row **and its position** in the list, so the entries around it still line up |
+  | `LIMIT_REACHED` | the per-form ceiling of **50 exchanges** was reached. This is the last entry in the list, and nothing after it was stored |
+  | `UNREADABLE` | that exchange's content could not be read |
+  | `null` | `data` is there |
+
+  The ceiling is counted in **bytes, not characters** — an answer written with accents, or carrying emoji, reaches it earlier than its length on screen suggests.
+</Warning>
+
+<Note>
+  **The exchanges are kept for 30 days + 1, and the extra day is not decoration.** An exchange is captured while the person is still filling the form — minutes *before* the submission that creates the response row. On an identical 30 days the exchanges would expire first, and a response still inside its own window would publish an empty list for its last minutes.
+</Note>
+
+<Warning>
+  **`flowMedia` carries a URL from the first delivery, including while the file is still on its way to us.** Each entry is `field` (whatever the Flow's **author** named the component — not a reserved word, not a type), `fileName`, `mimeType`, `status` and `url`. The bytes sit on Meta's CDN and are re-hosted by a queue: the event is emitted as soon as the submission is stored, and that transfer runs after it, so a submission is ordinarily announced while the file is still in flight. That ordering is why the link exists, not a caveat to work around: `url` is there at `PENDING` too.
+
+  **Fetch it and it waits for the file.** The route holds the request while the re-host finishes, then serves the file; every later fetch is a redirect. A wait that runs out answers `404` with a `Retry-After` header, and the same link keeps working after it. The value does not change once the bytes land, so it is safe to store on arrival — `status` (`PENDING` / `STORED` / `FAILED`) is still what tells you whether they have. Treat the link as opaque: fetch it, never construct one. It is `null` in three cases, and *"still transferring"* is none of them — no signing secret on the deployment, which falls back to the direct object URL once `STORED`; no `media_id` from Meta to sign an identity over; or a `RELAY_ONLY` number, where nothing was stored at all.
+
+  **`null` means four different things, and only one of them is "nothing was attached".** It is also what you get when Meta echoed no `flow_token` with the submission; when the attachment lookup itself failed, which is best-effort and costs a field rather than the event; and before the re-host job starts, because the row that would carry `PENDING` is only written once the transfer actually starts, by the backend that performs it, and not at the moment the file is queued — so until then there is nothing to list. **`null` is therefore not proof that no file was sent.** A Flow that collects files is read back at [`GET /v1/flows/{id}/responses`](/api/flows#read-form-responses), never concluded from this field.
+
+  The field is **never `[]`**. And the event carries **no `cdn_url` and no `encryption_metadata`**: Meta derives one AES key per file, and forwarding it would put the key that opens the customer's document into your webhook, and into your logs.
+</Warning>
 
 <Warning>
   **The `message.*` side of a submission carries no answers, and that is deliberate.** Meta delivers a submitted Flow as an interactive reply of type `nfm_reply`, whose human-readable `body` is a bare label — `Sent` / `Enviado`. That label is what lands in `content`, in `chat_messages.text` and in `GET /v1/messages`; the answers never go there, because `content` is promised to be message *text* and a JSON blob in it would break every consumer that renders or matches on it.
@@ -556,8 +640,14 @@ See the [full calling flow](/api/calls/overview).
 </Warning>
 
 <Note>
-  **`response` or `responseRaw`, never both.** Meta sends the answers as a JSON *string*. When it parses you get `response`; when it does not you get `responseRaw` with the bytes as they arrived. The submission is never dropped for being unparseable, so check which one you got.
+  **`response` or `responseRaw`, never both.** Meta sends the `nfm_reply` body as a JSON *string*. When it parses you get `response`; when it does not you get `responseRaw` with the bytes as they arrived. The submission is never dropped for being unparseable, so check which one you got — and remember that on a `data_exchange` Flow what is in there is the `flow_token`, not the answers.
 </Note>
+
+<Warning>
+  **A chosen option arrives as its `id`, not as the label the person read.** `RadioButtonsGroup`, `Dropdown` and `ChipsSelector` declare their options in the Flow JSON as a `data-source` of `id` + `title` pairs. Against `[{"id":"5","title":"Otimo"}, {"id":"3","title":"Razoavel"}, {"id":"1","title":"Ruim"}]`, someone who taps **Otimo** submits `{"nota":"5","comentario":"AOBA","flow_token":"..."}`. WhatsApp's "Your response" screen shows `Otimo` because the phone still holds the Flow JSON; your endpoint gets `5`, and nothing in the payload says what `5` meant.
+
+  Resolving the label afterwards can hand you the **wrong** label: the `id` is stable, the `title` is not, so a Flow republished with `{"id":"5","title":"Excelente"}` makes a later lookup name a word the customer never saw. Capture the label at the moment the submission arrives, and keep it beside the `id`. See [Receive Flow responses](/guides/flow-responses).
+</Warning>
 
 <Note>
   **No answers means no event.** A submission that carries nothing at all does not fire — an empty body would be indistinguishable, on your side, from a form submitted blank.
@@ -566,7 +656,11 @@ See the [full calling flow](/api/calls/overview).
 </Note>
 
 <Warning>
-  **On a number configured to keep no customer content, the delivery is complete and the stored copy is not.** Your endpoint receives the full body; the payload kept in the webhook log has `from`, `response` and `responseRaw` blanked. A log entry that looks empty beside a `200` is that redaction, not a failed delivery.
+  **On a number configured to keep no customer content, the delivery is complete and the stored copy is not.** Your endpoint receives the full body; in the payload kept in the webhook log `response`, `responseRaw`, `submitted` and `flowMedia` become `null`, and `from` becomes the placeholder string `conteúdo indisponível` — a string, not a `null`, so do not test for one. A log entry that looks empty beside a `200` is that redaction, not a failed delivery.
+
+  **That redacted copy is what a SUCCESSFUL delivery stores.** A delivery that failed keeps the **real** payload, so an operator can inspect and replay what was actually sent; a sweep replaces the payload of those rows — whole, with a marker object, not field by field — once they are more than 24 hours old. Inside that window `GET /v1/webhooks/{id}/logs` can return the submission in full on a number whose configuration says it keeps nothing.
+
+  **On such a number attachments are never re-hosted at all**, so `flowMedia` is `null` on the delivery too — there is no stored copy to point at, and the reference stays where it was. **Nor is a single exchange captured**: `submitted` is `null` on the delivery as well, and not as a redacted row — no row at all. That is the number's configuration doing what it says, not a failure.
 </Warning>
 
 ## Meta Cloud API events (native envelope)

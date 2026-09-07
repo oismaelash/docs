@@ -6,6 +6,211 @@ icon: "clock-rotate-left"
 
 O que há de novo na plataforma Pilot Status — novidades de API, mudanças e correções notáveis. Assine pelo ícone RSS acima.
 
+<Update label="2026-09-06" tags={["Flows", "Webhooks", "API"]}>
+  ## Num Flow `data_exchange` as respostas nunca estiveram no `response` — o `submitted` é que as traz
+
+  A gente mandava você ler o `data.response` para saber o que o cliente digitou. Num Flow `data_exchange` esse campo é o lugar vazio, e sempre foi.
+
+  ### O que o `response` traz de verdade ali
+
+  O `response` é o `nfm_reply` da Meta, parseado. Num Flow cujas telas são respondidas pela sua API, a submissão que fecha o formulário carrega o token e mais nada. Medido três vezes em produção em 2026-09-06, é isto por inteiro:
+
+  ```json
+  { "flow_token": "2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM" }
+  ```
+
+  Na mesma submissão o seu próprio endpoint recebeu `{"observacao": "Aobaaa", "foto": [...]}`. As respostas existiam — chegaram até você tela a tela, dentro das trocas cifradas — e nada aqui as guardava, então toda superfície que se oferecia para mostrar uma submissão `data_exchange` mostrava um token no lugar.
+
+  <Note>
+    **Isto é o caso `data_exchange`, não todo Flow.** Um Flow simples — sem endpoint, `NAVIGATE` entre telas — entrega os componentes de texto livre no `response`, e sempre entregou. É quando a sua API responde as telas que o `nfm_reply` esvazia, porque as respostas foram para a sua API em vez de virem dentro dele.
+  </Note>
+
+  ### Novo: `submitted`, no evento e na superfície de leitura
+
+  O `flow.response_received` (dentro de `data`) e o `GET /v1/flows/{id}/responses` passam os dois a trazer `submitted` — as trocas que a Meta nos mandou enquanto a pessoa ainda preenchia o formulário, em ordem:
+
+  ```json
+  "submitted": [
+    {
+      "screen": "WELCOME_SCREEN",
+      "at": "2026-09-06T16:08:12.616Z",
+      "data": { "observacao": "Aobaaa" },
+      "omitted": null
+    }
+  ]
+  ```
+
+  O `screen` é string ou `null`, o `at` é ISO-8601, e o `data` é o objeto parseado ou `null`.
+
+  **Vazio escreve-se de forma diferente nas duas superfícies, e isso é de propósito.** Em `GET /v1/flows/{id}/responses` o `submitted` é `[]` e nunca `null`: o valor vem de uma busca que não responde nada quando não há trocas, e um campo posto a nada desapareceria do JSON em vez de chegar vazio. No `flow.response_received` é `null` e nunca `[]` — a regra que o `flowMedia` já segue lá, pelo motivo de aquele payload ser guardado: o redator só apaga um campo que tenha algo dentro, então um array vazio voltaria a ler-se como *"havia respostas e nós as escondemos"*. Nenhuma das duas grafias é prova de que a pessoa não digitou nada.
+
+  ### Nada é truncado em silêncio
+
+  O `omitted` é `null` ou exatamente um de três valores. Ou a entrada tem o `data` com `omitted: null`, ou tem `data: null` e o motivo de faltar. Não existe uma terceira forma, então um `data` nulo sempre tem a resposta ao lado.
+
+  | `omitted` | O que aconteceu |
+  | --- | --- |
+  | `DATA_TOO_LARGE` | Uma troca grande demais. Ela mantém a linha **e o lugar na ordem** — a troca não some, só o conteúdo dela. |
+  | `LIMIT_REACHED` | O teto de 50 trocas por formulário. É uma entrada final de marcação, e **nada depois dela foi guardado**. |
+  | `UNREADABLE` | A troca está na lista e o conteúdo dela não pôde ser lido de volta. |
+
+  **"Grande demais" é medido em bytes, não em caracteres.** Acento e emoji custam mais de um byte cada, então o `DATA_TOO_LARGE` pode cair numa resposta que parece curta.
+
+  ### A lista é mais curta que o rastro do endpoint, e é assim que tem de ser
+
+  **Só as trocas `data_exchange` são capturadas — o `INIT` e o `BACK` não.** O `INIT` devolve o estado que *nós* semeamos, os params mandados no envio voltando para nós, e o `BACK` é navegação. Nenhum dos dois é coisa que alguém digitou. Então a tela de rastro do Flow lista mais chamadas do que o `submitted` lista entradas. Essa diferença é o `INIT` e o `BACK`, e a lista mais curta é a lista certa.
+
+  <Warning>
+    **O `submitted` é o pedido que a Meta nos manda, nunca o que o seu endpoint respondeu.** As telas e os payloads que a sua API devolve não são capturados aqui, e não são capturados em lugar nenhum: o `extension_message_response` continua não aparecendo em superfície nenhuma do Pilot Status. Este campo não mudou isso.
+  </Warning>
+
+  **É append-only, sem deduplicação.** Quem volta uma tela e submete de novo produz uma segunda entrada, legítima — as duas são reais, e o `at` é o que separa duas passagens pelo mesmo formulário sob um único token.
+
+  **Um número em `RELAY_ONLY` não guarda nada aqui.** Não é linha apagada: não há linha. A troca continua sendo decifrada e repassada ao seu endpoint, como tudo nesse modo; o que não fica é a cópia.
+
+  ### Guardado por 30 dias + 1
+
+  As respostas são podadas aos 30 dias, as trocas por trás delas aos 31, e **o dia a mais não é arredondamento**. Uma troca é capturada enquanto o cliente ainda preenche o formulário, minutos *antes* da submissão que cria a linha da resposta. Com 30 dias iguais as trocas expirariam primeiro, e uma resposta nos seus últimos minutos de vida publicaria um `submitted` vazio ao lado de respostas que estiveram lá o tempo todo.
+
+  Veja [Receber as respostas de um Flow](/pt-BR/guides/flow-responses) para o campo nas duas superfícies, e [Retenção de dados e modos de PII](/pt-BR/trust/data-retention) para as janelas.
+</Update>
+
+<Update label="2026-09-06" tags={["Flows", "Webhooks", "API"]}>
+  ## O `endpoint_uri` não tinha quem o escrevesse em lugar nenhum do produto, e um arquivo anexado dentro de um formulário não chegava a superfície nenhuma
+
+  Dois buracos no mesmo recurso, os dois do tipo que não reporta nada.
+
+  ### Dava para configurar tudo, menos o único campo que a Meta exige
+
+  A entrada anterior deixou o proxy de `data_exchange` configurável: uma chave por número, uma URL de encaminhamento por Flow. Os dois diziam, com todas as letras, que **salvar a URL não registra nada na Meta** — e nada mais registrava também. Não existia quem escrevesse o `endpoint_uri` em superfície nenhuma: nem no painel, que mostrava `FLOW_ENDPOINT_META_URI_UNKNOWN` e não oferecia ação nenhuma, nem na API. Dava para ligar um Flow `data_exchange` de ponta a ponta e mesmo assim não conseguir publicá-lo, porque a Meta recusa o `publish` com *"Publishing without specifying 'endpoint_uri' is forbidden"* (o texto é da Meta, não nosso).
+
+  **Novo: `POST /v1/flows/{id}/endpoint`** — o mesmo caminho da gravação, outro ato. O `GET` lê esse estado e o `PUT` / `PATCH` guardam o **seu** destino; nenhum dos três fala com a Meta. O `POST` escreve a URL do **nosso** proxy no `endpoint_uri` do Flow **na Meta**.
+
+  ```bash
+  curl -X POST https://pilotstatus.com.br/v1/flows/flw_local_1/endpoint \
+    -H "x-api-key: $PILOT_STATUS_API_KEY"
+  ```
+
+  O corpo é opcional — vazio é legal aqui, ao contrário do `PUT` — e **`confirmOverwrite` é o único campo aceito**. Qualquer outro é `400 FLOW_UNKNOWN_FIELDS`; `whatsappNumberId` no corpo é `400 FLOW_NUMBER_FROM_KEY`, porque o número vem da credencial como em toda a `/v1`; corpo truncado é `400 FLOW_BODY_INVALID` e nunca é lido como corpo vazio. O `200` é o mesmo estado do endpoint que o `GET` e o `PUT` já devolviam, sem campo novo e sem `secret` — o `POST` nunca cria um.
+
+  **É idempotente, e a verificação lê a Meta ao vivo.** Um Flow que já aponta para nós responde `200` sem escrever no Graph. Ela deliberadamente não consulta a coluna `metaEndpointUri`, sincronizada de hora em hora, porque essa coluna é muda sobre um URI registrado na última hora — exatamente a janela em que duas pessoas ligam o mesmo Flow.
+
+  **Um Flow apontando para outro lugar é recusado, e a recusa nomeia o outro endpoint:**
+
+  ```json
+  {
+    "error": "A Meta já aponta este Flow para outro endpoint. …",
+    "errorEN": "Meta already points this Flow at another endpoint. …",
+    "code": "FLOW_ENDPOINT_URI_WOULD_OVERWRITE",
+    "currentEndpointUri": "https://outra-pessoa.example/flows/1122334455"
+  }
+  ```
+
+  `409`, e um dos dois corpos desta superfície que trazem uma quarta chave — o `FLOW_JSON_INVALID` já acrescenta `validationErrors` do mesmo jeito. **A nossa URL deliberadamente não é ecoada** — ela embute o token de endpoint do número, que é a credencial do proxy. Reenviar com `{"confirmOverwrite": true}` assume o Flow, e assumir **tira todas as trocas desse Flow de quem responde por ele hoje**: a escrita da Meta é sobrescrita pura, sem mesclagem, sem desfazer e sem aviso nenhum ao endpoint que deixa de ser chamado.
+
+  **O `confirmOverwrite` nunca é coagido.** Um valor que não seja booleano é `400 FLOW_ENDPOINT_CONFIRM_INVALID` em vez de leitura por veracidade — `"false"` é uma string verdadeira, e lê-la como consentimento tomaria conta de um endpoint vivo numa requisição cujo autor acreditava ter recusado.
+
+  <Warning>
+    **O `FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` passa a aparecer em dois papéis.** Ele só existia como valor dentro do array `warnings` de um `200`; agora é também um **`code` de `422`**, com corpo próprio, no registro. Salvar um destino num número sem chave continua dando certo *com aviso*; registrar na Meta não pode dar certo de jeito nenhum, porque não há URL para registrar. Um cliente que testava `warnings.includes(...)` passa a poder receber a mesma grafia como falha.
+  </Warning>
+
+  ### Um arquivo anexado dentro de um formulário expirava no CDN da Meta e nunca era nosso
+
+  Um `PhotoPicker` ou um `DocumentPicker` põe um arquivo na submissão, e **ele nunca chega em `response`**. Os bytes vão para a Meta, e a referência que chega até eles — com a chave AES que a Meta deriva por arquivo ao lado — viaja dentro do pedido `data_exchange` cifrado que só o proxy decifra, nunca no `nfm_reply` que vira o `response`. A Meta então apaga o arquivo depois de no máximo 20 dias, e nada aqui o decifrava, copiava ou listava: não existia decifrador nenhum no código, então o anexo simplesmente se perdia. Agora ele é decifrado, re-hospedado, e publicado nas duas superfícies e nos tipos do SDK.
+
+  **O `flow.response_received` agora traz `flowMedia`:**
+
+  ```json
+  {
+    "event": "flow.response_received",
+    "data": {
+      "event": "flow.response_received",
+      "flowId": "flw_local_1",
+      "metaFlowId": "1122334455",
+      "flowToken": "a1b2c3d4e5f6...",
+      "messageId": "wamid.HBgNNTU2Nzk5...",
+      "whatsappNumberId": "cmm0abc123",
+      "from": "+5567999999999",
+      "receivedAt": "2026-09-06T14:21:07.000Z",
+      "response": { "nome": "Ana" },
+      "responseRaw": null,
+      "flowMedia": [
+        {
+          "field": "documento",
+          "fileName": "carteira.jpg",
+          "mimeType": null,
+          "status": "PENDING",
+          "url": "https://pilotstatus.com.br/api/flows/media/eyJ0IjoiY21xc2N4MXczIiwiayI6ImZvdG8ifQ.9f2c1a4b8e0d6c73"
+        }
+      ]
+    }
+  }
+  ```
+
+  **E o `GET /v1/flows/{id}/responses` agora traz `media` em cada resposta** — os mesmos arquivos, já resolvidos, mais o `sizeBytes`:
+
+  ```json
+  {
+    "field": "documento",
+    "fileName": "carteira.jpg",
+    "mimeType": "image/jpeg",
+    "sizeBytes": 184320,
+    "status": "STORED",
+    "url": "https://media.pilotstatus.com.br/public/tenants/.../flow-media/....jpg"
+  }
+  ```
+
+  **O `url` já vem na primeira entrega, e é um link que espera.** O evento é emitido assim que a submissão é gravada e a re-hospedagem roda numa fila depois dele, então a submissão normalmente é anunciada com a transferência ainda em curso. Em vez de publicar nada durante essa janela, o `url` aponta para uma rota nossa: buscá-lo antes de os bytes chegarem segura a requisição enquanto a re-hospedagem termina e então entrega o arquivo, toda busca depois disso é um redirect, e uma espera que estoura responde `404` com o cabeçalho `Retry-After`. **O valor não muda quando o arquivo chega**, então dá para guardá-lo já na chegada — e o `status` (`PENDING` / `STORED` / `FAILED`) continua sendo como você sabe se os bytes já são nossos. Trate o link como opaco: busque, nunca monte um.
+
+  <Note>
+    **O `url` continua vindo `null` em três casos, e "ainda não transferiu" não é nenhum deles.** Uma instalação sem segredo de assinatura configurado cai no comportamento antigo — a URL direta do objeto, assim que o `status` for `STORED`; a Meta não mandou `media_id` para assinarmos uma identidade em cima; ou o número é `RELAY_ONLY`, onde nenhum anexo é guardado.
+  </Note>
+
+  O `mimeType` é detectado pelos **bytes** já decifrados, nunca pelo nome do arquivo, e nunca é `text/html` nem `image/svg+xml` — os dois executariam script na origem que os serve.
+
+  <Warning>
+    **`null` não é prova de que nenhum arquivo foi enviado, e `[]` também não.** O `flowMedia` também vem `null` quando a Meta não devolveu `flow_token` junto da submissão, quando a consulta dos anexos falhou — best-effort, custando um campo em vez do evento — e antes de o job de re-hospedagem rodar, já que a linha que diria `PENDING` só é escrita quando a transferência de fato começa, pelo backend que a executa, e não no instante em que o arquivo entra na fila. A superfície de leitura tem o espelho disso: o join dos anexos lá também é best-effort, então um join que falha deixa **todas as linhas da página com `media: []`**. Um Flow que coleta arquivos se reconcilia contra algo que você mesmo guardou.
+  </Warning>
+
+  **O `fileName` nunca é `null`.** Foto tirada na câmera não reporta nome nenhum, e aí entra o nome do próprio campo — então um `fileName` igual ao `field` pode ser o do aparelho ou o nosso, e os dois são indistinguíveis.
+
+  **Nenhuma das duas superfícies leva `cdn_url` nem `encryption_metadata`.** A Meta deriva uma chave AES por arquivo; repassar qualquer um dos dois colocaria a chave que abre o documento do cliente dentro do seu webhook e dos seus logs.
+
+  <Warning>
+    **O arquivo re-hospedado fica numa URL pública — quem tem o link lê o arquivo — e a cópia não vence.** Respostas, sessões e traços do endpoint são podados por uma janela de retenção; o arquivo não. Nada na plataforma apaga a linha nem o objeto, então o link sobrevive à resposta a que ele pertencia: as respostas param de ser servidas, o link para o documento continua funcionando. Decida isso antes de um Flow seu pedir documento de identidade a alguém.
+  </Warning>
+
+  **SDK de Node.** `FlowResponse.media` e `FlowResponseReceivedEventData.flowMedia` estão tipados, e o parser de webhooks agora **declara** o `flowMedia` — essa linha é o ponto inteiro: `z.object` remove as chaves que não conhece, então um campo presente no fio e ausente do schema não dá erro, ele **some**, e você vê uma submissão sem anexos em vez de um erro dizendo que o SDK está atrasado. É `.nullable().optional()` de propósito: `null` é o emissor dizendo que não há nada listado, *ausente* é um backend anterior ao campo, e recusar o segundo recusaria todo evento vindo de um deploy mais antigo.
+
+  ### Quatro corpos de erro de Flow do painel eram meio envelope, e um deles passa a chegar à `/v1`
+
+  A `/v1/flows`, a `/v1/flows/{id}` e a `/v1/flows/{id}/json` traduzem cada uma as próprias falhas de escrita e respondem `{ error, errorEN, code }` desde a primeira linha — nenhum corpo e nenhuma string delas se mexeu aqui. A tabela que estava sem metade do envelope é o tradutor por trás da API de Flows do **painel** (`/api/flows/*`), cujos corpos eram `{ error, code }`: só português. Quatro passam a trazer `errorEN` — `FLOW_NOT_FOUND` (404), `FLOW_NOT_DRAFT` (409), `FLOW_REQUIRES_META_NUMBER` (422), e o ramo que repassa uma recusa do Graph, a falha com maior chance de precisar de um remédio traduzido ("o token expirou", "a janela de 24 horas fechou") e a única das quatro cuja metade em inglês já existia e estava sendo jogada fora.
+
+  **Esse último ramo é o que um integrador enxerga.** O registro é a única rota `/v1` que encadeia esse tradutor, e a única que fala com o Graph, então uma recusa da Meta no `POST /v1/flows/{id}/endpoint` chega com as duas metades. Os outros três não chegam a um integrador: o registro responde os corpos de `FLOW_NOT_FOUND` e de `FLOW_REQUIRES_META_NUMBER` da própria `/v1`, que já eram bilíngues e não se mexeram, e nunca levanta o `FLOW_NOT_DRAFT` — registrar um `endpoint_uri` não exige rascunho.
+
+  **Duas mensagens em português também mudaram, e ganharam o remédio que faltava nelas.** Elas são do painel; os códigos e os status HTTP estão intactos:
+
+  ```json
+  { "error": "Flow não encontrado.", "code": "FLOW_NOT_FOUND" }
+  ```
+
+  ```json
+  {
+    "error": "Flow não encontrado. Ele pode ter sido apagado — atualize a lista.",
+    "errorEN": "Flow not found. It may have been deleted — refresh the list.",
+    "code": "FLOW_NOT_FOUND"
+  }
+  ```
+
+  O `FLOW_REQUIRES_META_NUMBER` ganhou o *"— selecione um número Meta para continuar"* do mesmo jeito, e esse remédio deliberadamente não é o que a `/v1` dá: lá o número vem da chave de API, então a frase continua *"use uma chave de um número Meta"*. **Nenhuma string de mensagem da `/v1` se mexeu.** Se você conduz a `/api/flows/*` direto e casa pela mensagem em vez do `code`, isso te quebra; o `code` é o contrato e não se mexeu.
+
+  ### Uma chave de escopo tenant podia enviar de um número que o chamador nunca pediu
+
+  **Corrigido.** Uma chave de conta inteira (`scope: "tenant"`) nomeia o número por requisição, com o `x-whatsapp-number-id`. Quando uma chave dessas mesmo assim carregava um número na própria linha — uma mitigação operacional, uma migração, um `UPDATE` na mão, e as três aconteceram — o worker re-resolvia o envio por esse número e **descartava o header em silêncio**. A mensagem saía do número de WhatsApp errado, chegava à pessoa certa, e nada em lugar nenhum reportava.
+
+  Uma chave de escopo tenant passa a honrar o header que recebeu. **Uma chave de escopo número continua mandando no próprio número**, e isso é regra e não omissão: é a mesma que a borda já aplica, porque senão o header deixaria uma chave do número A agir sobre o número B.
+</Update>
+
 <Update label="2026-09-05" tags={["Webhooks", "API"]}>
   ## Uma entrega falha agora diz *por quê*: o `response` traz a cadeia de causas
 

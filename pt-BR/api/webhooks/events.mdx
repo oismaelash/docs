@@ -510,7 +510,7 @@ Consulte o [fluxo completo de chamadas](/pt-BR/api/calls/overview).
 
 O `flow.response_received` dispara quando um cliente envia um [Flow](/pt-BR/concepts/flows). Usa o envelope canônico `{ event, data }` mesmo em número Meta, e está disponível **apenas** em números Meta Cloud API, porque Flows só existem lá.
 
-```json
+```json Flow simples — sem endpoint, respostas no response
 {
   "event": "flow.response_received",
   "data": {
@@ -527,7 +527,46 @@ O `flow.response_received` dispara quando um cliente envia um [Flow](/pt-BR/conc
       "nota_atendimento": "9",
       "comentario": "Teste"
     },
-    "responseRaw": null
+    "responseRaw": null,
+    "submitted": null,
+    "flowMedia": null
+  }
+}
+```
+
+```json Flow data_exchange — respostas no submitted, anexo ainda em transferência
+{
+  "event": "flow.response_received",
+  "data": {
+    "event": "flow.response_received",
+    "flowId": "flw_local_2",
+    "metaFlowId": "1122334455",
+    "flowToken": "2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM",
+    "messageId": "wamid.HBgNNTU2Nzk5...",
+    "whatsappNumberId": "cmm0abc123",
+    "from": "+5567999999999",
+    "receivedAt": "2026-09-06T16:10:44.000Z",
+    "response": {
+      "flow_token": "2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM"
+    },
+    "responseRaw": null,
+    "submitted": [
+      {
+        "screen": "WELCOME_SCREEN",
+        "at": "2026-09-06T16:08:12.616Z",
+        "data": { "observacao": "Aobaaa" },
+        "omitted": null
+      }
+    ],
+    "flowMedia": [
+      {
+        "field": "foto",
+        "fileName": "comprovante.jpg",
+        "mimeType": null,
+        "status": "PENDING",
+        "url": "https://pilotstatus.com.br/api/flows/media/eyJ0IjoiY21xc2N4MXczIiwiayI6ImZvdG8ifQ.9f2c1a4b8e0d6c73"
+      }
+    ]
   }
 }
 ```
@@ -542,8 +581,53 @@ O `flow.response_received` dispara quando um cliente envia um [Flow](/pt-BR/conc
 | `whatsappNumberId` | sempre | id Pilot Status do número que recebeu |
 | `from` | sempre | quem respondeu, em E.164 |
 | `receivedAt` | sempre | ISO 8601 |
-| `response` | pode ser nulo | as respostas enviadas, **já parseadas** |
+| `response` | pode ser nulo | o payload `nfm_reply` da Meta, **já parseado**. Num Flow sem endpoint é aqui que estão as respostas; num Flow `data_exchange` ele carrega o `flow_token` e mais nada |
 | `responseRaw` | pode ser nulo | os bytes crus — **só** quando o parse falhou |
+| `submitted` | pode ser nulo | as trocas `data_exchange` capturadas enquanto o formulário era preenchido, da mais antiga para a mais nova — **é aqui que estão as respostas de um Flow `data_exchange`**. `null`, **nunca `[]`** |
+| `flowMedia` | pode ser nulo, e pode nem vir | os arquivos anexados dentro do formulário. `null` é a gente dizendo que não há nada listado — **nunca `[]`**; a chave *ausente* é um deploy anterior ao campo. Trate os dois do mesmo jeito, e não exija que a chave venha |
+
+<Warning>
+  **Num Flow `data_exchange`, o `data.response` é o lugar vazio.** Ele é o `nfm_reply` da Meta e, quando o Flow é servido por um endpoint, essa resposta carrega o token e mais nada — medido três vezes em produção como `{"flow_token":"2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM"}`, enquanto a mesma submissão já tinha entregue ao endpoint do próprio cliente `{"observacao":"Aobaaa","foto":[…]}`. O que a pessoa digitou está em **`data.submitted`**; um handler que vá ao `response` atrás disso reporta formulário vazio em todo Flow que você ligar a uma API.
+
+  **Num Flow simples — sem endpoint — os componentes de texto livre chegam sim no `response`.** Ali nada intercepta as telas, então não há o que capturar no caminho e o `submitted` vem `null`. Quem decide onde estão as respostas é o Flow que você enviou, não o payload: leia o `submitted` num Flow `data_exchange`, e o `response` num Flow simples. Veja [Conectar a minha API a um Flow](/pt-BR/guides/flow-data-exchange).
+</Warning>
+
+<Note>
+  **O `submitted` é a lista das trocas `data_exchange`, da mais antiga para a mais nova.** Cada item tem `screen` (uma string, ou `null`), `at` (ISO 8601), `data` (o objeto já parseado, ou `null`) e `omitted`. O campo é `null` — **nunca `[]`** — tanto quando não há nada para mostrar quanto quando o conteúdo foi ocultado, porque `[]` se leria como "houve respostas e nós as escondemos".
+
+  **Só as trocas `data_exchange` são capturadas.** Um `INIT` devolve o estado que *nós* semeamos no envio do Flow, e um `BACK` é navegação; nenhum dos dois é algo que a pessoa respondeu, então nenhum dos dois é guardado. A lista é, portanto, legitimamente **mais curta** que os traces do seu endpoint para a mesma sessão — um `INIT` que não aparece nela não é troca perdida.
+
+  **Ele captura a requisição que a Meta manda para nós, nunca o que o seu endpoint respondeu.** O `extension_message_response` que a sua API devolve para encerrar o Flow continua não aparecendo em lado nenhum da Pilot Status, e este campo não muda isso — veja [Conectar a minha API a um Flow](/pt-BR/guides/flow-data-exchange).
+
+  **É append-only, e não há deduplicação.** Quem volta uma tela e envia de novo gera um segundo item, genuíno, em vez de sobrescrever o primeiro; é o `at` que separa duas passagens sob o mesmo token.
+</Note>
+
+<Warning>
+  **Nada é truncado em silêncio — um item que não pôde guardar o conteúdo diz isso, no lugar dele.** Ou o item tem `data` com `omitted: null`, ou tem `data: null` e o motivo em `omitted`. Não existe um terceiro formato, e o `omitted` é exatamente um de três valores.
+
+  | `omitted` | O que significa |
+  | --- | --- |
+  | `DATA_TOO_LARGE` | aquela troca sozinha passou do teto. Ela mantém a linha **e a posição** na lista, então os itens à volta continuam alinhados |
+  | `LIMIT_REACHED` | o teto de **50 trocas** por formulário foi atingido. Este é o último item da lista, e nada depois dele foi guardado |
+  | `UNREADABLE` | não foi possível ler o conteúdo daquela troca |
+  | `null` | o `data` está lá |
+
+  O teto é contado em **bytes, não em caracteres** — uma resposta escrita com acentos, ou com emoji, chega nele antes do que o tamanho na tela sugere.
+</Warning>
+
+<Note>
+  **As trocas ficam guardadas por 30 dias + 1, e o dia a mais não é enfeite.** Uma troca é capturada enquanto a pessoa ainda está preenchendo o formulário — minutos *antes* da submissão que cria a linha da resposta. Com 30 dias iguais dos dois lados, as trocas expirariam primeiro, e uma resposta ainda dentro da própria janela publicaria lista vazia nos seus últimos minutos.
+</Note>
+
+<Warning>
+  **O `flowMedia` já traz URL na primeira entrega, inclusive enquanto o arquivo ainda está a caminho de nós.** Cada item tem `field` (o nome que o **autor** do Flow deu ao componente — não é palavra reservada nem tipo), `fileName`, `mimeType`, `status` e `url`. Os bytes ficam no CDN da Meta e são re-hospedados por uma fila: o evento é emitido assim que a submissão é gravada, e essa transferência roda depois dele, então a submissão normalmente é anunciada com o arquivo ainda a caminho. É essa ordem que justifica o link, e não uma ressalva para contornar: o `url` está lá também no `PENDING`.
+
+  **Busque o link e ele espera pelo arquivo.** A rota segura a requisição enquanto a re-hospedagem termina, e então entrega o arquivo; toda busca posterior é um redirect. Uma espera que estoura responde `404` com o cabeçalho `Retry-After`, e o mesmo link continua funcionando depois disso. O valor não muda quando os bytes chegam, então dá para guardá-lo já na chegada — o `status` (`PENDING` / `STORED` / `FAILED`) continua sendo o que diz se eles chegaram. Trate o link como opaco: busque, nunca monte um. Ele vem `null` em três casos, e *"ainda transferindo"* não é nenhum deles — a instalação sem segredo de assinatura, que cai na URL direta do objeto assim que o `status` for `STORED`; a Meta sem `media_id` para assinarmos uma identidade em cima; ou um número `RELAY_ONLY`, onde nada foi guardado.
+
+  **`null` quer dizer quatro coisas diferentes, e só uma delas é "não houve anexo".** Ele também é o que você recebe quando a Meta não devolveu `flow_token` junto da submissão; quando a própria consulta dos anexos falhou, que é best-effort e custa um campo em vez do evento; e antes de o job de re-hospedagem começar, porque a linha que traria `PENDING` só é escrita quando a transferência de fato começa, pelo backend que a executa, e não no instante em que o arquivo entra na fila — até lá não há nada para listar. **Ou seja: `null` não é prova de que nenhum arquivo foi enviado.** Um Flow que coleta arquivos se relê em [`GET /v1/flows/{id}/responses`](/pt-BR/api/flows#ler-as-respostas-dos-formularios), nunca se conclui deste campo.
+
+  O campo é **nunca `[]`**. E o evento não leva **`cdn_url` nem `encryption_metadata`**: a Meta deriva uma chave AES por arquivo, e repassá-la colocaria a chave que abre o documento do cliente dentro do seu webhook, e dos seus logs.
+</Warning>
 
 <Warning>
   **O lado `message.*` de uma submissão não carrega resposta nenhuma, e isso é deliberado.** A Meta entrega um Flow enviado como resposta interativa do tipo `nfm_reply`, cujo `body` legível é um rótulo seco — `Enviado` / `Sent`. É esse rótulo que cai em `content`, em `chat_messages.text` e no `GET /v1/messages`; as respostas nunca vão para lá, porque `content` tem a promessa de ser *texto* de mensagem e um blob JSON ali quebraria todo consumidor que renderiza ou casa em cima dele.
@@ -556,8 +640,14 @@ O `flow.response_received` dispara quando um cliente envia um [Flow](/pt-BR/conc
 </Warning>
 
 <Note>
-  **Ou `response`, ou `responseRaw`, nunca os dois.** A Meta manda as respostas como *string* JSON. Quando parseia, você recebe `response`; quando não parseia, recebe `responseRaw` com os bytes como chegaram. A submissão nunca é descartada por não parsear, então confira qual dos dois veio.
+  **Ou `response`, ou `responseRaw`, nunca os dois.** A Meta manda o corpo do `nfm_reply` como *string* JSON. Quando parseia, você recebe `response`; quando não parseia, recebe `responseRaw` com os bytes como chegaram. A submissão nunca é descartada por não parsear, então confira qual dos dois veio — e lembre que, num Flow `data_exchange`, o que está ali é o `flow_token`, não as respostas.
 </Note>
+
+<Warning>
+  **Uma opção escolhida chega como o `id`, não como o rótulo que a pessoa leu.** `RadioButtonsGroup`, `Dropdown` e `ChipsSelector` declaram as opções no Flow JSON num `data-source` de pares `id` + `title`. Diante de `[{"id":"5","title":"Otimo"}, {"id":"3","title":"Razoavel"}, {"id":"1","title":"Ruim"}]`, quem toca em **Otimo** envia `{"nota":"5","comentario":"AOBA","flow_token":"..."}`. A tela "Sua resposta" do WhatsApp mostra `Otimo` porque o aparelho ainda tem o Flow JSON; o seu endpoint recebe `5`, e nada no payload diz o que `5` significava.
+
+  Resolver o rótulo depois pode te devolver o rótulo **errado**: o `id` é estável, o `title` não é, então um Flow republicado com `{"id":"5","title":"Excelente"}` faz uma busca posterior nomear uma palavra que o cliente nunca viu. Capture o rótulo no momento em que a submissão chega e guarde-o ao lado do `id`. Veja [Receber as respostas de um Flow](/pt-BR/guides/flow-responses).
+</Warning>
 
 <Note>
   **Sem respostas nenhuma, não sai evento.** Uma submissão que não carrega nada não dispara — um corpo vazio seria indistinguível, do seu lado, de um formulário enviado em branco.
@@ -566,7 +656,11 @@ O `flow.response_received` dispara quando um cliente envia um [Flow](/pt-BR/conc
 </Note>
 
 <Warning>
-  **Num número configurado para não guardar conteúdo do cliente, a entrega é completa e a cópia guardada não é.** O seu endpoint recebe o corpo inteiro; o payload guardado no log do webhook tem `from`, `response` e `responseRaw` apagados. Um registro que parece vazio ao lado de um `200` é essa ocultação, não uma entrega falhada.
+  **Num número configurado para não guardar conteúdo do cliente, a entrega é completa e a cópia guardada não é.** O seu endpoint recebe o corpo inteiro; no payload guardado no log do webhook o `response`, o `responseRaw`, o `submitted` e o `flowMedia` viram `null`, e o `from` vira a string marcadora `conteúdo indisponível` — uma string, não um `null`, então não teste por um. Um registro que parece vazio ao lado de um `200` é essa ocultação, não uma entrega falhada.
+
+  **Essa cópia ocultada é o que uma entrega BEM-SUCEDIDA guarda.** Uma entrega que falhou guarda o payload **real**, para o operador poder inspecionar e reenviar o que de fato saiu; uma varredura substitui o payload dessas linhas — inteiro, por um objeto marcador, não campo a campo — quando elas passam de 24 horas. Dentro dessa janela o `GET /v1/webhooks/{id}/logs` pode devolver a submissão por inteiro num número cuja configuração diz que ele não guarda nada.
+
+  **Num número desses os anexos nunca são re-hospedados**, então `flowMedia` vem `null` também na entrega — não existe cópia guardada para apontar, e a referência fica onde estava. **E nem uma troca é capturada**: o `submitted` também vem `null` na entrega, e não como linha ocultada — linha nenhuma. É a configuração do número fazendo o que ela diz, não uma falha.
 </Warning>
 
 ## Eventos da Meta Cloud API (envelope nativo)

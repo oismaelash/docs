@@ -11,6 +11,8 @@ Você não implementa nada da criptografia da Meta. **O endpoint que a Meta cham
 
 <Note>
   Um Flow `NAVIGATE` — aquele em que todas as telas estão fixas no Flow JSON — não precisa de nada disto. Tudo nesta página vale só para Flows cujas telas chamam o seu backend. Veja [Flows](/pt-BR/concepts/flows) para a diferença.
+
+  Esta página é o contrato requisição por requisição. Para o mesmo recurso em linguagem de produto — o que configurar, em que ordem, e o que uma pessoa vê quando está errado — leia [Flows com dados ao vivo](/pt-BR/guides/flow-live-data).
 </Note>
 
 ## O formato de uma troca
@@ -58,6 +60,10 @@ Você não implementa nada da criptografia da Meta. **O endpoint que a Meta cham
   **`action` nunca é `null`, e uma requisição sem ele nunca é encaminhada.** Toda chamada que a Meta faz carrega `INIT`, `BACK`, `data_exchange` ou `ping`. Um payload descriptografado que não traga nenhum deles é descartado antes de chegar até você, porque encaminhá-lo colocaria a nossa assinatura em algo que não é uma troca de Flow — e o seu endpoint não teria como distingui-lo de um que assinamos de propósito.
 </Note>
 
+<Note>
+  **Um arquivo escolhido num `PhotoPicker` ou `DocumentPicker` chega até nós NESTA troca, e nunca no `nfm_reply`.** É por isso que um Flow sem endpoint não recebe anexo nenhum. O Pilot Status re-hospeda o arquivo e o publica na submissão como `flowMedia` / `media` — o evento é emitido assim que a submissão é gravada e a re-hospedagem roda depois dele, então o `status` normalmente vem `PENDING` quando o evento cai, e o `flowMedia[].url` é um link que já funciona: buscá-lo espera a transferência em vez de dar 404. O formato, e o que fazer com isso, estão em [Receber as respostas de um Flow](/pt-BR/guides/flow-responses). Os limites da própria Meta (um picker por tela, 25 MiB, 20 dias no CDN dela) estão em [Flows](/pt-BR/concepts/flows).
+</Note>
+
 ### A assinatura
 
 Quando o Flow tem um segredo de assinatura, o encaminhamento leva o cabeçalho **`x-pilot-status-signature`**: o HMAC-SHA256 em hexadecimal do **corpo cru** da requisição, com esse segredo como chave.
@@ -97,6 +103,12 @@ Para encerrar o Flow, devolva a tela reservada `SUCCESS`. ⚠️ Este formato é
 ```
 
 <Warning>
+  **O que volta na submissão é só o que você nomeou em `params`, e as respostas não estão ali.** A Meta desembrulha esse objeto no `nfm_reply`, então, num Flow `data_exchange`, o `data.response` publica exatamente o formato acima e mais nada — `{"flow_token": "a1b2c3..."}` — enquanto a mesma submissão já tinha entregado `{"observacao": "Aobaaa", "foto": [ … ]}` ao seu endpoint. As respostas foram para **você**, tela a tela. Elas nunca voltaram pela Meta.
+
+  Leia-as em **`data.submitted`**, que carrega as requisições `data_exchange` que encaminhamos, cada uma com a sua tela e o seu horário — veja [Receber as respostas de um Flow](/pt-BR/guides/flow-responses). Um Flow comum, sem endpoint, é o outro caso: nada recolheu as respostas no caminho, então ali o `response` é onde estão todas elas.
+</Warning>
+
+<Warning>
   **Um `200` que não nomeia `screen` é recusado de propósito.** É o único modo de falha que parece sucesso do seu lado e é invisível do lado do cliente: a Meta renderiza um payload sem tela como *nada*, então a pessoa fica diante de um formulário que nunca avança e nunca dá erro.
 
   Em vez disso, tratamos exatamente como uma chamada falha — o cliente recebe um erro repetível sobre a tela em que já está, e a troca fica registrada como falha que você consegue encontrar.
@@ -131,7 +143,19 @@ Seja qual for a causa — fora do ar, timeout, não-`2xx`, corpo impossível de 
 
 ### Ver o que aconteceu
 
-A tela do Flow no painel lista as trocas recentes: a ação, a tela, o desfecho, o seu status HTTP e quanto tempo você levou. Os corpos são gravados **só em caso de falha** — uma troca bem-sucedida guarda tempo e formato e nada do que o cliente digitou — e o registro inteiro expira em 24 horas.
+A tela do Flow no painel lista as trocas recentes: a ação, a tela, o desfecho, o seu status HTTP e quanto tempo você levou. Os corpos são gravados **só em caso de falha** — uma troca bem-sucedida guarda tempo e formato e nenhum dos dois corpos, nem o que encaminhamos nem o que você respondeu — e o registro inteiro expira em 24 horas.
+
+<Warning>
+  **"Não está neste registro" não é "não foi guardado".** O que o cliente digitou numa tela `data_exchange` é guardado e publicado: é o `data.submitted` da submissão, com cada entrada carregando a tela em que foi preenchida e o momento em que aconteceu, no evento `flow.response_received` e no `GET /v1/flows/{id}/responses`, por 31 dias.
+
+  Um dia a mais que a própria resposta, de propósito. A troca é capturada enquanto a pessoa ainda está preenchendo, minutos antes da submissão que cria a linha da resposta — com uma janela igual, as trocas expirariam primeiro e os últimos minutos de uma resposta publicariam uma lista vazia. O formato completo está em [Receber as respostas de um Flow](/pt-BR/guides/flow-responses).
+</Warning>
+
+<Note>
+  **O `submitted` é legitimamente mais curto que esta lista, e isso não é falha.** Só as trocas `data_exchange` são capturadas. O `INIT` carrega o estado que *nós* semeamos — os params com que o Flow foi enviado, devolvidos de volta — e o `BACK` é navegação; nenhum dos dois é uma resposta, então nenhum é guardado. Conte as linhas daqui e as entradas de lá: os dois números não batem.
+
+  Ele também só acrescenta, nunca reescreve e nunca deduplica: quem volta uma tela e a envia de novo produz uma segunda entrada, genuína, e é o horário que separa as duas passagens sob um mesmo `flow_token`. E é a requisição que **a Meta manda para nós** — nunca o que o seu endpoint respondeu, e é por isso que `extension_message_response` continua não aparecendo em lado nenhum da Pilot Status.
+</Note>
 
 ## Como configurar, na ordem
 
@@ -145,7 +169,7 @@ Três coisas precisam ser verdade antes de a Meta chamar a sua API, e elas se to
     Para onde damos `POST` na troca já descriptografada. Um número serve vários formulários, e cada formulário costuma ser um serviço diferente do seu lado, então isso é por Flow.
   </Step>
   <Step title="3. `endpoint_uri` — na Meta, no Flow">
-    A Meta só chama um endpoint que ela tem registrado. **Salvar a URL conosco não registra nada na Meta**, de propósito: fazer isso como efeito colateral de um rename sequestraria o Flow de quem já roda um endpoint próprio. Leia o endpoint de volta e compare `endpointUri` (o nosso) com `metaEndpointUri` (o da Meta) — `drift: true` quer dizer que a Meta está chamando outra pessoa.
+    A Meta só chama um endpoint que ela tem registrado, e **salvar a URL no passo 2 não registra nada na Meta**. O registro é uma requisição própria — `POST /v1/flows/{flowId}/endpoint` — porque fazê-lo como efeito colateral de um rename sequestraria o Flow de quem já roda um endpoint próprio. Enquanto não for feito, a Meta se recusa a publicar o Flow.
   </Step>
 </Steps>
 
@@ -153,6 +177,7 @@ Três coisas precisam ser verdade antes de a Meta chamar a sua API, e elas se to
 | --- | --- | --- |
 | **Chave** — o que descriptografa a requisição da Meta | Por **número** | `POST /v1/numbers/{numberId}/flow-endpoint-key`, ou a tela de **Flows** no painel |
 | **URL do endpoint** — para onde encaminhamos | Por **Flow** | `PUT /v1/flows/{flowId}/endpoint`, ou a tela de **Flows** no painel |
+| **`endpoint_uri`** — para onde a Meta chama | Por **Flow**, guardado **na Meta** | `POST /v1/flows/{flowId}/endpoint`, ou **Registar na Meta** na tela de **Flows** do painel |
 
 <Warning>
   **A chave é deste NÚMERO, mesmo aparecendo ao lado de um Flow.** Trocá-la muda a descriptografia de todos os Flows `data_exchange` daquele telefone, não só do que você estava olhando.
@@ -292,9 +317,69 @@ curl -X PUT "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
   O número não é parâmetro: ele vem da chave de API (uma chave por número nomeia o dela; uma chave de conta estreita com `x-whatsapp-number-id`). Nomeá-lo no corpo é recusado com `FLOW_NUMBER_FROM_KEY`, e uma chave vinculada a um número fora da WABA do Flow recebe `422 FLOW_NUMBER_WABA_MISMATCH` em vez de uma resposta sobre um número que nunca poderia enviar esse Flow.
 </Note>
 
-### Passo 3 — aponte a Meta para nós
+### Passo 3 — registre a gente na Meta
 
-Registre `endpointUri` como o `endpoint_uri` do Flow no Flow Manager da Meta. Depois leia o endpoint de volta:
+A Meta só chama um endpoint que ela tem registrado no Flow. O passo 2 não registrou nada — esta é a requisição que registra:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+Ela escreve `endpointUri` — a nossa URL de proxy para este Flow — no `endpoint_uri` do Flow na Meta, e responde com o mesmo estado que o `GET` devolve:
+
+```json
+{
+  "flowId": "flw_local_1",
+  "url": "https://api.sua-empresa.com/flows/agendamento",
+  "hasSecret": true,
+  "endpointUri": "https://pilotstatus.com.br/api/flows/endpoint/AbC123.../1122334455",
+  "metaEndpointUri": "https://pilotstatus.com.br/api/flows/endpoint/AbC123.../1122334455",
+  "drift": false,
+  "numberHasKey": true,
+  "numberKeyUploadedAt": "2026-09-02T10:00:00.000Z",
+  "warnings": []
+}
+```
+
+O corpo é opcional, e `confirmOverwrite` (booleano) é o único campo aceito — o número vem da chave, como em todo o `/v1`. Não há `secret` nesta resposta: o `POST` nunca cria nenhum.
+
+<Note>
+  O painel faz o mesmo ato. Na tela de **Flows**, em **Apontar a Meta para cá**, o botão **Registar na Meta** chama esta rota; um `409` abre uma confirmação mostrando o endereço que você está prestes a deslocar, e `confirmOverwrite` é o que o botão **Assumir mesmo assim** envia.
+</Note>
+
+<Warning>
+  **Sem esta chamada, um Flow `data_exchange` não pode nem ser publicado.** A Meta recusa o `publish` com *"Publishing without specifying 'endpoint_uri' is forbidden"*, e nada mais no Pilot Status escreve esse campo.
+</Warning>
+
+<Note>
+  **Por que é uma segunda requisição e não uma flag na gravação.** O `PUT` é você descrevendo o **seu** webhook; o `POST` é a gente dizendo à **Meta** para rotear o Flow por nós. Fundidos num ato só, um cliente que roda o próprio endpoint de Flow perderia todas as trocas na próxima vez que corrigisse um erro de digitação numa URL — o rename re-apontaria o Flow em silêncio. Eles são separados para que re-apontar seja algo que você faz de propósito.
+</Note>
+
+**É idempotente.** Um Flow cujo `endpoint_uri` já é o nosso responde `200` e não escreve nada na Meta. A verificação lê a Meta **ao vivo**, não a coluna `metaEndpointUri` sincronizada de hora em hora — essa coluna é muda sobre uma URI registrada na última hora, que é exatamente a janela em que duas pessoas configuram o mesmo Flow.
+
+<Warning>
+  **`409 FLOW_ENDPOINT_URI_WOULD_OVERWRITE` — a Meta já aponta este Flow para outro lugar.** A resposta nomeia esse outro lugar, e só ele:
+
+  ```json
+  {
+    "error": "…",
+    "errorEN": "Meta already points this Flow at another endpoint. …",
+    "code": "FLOW_ENDPOINT_URI_WOULD_OVERWRITE",
+    "currentEndpointUri": "https://outra-pessoa.example/flows/1122334455"
+  }
+  ```
+
+  Reenviar a mesma requisição com `{"confirmOverwrite": true}` assume o Flow — e **assumir tira TODAS as trocas deste Flow de quem responde por ele hoje**. A escrita da Meta é uma sobrescrita simples: sem mesclagem, sem desfazer, e nada avisa o endpoint deslocado de que ele parou de ser chamado. Descubra o que está do outro lado de `currentEndpointUri` antes.
+
+  A nossa URL deliberadamente **não** é ecoada de volta: ela carrega o token de endpoint do número, e esse token é a credencial do proxy. `currentEndpointUri` é o deles, que é o que você precisa para reconhecê-los.
+</Warning>
+
+<Note>
+  **`422 FLOW_ENDPOINT_NUMBER_HAS_NO_KEY`** — o número não tem chave de endpoint de Flow, então não existe URL para registrar. Gere a chave (passo 1) e registre de novo.
+</Note>
+
+Leia o endpoint de volta quando quiser:
 
 ```bash
 curl "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
@@ -328,6 +413,8 @@ Toda falha destes endpoints responde no mesmo envelope — um formato só, uma g
 { "error": "<português>", "errorEN": "<inglês>", "code": "<CÓDIGO>" }
 ```
 
+`FLOW_ENDPOINT_URI_WOULD_OVERWRITE` é a única falha daqui que acrescenta uma quarta chave, `currentEndpointUri`.
+
 **A chave** (`/v1/numbers/{numberId}/flow-endpoint-key`):
 
 | Código | Status | Significado |
@@ -353,6 +440,13 @@ Toda falha destes endpoints responde no mesmo envelope — um formato só, uma g
 | `FLOW_ENDPOINT_SECRET_UNAVAILABLE` | 500 | Nosso. O segredo de assinatura não pode ser guardado cifrado, e encaminhar sem assinar não é uma opção que a gente tome. |
 | `FLOW_NUMBER_WABA_MISMATCH` | 422 | O número da sua chave não está na WABA dona deste Flow e nunca poderá enviá-lo. |
 | `FLOW_NOT_FOUND` | 404 | Nenhum Flow com esse id para esta credencial. |
+| `FLOW_ENDPOINT_CONFIRM_INVALID` | 400 | Só no `POST`. `confirmOverwrite` não é booleano. `"false"` é uma **string** verdadeira, e é recusada em vez de lida como consentimento. |
+| `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` | 409 | Só no `POST`. A Meta já aponta este Flow para outro endpoint, nomeado em `currentEndpointUri`. `409` e não `400`: não há nada de malformado na requisição — o que bloqueia é o estado na Meta. |
+| `FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` | 422 | Só no `POST`. O número não tem chave de endpoint, então não há URL para registrar. Gere a chave primeiro. |
+
+<Note>
+  **`FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` é a única grafia que aparece duas vezes** — como item de `warnings` numa leitura ou gravação, e como `422` no registro. É o mesmo fato em dois papéis: salvar um destino num número sem chave pode dar certo *com aviso*, e registrar na Meta não pode dar certo de jeito nenhum.
+</Note>
 
 Comuns aos dois: `FLOW_BODY_INVALID` (400, corpo malformado — um corpo truncado nunca é tratado como vazio), `FLOW_UNKNOWN_FIELDS` (400), `FLOW_NUMBER_FROM_KEY` (400, o corpo nomeou o número), `FLOW_REQUIRES_META_NUMBER` (422), `INTERNAL_ERROR` (500).
 
@@ -414,5 +508,6 @@ app.listen(3000);
 ## Relacionados
 
 - [Flows](/pt-BR/concepts/flows) — ciclo de vida, publicação, clonagem
+- [Flows com dados ao vivo](/pt-BR/guides/flow-live-data) — a mesma configuração, sem o contrato HTTP
 - [Receber as respostas de um Flow](/pt-BR/guides/flow-responses) — as respostas enviadas, no webhook
 - [API de Flows](/pt-BR/api/flows)

@@ -6,6 +6,211 @@ icon: "clock-rotate-left"
 
 What's new on the Pilot Status platform — API additions, changes and notable fixes. Subscribe via the RSS icon above.
 
+<Update label="2026-09-06" tags={["Flows", "Webhooks", "API"]}>
+  ## In a `data_exchange` Flow the answers were never in `response` — `submitted` carries them
+
+  We sent you to `data.response` for what a customer typed. On a `data_exchange` Flow that field is the empty place, and it always was.
+
+  ### What `response` actually holds there
+
+  `response` is Meta's `nfm_reply`, parsed. On a Flow whose screens are answered by your API, the submission that closes the form carries the token and nothing else. Measured three times in production on 2026-09-06, this is the whole of it:
+
+  ```json
+  { "flow_token": "2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM" }
+  ```
+
+  In that same submission your own endpoint received `{"observacao": "Aobaaa", "foto": [...]}`. The answers existed — they reached you screen by screen, inside the encrypted exchanges — and nothing here kept them, so every surface that offered to show you a `data_exchange` submission showed you a token instead.
+
+  <Note>
+    **This is the `data_exchange` case, not every Flow.** A plain Flow — no endpoint, `NAVIGATE` between screens — delivers its free-text components in `response`, and always did. It is when your API answers the screens that the `nfm_reply` empties out, because the answers went to your API instead of into it.
+  </Note>
+
+  ### New: `submitted`, on the event and on the read surface
+
+  `flow.response_received` (under `data`) and `GET /v1/flows/{id}/responses` now both carry `submitted` — the exchanges Meta sent us while the person was still filling the form, in order:
+
+  ```json
+  "submitted": [
+    {
+      "screen": "WELCOME_SCREEN",
+      "at": "2026-09-06T16:08:12.616Z",
+      "data": { "observacao": "Aobaaa" },
+      "omitted": null
+    }
+  ]
+  ```
+
+  `screen` is a string or `null`, `at` is ISO-8601, and `data` is the parsed object or `null`.
+
+  **Empty is spelled differently on the two surfaces, and that is deliberate.** On `GET /v1/flows/{id}/responses` `submitted` is `[]` and never `null`: the value comes from a lookup that answers nothing when there are no exchanges, and a field set to nothing would vanish from the JSON instead of arriving empty. On `flow.response_received` it is `null` and never `[]` — the rule `flowMedia` already follows there, for the reason that payload is stored: the redactor blanks a field only when it holds something, so an empty array would come back reading as *"there were answers and we hid them"*. Neither spelling is proof the person typed nothing.
+
+  ### Nothing is ever silently truncated
+
+  `omitted` is `null` or exactly one of three values. An entry either has its `data` with `omitted: null`, or `data: null` and the reason it is missing. There is no third shape, so a `null` `data` always has its answer beside it.
+
+  | `omitted` | What happened |
+  | --- | --- |
+  | `DATA_TOO_LARGE` | One over-sized exchange. It keeps its row **and its place in the order** — the exchange is not dropped, only its content is. |
+  | `LIMIT_REACHED` | The per-form ceiling of 50 exchanges. It is one final marker entry, and **nothing after it was stored**. |
+  | `UNREADABLE` | The exchange is on the list and its content could not be read back. |
+
+  **Over-sized is measured in bytes, not characters.** Accents and emoji cost more than one byte each, so `DATA_TOO_LARGE` can land on an answer that looks short.
+
+  ### The list is shorter than the endpoint traces, and that is the feature
+
+  **Only `data_exchange` exchanges are captured — `INIT` and `BACK` are not.** `INIT` hands back the state *we* seeded, the params sent at send time returned to us, and `BACK` is navigation. Neither is anything a person typed. So the Flow's trace screen lists more calls than `submitted` lists entries. That difference is `INIT` and `BACK`, and the shorter list is the correct one.
+
+  <Warning>
+    **`submitted` is the request Meta sends us, never what your endpoint replied.** The screens and payloads your API returns are not captured here, and are not captured anywhere: `extension_message_response` still appears on no surface in Pilot Status. This field did not change that.
+  </Warning>
+
+  **It is append-only, with no de-duplication.** Somebody who steps back a screen and submits it again produces a second, genuine entry — both are real, and `at` is what separates two runs of the same form under one token.
+
+  **A number in `RELAY_ONLY` keeps nothing here.** Not a blanked row: no row. The exchange is still decrypted and forwarded to your endpoint, as everything is in that mode; what is not kept is the copy.
+
+  ### Kept for 30 days + 1
+
+  Responses are pruned at 30 days, the exchanges behind them at 31, and **the extra day is not a rounding**. An exchange is captured while the customer is still filling the form, minutes *before* the submission that creates the response row. On an identical 30 days the exchanges would expire first, and a response in its last minutes of life would publish an empty `submitted` beside answers that had been there the whole time.
+
+  See [Receive Flow responses](/guides/flow-responses) for the field on both surfaces, and [Data Retention & PII Modes](/trust/data-retention) for the windows.
+</Update>
+
+<Update label="2026-09-06" tags={["Flows", "Webhooks", "API"]}>
+  ## `endpoint_uri` had no writer anywhere in the product, and a file attached inside a form reached no surface at all
+
+  Two holes on the same feature, both of the kind that reports nothing.
+
+  ### Everything was configurable except the one field Meta requires
+
+  The previous entry made the `data_exchange` proxy configurable: a key per number, a forwarding URL per Flow. Both said, out loud, that **saving the URL registers nothing at Meta** — and nothing else registered it either. There was no writer for `endpoint_uri` on any surface: not the dashboard, which showed `FLOW_ENDPOINT_META_URI_UNKNOWN` and offered no way to act on it, and not the API. A `data_exchange` Flow could be wired end to end and still not be published, because Meta refuses `publish` with *"Publishing without specifying 'endpoint_uri' is forbidden"* (Meta's wording, not ours).
+
+  **New: `POST /v1/flows/{id}/endpoint`** — the same path as the save, a different act. `GET` reads that state and `PUT` / `PATCH` store **your** destination; none of the three talks to Meta. `POST` writes **our** proxy URL into the Flow's `endpoint_uri` **at Meta**.
+
+  ```bash
+  curl -X POST https://pilotstatus.com.br/v1/flows/flw_local_1/endpoint \
+    -H "x-api-key: $PILOT_STATUS_API_KEY"
+  ```
+
+  The body is optional — an empty one is legal here, unlike on `PUT` — and **`confirmOverwrite` is the only field it accepts**. Anything else is `400 FLOW_UNKNOWN_FIELDS`; `whatsappNumberId` in the body is `400 FLOW_NUMBER_FROM_KEY`, because the number comes from the credential as everywhere in `/v1`; a truncated body is `400 FLOW_BODY_INVALID` and is never read as an empty one. The `200` is the same endpoint state `GET` and `PUT` already returned, with no new field and no `secret` — `POST` never mints one.
+
+  **It is idempotent, and the check reads Meta live.** A Flow already pointing at us answers `200` with no write to the Graph. It deliberately does not consult the hourly-synced `metaEndpointUri` column, because that column is silent about a URI registered in the last hour — exactly the window in which two people wire the same Flow.
+
+  **A Flow pointing somewhere else is refused, and the refusal names the other endpoint:**
+
+  ```json
+  {
+    "error": "A Meta já aponta este Flow para outro endpoint. …",
+    "errorEN": "Meta already points this Flow at another endpoint. …",
+    "code": "FLOW_ENDPOINT_URI_WOULD_OVERWRITE",
+    "currentEndpointUri": "https://someone-else.example/flows/1122334455"
+  }
+  ```
+
+  `409`, and one of the two bodies on this surface that carry a fourth key — `FLOW_JSON_INVALID` already adds `validationErrors` the same way. **Ours is deliberately not echoed** — our URL embeds the number's endpoint token, which is the credential of the proxy. Re-sending with `{"confirmOverwrite": true}` takes the Flow over, and taking it over **removes every exchange of that Flow from whoever answers it today**: Meta's write is a plain overwrite, with no merge, no undo and no notice to the endpoint that stops being called.
+
+  **`confirmOverwrite` is never coerced.** A non-boolean is `400 FLOW_ENDPOINT_CONFIRM_INVALID` rather than a truthy read — `"false"` is a truthy string, and reading it as consent would take over a live endpoint on a request whose author believed they had declined.
+
+  <Warning>
+    **`FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` now appears in two roles.** It was only ever a value inside the `warnings` array of a `200`; it is now also a **`422` `code`** with a body of its own, on the registration. Saving a destination on a key-less number still succeeds *with a warning*; registering at Meta cannot succeed at all, because there is no URL to register. A client that tested `warnings.includes(...)` can now receive the same spelling as a failure.
+  </Warning>
+
+  ### A file attached inside a form expired on Meta's CDN and was never ours
+
+  A `PhotoPicker` or a `DocumentPicker` puts a file in the submission, and **it never arrives in `response`**. The bytes go to Meta, and the reference that reaches them — with the AES key Meta derives per file beside it — travels inside the encrypted `data_exchange` request that only the proxy decrypts, never in the `nfm_reply` that becomes `response`. Meta then deletes the file after at most 20 days, and nothing here decrypted it, copied it or listed it: there was no decrypter in the codebase at all, so the attachment was simply lost. It is now decrypted, re-hosted, and published on both surfaces and in the SDK types.
+
+  **`flow.response_received` now carries `flowMedia`:**
+
+  ```json
+  {
+    "event": "flow.response_received",
+    "data": {
+      "event": "flow.response_received",
+      "flowId": "flw_local_1",
+      "metaFlowId": "1122334455",
+      "flowToken": "a1b2c3d4e5f6...",
+      "messageId": "wamid.HBgNNTU2Nzk5...",
+      "whatsappNumberId": "cmm0abc123",
+      "from": "+5567999999999",
+      "receivedAt": "2026-09-06T14:21:07.000Z",
+      "response": { "nome": "Ana" },
+      "responseRaw": null,
+      "flowMedia": [
+        {
+          "field": "documento",
+          "fileName": "carteira.jpg",
+          "mimeType": null,
+          "status": "PENDING",
+          "url": "https://pilotstatus.com.br/api/flows/media/eyJ0IjoiY21xc2N4MXczIiwiayI6ImZvdG8ifQ.9f2c1a4b8e0d6c73"
+        }
+      ]
+    }
+  }
+  ```
+
+  **And `GET /v1/flows/{id}/responses` now carries `media` on every response** — the same files, settled, plus `sizeBytes`:
+
+  ```json
+  {
+    "field": "documento",
+    "fileName": "carteira.jpg",
+    "mimeType": "image/jpeg",
+    "sizeBytes": 184320,
+    "status": "STORED",
+    "url": "https://media.pilotstatus.com.br/public/tenants/.../flow-media/....jpg"
+  }
+  ```
+
+  **`url` is there on the first delivery, and it is a link that waits.** The event is emitted as soon as the submission is stored and the re-host runs on a queue after it, so the submission is ordinarily announced while the transfer is still in flight. Rather than publish nothing across that window, `url` points at a route of ours: fetching it before the bytes land holds the request while the re-host finishes and then serves the file, every fetch after that is a redirect, and a wait that runs out answers `404` with a `Retry-After` header. **The value does not change when the file lands**, so it is safe to store on arrival — and `status` (`PENDING` / `STORED` / `FAILED`) is still how you know whether the bytes are ours. Treat the link as opaque: fetch it, never construct one.
+
+  <Note>
+    **`url` is still `null` in three cases, and "not transferred yet" is not one of them.** A deployment with no signing secret configured falls back to the older behaviour — the direct object URL, once `status` is `STORED`; Meta sent no `media_id` to sign an identity over; or the number is `RELAY_ONLY`, where no attachment is stored at all.
+  </Note>
+
+  `mimeType` is sniffed from the decrypted **bytes**, never from the file name, and is never `text/html` or `image/svg+xml` — both would execute script in the origin that serves them.
+
+  <Warning>
+    **`null` is not proof that no file was sent, and neither is `[]`.** `flowMedia` is also `null` when Meta echoed no `flow_token` with the submission, when the attachment lookup failed — best-effort, costing a field rather than the event — and before the re-host job runs, since the row that would say `PENDING` is only written once the transfer actually starts, by the backend that performs it, and not at the moment the file is queued. The read surface has the mirror: its attachment join is best-effort too, so a join that fails leaves **every row on the page with `media: []`**. A Flow that collects files is reconciled against something you kept yourself.
+  </Warning>
+
+  **`fileName` is never `null`.** A photo taken in the camera reports no name, and the field's own name is used in its place — so a `fileName` equal to `field` may be the device's or ours, and the two are indistinguishable.
+
+  **Neither surface carries `cdn_url` or `encryption_metadata`.** Meta derives one AES key per file; forwarding either would put the key that opens the customer's document into your webhook and into your logs.
+
+  <Warning>
+    **The re-hosted file sits at a public URL — whoever holds the link reads it — and the copy never expires.** Responses, sessions and endpoint traces are pruned on a retention window; the file is not. Nothing in the platform deletes the row or the object, so the link outlives the response it belonged to: the answers stop being served, the link to the document keeps working. Decide that before a Flow of yours asks someone for an identity document.
+  </Warning>
+
+  **Node SDK.** `FlowResponse.media` and `FlowResponseReceivedEventData.flowMedia` are typed, and the webhook parser now **declares** `flowMedia` — that line is the whole point: `z.object` strips keys it was not told about, so a field on the wire and absent from the schema does not fail, it **vanishes**, and you see a submission with no attachments instead of an error saying the SDK is behind. It is `.nullable().optional()` on purpose: `null` is the emitter saying nothing is listed, *absent* is a backend older than the field, and rejecting the second would reject every event from an older deployment.
+
+  ### Four dashboard Flow error bodies were half an envelope, and one of them now reaches `/v1`
+
+  `/v1/flows`, `/v1/flows/{id}` and `/v1/flows/{id}/json` each translate their own write failures and have answered `{ error, errorEN, code }` since their first line — no body and no string of theirs moved here. The table that was short of the envelope is the translator behind the **dashboard's** Flow API (`/api/flows/*`), whose bodies were `{ error, code }`: Portuguese only. Four now carry `errorEN` — `FLOW_NOT_FOUND` (404), `FLOW_NOT_DRAFT` (409), `FLOW_REQUIRES_META_NUMBER` (422), and the arm that relays a Graph refusal, the failure most likely to need a translated remedy ("the token expired", "the 24-hour window closed") and the only one of the four whose English half already existed and was being dropped on the floor.
+
+  **That last arm is the one an integrator can see.** The registration is the only `/v1` route that chains this translator, and the only one that talks to the Graph, so a Meta refusal on `POST /v1/flows/{id}/endpoint` arrives with both halves. The other three do not reach an integrator: the registration answers `/v1`'s own `FLOW_NOT_FOUND` and `FLOW_REQUIRES_META_NUMBER` bodies, which were already bilingual and did not move, and it never raises `FLOW_NOT_DRAFT` at all — registering an `endpoint_uri` does not require a draft.
+
+  **Two Portuguese messages also changed, and gained the remedy they were missing.** They are the dashboard's; codes and HTTP statuses are untouched:
+
+  ```json
+  { "error": "Flow não encontrado.", "code": "FLOW_NOT_FOUND" }
+  ```
+
+  ```json
+  {
+    "error": "Flow não encontrado. Ele pode ter sido apagado — atualize a lista.",
+    "errorEN": "Flow not found. It may have been deleted — refresh the list.",
+    "code": "FLOW_NOT_FOUND"
+  }
+  ```
+
+  `FLOW_REQUIRES_META_NUMBER` gained *"— select a Meta number to continue"* the same way, and that remedy is deliberately not the one `/v1` gives: there the number comes from the API key, so the sentence stays *"use a key bound to a Meta number"*. **No `/v1` message string moved.** If you drive `/api/flows/*` directly and match on the message rather than on `code`, this breaks you; `code` is the contract and did not move.
+
+  ### A tenant-scoped key could send from a number the caller never asked for
+
+  **Fixed.** An account-wide (`scope: "tenant"`) key names the number per request, with `x-whatsapp-number-id`. When such a key nevertheless carried a number of its own on its row — an operational mitigation, a migration, a hand-written `UPDATE`, all three of which happened — the worker re-resolved the send by that number and **discarded the header in silence**. The message left from the wrong WhatsApp number, reached the right person, and nothing anywhere reported it.
+
+  A tenant-scoped key now honours the header it was given. **A number-scoped key still wins over the header**, and that is a rule rather than an omission: it is the same one the edge already enforces, because otherwise the header would let a key for number A act on number B.
+</Update>
+
 <Update label="2026-09-05" tags={["Webhooks", "API"]}>
   ## A failed delivery now says *why*: `response` carries the cause chain
 

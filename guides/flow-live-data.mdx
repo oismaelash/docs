@@ -1,0 +1,155 @@
+---
+title: "Flows That Answer With Live Data"
+sidebarTitle: "Flows with live data"
+description: "Set up a Flow whose screens are decided by your own system while the customer is filling the form — what you need, in what order, what can go wrong, and what the customer sees when it does."
+mode: "wide"
+---
+
+A **live-data Flow** is a form inside WhatsApp whose next screen is decided by one of your systems, while the person is still filling it in. Meta calls it `data_exchange`, and the difference from an ordinary form is that the form can now *answer back*: it shows the times that are really free, tells the person their code was wrong, or prices what they just chose.
+
+<Note>
+  This page is for whoever sets a Flow up and wants to understand what is happening. The request-by-request contract your developers implement is in [Connect your API to a Flow](/guides/flow-data-exchange).
+</Note>
+
+## A simple form collects, a live Flow converses
+
+| | Simple form (`NAVIGATE`) | Live data (`data_exchange`) |
+| --- | --- | --- |
+| What the screens show | Whatever you wrote into the form | Whatever your system decides, screen by screen |
+| When you learn the answers | Once, at the end, when the person submits | On every screen, as they go |
+| What it needs | Nothing beyond the form itself | A system of yours that answers, plus the wiring on this page |
+| Good for | Sign-up, survey, lead capture | Booking, lookups, validation, prices |
+
+Most Flows are simple forms, and they need none of this. Set one up as live-data only when a screen has to show something you cannot know in advance.
+
+## When it is worth the extra setup
+
+- **Show what is actually free.** The person picks a day, and the next screen lists the slots still open at that moment — not a fixed list that goes stale.
+- **Check something before you accept it.** An order number, a member id, a coupon: the person types it and the form says right away whether it is good.
+- **Calculate as they choose.** Size, quantity, delivery: the price on the next screen is your system's answer, not a table you maintain twice.
+- **Send different people down different paths.** An existing customer sees one screen, a new one another. Your system names the screen that comes next.
+
+## What you need, in order
+
+Each step below only works if the one before it is done. Skipping one leaves a Flow that looks configured, shows no error anywhere, and is simply never called.
+
+<Steps>
+  <Step title="A Meta number">
+    Flows exist only on official Meta (Cloud API) numbers. An unofficial number cannot send them at all. See [Official vs unofficial](/concepts/official-vs-unofficial).
+  </Step>
+  <Step title="An endpoint key on that number">
+    Open the Flow in the dashboard and find the box **Key of this NUMBER**. Click **Generate a new pair**, or **Import an existing key** if you already have one in use.
+
+    The key belongs to the **number**, not to this Flow: every live-data Flow on that number uses it. Generating a new one replaces whatever Meta holds for that number, so if another form on the same number is already working, generate with care — importing changes nothing at Meta and is the safe option there.
+  </Step>
+  <Step title="A system of yours that answers">
+    Any address of yours that can receive a message and reply within a couple of seconds — your own backend, an automation tool, whatever you already run. It must be reachable over `https://`, because what we send it is what the customer just typed.
+  </Step>
+  <Step title="Save the destination on the Flow">
+    In the box **Destination of this Flow**, paste that address and click **Save destination**. This one is per Flow: another form on the same number can point somewhere else entirely.
+
+    If the field is greyed out, the number has no key yet — go back to step 2. It is deliberately not saveable before then, because a destination on a key-less number would never be called.
+  </Step>
+  <Step title="Register the Flow with Meta">
+    Meta only calls an address it has registered on the Flow, and saving the destination registers nothing — that separation is what stops a typo correction from stealing a Flow that someone else's system is answering today.
+
+    In the same panel, under **Point Meta here**, click **Register at Meta**. Once it is done — or if Meta was already pointing at us — the panel says *"Meta already points here. Nothing to do."*, and the button becomes **Register again**. Pressing it a second time is harmless: a Flow already registered with us changes nothing.
+
+    The button is greyed out until the number has a key, for the same reason the destination field is.
+  </Step>
+  <Step title="Publish the Flow">
+    Only now. **Meta refuses to publish a live-data Flow that has no registered address** — it answers *"Publishing without specifying 'endpoint_uri' is forbidden"*. Publishing is irreversible: a published Flow can never be edited, only cloned into a new version.
+  </Step>
+</Steps>
+
+<Warning>
+  **If Meta is already pointing this Flow somewhere else, the button asks before it acts.** A box opens saying *"Meta already points this Flow at another address"*, shows that address, and warns that continuing moves **every** exchange of this Flow to Pilot Status — whoever answers at that address stops receiving them, and Meta keeps no copy of the previous value. Two buttons: **Take it over anyway** and **Cancel**.
+
+  Read the address before you continue. If you do not recognise it, cancel and find out whose it is: nothing tells the system on the other end that it stopped being called.
+
+  On the rare occasion Meta refuses without naming that address, **the question is still asked** — only without the address on screen. There is no path through this panel that takes a live Flow over silently.
+</Warning>
+
+<Note>
+  Teams that automate their setup can do the same act from the API instead of the panel — see [Flows API](/api/flows). The panel is the normal way.
+</Note>
+
+## What Pilot Status does for you
+
+Meta does not send your system the customer's answers in plain text. It encrypts every single call, and expects the reply encrypted back in a very specific way — this is the part that normally stops teams from shipping an interactive form at all.
+
+**Pilot Status is the address Meta calls.** For every screen the customer fills in:
+
+1. Meta sends us the encrypted call.
+2. We decrypt it.
+3. We forward the plain content to your address, stamped with a signature header — `x-pilot-status-signature` — so your system can prove the message came from us and not from someone who guessed your URL.
+4. We encrypt your answer and hand it back to Meta, which draws the screen you named.
+
+You never touch the encryption. It is the same signature header as ordinary [Pilot Status webhooks](/concepts/webhooks), so if your system already checks those, it needs nothing new.
+
+<Note>
+  The **signing secret** is shown to you exactly once, on the save that creates it, with a button to copy it. Copy it then — it is stored encrypted and cannot be read back, and the dashboard has no way to show it again. Replacing a lost or leaked one is an API call (`rotateSecret`), after which your system has to be updated with the new value.
+</Note>
+
+## What your system has to send back
+
+One small answer, every time: the **name of the next screen**, and the information that screen needs.
+
+```json
+{
+  "screen": "PICK_SLOT",
+  "data": { "slots": ["09:00", "11:30", "16:00"] }
+}
+```
+
+The screen names are the ones in your Flow itself. To close the form, answer with the reserved screen `SUCCESS`.
+
+<Warning>
+  **An answer that names no screen is treated as a failure, on purpose.** Meta draws a reply with no screen as *nothing at all* — the person sits looking at a form that neither advances nor errs, and nothing anywhere reports it. We would rather show them a retryable error and record the exchange as failed.
+</Warning>
+
+## The clock is the real constraint
+
+Meta holds the call open while a person is watching a spinner on their phone, and **it does not try again**. A slow answer is not a delayed screen; it is a failed one.
+
+<Warning>
+  We give up on your system after **8 seconds** (the default) and show the customer an error. That is much tighter than an ordinary webhook, and for a good reason: an ordinary webhook is a notification nobody is waiting for, and this is somebody standing still.
+
+  Do the slow work *after* you reply. Answer the screen first, then book, charge, or write to your database.
+</Warning>
+
+## When something is wrong
+
+The customer never sees your servers. Whatever failed — no destination saved, your system down, too slow, an answer we could not read — they get a generic, retryable error over **the screen they are already on**, and nothing they typed is lost. The one exception is a failure at a moment Meta did not name a screen for — the form opening, or the person stepping back — where there is no screen to put the error on and Meta shows its own.
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| The destination field is greyed out | The **number** has no endpoint key, so Meta has nothing to encrypt with and could never reach us | Generate or import the key in **Key of this NUMBER**, above the field |
+| **"Meta is not calling us for this Flow"** | Meta has an address registered on this Flow and it is not ours. The answers are going somewhere else, or nowhere | Click **Register at Meta** (step 5) and read the address in the confirmation box before you continue — taking it over stops that address being called, with no warning to whoever runs it |
+| A warning saying there is **no destination** | The Flow has no address saved, so there is nothing to forward to | Save the destination (step 4) |
+| Publishing is refused, mentioning `endpoint_uri` | The Flow was never registered with Meta | Click **Register at Meta** (step 5), then publish |
+| The customer reports an error screen mid-form | Your system answered too slowly, was down, or replied with something unusable | Open the Flow's recent exchanges — the failure is recorded there with your status and how long you took |
+| The submission arrives with no answers in it | Normal for a live-data Flow. What Meta hands back at the end carries only the form's token: the answers went to **your system**, screen by screen, and never travelled back through Meta | Read them in `submitted` on the submission — see [Receive Flow responses](/guides/flow-responses) |
+
+<Warning>
+  **A live-data Flow that is not wired fails silently, not loudly.** Nothing errors on your side, nothing errors in the dashboard, and the form simply never calls you. That is why the Flow's panel lists **Warnings about this wiring** even after a save succeeds — read that list before you assume it is done, and keep any warning you do not recognise on screen rather than dismissing it.
+</Warning>
+
+## Checking what actually happened
+
+The Flow's screen in the dashboard lists its recent exchanges: which screen, whether it worked, what your system answered, and how long it took. The bodies of **failed** exchanges are kept so you can see what went wrong; successful ones keep only timing and shape. The whole record expires after **24 hours** — it is a debugging aid, not an archive.
+
+<Note>
+  **That is the trace of the wiring, not of the answers.** What the person typed is kept, and kept properly: it travels with the submission as `submitted`, screen by screen, each entry stamped with the moment it was filled in, and stays for 31 days — one day longer than the submission itself, so a submission is never served after the exchanges that fed it have expired.
+
+  Only the screens someone actually answered are in that list. Opening the form and stepping back a screen are not answers and are not stored, which is why it is shorter than the exchanges above — that is the design, not a loss.
+</Note>
+
+For the answers themselves — their shape, and how to read them — see [Receive Flow responses](/guides/flow-responses).
+
+## Related
+
+- [Flows](/concepts/flows) — what a Flow is, and its lifecycle
+- [Connect your API to a Flow](/guides/flow-data-exchange) — the developer contract for the system that answers
+- [Receive Flow responses](/guides/flow-responses) — the answers people submit
+- [Flows API](/api/flows)

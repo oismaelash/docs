@@ -46,6 +46,26 @@ Each WhatsApp number is configured independently with one of three modes (set on
 | `STORE_X_DAYS` | Only records within the window — for date-range queries the effective lower bound is `max(startDate, now − piiRetentionDays)`. |
 | `RELAY_ONLY` | Empty list with `{ "total": 0, "notice": "PII_RELAY_ONLY" }`. |
 
+## Flow data
+
+A [WhatsApp Flow](/concepts/flows) keeps three records of its own, and their windows are fixed by the platform — they are not the API key's `retentionDays`, and not the number's `piiRetentionDays`.
+
+| Record | Window | What it is |
+| --- | --- | --- |
+| **Flow responses** | 30 days | What the customer submitted, read at `GET /v1/flows/{id}/responses`. The window is enforced **on read**, so a response past its expiry is never served — even if the pruner has not reached it yet. |
+| **Flow exchanges** | 30 days \+ 1 | The `data_exchange` calls Meta made while the person was still filling the form, published as `submitted` on the response and on the `flow.response_received` event. `INIT` and `BACK` are not captured, so the list is shorter than the Flow's endpoint trace. |
+| **Flow media** | **Never expires** | A file attached with `PhotoPicker` or `DocumentPicker`, decrypted and re-hosted by us. It carries no expiry, and nothing in the platform deletes it. |
+
+<Note>
+  **Why the exchanges get one day more than the responses.** An exchange is captured while the customer is still filling the form, minutes *before* the submission that creates the response row. On an identical 30 days the exchanges would expire first, and a response in its last minutes of life would publish an empty `submitted` beside answers that had been there the whole time.
+</Note>
+
+**On a `RELAY_ONLY` number no exchange is stored at all** — not a blanked row: no row. The call is still decrypted and forwarded to your endpoint, as everything is in that mode; what is not kept is the copy. Where a number's redaction blanks a stored copy of the **event**, `submitted` comes back `null` — never `[]`, which would read as answers hidden rather than answers absent. On the **read surface**, `GET /v1/flows/{id}/responses`, empty is spelled `[]` instead: there is no stored payload to redact there, and a field set to nothing would vanish from the JSON rather than arrive empty.
+
+<Warning>
+  **The re-hosted Flow file outlives the response it belonged to, at a public URL.** Whoever holds the link reads it, and the link keeps working after the answers have stopped being served at `GET /v1/flows/{id}/responses`. Decide that before a Flow of yours asks somebody for an identity document.
+</Warning>
+
 ## Forwarding is always active
 
 Regardless of PII mode, these always work:
@@ -60,3 +80,4 @@ Only **storage and read-back** are affected.
 
 - [Webhooks](/concepts/webhooks)
 - [Chatwoot integration](/integrations/chatwoot)
+- [Flows](/concepts/flows)

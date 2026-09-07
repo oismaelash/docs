@@ -24,6 +24,10 @@ A `NAVIGATE` Flow is delivered, filled in, and submitted once. You receive the w
 
 A `data_exchange` Flow talks back mid-form: the customer picks a date and the next screen shows the slots that are _actually_ free. That requires an HTTPS endpoint that Meta calls per screen — and Meta encrypts every one of those calls.
 
+<Warning>
+  **Meta will not publish a `data_exchange` Flow that has no `endpoint_uri` registered** — it answers *"Publishing without specifying 'endpoint_uri' is forbidden"*. Registering is step 3 below, and it is a request of its own.
+</Warning>
+
 ## Lifecycle
 
 <Steps>
@@ -54,13 +58,17 @@ Attach the Flow to a template using a **FLOW button**. The button binds by `flow
 
 ## Receiving the answer
 
-When the customer submits, Meta sends an `nfm_reply` carrying the `flow_token` and the submitted form as a JSON **string**. There are two ways to read it:
+When the customer submits, Meta sends an `nfm_reply` carrying the `flow_token` and, on a `NAVIGATE` Flow, the filled form as a JSON **string**. There are two ways to read it:
 
 - **Live** — the `flow.response_received` webhook event, carrying the parsed answers. See [Receive Flow responses](/guides/flow-responses).
 - **Later** — `GET /v1/flows/{id}/responses`, joined back to the contact who answered.
 
 <Warning>
   **The chat message that carries a submission has no answers in it, and the event has to be subscribed to.** Meta's `nfm_reply` puts a bare label in the message body — `Sent` / `Enviado` — and that label is what reaches `content`, `GET /v1/messages` and the Chatwoot mirror. A webhook subscribed only to `messages` therefore receives a message that looks empty, with no error anywhere. Add `flow.response_received` to its `events`.
+</Warning>
+
+<Warning>
+  **In a `data_exchange` Flow the answers are not in `response` at all.** Meta's `nfm_reply` carries the `flow_token` and nothing else, so `response` — on the event and on the read surface — holds a bare token while your own endpoint received what the person actually typed. Those answers are published as **`submitted`**, one entry per exchange. `response` keeps its old meaning only on a Flow with no endpoint, where free-text components still arrive in it.
 </Warning>
 
 <Note>
@@ -76,7 +84,7 @@ Meta encrypts every endpoint call: an AES-GCM payload whose key arrives RSA-2048
 **So Pilot Status is the endpoint.** We hold the key, decrypt Meta's request, and forward **plain JSON over HTTPS** to a webhook you control. Your reply is encrypted on the way back. You never implement RSA, AES-GCM, or the inverted IV.
 
 <Note>
-  **Two settings at two levels** — the key belongs to the **number**, the forwarding URL to the **Flow**. `NAVIGATE` Flows need neither. Both are set on the **Flows** screen in the dashboard, and both have a public-API surface of their own: `GET` / `POST /v1/numbers/{id}/flow-endpoint-key` and `GET` / `PUT` / `PATCH /v1/flows/{id}/endpoint`, all four gated at `flows:manage`. Neither URL appears on `GET /v1/flows`, because the token inside it is a credential — see [Connect your API to a Flow](/guides/flow-data-exchange).
+  **Two settings at two levels, and one registration** — the key belongs to the **number**, the forwarding URL to the **Flow**, and `endpoint_uri` is written **at Meta**. `NAVIGATE` Flows need none of them. All three are set on the **Flows** screen in the dashboard, and each has a public-API surface of its own: `GET` / `POST /v1/numbers/{id}/flow-endpoint-key`, `GET` / `PUT` / `PATCH /v1/flows/{id}/endpoint`, and `POST /v1/flows/{id}/endpoint` for the registration — all gated at `flows:manage`. Neither URL appears on `GET /v1/flows`, because the token inside it is a credential — see [Connect your API to a Flow](/guides/flow-data-exchange).
 </Note>
 
 <Steps>
@@ -86,8 +94,8 @@ Meta encrypts every endpoint call: an AES-GCM payload whose key arrives RSA-2048
   <Step title="2. Set your webhook URL on the Flow">
     This is where we forward the decrypted JSON. It is configured **per Flow**, because one number can serve several forms and each one is usually a different service on your side.
   </Step>
-  <Step title="3. Point Meta at us">
-    Register our endpoint URL as the Flow's `endpoint_uri`. It carries two segments — one identifying the number, one identifying the Flow — because Meta's request does not say which Flow it belongs to. **Saving the URL with us does not do this for you**, deliberately: it would hijack a Flow already pointed at someone else's endpoint.
+  <Step title="3. Register us at Meta">
+    **Register at Meta**, in the dashboard, writes our endpoint URL into the Flow's `endpoint_uri` at Meta — as does `POST /v1/flows/{id}/endpoint`. That URL carries two segments — one identifying the number, one identifying the Flow — because Meta's request does not say which Flow it belongs to. **Saving the URL in step 2 does not do this for you**, deliberately: as a side effect of a rename it would hijack a Flow already pointed at someone else's endpoint. A Flow already pointing at us is answered without a write; one pointing elsewhere is refused until you confirm the takeover.
   </Step>
 </Steps>
 
@@ -133,6 +141,26 @@ To finish the Flow, return the reserved `SUCCESS` screen:
   **Answer within a few seconds.** Meta is holding the request open while a person watches a spinner, and there is no retry — a slow answer is a failed screen. Do the slow work after you reply, not before.
 </Note>
 
+### What is kept of the exchanges
+
+Every `data_exchange` exchange we decrypt is kept beside the response the form eventually produces, and published as **`submitted`** — one entry per exchange, on the `flow.response_received` event and on `GET /v1/flows/{id}/responses` alike. Inside Pilot Status it is the only place the answers of a `data_exchange` Flow exist at all: the `nfm_reply` Meta sends at the end carries the `flow_token` and nothing more, so `response` is empty on exactly the Flows whose screens collected the most.
+
+What is kept is **the request Meta sends us** — the person's own input, screen by screen. What your endpoint answered is not: the `data` you return, `extension_message_response` included, is encrypted back to Meta and written down nowhere. Neither are `INIT` and `BACK` — `INIT` hands back the params we seeded at send time and `BACK` is navigation, so neither is anything a person typed, and the list is legitimately shorter than your endpoint's own traces.
+
+<Note>
+  **Nothing is dropped in silence.** An exchange too large to keep holds its place in the list and says `DATA_TOO_LARGE`; one we could not read says `UNREADABLE`; the ceiling of **50 exchanges per form** closes the list with a final entry saying `LIMIT_REACHED`, and nothing after it was stored. The list is also append-only: someone who walks back a screen and submits it again produces a second, genuine entry, separated from the first only by its timestamp.
+</Note>
+
+<Warning>
+  **A number that keeps no customer content keeps none of this.** On `RELAY_ONLY` there is no entry at all — not a redacted one — and `submitted` comes back empty, which is also what redaction leaves behind. Empty is never proof that nobody typed anything.
+
+  ⚠️ **And "empty" is spelled differently on the two surfaces, deliberately.** On `GET /v1/flows/{id}/responses` `submitted` is `[]` and never `null`: the value comes from a lookup that answers nothing when there are no exchanges, and a field set to nothing would vanish from the JSON instead of arriving empty. On the `flow.response_received` event it is `null` and never `[]`: that payload is stored, the redactor blanks a field only when it holds something, and an empty array would come back as the "content unavailable" marker and read as answers that were hidden. Each surface picked the right answer to its own problem.
+
+  The entries are pruned on **30 days + 1**, and the extra day is not a rounding. An exchange is captured while the person is still filling the form, minutes before the submission that creates the response beside it; on an identical window the exchanges would expire first, and a response still being served would answer with an empty `submitted` beside everything else it still had.
+</Warning>
+
+The field-by-field shape — `screen`, `at`, `data`, `omitted` — is on the [Flows API](/api/flows#read-form-responses).
+
 ### When your webhook fails
 
 If your server is down, times out, or answers something unusable, Pilot Status does **not** pass the failure through as a broken screen. The customer sees a generic error on the screen they are already looking at, and can retry — nothing they typed is lost, and nothing about your infrastructure is shown to them.
@@ -143,6 +171,62 @@ If your server is down, times out, or answers something unusable, Pilot Status d
   - Meta's **`ping`** — answered by Pilot Status, so your server being asleep does not make Meta mark the endpoint unhealthy for every Flow on the number.
   - **Key mismatch** — if Meta's copy of the public key ever drifts from ours, the endpoint tells Meta to re-fetch it. That is the _only_ thing that response means, so a failure on your side is never reported as a key problem.
 </Warning>
+
+### Attachments, and what Meta will not let you draw
+
+A `PhotoPicker` or a `DocumentPicker` puts a file in the submission. Four constraints decide whether the Flow you are designing is buildable at all:
+
+| Constraint | Detail |
+| --- | --- |
+| **One picker per screen** | At most one `PhotoPicker` **or** one `DocumentPicker` on any single screen — Meta's own refusal, quoted below. Two files means two screens. |
+| **A picker requires `data_exchange`** | The file references travel inside the request our endpoint decrypts. **A Flow with no endpoint receives no attachment at all** — the `nfm_reply` that carries the submission holds none of them. |
+| **25 MiB per file** | Above that the upload is refused, not slow. |
+| **20 days on Meta's CDN** | Meta deletes the original after that. Pilot Status re-hosts a copy, and that copy is the only durable one — **and it has no expiry of its own**, see below. |
+
+<Note>
+  **The one-picker limit is Meta's, and this is Meta's own wording.** Uploading a Flow JSON with a `PhotoPicker` and a `DocumentPicker` on the same screen is refused with `422` `FLOW_JSON_INVALID`, and Meta's entry comes back verbatim inside `validationErrors`:
+
+  ```json
+  {
+    "error": "COMPONENT_TYPE_MAX_NUMBER_PER_SCREEN",
+    "error_type": "FLOW_JSON_ERROR",
+    "message": "You can only have a maximum of 1 component of type PhotoPicker or DocumentPicker per screen.",
+    "pointers": [
+      { "path": "screens[0].layout.children[0].children[1].type" },
+      { "path": "screens[0].layout.children[0].children[2].type" }
+    ]
+  }
+  ```
+
+  `pointers` names the components it refused. Moving the second picker onto a screen of its own makes the same document compile, with `validationErrors: []`. In the Node SDK the same array is read with `flowJsonValidationErrors(err)`.
+
+  **Measured against Meta on 6 September 2026.** The code, the wording and the limit are Meta's to change without telling anyone — if this stops matching what you get back, believe Meta's response, not this page.
+</Note>
+
+{/*
+  PROVENANCE — READ BEFORE EDITING OR "CORRECTING" THE PARAGRAPH ABOVE.
+
+  `COMPONENT_TYPE_MAX_NUMBER_PER_SCREEN`, the message text, the `pointers` shape and
+  the "maximum of 1 per screen" limit are META'S, not ours. They appear NOWHERE in the
+  Pilot Status codebase — grepping the repo for them returns nothing, and that absence
+  is NOT evidence they are wrong.
+
+  Source: measured live against Meta's Graph API on 2026-09-06 by uploading a Flow JSON
+  carrying a PhotoPicker and a DocumentPicker on one screen; splitting them across two
+  screens made the same document pass. The only way to re-verify is to measure again.
+
+  Everything else on this page can be checked against our code. This paragraph cannot.
+*/}
+
+<Warning>
+  **The re-hosted file sits at a public URL: whoever holds the link reads it.** That is an explicit owner decision — the URL is the access control, with nothing else in front of it — and it is the same property the inbound `mediaLink` already has. Decide that before a Flow of yours asks someone for an identity document, and treat the URLs as you would treat the files.
+
+  The content type is decided by the **bytes**, never by the file name, and it is never `text/html` or `image/svg+xml` even when the bytes look like one — both would execute script in the origin that serves them.
+
+  **The copy never expires, and it outlives the response it belongs to.** Flow responses, sessions and endpoint traces are pruned on a retention window; the re-hosted file is not — it carries no expiry, and nothing in the platform deletes it. The answers stop being served at `GET /v1/flows/{id}/responses` on schedule; the link to the identity document keeps working after them.
+</Warning>
+
+The wire contract — `flowMedia` on the webhook, `media` on the read surface, and why the URL is there before the bytes are — is in [Receive Flow responses](/guides/flow-responses).
 
 ## Health and status
 
@@ -155,7 +239,8 @@ Each Flow carries a status (`DRAFT`, `PUBLISHED`, `DEPRECATED`, `BLOCKED`, `THRO
 ## Related
 
 - [Receive Flow responses](/guides/flow-responses)
-- [Connect your API to a Flow](/guides/flow-data-exchange)
+- [Flows with live data](/guides/flow-live-data) — setting `data_exchange` up, in product terms
+- [Connect your API to a Flow](/guides/flow-data-exchange) — the contract your backend implements
 - [Flows API](/api/flows)
 - [Templates](/concepts/templates)
 - [Webhooks](/concepts/webhooks)

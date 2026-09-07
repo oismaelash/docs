@@ -11,6 +11,8 @@ You do not implement any of Meta's cryptography. **Pilot Status is the endpoint 
 
 <Note>
   A `NAVIGATE` Flow — one whose screens are all fixed in the Flow JSON — needs none of this. Everything on this page is only for Flows whose screens call your backend. See [Flows](/concepts/flows) for the difference.
+
+  This page is the request-by-request contract. For the same feature in product terms — what to set up, in what order, and what a person sees when it is wrong — read [Flows with live data](/guides/flow-live-data).
 </Note>
 
 ## The shape of one exchange
@@ -58,6 +60,10 @@ You do not implement any of Meta's cryptography. **Pilot Status is the endpoint 
   **`action` is never `null`, and a request without one is never forwarded.** Every call Meta makes carries `INIT`, `BACK`, `data_exchange` or `ping`. A decrypted payload that carries none of them is dropped before it reaches you, because forwarding it would put our signature on something that is not a Flow exchange — and your endpoint would have no way to tell it apart from one we vouched for on purpose.
 </Note>
 
+<Note>
+  **A file picked with `PhotoPicker` or `DocumentPicker` reaches us in THIS exchange, and never in the `nfm_reply`.** That is why a Flow with no endpoint receives no attachment at all. Pilot Status re-hosts the file and publishes it on the submission as `flowMedia` / `media` — the event is emitted as soon as the submission is stored and the re-host runs after it, so `status` is ordinarily `PENDING` when the event lands, and `flowMedia[].url` is a link that already works: fetching it waits for the transfer instead of 404ing. The shape, and what to do with that, are in [Receive Flow responses](/guides/flow-responses). Meta's own limits (one picker per screen, 25 MiB, 20 days on its CDN) are in [Flows](/concepts/flows).
+</Note>
+
 ### The signature
 
 When the Flow has a signing secret, the forward carries **`x-pilot-status-signature`**: the hex-encoded HMAC-SHA256 of the **raw request body**, keyed with that secret.
@@ -97,6 +103,12 @@ To finish the Flow, return the reserved `SUCCESS` screen. ⚠️ This shape is *
 ```
 
 <Warning>
+  **What comes back on the submission is only what you named in `params`, and the answers are not in it.** Meta unwraps that object into the `nfm_reply`, so in a `data_exchange` Flow `data.response` publishes exactly the shape above and nothing more — `{"flow_token": "a1b2c3..."}` — while the same submission had already handed `{"observacao": "Aobaaa", "foto": [ … ]}` to your endpoint. The answers went to **you**, screen by screen. They never travelled back through Meta.
+
+  Read them in **`data.submitted`**, which carries the `data_exchange` requests we forwarded, each with its screen and its timestamp — see [Receive Flow responses](/guides/flow-responses). A plain Flow with no endpoint is the other case: nothing collected the answers on the way, so there `response` is where all of them are.
+</Warning>
+
+<Warning>
   **A `200` that names no `screen` is refused on purpose.** It is the one failure mode that looks like success from your side and is invisible from the customer's: Meta renders a payload without a screen as *nothing at all*, so the person sits in front of a form that never advances and never errs.
 
   We treat it exactly like a failed call instead — the customer gets a retryable error on the screen they are already looking at, and the exchange is recorded as a failure you can find.
@@ -131,7 +143,19 @@ Whatever the cause — down, timed out, non-`2xx`, unparseable body, no `screen`
 
 ### Seeing what happened
 
-The Flow's screen in the dashboard lists the recent exchanges: the action, the screen, the outcome, your HTTP status and how long you took. Bodies are recorded **only on a failure** — a successful exchange keeps timing and shape and nothing the customer typed — and the whole record expires after 24 hours.
+The Flow's screen in the dashboard lists the recent exchanges: the action, the screen, the outcome, your HTTP status and how long you took. Bodies are recorded **only on a failure** — a successful exchange keeps timing and shape and neither body, not the one we forwarded nor the one you answered — and the whole record expires after 24 hours.
+
+<Warning>
+  **"Not in this trace" is not "not kept".** What the customer typed into a `data_exchange` screen is stored and published: it is `data.submitted` on the submission, each entry carrying the screen it was filled on and the moment it happened, on the `flow.response_received` event and at `GET /v1/flows/{id}/responses`, for 31 days.
+
+  A day longer than the response itself, deliberately. The exchange is captured while the person is still filling, minutes before the submission that creates the response row — on an identical window the exchanges would expire first, and a response's last minutes on the endpoint would publish an empty list. The full shape is in [Receive Flow responses](/guides/flow-responses).
+</Warning>
+
+<Note>
+  **`submitted` is legitimately shorter than this list, and that is not a gap.** Only `data_exchange` exchanges are captured. `INIT` carries the state *we* seeded — the params the Flow was sent with, handed straight back — and `BACK` is navigation; neither is an answer, so neither is stored. Count the rows here and the entries there and the two will not match.
+
+  It is append-only and never de-duplicated: someone who walks back a screen and re-submits it produces a second, genuine entry, and the timestamp is what separates the two runs under one `flow_token`. And it is the request **Meta sends us** — never what your endpoint replied, which is why `extension_message_response` still appears nowhere in Pilot Status.
+</Note>
 
 ## Setting it up, in order
 
@@ -145,7 +169,7 @@ Three things have to be true before Meta calls your API, and they become true in
     Where we `POST` the decrypted exchange. One number serves several forms, and each form is usually a different service on your side, so this is per Flow.
   </Step>
   <Step title="3. `endpoint_uri` — at Meta, on the Flow">
-    Meta only calls an endpoint it has registered. **Saving the URL with us registers nothing at Meta**, on purpose: doing it as a side effect of a rename would hijack the Flow of someone already running their own endpoint. Read the endpoint back and compare `endpointUri` (ours) with `metaEndpointUri` (Meta's) — `drift: true` means Meta is calling someone else.
+    Meta only calls an endpoint it has registered, and **saving the URL in step 2 registers nothing at Meta**. Registration is a request of its own — `POST /v1/flows/{flowId}/endpoint` — because performing it as a side effect of a rename would hijack the Flow of someone already running their own endpoint. Until it is done, Meta refuses to publish the Flow at all.
   </Step>
 </Steps>
 
@@ -153,6 +177,7 @@ Three things have to be true before Meta calls your API, and they become true in
 | --- | --- | --- |
 | **Key** — what decrypts Meta's request | Per **number** | `POST /v1/numbers/{numberId}/flow-endpoint-key`, or the **Flows** screen in the dashboard |
 | **Endpoint URL** — where we forward | Per **Flow** | `PUT /v1/flows/{flowId}/endpoint`, or the **Flows** screen in the dashboard |
+| **`endpoint_uri`** — where Meta calls | Per **Flow**, stored **at Meta** | `POST /v1/flows/{flowId}/endpoint`, or **Register at Meta** on the **Flows** screen in the dashboard |
 
 <Warning>
   **The key is per NUMBER, however it is presented next to a Flow.** Changing it changes decryption for every `data_exchange` Flow on that phone number, not just the one you were looking at.
@@ -292,9 +317,69 @@ curl -X PUT "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
   The number is not a parameter: it comes from the API key (a number-scoped key names its own; an account-wide key narrows with `x-whatsapp-number-id`). Naming it in the body is refused with `FLOW_NUMBER_FROM_KEY`, and a key bound to a number outside the Flow's WABA gets `422 FLOW_NUMBER_WABA_MISMATCH` rather than an answer about a number that could never send this Flow.
 </Note>
 
-### Step 3 — point Meta at us
+### Step 3 — register us at Meta
 
-Register `endpointUri` as the Flow's `endpoint_uri` in Meta's Flow Manager. Then read the endpoint back:
+Meta only calls an endpoint it has registered on the Flow. Step 2 registered nothing — this is the request that does:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+It writes `endpointUri` — our proxy URL for this Flow — into the Flow's `endpoint_uri` at Meta, and answers with the same state the `GET` returns:
+
+```json
+{
+  "flowId": "flw_local_1",
+  "url": "https://api.your-company.com/flows/booking",
+  "hasSecret": true,
+  "endpointUri": "https://pilotstatus.com.br/api/flows/endpoint/AbC123.../1122334455",
+  "metaEndpointUri": "https://pilotstatus.com.br/api/flows/endpoint/AbC123.../1122334455",
+  "drift": false,
+  "numberHasKey": true,
+  "numberKeyUploadedAt": "2026-09-02T10:00:00.000Z",
+  "warnings": []
+}
+```
+
+The body is optional, and `confirmOverwrite` (boolean) is the only field it accepts — the number comes from the key, as everywhere in `/v1`. There is no `secret` on this response: `POST` never mints one.
+
+<Note>
+  The dashboard performs the same act. On the **Flows** screen, under **Point Meta here**, the **Register at Meta** button calls this route; a `409` opens a confirmation showing the address you are about to displace, and `confirmOverwrite` is what its **Take it over anyway** button sends.
+</Note>
+
+<Warning>
+  **Without this call a `data_exchange` Flow cannot be published at all.** Meta refuses `publish` with *"Publishing without specifying 'endpoint_uri' is forbidden"*, and nothing else in Pilot Status writes that field.
+</Warning>
+
+<Note>
+  **Why this is a second request and not a flag on the save.** `PUT` is you describing **your** webhook; `POST` is us telling **Meta** to route the Flow through us. Fused into one act, a tenant who runs their own Flow endpoint would lose every exchange the next time they corrected a typo in a URL — the rename would silently re-point the Flow. They are separate so that re-pointing is something you do on purpose.
+</Note>
+
+**It is idempotent.** A Flow whose `endpoint_uri` is already ours answers `200` and writes nothing at Meta. The check reads Meta **live**, not the hourly-synced `metaEndpointUri` column — that column is silent about a URI registered in the last hour, which is exactly the window in which two people wire the same Flow.
+
+<Warning>
+  **`409 FLOW_ENDPOINT_URI_WOULD_OVERWRITE` — Meta already points this Flow somewhere else.** The response names it, and only it:
+
+  ```json
+  {
+    "error": "…",
+    "errorEN": "Meta already points this Flow at another endpoint. …",
+    "code": "FLOW_ENDPOINT_URI_WOULD_OVERWRITE",
+    "currentEndpointUri": "https://someone-else.example/flows/1122334455"
+  }
+  ```
+
+  Re-sending the same request with `{"confirmOverwrite": true}` takes it over — and **taking it over removes every exchange of this Flow from whoever is answering it today**. Meta's write is a plain overwrite: no merge, no undo, and nothing tells the displaced endpoint it stopped being called. Find out what is on the other end of `currentEndpointUri` first.
+
+  Ours is deliberately **not** echoed back: our URL embeds the number's endpoint token, and that token is the credential of the proxy. `currentEndpointUri` is theirs, which is what you need to recognise them.
+</Warning>
+
+<Note>
+  **`422 FLOW_ENDPOINT_NUMBER_HAS_NO_KEY`** — the number holds no Flow endpoint key, so there is no URL to register in the first place. Generate it (step 1) and register again.
+</Note>
+
+Read the endpoint back at any time:
 
 ```bash
 curl "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
@@ -328,6 +413,8 @@ Every failure of these endpoints answers the same envelope — one shape, one sp
 { "error": "<Portuguese>", "errorEN": "<English>", "code": "<CODE>" }
 ```
 
+`FLOW_ENDPOINT_URI_WOULD_OVERWRITE` is the one failure here that adds a fourth key, `currentEndpointUri`.
+
 **The key** (`/v1/numbers/{numberId}/flow-endpoint-key`):
 
 | Code | Status | Meaning |
@@ -353,6 +440,13 @@ Every failure of these endpoints answers the same envelope — one shape, one sp
 | `FLOW_ENDPOINT_SECRET_UNAVAILABLE` | 500 | Ours. The signing secret cannot be stored encrypted, and forwarding unsigned is not an option we take. |
 | `FLOW_NUMBER_WABA_MISMATCH` | 422 | Your key's number is not in the WABA that owns this Flow and can never send it. |
 | `FLOW_NOT_FOUND` | 404 | No Flow with that id for this credential. |
+| `FLOW_ENDPOINT_CONFIRM_INVALID` | 400 | `POST` only. `confirmOverwrite` is not a boolean. `"false"` is a truthy **string** and is refused rather than read as consent. |
+| `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` | 409 | `POST` only. Meta already points this Flow at another endpoint, named in `currentEndpointUri`. `409` and not `400`: nothing about the request is malformed — it is the state at Meta that blocks it. |
+| `FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` | 422 | `POST` only. The number holds no endpoint key, so there is no URL to register. Generate the key first. |
+
+<Note>
+  **`FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` is the one spelling that appears twice** — as a `warnings` entry on a read or a save, and as a `422` on the registration. That is the same fact in two roles: saving a destination on a key-less number is allowed to succeed *with a warning*, and registering at Meta cannot succeed at all.
+</Note>
 
 Shared by both: `FLOW_BODY_INVALID` (400, malformed body — a truncated one is never treated as empty), `FLOW_UNKNOWN_FIELDS` (400), `FLOW_NUMBER_FROM_KEY` (400, the body named the number), `FLOW_REQUIRES_META_NUMBER` (422), `INTERNAL_ERROR` (500).
 
@@ -414,5 +508,6 @@ app.listen(3000);
 ## Related
 
 - [Flows](/concepts/flows) — lifecycle, publishing, cloning
+- [Flows with live data](/guides/flow-live-data) — the same setup without the HTTP contract
 - [Receive Flow responses](/guides/flow-responses) — the submitted answers, on a webhook
 - [Flows API](/api/flows)
