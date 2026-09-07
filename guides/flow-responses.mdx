@@ -209,10 +209,19 @@ A `PhotoPicker` or a `DocumentPicker` puts a file in the submission, and **it do
 "flowMedia": [
   {
     "field": "documento",
+    "mediaId": "1DC6DF81-E889-4A15-91EB-80753FB6E11B",
     "fileName": "carteira.jpg",
     "mimeType": "image/jpeg",
     "status": "STORED",
     "url": "https://media.pilotstatus.com.br/public/tenants/.../flow-media/....jpg"
+  },
+  {
+    "field": "documento",
+    "mediaId": "9B2F0A17-4C31-4E88-B6D2-1A7E55C0F314",
+    "fileName": "documento",
+    "mimeType": "image/jpeg",
+    "status": "PENDING",
+    "url": "https://media.pilotstatus.com.br/api/flows/media/..."
   }
 ]
 ```
@@ -220,6 +229,7 @@ A `PhotoPicker` or a `DocumentPicker` puts a file in the submission, and **it do
 | Field | Description |
 | --- | --- |
 | `field` | The key the file was listed under — whatever the **Flow's author** named the component. It is not a reserved word and not a type. |
+| `mediaId` | Meta's id for this file, and **the only way to tell two attachments apart**. `null` when Meta sent none. See [Matching a file to the answer that names it](#matching-a-file-to-the-answer-that-names-it). |
 | `fileName` | The name the sender's device reported — and **never `null`**. A photo taken in the camera reports no name, and the **field's own name** is used in its place, so a `fileName` equal to `field` may be either and the two are indistinguishable. |
 | `mimeType` | Sniffed from the decrypted **bytes**, never from the file name. `null` until stored. |
 | `status` | `PENDING` while the transfer is in flight, then `STORED` or `FAILED`. |
@@ -236,6 +246,32 @@ A `PhotoPicker` or a `DocumentPicker` puts a file in the submission, and **it do
 <Note>
   **`url` is `null` in three cases, and "not transferred yet" is not one of them.** The deployment has no signing secret configured — it then falls back to the older behaviour, the direct object URL once `status` is `STORED`, never nothing; Meta sent no `media_id` for us to sign an identity over; or the number is `RELAY_ONLY`, so no attachment was stored at all.
 </Note>
+
+### Matching a file to the answer that names it
+
+One picker can hold **more than one file**, and then `field` and `fileName` stop telling them apart. Two photos taken in the camera arrive under the same `field`, and because a camera reports no name, both take the field's own name — so both entries read `"field": "documento", "fileName": "documento"`. They are two different files and nothing in those two values says so.
+
+**`mediaId` is the join.** The same id appears on the answer side, in `submitted[].data.<field>[].media_id`:
+
+```json
+"submitted": [
+  {
+    "data": {
+      "documento": [
+        { "media_id": "1DC6DF81-E889-4A15-91EB-80753FB6E11B", "file_name": "carteira.jpg", "flow_media_attachment": true },
+        { "media_id": "9B2F0A17-4C31-4E88-B6D2-1A7E55C0F314", "file_name": "documento", "flow_media_attachment": true }
+      ],
+      "observacao": "Anexo os dois lados"
+    }
+  }
+]
+```
+
+<Warning>
+  **Do not match by array position.** The two arrays are built from different sources — `flowMedia` from our own records of the transfer, `submitted` from the answers as they were sent — and nothing keeps their order aligned. Match `flowMedia[].mediaId` against `submitted[].data.<field>[].media_id` and ignore position entirely.
+
+  **When `mediaId` is `null`, there is nothing to match on**, because Meta sent no id for that file. `url` is `null` in the same case: the link is signed over an identity the id is part of. The file still belongs to the `field` it is listed under.
+</Warning>
 
 <Note>
   **`flowMedia` is `null` — never `[]` — when nothing is listed**, and the two are not interchangeable. On a number that keeps no customer content the stored copy of a field is replaced by a placeholder only when it holds something, so an empty array would come back looking like "there were attachments and we hid them".
