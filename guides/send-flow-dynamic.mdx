@@ -1,0 +1,91 @@
+---
+title: "Send a WhatsApp Flow Without a Template"
+sidebarTitle: "Dynamic Flows"
+description: "Pick the Flow at send time instead of baking it into an approved template. Requires the 24-hour window — and Meta answers 200 and silently discards the message when it is closed, which is why we refuse instead."
+mode: "wide"
+---
+
+A template's FLOW button is fixed: the Flow is chosen when the template is created, and changing it means editing the template and waiting for review again.
+
+A **dynamic Flow** picks the Flow in the send call itself. Same customer experience, no template, no approval.
+
+```json
+POST /v1/messages/send
+
+{
+  "destinationNumber": "+5511999999999",
+  "text": "Please answer our survey:",
+  "flow": {
+    "flowId": "2038526810137974",
+    "cta": "Open",
+    "action": "navigate",
+    "screen": "WELCOME",
+    "data": { "name": "Ana" },
+    "mode": "published"
+  }
+}
+```
+
+| Field | Required | What it does |
+| --- | --- | --- |
+| `flowId` | Yes | The Flow id **on Meta**, not the Pilot Status row id |
+| `cta` | Yes | Label on the button that opens the Flow, up to 30 characters |
+| `action` | No | `navigate` (default) opens a screen; `data_exchange` calls your endpoint |
+| `screen` | No | Entry screen. Leave it out and we resolve the Flow's first screen for you |
+| `data` | No | Initial data for the first screen |
+| `mode` | No | `published` (default) or `draft` |
+
+`text` is required — the Flow is a button, not the whole message. The `flow` block cannot be combined with `templateId`, `list`, `carousel`, `buttons`, `header`, or a direct media send.
+
+## The 24-hour window is not optional
+
+This is the part you cannot see, and the reason we refuse the send instead of trying it.
+
+We measured this on 9 September 2026 against three versions of the Graph API — v22.0, v25.0 and v26.0 — with real numbers and real handsets. **Outside the 24-hour window, Meta answers `HTTP 200` with a `wamid` and silently discards the message.** No error. No failure status. Nothing in any log. Eight sends, four delivered, `200` on all eight.
+
+So if we let it through, your message would vanish and neither you nor we would ever know. Instead you get:
+
+```json
+{
+  "code": "FLOW_WINDOW_CLOSED",
+  "error": "The 24h window with this contact is closed…"
+}
+```
+
+To reopen the conversation, send a **template**. Templates do not depend on the window — which is exactly why a FLOW button inside a template is still the way to start a conversation.
+
+## Errors
+
+| Code | HTTP | When |
+| --- | --- | --- |
+| `FLOW_REQUIRES_META_NUMBER` | 422 | The number is not a Meta (Cloud API) number. Unofficial providers have no Flows |
+| `FLOW_WINDOW_CLOSED` | 422 | The 24-hour window is closed — see above |
+| `FLOW_NOT_SENDABLE` | 422 | The Flow does not exist in your account, belongs to another WABA, or is not published |
+| `FLOW_TOKEN_NOT_ACCEPTED` | 422 | You sent `flow_token` in the body. We generate one per message |
+
+`FLOW_NOT_SENDABLE` returns one message for all three causes on purpose. Telling you "it exists, but it belongs to another account" would confirm that an id you do not own is real.
+
+## Getting the answers back
+
+When someone submits the Flow, the answers arrive on the `flow.response_received` webhook event and in `GET /v1/flows/{id}/responses`, correlated with the send that produced them.
+
+You do not have to do anything for that correlation to work. The token that links the two is generated per message and stored when the message goes out — which is also why `flow_token` in the request body is refused. A token chosen by the caller would let one account claim another account's answers.
+
+<Note>
+Subscribing to `flow.response_received` is a separate step. See [Flow responses](/guides/flow-responses).
+</Note>
+
+## Two things worth knowing before you test
+
+**A Cloud API number does not receive Flows.** Sending to another Meta number — even with the window open — does not deliver, and Meta still answers `200`. Test with an ordinary phone.
+
+**`mode: "draft"` works.** You can try a Flow before publishing it. Remember the message reaches a real person.
+
+## Template button or dynamic Flow?
+
+| | Template with FLOW button | Dynamic `flow` |
+| --- | --- | --- |
+| Flow is chosen | When the template is created | **At send time** |
+| 24-hour window | Not needed | **Required** |
+| Goes through review | Yes | No |
+| Can start a conversation | **Yes** | No |
