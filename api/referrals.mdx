@@ -40,7 +40,8 @@ ids — beside the raw `sourceId`.
 
   Nothing you can send on the request changes this. Querying **never** triggers a call to the
   Marketing API: resolution runs asynchronously, off the request path, so a `null` you see now
-  can be a name a few minutes later with nothing done on your side.
+  can be a name seconds later with nothing done on your side — see [The first click on a new
+  ad arrives before its names](#the-first-click-on-a-new-ad-arrives-before-its-names).
 </Warning>
 
 `namesResolvedAt` is what makes the three states distinguishable, and they call for different
@@ -48,7 +49,7 @@ answers:
 
 | `namesResolvedAt` | Names | What it means |
 | --- | --- | --- |
-| `null` | null | Never resolved yet. Usually: the ad account has not been shared. |
+| `null` | null | Not resolved **yet**. On a creative nobody has clicked before, this is the normal state for the first seconds after the click — see the section below. If it stays this way, the ad account has not been shared. |
 | a timestamp | filled | Resolved. The names are the ones Meta returned at that moment. |
 | a timestamp | null | We asked and Meta returned nothing — the ad was deleted, or the sharing is still missing. |
 
@@ -57,6 +58,30 @@ answers:
   Meta at any time, so anything that keys on `campaignName` loses its own history the first
   time the advertiser edits it.
 </Note>
+
+## The first click on a new ad arrives before its names
+
+The referral row is stored **before** your webhook fires, so `sourceId`, `sourceUrl`, `headline`
+and `body` are already readable the moment the event reaches you. The names are not: they are
+resolved by a separate worker that calls Meta's Marketing API **once per ad**, and that call
+finishes after the webhook has already left.
+
+Measured in production across 53 ads: the names land **0.7s after the message row at the median,
+3.0s at p95, 5.5s at the worst**. The spread is Meta's own latency. So an integration that calls
+`GET /v1/referrals` the instant its webhook arrives is racing that worker, and on the **first
+click of a brand-new creative** it often wins the race — getting the referral back with all five
+name fields `null` and `namesResolvedAt: null`.
+
+It happens **once per ad, ever**. Every later click on the same ad reads the cached names and
+comes back filled in immediately. That is exactly why the same integration sees names "sometimes"
+and not others: the misses are new creatives, the hits are ads that have been clicked before.
+
+<Check>
+  **Recipe.** Treat `namesResolvedAt: null` as *ask again*, never as *there are no names*: repeat
+  the same query ~5s later, and once more after ~60s. As soon as `namesResolvedAt` holds a
+  timestamp the answer is final — names filled means those are the names, names null means the
+  partner sharing is missing and retrying will not change it.
+</Check>
 
 ## Only the first message carries the origin
 

@@ -40,7 +40,8 @@ correspondentes — ao lado do `sourceId` cru.
 
   Nada que você envie na requisição muda isso. Consultar **nunca** dispara chamada à Marketing
   API: a resolução roda de forma assíncrona, fora do caminho da requisição, então um `null` que
-  você vê agora pode ser um nome minutos depois, sem você fazer nada.
+  você vê agora pode ser um nome segundos depois, sem você fazer nada — veja [O primeiro clique
+  em um anúncio novo chega antes dos nomes](#o-primeiro-clique-em-um-anúncio-novo-chega-antes-dos-nomes).
 </Warning>
 
 O `namesResolvedAt` é o que torna os três estados distinguíveis, e cada um pede uma resposta
@@ -48,7 +49,7 @@ diferente:
 
 | `namesResolvedAt` | Nomes | O que significa |
 | --- | --- | --- |
-| `null` | nulos | Nunca resolvido. Em geral: a conta de anúncios não foi compartilhada. |
+| `null` | nulos | Ainda **não** resolvido. Em criativo que ninguém clicou antes, é o estado normal nos primeiros segundos depois do clique — veja a seção abaixo. Se ficar assim, a conta de anúncios não foi compartilhada. |
 | data preenchida | preenchidos | Resolvido. Os nomes são os que a Meta devolveu naquele momento. |
 | data preenchida | nulos | Perguntamos e a Meta não devolveu — anúncio apagado, ou compartilhamento ainda ausente. |
 
@@ -57,6 +58,30 @@ diferente:
   renomeada na Meta a qualquer momento, então quem usa `campaignName` como chave perde o próprio
   histórico na primeira vez que o anunciante editar.
 </Note>
+
+## O primeiro clique em um anúncio novo chega antes dos nomes
+
+A linha do referral é gravada **antes** de o seu webhook disparar, então `sourceId`, `sourceUrl`,
+`headline` e `body` já podem ser lidos no instante em que o evento chega até você. Os nomes não:
+eles são resolvidos por um worker separado, que chama a Marketing API da Meta **uma vez por
+anúncio**, e essa chamada termina depois que o webhook já saiu.
+
+Medido em produção em 53 anúncios: os nomes ficam prontos **0,7s depois da linha da mensagem na
+mediana, 3,0s no p95 e 5,5s no pior caso**. A variação é a latência da própria Meta. Ou seja,
+uma integração que chama o `GET /v1/referrals` no instante em que o webhook chega está correndo
+contra esse worker — e no **primeiro clique de um criativo novo** ela costuma ganhar a corrida,
+recebendo o referral com os cinco campos de nome `null` e `namesResolvedAt: null`.
+
+Isso acontece **uma vez por anúncio, só**. Todo clique seguinte no mesmo anúncio lê os nomes já
+em cache e volta preenchido na hora. É exatamente por isso que a mesma integração vê os nomes
+"às vezes": as falhas são criativos novos, os acertos são anúncios que já tinham sido clicados.
+
+<Check>
+  **Receita.** Trate `namesResolvedAt: null` como *pergunte de novo*, nunca como *não existem
+  nomes*: repita a mesma consulta ~5s depois e mais uma vez ~60s depois. Assim que
+  `namesResolvedAt` tiver uma data, a resposta é definitiva — nomes preenchidos são os nomes,
+  nomes nulos significam que falta o compartilhamento de parceiro, e repetir não vai mudar.
+</Check>
 
 ## Só a primeira mensagem carrega a origem
 
