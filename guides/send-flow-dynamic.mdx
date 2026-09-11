@@ -31,8 +31,8 @@ POST /v1/messages/send
 | `flowId` | Yes | The Flow id **on Meta**, not the Pilot Status row id |
 | `cta` | Yes | Label on the button that opens the Flow, up to 30 characters |
 | `action` | No | `navigate` (default) opens a screen; `data_exchange` calls your endpoint |
-| `screen` | No | Entry screen. Leave it out and we resolve the Flow's first screen for you |
-| `data` | No | Initial data for the first screen |
+| `screen` | No | Entry screen — **`navigate` only**. Leave it out and we resolve the Flow's first screen for you |
+| `data` | No | Initial data for the entry screen — **`navigate` only** |
 | `mode` | No | `published` (default) or `draft` |
 
 `text` is required — the Flow is a button, not the whole message. The `flow` block cannot be combined with `templateId`, `list`, `carousel`, `buttons`, `header`, or a direct media send.
@@ -62,8 +62,32 @@ To reopen the conversation, send a **template**. Templates do not depend on the 
 | `FLOW_WINDOW_CLOSED` | 422 | The 24-hour window is closed — see above |
 | `FLOW_NOT_SENDABLE` | 422 | The Flow does not exist in your account, belongs to another WABA, or is not published |
 | `FLOW_TOKEN_NOT_ACCEPTED` | 422 | You sent `flow_token` in the body. We generate one per message |
+| `FLOW_PAYLOAD_NOT_ALLOWED` | 422 | You sent `screen` or `data` together with `action: "data_exchange"` — see below |
 
 `FLOW_NOT_SENDABLE` returns one message for all three causes on purpose. Telling you "it exists, but it belongs to another account" would confirm that an id you do not own is real.
+
+## `data_exchange` takes no screen and no data
+
+A `data_exchange` Flow is answered by your endpoint, so there is nothing to seed at send time — and Meta enforces that. Send the entry screen alongside it and the whole message is rejected:
+
+```
+(#131009) Unexpected key "flow_action_payload" when "flow_action" is "data_exchange"
+```
+
+Measured in production on 10 September 2026: three sends of one account, **none delivered**. The initial state of a `data_exchange` Flow reaches it through the **INIT** request Meta makes to your endpoint — that is the seam, not the send.
+
+So `screen` and `data` are refused at the door instead of being silently dropped:
+
+```json
+{
+  "code": "FLOW_PAYLOAD_NOT_ALLOWED",
+  "details": { "field": "flow.screen", "action": "data_exchange" }
+}
+```
+
+<Note>
+  **We refuse rather than drop, and that is deliberate.** Quietly discarding `data` would let you believe values reached the Flow that never left our process. Remove the field, or switch to `action: "navigate"` — which is exactly what those two fields are for.
+</Note>
 
 ## Getting the answers back
 

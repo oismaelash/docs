@@ -31,8 +31,8 @@ POST /v1/messages/send
 | `flowId` | Sim | O id do Flow **na Meta**, e não o id da linha no Pilot Status |
 | `cta` | Sim | Texto do botão que abre o Flow, até 30 caracteres |
 | `action` | Não | `navigate` (padrão) abre uma tela; `data_exchange` chama o seu endpoint |
-| `screen` | Não | Tela de entrada. Sem ela, resolvemos a primeira tela do Flow por você |
-| `data` | Não | Dados iniciais da primeira tela |
+| `screen` | Não | Tela de entrada — **só em `navigate`**. Sem ela, resolvemos a primeira tela do Flow por você |
+| `data` | Não | Dados iniciais da tela de entrada — **só em `navigate`** |
 | `mode` | Não | `published` (padrão) ou `draft` |
 
 `text` é obrigatório — o Flow é um botão, não a mensagem inteira. O bloco `flow` não pode ser combinado com `templateId`, `list`, `carousel`, `buttons`, `header` nem com envio direto de mídia.
@@ -62,8 +62,32 @@ Para reabrir a conversa, envie um **template**. Templates não dependem da janel
 | `FLOW_WINDOW_CLOSED` | 422 | A janela de 24 horas está fechada — veja acima |
 | `FLOW_NOT_SENDABLE` | 422 | O Flow não existe na sua conta, é de outra WABA, ou não está publicado |
 | `FLOW_TOKEN_NOT_ACCEPTED` | 422 | Você enviou `flow_token` no corpo. Nós geramos um por mensagem |
+| `FLOW_PAYLOAD_NOT_ALLOWED` | 422 | Você enviou `screen` ou `data` junto de `action: "data_exchange"` — veja abaixo |
 
 O `FLOW_NOT_SENDABLE` devolve uma única mensagem para os três motivos, de propósito. Dizer "existe, mas é de outra conta" confirmaria que um id que não é seu é real.
+
+## `data_exchange` não leva tela nem dados
+
+Um Flow `data_exchange` é respondido pelo seu endpoint, então não há o que semear no envio — e a Meta cobra isso. Mande a tela de entrada junto e a mensagem inteira é recusada:
+
+```
+(#131009) Unexpected key "flow_action_payload" when "flow_action" is "data_exchange"
+```
+
+Medido em produção em 10 de setembro de 2026: três envios de uma conta, **nenhum entregue**. O estado inicial de um Flow `data_exchange` chega pela requisição **INIT** que a Meta faz ao seu endpoint — a costura é ali, não no envio.
+
+Por isso `screen` e `data` são recusados na porta, em vez de descartados em silêncio:
+
+```json
+{
+  "code": "FLOW_PAYLOAD_NOT_ALLOWED",
+  "details": { "field": "flow.screen", "action": "data_exchange" }
+}
+```
+
+<Note>
+  **Recusamos em vez de descartar, e isso é deliberado.** Jogar fora o `data` caladamente deixaria você acreditar que valores chegaram ao Flow sem nunca terem saído do nosso processo. Remova o campo, ou use `action: "navigate"` — que é exatamente para isso que esses dois campos existem.
+</Note>
 
 ## Como as respostas voltam
 
