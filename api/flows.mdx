@@ -115,8 +115,33 @@ A document Meta refuses comes back as **`422` `FLOW_JSON_INVALID`**, with Meta's
 
   This route reads the list rather than the Graph status, and answers `422` whenever it is non-empty. A `200` from us therefore means what a `200` should mean. Read `validationErrors` on the `422` — it is Meta's own answer, verbatim.
 
+  **And one refusal here is OURS, not Meta's** — see `FLOW_JSON_DEAD_FORM_PREFIX` below. Meta would have accepted that document.
+
   `flowJson` is a **string**, never a nested object: Meta compiles the exact bytes, and re-serializing would silently reorder what you wrote.
 </Warning>
+
+### The one refusal that is ours: `FLOW_JSON_DEAD_FORM_PREFIX`
+
+A form value is referenced by the **literal keyword `form`** — `${form.quantity}`. The `name` of the enclosing `Form` component never appears in the reference: with a `Form` named `form_product` it is still `${form.quantity}`.
+
+Meta accepts a document with the wrong prefix, reports `validation_errors: []`, publishes it — and then sends your endpoint `"data": {}` at runtime, where the only symptom is the person's phone saying _"Could not complete this step. Please try again."_ Since 12 September 2026 this route refuses that document instead of uploading it:
+
+```json
+{
+  "error": "Este Flow JSON referencia valores pelo NOME DO FORM …",
+  "errorEN": "This Flow JSON references values by the FORM'S NAME …",
+  "code": "FLOW_JSON_DEAD_FORM_PREFIX",
+  "deadRefs": [
+    { "ref": "${form_product.quantity}", "suggestion": "${form.quantity}" }
+  ]
+}
+```
+
+Each entry of `deadRefs` carries the finished replacement, so the fix is a paste rather than a rule to apply by hand.
+
+<Note>
+  **Narrow on purpose, and a `200` here is not "the document is valid".** The check fires only when a reference's root matches the `name` of a `Form` declared in the same document — that case cannot resolve, ever. A root we do not recognise is left alone: our ignorance must not become your error. Everything else is still Meta's to judge, and still arrives as `FLOW_JSON_INVALID`.
+</Note>
 
 <Note>
   Each entry in `validationErrors` is Meta's, verbatim — `error`, `error_type`, `message` and `pointers` naming the offending components. One you will meet if a Flow collects files is `COMPONENT_TYPE_MAX_NUMBER_PER_SCREEN`: at most one `PhotoPicker` **or** `DocumentPicker` per screen. See [Flows](/concepts/flows) for that one quoted in full. The Node SDK reads the array with `flowJsonValidationErrors(err)`.
@@ -451,7 +476,7 @@ Every failure of this surface answers the same envelope — there is exactly one
 { "error": "<Portuguese>", "errorEN": "<English>", "code": "<CODE>" }
 ```
 
-`FLOW_JSON_INVALID` adds a `validationErrors` array; `FLOW_UNKNOWN_FIELDS` adds the offending keys; `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` adds `currentEndpointUri`. Never assume the set of codes is closed — branch on the ones you handle and fall through to `code` for the rest.
+`FLOW_JSON_INVALID` adds a `validationErrors` array; `FLOW_JSON_DEAD_FORM_PREFIX` adds `deadRefs`; `FLOW_UNKNOWN_FIELDS` adds the offending keys; `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` adds `currentEndpointUri`. Never assume the set of codes is closed — branch on the ones you handle and fall through to `code` for the rest.
 
 | Code | Status | Meaning |
 | --- | --- | --- |
@@ -460,6 +485,7 @@ Every failure of this surface answers the same envelope — there is exactly one
 | `FLOW_REQUIRES_META_NUMBER` | 422 | The key's number is not a Meta number, or has no WABA |
 | `FLOW_NUMBER_FROM_KEY` | 400 | The request named the number (`whatsappNumberId`, `numberId` or `wabaId`, in body or query) — it comes from the key, and is never accepted alongside it |
 | `FLOW_JSON_INVALID` | 422 | Meta refused the document — read `validationErrors` |
+| `FLOW_JSON_DEAD_FORM_PREFIX` | 422 | **Ours.** The document references form values by the `Form`'s own name — read `deadRefs` |
 | `FLOW_JSON_REQUIRED` | 400 | `flowJson` absent or empty |
 | `FLOW_NAME_REQUIRED` | 400 | `name` missing on create |
 | `FLOW_NAME_INVALID` | 400 | `name` present but not a usable string |

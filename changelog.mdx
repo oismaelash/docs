@@ -6,6 +6,69 @@ icon: "clock-rotate-left"
 
 What's new on the Pilot Status platform — API additions, changes and notable fixes. Subscribe via the RSS icon above.
 
+<Update label="2026-09-12" tags={["Flows", "API"]}>
+  ## A Flow whose payload named the `Form` was published, opened, and then sent your endpoint nothing
+
+  If your Flow's `data_exchange` payload referenced values as `${form_product.quantity}` — the `Form` component's own name as the prefix — Meta compiled the document, published it, reported `validation_errors: []`, and every entity came back `AVAILABLE`. Nothing anywhere said a word.
+
+  Then, at runtime, your endpoint received this:
+
+  ```json
+  { "version": "3.0", "action": "data_exchange", "screen": "PRODUCT", "data": {} }
+  ```
+
+  And the person on the other end saw only:
+
+  ```
+  Could not complete this step. Please try again.
+  ```
+
+  ### The prefix is a keyword, not a name
+
+  A form value is referenced by the **literal keyword `form`**. The `name` you gave the enclosing `Form` never appears in the reference:
+
+  ```json
+  // ✅ correct, even with a Form named "form_product"
+  { "name": "data_exchange", "payload": { "quantity": "${form.quantity}" } }
+
+  // ⛔ resolves to nothing, silently
+  { "name": "data_exchange", "payload": { "quantity": "${form_product.quantity}" } }
+  ```
+
+  For a field filled on an earlier screen it is `${screen.<SCREEN_ID>.form.<input name>}` — the literal `form` is still in there.
+
+  ### What changed
+
+  `POST /v1/flows/{id}/json` now refuses such a document **before** it reaches Meta, and hands back the replacement already written out:
+
+  ```json
+  {
+    "code": "FLOW_JSON_DEAD_FORM_PREFIX",
+    "deadRefs": [
+      { "ref": "${form_product.quantity}", "suggestion": "${form.quantity}" }
+    ]
+  }
+  ```
+
+  One entry per reference, deduplicated. The status is `422`, the same as `FLOW_JSON_INVALID` — branch on `code`, not on the status.
+
+  <Note>
+    **Narrow on purpose, and a `200` is still not a verdict on your document.** The check fires only when a reference's root matches the `name` of a `Form` declared in the same document, which is the one case that provably cannot resolve on any version. A root we do not recognise is left alone — our ignorance must not become your error. Everything else is still Meta's to judge.
+  </Note>
+
+  <Warning>
+    **A Flow already published elsewhere is not covered.** The check runs on upload, so a document that reached Meta by another route keeps the defect. Published Flows are immutable at Meta: clone it, fix the references, publish the clone — and remember the endpoint URL is configured **per Flow**, so the clone starts with none.
+  </Warning>
+
+  ### While you are there: answer `200` on a business error
+
+  Any non-`200` from your endpoint becomes that same generic sentence on the phone, whatever the reason. An error the person needs to read belongs **inside** the reply:
+
+  ```json
+  { "version": "3.0", "screen": "PRODUCT", "data": { "error_message": "Choose a size" } }
+  ```
+</Update>
+
 <Update label="2026-09-11" tags={["Flows", "API"]}>
   ## A `data_exchange` Flow could not be sent at all — the entry screen we added for you was the reason
 

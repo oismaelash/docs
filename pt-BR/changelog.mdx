@@ -6,6 +6,69 @@ icon: "clock-rotate-left"
 
 O que há de novo na plataforma Pilot Status — novidades de API, mudanças e correções notáveis. Assine pelo ícone RSS acima.
 
+<Update label="2026-09-12" tags={["Flows", "API"]}>
+  ## Um Flow cujo payload nomeava o `Form` foi publicado, abriu, e não mandou nada ao seu endpoint
+
+  Se o payload `data_exchange` do seu Flow referenciava valores como `${form_produto.quantidade}` — o nome do próprio componente `Form` como prefixo —, a Meta compilou o documento, publicou, respondeu `validation_errors: []` e todas as entidades voltaram `AVAILABLE`. Nada, em lugar nenhum, disse uma palavra.
+
+  Em execução, o seu endpoint recebia isto:
+
+  ```json
+  { "version": "3.0", "action": "data_exchange", "screen": "PRODUTO", "data": {} }
+  ```
+
+  E a pessoa do outro lado via apenas:
+
+  ```
+  Could not complete this step. Please try again.
+  ```
+
+  ### O prefixo é palavra-chave, não nome
+
+  Um valor de formulário é referenciado pela **palavra-chave literal `form`**. O `name` que você deu ao `Form` nunca entra na referência:
+
+  ```json
+  // ✅ certo, mesmo com um Form chamado "form_produto"
+  { "name": "data_exchange", "payload": { "quantidade": "${form.quantidade}" } }
+
+  // ⛔ não resolve nada, em silêncio
+  { "name": "data_exchange", "payload": { "quantidade": "${form_produto.quantidade}" } }
+  ```
+
+  Para um campo preenchido numa tela anterior é `${screen.<SCREEN_ID>.form.<nome do campo>}` — o `form` literal continua lá.
+
+  ### O que mudou
+
+  O `POST /v1/flows/{id}/json` agora recusa um documento assim **antes** de ele chegar à Meta, e devolve a substituição já escrita:
+
+  ```json
+  {
+    "code": "FLOW_JSON_DEAD_FORM_PREFIX",
+    "deadRefs": [
+      { "ref": "${form_produto.quantidade}", "suggestion": "${form.quantidade}" }
+    ]
+  }
+  ```
+
+  Uma entrada por referência, sem repetir. O status é `422`, o mesmo do `FLOW_JSON_INVALID` — trate pelo `code`, não pelo status.
+
+  <Note>
+    **Estreita de propósito, e um `200` continua não sendo veredito sobre o seu documento.** A checagem dispara só quando o root de uma referência coincide com o `name` de um `Form` declarado no mesmo documento — o único caso que comprovadamente não resolve em versão nenhuma. Um root que não reconhecemos passa: a nossa ignorância não pode virar erro seu. Todo o resto continua sendo a Meta a julgar.
+  </Note>
+
+  <Warning>
+    **Flow já publicado por outro caminho não está coberto.** A checagem roda no envio, então um documento que chegou à Meta por fora mantém o defeito. Flow publicado é imutável na Meta: clone, corrija as referências e publique o clone — e lembre que a URL do endpoint é configurada **por Flow**, então o clone nasce sem nenhuma.
+  </Warning>
+
+  ### Já que está aqui: responda `200` em erro de negócio
+
+  Qualquer resposta diferente de `200` do seu endpoint vira aquela mesma frase genérica no telefone, seja qual for o motivo. Um erro que a pessoa precisa ler vai **dentro** da resposta:
+
+  ```json
+  { "version": "3.0", "screen": "PRODUTO", "data": { "error_message": "Escolha o tamanho" } }
+  ```
+</Update>
+
 <Update label="2026-09-11" tags={["Flows", "API"]}>
   ## Um Flow `data_exchange` não podia ser enviado — e a culpa era da tela de entrada que nós acrescentávamos
 
