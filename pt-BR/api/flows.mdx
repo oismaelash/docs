@@ -115,8 +115,33 @@ Documento que a Meta recusa volta como **`422` `FLOW_JSON_INVALID`**, com a list
 
   Esta rota lê a LISTA em vez do status da Graph, e responde `422` sempre que ela não está vazia. Um `200` nosso significa, então, o que um `200` deve significar. Leia `validationErrors` no `422` — é a resposta da Meta, verbatim.
 
+  **E uma recusa aqui é NOSSA, não da Meta** — veja `FLOW_JSON_DEAD_FORM_PREFIX` abaixo. Aquele documento a Meta teria aceitado.
+
   `flowJson` é uma **string**, nunca um objeto aninhado: a Meta compila os bytes exatos, e re-serializar reordenaria em silêncio o que você escreveu.
 </Warning>
+
+### A única recusa que é nossa: `FLOW_JSON_DEAD_FORM_PREFIX`
+
+Um valor de formulário é referenciado pela **palavra-chave literal `form`** — `${form.quantidade}`. O `name` do componente `Form` que envolve os campos nunca entra na referência: com um `Form` chamado `form_produto`, continua sendo `${form.quantidade}`.
+
+A Meta ACEITA um documento com o prefixo errado, responde `validation_errors: []`, publica — e em execução manda `"data": {}` ao seu endpoint, onde o único sintoma é o telefone da pessoa dizendo _"Could not complete this step. Please try again."_ Desde 12 de setembro de 2026 esta rota recusa esse documento em vez de enviá-lo:
+
+```json
+{
+  "error": "Este Flow JSON referencia valores pelo NOME DO FORM …",
+  "errorEN": "This Flow JSON references values by the FORM'S NAME …",
+  "code": "FLOW_JSON_DEAD_FORM_PREFIX",
+  "deadRefs": [
+    { "ref": "${form_produto.quantidade}", "suggestion": "${form.quantidade}" }
+  ]
+}
+```
+
+Cada entrada de `deadRefs` traz a substituição pronta, então o conserto é colar em vez de aplicar uma regra à mão.
+
+<Note>
+  **Estreita de propósito, e um `200` aqui não significa "o documento é válido".** A checagem só dispara quando o root de uma referência coincide com o `name` de um `Form` declarado no MESMO documento — esse caso não resolve, nunca. Um root que não reconhecemos passa: a nossa ignorância não pode virar erro seu. Todo o resto continua sendo a Meta a julgar, e continua chegando como `FLOW_JSON_INVALID`.
+</Note>
 
 <Note>
   Cada item de `validationErrors` é da Meta, verbatim — `error`, `error_type`, `message` e `pointers` nomeando os componentes recusados. Um que você vai encontrar se um Flow coleta arquivos é o `COMPONENT_TYPE_MAX_NUMBER_PER_SCREEN`: no máximo um `PhotoPicker` **ou** `DocumentPicker` por tela. Veja [Flows](/pt-BR/concepts/flows) com ele citado por inteiro. O SDK de Node lê o array com `flowJsonValidationErrors(err)`.
@@ -449,7 +474,7 @@ Toda falha desta superfície responde o mesmo envelope — existe exatamente uma
 { "error": "<português>", "errorEN": "<inglês>", "code": "<CÓDIGO>" }
 ```
 
-`FLOW_JSON_INVALID` acrescenta um array `validationErrors`; `FLOW_UNKNOWN_FIELDS` acrescenta as chaves recusadas; `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` acrescenta `currentEndpointUri`. Nunca assuma que o conjunto de códigos é fechado — trate os que você conhece e caia no `code` para o resto.
+`FLOW_JSON_INVALID` acrescenta um array `validationErrors`; `FLOW_JSON_DEAD_FORM_PREFIX` acrescenta `deadRefs`; `FLOW_UNKNOWN_FIELDS` acrescenta as chaves recusadas; `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` acrescenta `currentEndpointUri`. Nunca assuma que o conjunto de códigos é fechado — trate os que você conhece e caia no `code` para o resto.
 
 | Código | Status | Significado |
 | --- | --- | --- |
@@ -458,6 +483,7 @@ Toda falha desta superfície responde o mesmo envelope — existe exatamente uma
 | `FLOW_REQUIRES_META_NUMBER` | 422 | O número da chave não é Meta, ou não tem WABA |
 | `FLOW_NUMBER_FROM_KEY` | 400 | A requisição nomeou o número (`whatsappNumberId`, `numberId` ou `wabaId`, no corpo ou na query) — ele vem da chave, e nunca é aceito ao lado dela |
 | `FLOW_JSON_INVALID` | 422 | A Meta recusou o documento — leia `validationErrors` |
+| `FLOW_JSON_DEAD_FORM_PREFIX` | 422 | **Nossa.** O documento referencia valores pelo NOME do `Form` — leia `deadRefs` |
 | `FLOW_JSON_REQUIRED` | 400 | `flowJson` ausente ou vazio |
 | `FLOW_NAME_REQUIRED` | 400 | `name` faltando na criação |
 | `FLOW_NAME_INVALID` | 400 | `name` presente mas não é string utilizável |
