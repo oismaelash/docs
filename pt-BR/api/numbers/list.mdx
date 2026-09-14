@@ -21,6 +21,7 @@ Lista todas as instâncias de WhatsApp do **tenant** da chave de API como um arr
 - Cada número expõe seu `state` de conexão plano e uma flag `isFullyConnected`.
 - A listagem **não** força uma atualização em massa do estado de conexão — use `GET /v1/numbers/{id}/status` por número quando precisar de uma verificação em tempo real.
 - As entradas `apiKeys` de cada item incluem apenas `name`, `keyPrefix` e `keyLast4` (sem o `id` da chave de API).
+- Itens Meta (Cloud API) também trazem um bloco `coexistence` — veja a seção de Coexistência abaixo.
 
 ```bash
 curl "https://pilotstatus.com.br/v1/numbers" \
@@ -72,7 +73,8 @@ Resposta (número Meta):
       "verifiedName": "Acme LTDA",
       "qualityRating": "GREEN",
       "messagingLimitTier": "TIER_2K",
-      "isPinEnabled": true
+      "isPinEnabled": true,
+      "isOnBizApp": false
     },
     "profile": {
       "about": "8h-18h",
@@ -91,4 +93,36 @@ Resposta (número Meta):
 }
 ```
 
-Para um número não-Meta (não oficial / QR), a mesma chamada retorna `"provider": "PILOT_STATUS"` e `"meta": null`.
+Para um número não-Meta (não oficial / QR), a mesma chamada retorna `"provider": "PILOT_STATUS"`, `"meta": null` e `"coexistence": null`.
+
+## Coexistência — e por que o `platformType` não responde isso
+
+**Coexistência** significa que o número continua ativo no **app WhatsApp Business** de um aparelho *e*, ao mesmo tempo, está conectado à Cloud API.
+
+<Warning>
+  **Não** leia `meta.phone.platformType` para responder isso. Um número em coexistência reporta `CLOUD_API` — porque ele **está** na Cloud API. É isso que coexistência significa. O conjunto de valores da Meta para esse campo não tem `COEXISTENCE`, então um número em coexistência e um número Cloud API "puro" são indistinguíveis por ali.
+</Warning>
+
+Leia o bloco `coexistence`. Ele vem nos números Meta tanto em `GET /v1/numbers` quanto em `GET /v1/numbers/{id}`, e é `null` para números não oficiais (pareados por QR).
+
+<ResponseField name="coexistence.status" type="string">
+  `CONFIRMED` — o número **está** em coexistência.
+  `NO` — não está; é um número Cloud API puro (indisponível no app do celular).
+  `LIKELY` — inferido, não respondido: a Meta deixa marcas num número em coexistência (ela recusa o `/register`, então ele fica `NOT_VERIFIED`, com `nameStatus` `NON_EXISTS` e sem PIN).
+  `UNKNOWN` — não é possível responder com o que temos.
+</ResponseField>
+
+<ResponseField name="coexistence.evidence" type="string">
+  De onde veio a resposta, para você separar resposta de palpite: `meta_is_on_biz_app` (campo da própria Meta, também espelhado em `meta.phone.isOnBizApp`), `history_sync` (o que a Meta respondeu quando pedimos o histórico do aparelho) ou `phone_fields` (a inferência acima — só aparece com `LIKELY`). É `null` quando o status é `UNKNOWN`.
+</ResponseField>
+
+<Warning>
+  `UNKNOWN` **não** quer dizer "não". O sinal por trás do `LIKELY` é de mão única: quando ele aparece, vale confiar; a ausência dele não prova nada. Trate `UNKNOWN` como "pergunte de novo depois" — chamar `?refresh=1` no número busca a resposta da própria Meta e normalmente promove o status para `CONFIRMED` ou `NO`.
+</Warning>
+
+### O que a coexistência muda na prática
+
+- A Meta **recusa** o `/register` do número ("not available for SMB businesses"), então ele nunca vira um número Cloud API plenamente registrado.
+- **Chamadas não podem ser habilitadas** enquanto o número seguir em coexistência.
+- **Mensagens funcionam normalmente** — envio e recebimento não são afetados.
+- Para usar chamadas, o número precisa ser migrado para fora do app WhatsApp Business. Essa decisão é de quem é dono do número.
