@@ -149,13 +149,27 @@ curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
 
 ## Verifique a assinatura
 
-<Warning>
-  **Hoje não existe como definir um segredo de assinatura — nem pela API, nem pelo painel.** `POST /v1/webhooks` e `PATCH /v1/webhooks/{id}` aceitam `name`, `url`, `events` e `active`, e mais nada; o formulário de Novo/Editar Webhook do painel tem os mesmos três campos. A coluna `secret` existe e o caminho de entrega a respeita, mas nenhuma superfície do produto escreve nela.
+**Todo webhook criado a partir de 15/09/2026 nasce assinado.** A criação cunha um segredo e devolve-o em claro naquele `201` — a única resposta na vida de um segredo que o carrega. Nenhuma leitura o traz de volta.
 
-  **Na prática: `x-pilot-status-signature` não é enviado.** Um webhook sem segredo não recebe cabeçalho nenhum — então **não** construa um receptor que rejeite entrega sem assinatura: ele rejeitaria tudo. Autentique a entrega de outra forma até isso existir: um segmento de caminho difícil de adivinhar ou um token de query na URL que você registra, mais uma allowlist do nosso IP de saída.
+<Warning>
+  **Webhooks criados antes dessa data não têm segredo, e continuam assim.** As entregas deles saem sem assinatura. É deliberado: ligar verificação de assinatura por baixo de uma integração viva é, por si só, uma interrupção. O `POST /v1/webhooks/{id}/rotate-secret` é como você a liga num deles — e a única forma de recuperar um segredo perdido, já que nenhuma leitura o devolve.
+
+  Leia o `hasSecret` de cada webhook para distinguir os dois casos antes de decidir se o seu receptor pode recusar entrega sem assinatura.
 </Warning>
 
-Quando um segredo *está* definido, o cabeçalho `x-pilot-status-signature` carrega o **HMAC-SHA256 do corpo bruto da requisição**, em hexadecimal, chaveado com o segredo. Calcule o HMAC sobre os bytes brutos exatamente como recebidos (antes de qualquer parse de JSON) e compare em tempo constante:
+## Rodar — ou cunhar um para um webhook antigo
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/webhooks/wh_abc/rotate-secret" \
+  -H "x-api-key: ps_your_token_here"
+# → { "id": "wh_abc", "hasSecret": true, "secret": "…" }   ← em claro, uma vez
+```
+
+<Warning>
+  **A rotação é imediata e não tem janela de sobreposição.** O segredo anterior deixa de verificar no instante em que a chamada retorna; entregas já em voo assinam com o valor que o despacho delas carregou. Aceite os dois segredos do seu lado durante um minuto, ou rode num momento de silêncio do número.
+</Warning>
+
+Quando um segredo está definido, o cabeçalho `x-pilot-status-signature` carrega o **HMAC-SHA256 do corpo bruto da requisição**, em hexadecimal, chaveado com o segredo. Calcule o HMAC sobre os bytes brutos exatamente como recebidos (antes de qualquer parse de JSON) e compare em tempo constante:
 
 ```javascript Node
 const crypto = require("node:crypto");

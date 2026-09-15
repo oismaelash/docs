@@ -148,13 +148,27 @@ curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
 
 ## Verify the signature
 
-<Warning>
-  **There is no way to set a signing secret today — not through the API and not in the dashboard.** `POST /v1/webhooks` and `PATCH /v1/webhooks/{id}` accept `name`, `url`, `events` and `active`, and nothing else; the dashboard's New/Edit Webhook form has the same three fields. The `secret` column exists and the delivery path honours it, but no product surface writes to it.
+**Every webhook created from 2026-09-15 onward is signed by birth.** Creation mints a secret and returns it in clear on that `201` — the only response in the life of a secret that carries it. Nothing reads it back.
 
-  **What that means in practice: `x-pilot-status-signature` is not sent.** A webhook with no secret gets no header, so do **not** build a receiver that rejects unsigned deliveries — it would reject everything. Authenticate the delivery some other way until this is wired: a hard-to-guess path segment or a query token on the URL you register, plus an allowlist of our egress.
+<Warning>
+  **Webhooks created before that date have no secret, and stay that way.** Their deliveries still go out unsigned. That is deliberate: switching signature verification on underneath a live integration is its own outage. `POST /v1/webhooks/{id}/rotate-secret` is how you turn it on for one of them — and the only way to recover a secret that was lost, since no read returns it.
+
+  Read `hasSecret` on any webhook to tell the two apart before you decide whether your receiver can reject unsigned deliveries.
 </Warning>
 
-When a secret *is* set, the header `x-pilot-status-signature` carries the hex-encoded **HMAC-SHA256 of the raw request body**, keyed with the secret. Compute the HMAC over the raw bytes exactly as received (before any JSON parsing) and compare in constant time:
+## Rotate — or mint one for an older webhook
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/webhooks/wh_abc/rotate-secret" \
+  -H "x-api-key: ps_your_token_here"
+# → { "id": "wh_abc", "hasSecret": true, "secret": "…" }   ← in clear, once
+```
+
+<Warning>
+  **Rotation is immediate and has no overlap window.** The previous secret stops verifying the moment the call returns; deliveries already in flight sign with whichever value their dispatch loaded. Accept either secret on your side for a minute, or rotate while the number is quiet.
+</Warning>
+
+When a secret is set, the header `x-pilot-status-signature` carries the hex-encoded **HMAC-SHA256 of the raw request body**, keyed with the secret. Compute the HMAC over the raw bytes exactly as received (before any JSON parsing) and compare in constant time:
 
 ```javascript Node
 const crypto = require("node:crypto");
