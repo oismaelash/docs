@@ -749,6 +749,125 @@ Plus the families that are **not** Meta's envelope:
   **Nine of Meta's fields are never delivered**, not even to a `"*"` subscription: `account_alerts`, `automatic_events`, `history`, `messaging_handovers`, `partner_solutions`, `security`, `smb_app_state_sync`, `standby` and `tracking_events`. They are internal (bulk history backfill, coexistence state sync) or admin/security traffic, and they are not offered in the event picker either. Everything else Meta sends for a subscribed field is forwarded.
 </Note>
 
+<Warning>
+  **An event name the number's provider cannot emit is dropped silently, not rejected.** `POST`/`PATCH` filter `events` down to the provider's subscribable set before storing — so subscribing a **Meta** number to `message.received` returns `201`, stores an empty list, and delivers nothing. Read back the `events` of the created webhook and check it against what you sent.
+</Warning>
+
+### Number health reaches `"*"` subscribers only
+
+A Meta number never emits `number.disconnected`. What it emits instead is the **number-health family**, and those names are **not in the event picker** — a webhook receives them only through the `"*"` wildcard:
+
+| Event | Fires when |
+| --- | --- |
+| `number.health_degraded` | Quality dropped to `RED`, or Meta put the number in `FLAGGED` / `RATE_LIMITED`. Sending is stopped on our side. |
+| `number.health_blocked` | Meta's phone `status` became `RESTRICTED` / `BANNED` / `DISABLED` / `DELETED` / `PENDING_DELETION`. |
+| `number.health_shadowban` | Native web (unofficial) numbers only. |
+| `number.recovered` | The number came back to healthy on the send axis. |
+| `number.inbound_stalled` | The number still **sends** fine, but its inbound pipe went quiet upstream. Deliberately distinct from a disconnection: your own dashboard shows the connection green. |
+| `number.inbound_recovered` | Inbound resumed. |
+
+They use the canonical `{ event, data }` shape (`data`: `numberId`, `phone`, `displayName`, `createdAt`, and `error` / `errorCode` when present) — **not** Meta's envelope. So a `"*"` subscription on a Meta number delivers **two different body shapes to the same URL**: Meta's `{ object, entry }` for the subscribed fields, and `{ event, data }` for these plus `call.*`, `flow.response_received` and `number.*`. Branch on the presence of `entry` before parsing.
+
+<Note>
+  If you want the conversation traffic and the health traffic on **different** endpoints, create two webhooks on the number: one with the Meta fields you need, one with `"*"`. See [how many webhooks per number](/api/webhooks/configure#how-many-webhooks-per-number).
+</Note>
+
+### Echoes: what the business sent from somewhere else
+
+`message_echoes` and `smb_message_echoes` both carry a copy of a message **the business sent** — the first for sends made through any other tool on the same WABA, the second for sends made from the **WhatsApp Business app on the phone** (coexistence). On a coexistence number, `smb_message_echoes` is how an agent's reply typed on the device reaches your system at all.
+
+The echoed message has the **same per-type shape as an inbound message** (`text` / `image` / `video` / `audio` / `document` / `sticker` / `location` / `contacts` / `reaction`), plus the recipient:
+
+| Field | Notes |
+| --- | --- |
+| `to` | Recipient phone, E.164 digits. **Conditional** since the username rollout — absent for a BSUID-addressed echo. |
+| `to_user_id` | Recipient Business-Scoped User ID, when the echo was addressed to one. |
+| `group_id` | Present for a group echo instead of `to` / `to_user_id`. |
+
+<Warning>
+  **The array key is not stable.** Meta puts the echoed messages under `value.message_echoes` on some payloads and reuses `value.messages` on others. Read both:
+
+  ```js
+  const echoes = value.message_echoes ?? value.messages ?? [];
+  ```
+
+  A parser that only reads one of them drops half the echoes with no error anywhere.
+</Warning>
+
+### `statuses[]` — this is where the billed category is
+
+On the `messages` field, delivery statuses ride `value.statuses`, and each one carries Meta's own billing verdict. This is the authoritative answer to "what did Meta charge for this message" — it does not have to be inferred from the template.
+
+```json
+{
+  "id": "wamid.HBg…",
+  "status": "delivered",
+  "timestamp": "1771000000",
+  "recipient_id": "5585984387245",
+  "conversation": {
+    "id": "b1f2…",
+    "expiration_timestamp": "1771086400",
+    "origin": { "type": "marketing" }
+  },
+  "pricing": { "pricing_model": "PMP", "category": "marketing", "type": "regular" }
+}
+```
+
+| Field | What it says |
+| --- | --- |
+| `pricing.category` | The category Meta billed: `marketing`, `utility`, `authentication`, `service`, `referral_conversion`. |
+| `pricing.type` | Whether it was billed at all. `regular` = billed. `free_entry_point` = free (a CTWA ad-click window). `free_customer_service` = free (inside the service allowance). |
+| `pricing.pricing_model` | `PMP` in current production. |
+| `conversation.origin.type` | How the 24h billing window opened — same value set as `pricing.category`. `referral_conversion` means an ad click opened it, which is how ad-sourced traffic is recognisable on the **outbound** side. |
+| `conversation.id` | Meta's window id. A **new** id is a **new** window. |
+| `conversation.expiration_timestamp` | When that window closes. |
+
+The combinations actually observed in production (surveyed over 30 days of deliveries):
+
+| `pricing_model` | `category` | `type` |
+| --- | --- | --- |
+| `PMP` | `marketing` | `regular` |
+| `PMP` | `utility` | `regular` |
+| `PMP` | `utility` | `free_customer_service` |
+| `PMP` | `service` | `free_customer_service` |
+| `PMP` | `referral_conversion` | `free_entry_point` |
+
+<Note>
+  `conversation.id` and `conversation.expiration_timestamp` are also the honest way to answer "did a second ad click open a new window or extend the old one?" — compare the ids rather than assuming. `pricing.type` then says whether Meta charged for it.
+</Note>
+
+### CTWA referral — where an ad click lands
+
+There is no separate `referral` field to subscribe to. The block arrives inside the `messages` envelope, at `entry[0].changes[0].value.messages[0].referral`, verbatim.
+
+```json
+"referral": {
+  "source_type": "ad",
+  "source_id": "120249791471690207",
+  "source_url": "https://fb.me/…",
+  "headline": "…",
+  "body": "…",
+  "media_type": "video",
+  "video_url": "https://…",
+  "thumbnail_url": "https://…",
+  "ctwa_clid": "…",
+  "welcome_message": { "text": "…" }
+}
+```
+
+<Warning>
+  **`referral` is on the FIRST message of the conversation only.** Meta does not repeat it on later messages, so a consumer that reads it per-message sees it once and must carry it forward itself.
+</Warning>
+
+- `source_id` is the ad id (`source_type: "ad"`) or the post id (`source_type: "post"`). Treat it as an **opaque grouping key**: resolving it to a campaign/ad name through the Graph needs `ads_read` on the advertiser's ad account, which a WhatsApp system-user token does not carry (it comes back `GraphMethodException` code 100 / subcode 33).
+- There is **no UTM** in a Meta referral. If you need campaign names, use [`GET /v1/referrals`](/api/referrals) — it returns the row immediately, with the names resolved asynchronously (`namesResolvedAt: null` means "not resolved yet, ask again").
+
+<Warning>
+  **Meta can deliver the same `wamid` twice, with different content.** Measured in production: a placeholder arrives first — `type: "unsupported"`, `errors[].code 131060` *"This message is unavailable."*, no text and no `referral` — and the real message follows about **425 ms** later with the text, the media and the `referral`.
+
+  Both are delivered to your webhook. **Deduplicating on the wamid alone discards the real one** and leaves you with an empty bubble and no ad attribution. Key on `(wamid, type)` instead, and treat an `unsupported` + `131060` arrival as a placeholder that must never overwrite content you already stored.
+</Warning>
+
 ## Migration-layer events (Evolution GO and v2)
 
 A number you brought over through a compatibility layer keeps that provider's **own** event vocabulary — the point of the layer is that your existing handlers do not change:

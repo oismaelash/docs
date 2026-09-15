@@ -128,9 +128,34 @@ no mesmo evento.
   **O `secret` de assinatura nunca é retornado** por nenhum desses endpoints.
 </Note>
 
+## Quantos webhooks por número
+
+**Um número pode ter mais de um webhook.** O escopo é muitos-para-muitos: todo webhook ativo assinado naquele número recebe os eventos que assinou, e o segundo **não** substitui o primeiro. Use isso para separar responsabilidades — um endpoint para conversas, outro para saúde e monitoramento.
+
+A única recusa é a **duplicata exata**: a mesma `url` no mesmo número — **409 `WEBHOOK_DUPLICATE`**. Não existe motivo legítimo para duas, e a integração que criava em vez de atualizar acumulava linhas em silêncio; agora recebe um conflito. Vale também um teto de **50** webhooks por workspace (**409 `WEBHOOK_LIMIT_REACHED`**) — deliberadamente folgado, já que um tenant com muitos números pode querer um por número.
+
+```bash Dois endpoints no mesmo número
+# 1) conversas → sua caixa de entrada / helpdesk
+curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+  -H "x-api-key: ps_your_token_here" -H "Content-Type: application/json" \
+  -d '{ "url": "https://example.com/hooks/inbox", "name": "Inbox", "events": ["messages", "smb_message_echoes"] }'
+
+# 2) tudo → seu endpoint de monitoramento (é a ÚNICA forma de receber a família
+#    de saúde do número; veja a referência de eventos)
+curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+  -H "x-api-key: ps_your_token_here" -H "Content-Type: application/json" \
+  -d '{ "url": "https://example.com/hooks/monitor", "name": "Monitor", "events": ["*"] }'
+```
+
 ## Verifique a assinatura
 
-O segredo de assinatura é configurado na página **Webhooks** do painel — ele não pode ser definido nem lido via `/v1/webhooks` (a API o remove de todas as respostas). Quando um segredo está definido, toda entrega inclui o cabeçalho `x-pilot-status-signature`: o **HMAC-SHA256 do corpo bruto da requisição**, codificado em hexadecimal e chaveado com o segredo. Calcule o HMAC sobre os bytes brutos exatamente como recebidos (antes de qualquer parse de JSON) e compare em tempo constante:
+<Warning>
+  **Hoje não existe como definir um segredo de assinatura — nem pela API, nem pelo painel.** `POST /v1/webhooks` e `PATCH /v1/webhooks/{id}` aceitam `name`, `url`, `events` e `active`, e mais nada; o formulário de Novo/Editar Webhook do painel tem os mesmos três campos. A coluna `secret` existe e o caminho de entrega a respeita, mas nenhuma superfície do produto escreve nela.
+
+  **Na prática: `x-pilot-status-signature` não é enviado.** Um webhook sem segredo não recebe cabeçalho nenhum — então **não** construa um receptor que rejeite entrega sem assinatura: ele rejeitaria tudo. Autentique a entrega de outra forma até isso existir: um segmento de caminho difícil de adivinhar ou um token de query na URL que você registra, mais uma allowlist do nosso IP de saída.
+</Warning>
+
+Quando um segredo *está* definido, o cabeçalho `x-pilot-status-signature` carrega o **HMAC-SHA256 do corpo bruto da requisição**, em hexadecimal, chaveado com o segredo. Calcule o HMAC sobre os bytes brutos exatamente como recebidos (antes de qualquer parse de JSON) e compare em tempo constante:
 
 ```javascript Node
 const crypto = require("node:crypto");
@@ -138,7 +163,18 @@ const expected = crypto.createHmac("sha256", process.env.WEBHOOK_SECRET).update(
 const ok = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.headers["x-pilot-status-signature"] ?? ""));
 ```
 
-As entregas também carregam um cabeçalho `Idempotency-Key` — estável por evento — use-o para deduplicar retentativas.
+## Deduplicar retentativas: `Idempotency-Key`
+
+Quando está presente, o `Idempotency-Key` é **estável por evento**: uma retentativa, um replay de backoff e um replay de failover do mesmo evento carregam o mesmo valor — é a chave certa para deduplicar. O mesmo valor também é mesclado no corpo JSON entregue como um campo `idempotencyKey` de primeiro nível, então dá para ler dos dois lugares.
+
+<Warning>
+  **O cabeçalho não vem em toda entrega.** Ele é derivado de um id de mensagem encontrado no payload (`messageId` / `internalMessageId`, no topo ou dentro de `data`). Um payload sem esse id não recebe **cabeçalho nenhum nem campo no corpo** — isso inclui:
+
+  - todo **envelope nativo da Meta Cloud API** (`messages`, `smb_message_echoes`, `message_echoes`, os campos de template e de conta …), cujo topo é `{ object, entry }`;
+  - os eventos `number.*` de ciclo de vida e os de saúde do número.
+
+  Ou seja: o tráfego de conversa de um número Meta **não** é coberto por esse cabeçalho hoje. Deduplique pelos ids da própria Meta — e leia o aviso sobre wamid repetido na [referência de eventos](/pt-BR/api/webhooks/events#eventos-da-meta-cloud-api-envelope-nativo) antes de chavear só pelo wamid.
+</Warning>
 
 ## Painel
 

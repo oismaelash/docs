@@ -127,9 +127,34 @@ A failed attempt is retried with exponential backoff before it is given up on, s
   **The signing `secret` is never returned** by any of these endpoints.
 </Note>
 
+## How many webhooks per number
+
+**A number can carry more than one webhook.** Scoping is many-to-many: every active webhook subscribed to the number receives the events it subscribed to, and a second one does **not** replace the first. Use that to split concerns — one endpoint for conversations, another for health and monitoring.
+
+The single refusal is an **exact duplicate**: the same `url` on the same number — **409 `WEBHOOK_DUPLICATE`**. There is no legitimate reason for two, and the integration that created instead of updating used to pile up rows in silence; it now gets a conflict. A workspace-wide cap of **50** webhooks also applies (**409 `WEBHOOK_LIMIT_REACHED`**) — deliberately loose, since a tenant with many numbers may want one per number.
+
+```bash Two endpoints on the same number
+# 1) conversations → your inbox / helpdesk
+curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+  -H "x-api-key: ps_your_token_here" -H "Content-Type: application/json" \
+  -d '{ "url": "https://example.com/hooks/inbox", "name": "Inbox", "events": ["messages", "smb_message_echoes"] }'
+
+# 2) everything → your monitoring endpoint (this is the ONLY way to get the
+#    number-health family; see the event reference)
+curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+  -H "x-api-key: ps_your_token_here" -H "Content-Type: application/json" \
+  -d '{ "url": "https://example.com/hooks/monitor", "name": "Monitor", "events": ["*"] }'
+```
+
 ## Verify the signature
 
-The signing secret is configured on the dashboard's **Webhooks** page — it cannot be set or read through `/v1/webhooks` (the API strips it from every response). When a secret is set, every delivery includes the header `x-pilot-status-signature`: the hex-encoded **HMAC-SHA256 of the raw request body**, keyed with the secret. Compute the HMAC over the raw bytes exactly as received (before any JSON parsing) and compare with a constant-time comparison:
+<Warning>
+  **There is no way to set a signing secret today — not through the API and not in the dashboard.** `POST /v1/webhooks` and `PATCH /v1/webhooks/{id}` accept `name`, `url`, `events` and `active`, and nothing else; the dashboard's New/Edit Webhook form has the same three fields. The `secret` column exists and the delivery path honours it, but no product surface writes to it.
+
+  **What that means in practice: `x-pilot-status-signature` is not sent.** A webhook with no secret gets no header, so do **not** build a receiver that rejects unsigned deliveries — it would reject everything. Authenticate the delivery some other way until this is wired: a hard-to-guess path segment or a query token on the URL you register, plus an allowlist of our egress.
+</Warning>
+
+When a secret *is* set, the header `x-pilot-status-signature` carries the hex-encoded **HMAC-SHA256 of the raw request body**, keyed with the secret. Compute the HMAC over the raw bytes exactly as received (before any JSON parsing) and compare in constant time:
 
 ```javascript Node
 const crypto = require("node:crypto");
@@ -137,7 +162,18 @@ const expected = crypto.createHmac("sha256", process.env.WEBHOOK_SECRET).update(
 const ok = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.headers["x-pilot-status-signature"] ?? ""));
 ```
 
-Deliveries also carry an `Idempotency-Key` header — stable per event — use it to deduplicate retries.
+## Deduplicate retries: `Idempotency-Key`
+
+When it is present, `Idempotency-Key` is **stable per event**: a retry, a backoff replay and a failover replay of the same event all carry the same value, so it is the right key to dedupe on. The same value is also merged into the delivered JSON body as a top-level `idempotencyKey` field, so you can read it from either place.
+
+<Warning>
+  **The header is not on every delivery.** It is derived from a message id found in the payload (`messageId` / `internalMessageId`, at the top level or under `data`). A payload with no such id gets **no header and no body field** — that includes:
+
+  - every **Meta Cloud API native envelope** (`messages`, `smb_message_echoes`, `message_echoes`, the template and account fields …), whose top level is `{ object, entry }`,
+  - the `number.*` lifecycle and number-health events.
+
+  So a Meta number's conversation traffic is **not** covered by this header today. Dedupe those on Meta's own ids instead — and read the wamid warning in the [event reference](/api/webhooks/events#meta-cloud-api-events-native-envelope) before keying on the wamid alone.
+</Warning>
 
 ## Dashboard
 

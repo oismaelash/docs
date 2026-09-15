@@ -30,7 +30,7 @@ curl "https://pilotstatus.com.br/v1/numbers" \
 
 ## GET /v1/numbers/{id} — Detalhe completo de um número
 
-Retorna o `state`/`isFullyConnected` plano, um bloco `health` (`qualityRating`, `messagingLimitTier`, `metaStatus`, `sendable`) e — para números **Meta** — um bloco aninhado em camelCase `meta` com informações de `phone`, `profile` e `waba` obtidas do Meta Graph. Para números não-Meta, `meta` é `null`.
+Retorna o `state`/`isFullyConnected` plano, um bloco `health` (veja [O bloco `health`](#o-bloco-health)) e — para números **Meta** — um bloco aninhado em camelCase `meta` com informações de `phone`, `profile` e `waba` obtidas do Meta Graph. Para números não-Meta, `meta` é `null`.
 
 <ParamField query="refresh" type="string">
   Adicione `?refresh=1` para forçar uma busca em tempo real no Meta Graph e persistir o snapshot. Por padrão, a resposta é armazenada em cache (último snapshot `meta`).
@@ -62,8 +62,11 @@ Resposta (número Meta):
   "updatedAt": "2026-06-30T09:18:33.000Z",
   "health": {
     "qualityRating": "GREEN",
-    "messagingLimitTier": "TIER_2K",
+    "messagingLimitTier": null,
+    "portfolioMessagingLimitTier": "TIER_2K",
     "metaStatus": "CONNECTED",
+    "code": null,
+    "reason": null,
     "sendable": true
   },
   "meta": {
@@ -94,6 +97,87 @@ Resposta (número Meta):
 ```
 
 Para um número não-Meta (não oficial / QR), a mesma chamada retorna `"provider": "PILOT_STATUS"`, `"meta": null` e `"coexistence": null`.
+
+## O bloco `health`
+
+`health` é o único lugar que responde *este número consegue enviar agora, e se não, por quê*. Ele é derivado dos sinais da Meta por um avaliador compartilhado, então a lista, o detalhe e o painel nunca discordam.
+
+<ResponseField name="health.sendable" type="boolean">
+  A única flag em que ramificar. O `state` / `isFullyConnected` de um número Meta são **derivados dela** (`sendable → "OPEN"`, caso contrário `"DISCONNECTED"`).
+</ResponseField>
+
+<ResponseField name="health.qualityRating" type="string | null">
+  A nota de qualidade da Meta para o número, em maiúsculas e repassada: `GREEN`, `YELLOW`, `RED`, `UNKNOWN`. `null` quando a Meta não informou nenhuma. **`RED` interrompe o envio** do nosso lado (`sendable: false`).
+</ResponseField>
+
+<ResponseField name="health.messagingLimitTier" type="string | null">
+  O limite de mensagens **do próprio número** (`messaging_limit_tier`), por exemplo `TIER_250`, `TIER_1K`, `TIER_2K`, `TIER_10K`, `TIER_100K`, `TIER_UNLIMITED`. `null` quando a Meta não reporta nenhum para ele — o que já é informação: um número sem tier próprio não é um número Cloud API plenamente registrado, e **chamadas não podem ser habilitadas** nele.
+</ResponseField>
+
+<ResponseField name="health.portfolioMessagingLimitTier" type="string | null">
+  O limite do **Business Portfolio** (`whatsapp_business_manager_messaging_limit`), mantido como campo próprio. A Meta o devolve mesmo quando o tier por número está ausente.
+
+  Ele já substituiu o `messagingLimitTier` sempre que a Meta omitia o do número, e a substituição era invisível: o painel mostrava "2K/24h" para um número em `TIER_250`, e o portão de habilitar chamadas abria para 17 números que não tinham tier nenhum. **Qual dos dois governa um envio é decisão da Meta, não nossa** — leia os dois, e trate `messagingLimitTier: null` como "este número não tem limite próprio", nunca como "ele tem o do portfólio".
+</ResponseField>
+
+<ResponseField name="health.metaStatus" type="string | null">
+  O `status` do número de telefone na Meta, em maiúsculas e **repassado verbatim** — não o enumeramos, porque a Meta acrescenta valores sem aviso. O que *fixamos* é a classificação de cada um:
+
+  | `metaStatus` | Veredito | `sendable` |
+  | --- | --- | --- |
+  | `RESTRICTED`, `BANNED`, `DISABLED`, `DELETED`, `PENDING_DELETION` | `BLOCKED` | `false` |
+  | `RATE_LIMITED` | `DEGRADED` | `false` |
+  | `FLAGGED` | `DEGRADED` | `false` |
+  | qualquer outro (ex.: `CONNECTED`, `PENDING`) | este campo não opina | — |
+
+  Um valor fora dos dois conjuntos não contribui para o veredito; a qualidade e a regra do número de teste abaixo ainda podem bloquear.
+</ResponseField>
+
+<ResponseField name="health.code" type="string | null">
+  Causa legível por máquina, `null` quando saudável. **Ramifique por aqui**, não pelo `reason`.
+
+  | `code` | Significado | `sendable` |
+  | --- | --- | --- |
+  | `meta_status_restricted` / `_banned` / `_disabled` / `_deleted` / `_pending_deletion` | A Meta bloqueou o número | `false` |
+  | `meta_status_flagged` | A Meta sinalizou o número | `false` |
+  | `meta_messaging_limit_reached` | A Meta reporta `RATE_LIMITED` | `false` |
+  | `meta_quality_red` | Nota de qualidade em `RED` | `false` |
+  | `meta_test_number_name_not_approved` | Número de teste `+1 555` da própria Meta com display name que não está `APPROVED` — a Meta recusa todo envio com `131037`. `AVAILABLE_WITHOUT_REVIEW` **não** conta como aprovado aqui, e a regra vale só para o número de teste fornecido pela Meta | `false` |
+  | `all_connections_down` / `web_shadowban_463` / `inbound_dammed` / `manual_resume` | Números web nativos (QR) e ações do operador — nunca o veredito de envio de um número Meta | — |
+</ResponseField>
+
+<ResponseField name="health.reason" type="string | null">
+  A mensagem legível por humano da mesma causa, em português. **String de diagnóstico, não contrato** — o texto muda entre releases. Exiba; não faça parse.
+</ResponseField>
+
+<Note>
+  **As transições de saúde também são empurráveis.** `number.health_degraded`, `number.health_blocked`, `number.recovered`, `number.inbound_stalled` e `number.inbound_recovered` disparam na transição — mas **não estão no seletor de eventos**, então um webhook só as recebe pelo curinga `"*"`. Veja [saúde do número na referência de eventos](/pt-BR/api/webhooks/events#saúde-do-número-só-chega-a-quem-assina).
+</Note>
+
+## Atualizando a partir do Meta Graph
+
+`?refresh=1` é a única coisa que lê a Meta. **Nada atualiza o `meta` por agendamento para você**: sem ele, `meta.fetchedAt` fica preso a quando o snapshot foi gravado pela última vez — tipicamente o momento do pareamento — não importa quanto tráfego o número tenha tratado desde então.
+
+O que custa um refresh: **quatro leituras sequenciais na Graph** (o nó do telefone, o perfil comercial, a WABA e as configurações de chamada), cada uma com try/catch independente, mais uma escrita para persistir o snapshot. **Não há limite de taxa nosso** na chamada; o teto que você vai encontrar é o throttling da própria Graph, compartilhado com toda outra chamada feita com o token daquele número.
+
+Como o refresh **persiste**, a atualidade não é propriedade do endpoint: um `GET /v1/numbers` posterior lê o mesmo snapshot que o refresh acabou de gravar. A lista não é permanentemente "mais fraca" que o detalhe — é o mesmo cache.
+
+<Note>
+  **Por que `coexistence.evidence` pode diferir entre duas chamadas no mesmo instante.** As duas rotas rodam o mesmo predicado, e ele prefere a evidência mais forte *presente no snapshot*:
+
+  1. `meta.phone.isOnBizApp` → `meta_is_on_biz_app`
+  2. senão `metaIsCoexistence` (gravado do que a Meta respondeu no onboarding) → `history_sync`
+  3. senão a impressão digital → `phone_fields` (só aparece com `LIKELY`)
+  4. senão `UNKNOWN`
+
+  `is_on_biz_app` é um campo **não documentado** da Graph, então ele viaja na lista rica de campos; se essa requisição falha, caímos para um conjunto mínimo que não o inclui. Um snapshot sem ele responde então por `history_sync` — mesmo status, evidência mais fraca. Um `?refresh=1` bem-sucedido recoloca o `isOnBizApp` no snapshot, e a partir daí **as duas** rotas reportam `meta_is_on_biz_app`.
+</Note>
+
+<Warning>
+  **`UNKNOWN` não é problema de tempo, então esperar não resolve.** Ele significa que não temos evidência nenhuma: sem `isOnBizApp` no snapshot, sem resposta de onboarding e sem casamento da impressão digital. Chame `?refresh=1` **imediatamente** — é ele que busca o `is_on_biz_app`, e normalmente resolve para `CONFIRMED` ou `NO` nessa mesma chamada.
+
+  Se *continuar* `UNKNOWN` depois de um refresh bem-sucedido, a leitura rica do telefone está falhando. Olhe `meta.errors` / `meta.graphErrors` na mesma resposta para o motivo (token expirado e app removido aparecem os dois lá) — repetir num timer não vai ajudar.
+</Warning>
 
 ## Coexistência — e por que o `platformType` não responde isso
 

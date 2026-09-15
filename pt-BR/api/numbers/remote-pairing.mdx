@@ -73,11 +73,65 @@ O corpo também aceita um objeto opcional `branding` para sobrescrever o logo/co
 
 Para números da **API oficial Meta Cloud** o link de pareamento pode executar fluxos Meta em vez do pareamento por QR:
 
-- `metaFlow: "embedded"` — a página hospedada executa o **Meta Embedded Signup** para que seu cliente conecte a própria WABA sem sair do link.
-- `metaFlow: "credentials"` — a página hospedada coleta as credenciais da WABA existente do cliente. Ela também exibe um checkbox **rotear webhooks recebidos para a Pilot Status** (ligado por padrão) que inscreve automaticamente a WABA do cliente no callback da Pilot, dispensando qualquer configuração manual de webhook — veja [entrega de webhook](/pt-BR/api/numbers/create).
+- `metaFlow: "embedded"` — a página hospedada executa o **Meta Embedded Signup**. Quem abrir o link autentica no Facebook dentro do diálogo da própria Meta e escolhe ali o business portfolio e o número de telefone.
+- `metaFlow: "credentials"` — a página hospedada coleta as credenciais de uma WABA existente. Ela também exibe um checkbox **rotear webhooks recebidos para a Pilot Status** (ligado por padrão) que inscreve automaticamente essa WABA no callback da Pilot, dispensando qualquer configuração manual de webhook — veja [entrega de webhook](/pt-BR/api/numbers/create).
+
+### Quem autentica decide de quem é a WABA
+
+A página hospedada executa o **mesmo** componente de Embedded Signup que o painel executa, com o mesmo app e a mesma configuração. Nada no token de pareamento fixa um business portfolio.
+
+**Ou seja: a WABA nasce no portfólio de quem fizer login no Facebook naquele diálogo** — o cliente final, se ele abrir o link, ou *você*, se um operador do seu time abrir e selecionar o seu próprio portfólio. Se o seu modelo é "a WABA é nossa e nós pagamos a Meta", faça o seu operador rodar o link; se é "o cliente é dono da WABA dele", mande o link para o cliente. A chamada de API é idêntica nos dois casos.
 
 <Note>
-  O pareamento remoto com `metaFlow` é a opção **hospedada**. Se você já possui as credenciais da WABA no servidor, use `POST /v1/numbers/meta` (BYO-WABA direto) em vez disso — sem link e sem interação do cliente final.
+  O Embedded Signup aqui é configurado com `featureType: "whatsapp_business_app_onboarding"` — o onboarding de **coexistência** da Meta. O diálogo exibe o QR que o dono do número escaneia com o app WhatsApp Business no celular dele, então o telefone ainda precisa estar ao alcance naquele momento, seja quem for que estiver conduzindo o diálogo.
+</Note>
+
+<Warning>
+  **O seletor de portfólio não aparece para o perfil do Facebook que é dono do app de desenvolvedor.** Isso é regra da Meta, não defeito: um portfólio que possui o app fica de fora do Embedded Signup do próprio app, e a Meta esconde um seletor vazio. Qualquer outro perfil — inclusive o seu, como cliente desta plataforma — vê o seletor. Se estiver testando, use um perfil do Facebook **sem papel nenhum** no app.
+</Warning>
+
+### `POST /v1/numbers/meta` — a alternativa BYO-WABA
+
+Se você já tem `metaPhoneId` + `metaWabaId` + um token de system user no servidor, o [`POST /v1/numbers/meta`](/pt-BR/api/numbers/create) anexa o número sem link e sem interação do cliente final.
+
+Ele é **agnóstico quanto a coexistência** — anexa um número em coexistência e um número Cloud API puro do mesmo jeito. O que ele **não** faz é nada do que o Embedded Signup faz por você:
+
+| | Embedded Signup (`remote-pairing`, `metaFlow: "embedded"`) | `POST /v1/numbers/meta` |
+| --- | --- | --- |
+| Cria a WABA / roda o QR de coexistência | **Sim** — dentro do diálogo da Meta | **Não.** A WABA e o número já precisam existir |
+| Pede a sincronia do histórico do aparelho | **Sim** | **Não** |
+| Grava `metaIsCoexistence` | **Sim**, a partir da resposta da Meta a esse pedido | **Não** — fica `null` |
+| `coexistence.evidence` logo depois | `history_sync`, promovido a `meta_is_on_biz_app` no primeiro `?refresh=1` | `UNKNOWN` até o primeiro `?refresh=1` |
+
+<Warning>
+  **O BYO-WABA não consegue fazer o pareamento de coexistência.** Transformar um telefone que está vivo no app WhatsApp Business num número Cloud API acontece dentro do diálogo de Embedded Signup da Meta — não existe API para isso, nem nossa nem da Meta. O `POST /v1/numbers/meta` é como você *registra* um número que o pareamento já produziu, não como pareia um.
+
+  Ele também nunca pede o histórico do aparelho à Meta, então nada é importado para aquele número. Se você precisa do histórico, pareie pelo Embedded Signup.
+</Warning>
+
+## Validade do link: dois TTLs diferentes
+
+Os dois provedores emitem duas credenciais diferentes, e elas **não** expiram no mesmo relógio.
+
+| Provedor | Credencial | Validade |
+| --- | --- | --- |
+| `META` | Sessão assinada de Embedded Signup, devolvida como `expiresAt` no `201` | **30 minutos** |
+| `PILOT_STATUS` | Token de pareamento por QR na linha do número | **24 horas**, ou até o número conectar (uso único) |
+
+Leia o `expiresAt` do `201` em vez de fixar qualquer um dos dois números no código. Num link `META`, o número também aparece imediatamente como placeholder cujo `GET /v1/numbers/{id}/status` responde `PENDING` e depois `EXPIRED` — é esse o sinal para mostrar ao seu cliente a mensagem de "o link expirou" e emitir um novo.
+
+## A origem da página de conexão (`postMessage`)
+
+Quando você embute a página de conexão no seu próprio site, ela conversa com a página hospedeira por `postMessage` (`connect:paired`, `connect:error`, `connect:expired`). **Os dois provedores usam o mesmo host** — ele vem de uma única configuração da plataforma, não do provedor — e em produção esse host é:
+
+```
+https://connect.pilotstatus.com.br
+```
+
+Trave o seu listener nele e recuse toda outra origem.
+
+<Note>
+  **Melhor do que fixar no código:** derive-a do link que a API acabou de devolver — `new URL(response.remotePairingUrl).origin`. O host é uma configuração de deploy; um receptor preso a um literal quebra em silêncio se ela mudar, enquanto um derivado do `remotePairingUrl` não tem como divergir.
 </Note>
 
 ## Erros
@@ -112,6 +166,6 @@ A página de pareamento usa estes endpoints baseados em token — você também 
 
 Observações:
 
-- O token expira após **24 horas** ou mediante **conexão bem-sucedida** (uso único).
+- Este é o token **`PILOT_STATUS` (QR)**: expira após **24 horas** ou mediante **conexão bem-sucedida** (uso único). Um link `META` de Embedded Signup é uma credencial diferente, com TTL de **30 minutos** — veja [Validade do link](#validade-do-link-dois-ttls-diferentes).
 - `POST .../connect` só funciona quando o estado não é `OPEN`.
 - O mesmo estado de conexão exibido no painel e nos webhooks (`number.created`, `number.connected`) se aplica.

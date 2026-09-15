@@ -73,11 +73,65 @@ The body also accepts an optional `branding` object to override the connect page
 
 For **official Meta Cloud API** numbers the pairing link can run Meta flows instead of QR pairing:
 
-- `metaFlow: "embedded"` — the hosted page runs **Meta Embedded Signup** so your customer connects their own WABA without leaving the link.
-- `metaFlow: "credentials"` — the hosted page collects the customer's existing WABA credentials. It also shows a **route inbound webhooks to Pilot Status** checkbox (on by default) that auto-subscribes the customer's WABA to Pilot's callback, so no manual webhook setup is needed — see [webhook delivery](/api/numbers/create).
+- `metaFlow: "embedded"` — the hosted page runs **Meta Embedded Signup**. Whoever opens the link authenticates with Facebook inside Meta's own dialog and picks the business portfolio and the phone number there.
+- `metaFlow: "credentials"` — the hosted page collects an existing WABA's credentials. It also shows a **route inbound webhooks to Pilot Status** checkbox (on by default) that auto-subscribes that WABA to Pilot's callback, so no manual webhook setup is needed — see [webhook delivery](/api/numbers/create).
+
+### Who authenticates decides who owns the WABA
+
+The hosted page runs the **same** Embedded Signup component the dashboard runs, with the same app and the same configuration. Nothing in the pairing token pins a business portfolio.
+
+**So the WABA lands in the portfolio of whoever logs into Facebook in that dialog** — the end customer if they open the link, or *you* if an operator on your team opens it and selects your own portfolio. If your model is "the WABA is ours and we pay Meta", have your operator run the link; if it is "the customer owns their WABA", send the link to the customer. The API call is identical either way.
 
 <Note>
-  Remote pairing with `metaFlow` is the **hosted** option. If you already hold the WABA credentials server-side, use `POST /v1/numbers/meta` (direct BYO-WABA) instead — no link and no end-customer interaction needed.
+  Embedded Signup here is configured with `featureType: "whatsapp_business_app_onboarding"` — Meta's **coexistence** onboarding. The dialog shows the QR the number's owner scans with the WhatsApp Business app on their phone, so the phone still has to be reachable at that moment, whoever is driving the dialog.
+</Note>
+
+<Warning>
+  **The portfolio picker does not appear for the Facebook profile that owns the developer app.** That is Meta's rule, not a bug: a portfolio that owns the app is excluded from its own Embedded Signup, and Meta hides an empty picker. Any other profile — including yours as a customer of this platform — sees it. If you are testing, use a Facebook profile with **no role** on the app.
+</Warning>
+
+### `POST /v1/numbers/meta` — the BYO-WABA alternative
+
+If you already hold `metaPhoneId` + `metaWabaId` + a system-user token server-side, [`POST /v1/numbers/meta`](/api/numbers/create) attaches the number with no link and no end-customer interaction.
+
+It is **agnostic about coexistence** — it attaches a coexistence number and a pure Cloud API number alike. What it does **not** do is anything Embedded Signup does for you:
+
+| | Embedded Signup (`remote-pairing`, `metaFlow: "embedded"`) | `POST /v1/numbers/meta` |
+| --- | --- | --- |
+| Creates the WABA / runs the coexistence QR | **Yes** — inside Meta's dialog | **No.** The WABA and the phone number must already exist |
+| Requests the on-device history sync | **Yes** | **No** |
+| Records `metaIsCoexistence` | **Yes**, from Meta's answer to that request | **No** — stays `null` |
+| `coexistence.evidence` right after | `history_sync`, upgraded to `meta_is_on_biz_app` on the first `?refresh=1` | `UNKNOWN` until the first `?refresh=1` |
+
+<Warning>
+  **BYO-WABA cannot perform the coexistence pairing itself.** Turning a phone that is live in the WhatsApp Business app into a Cloud API number happens inside Meta's Embedded Signup dialog — there is no API for it, ours or Meta's. `POST /v1/numbers/meta` is how you *register* a number that pairing already produced, not how you pair one.
+
+  It also never asks Meta for the on-device history, so nothing is imported for that number. If you need the history, pair through Embedded Signup.
+</Warning>
+
+## Link lifetime: two different TTLs
+
+The two providers mint two different credentials, and they do **not** expire on the same clock.
+
+| Provider | Credential | Lifetime |
+| --- | --- | --- |
+| `META` | Signed Embedded Signup session, returned as `expiresAt` on the `201` | **30 minutes** |
+| `PILOT_STATUS` | QR pairing token on the number row | **24 hours**, or until the number connects (single-use) |
+
+Read `expiresAt` off the `201` rather than hardcoding either number. For a `META` link, the number also shows up immediately as a placeholder whose `GET /v1/numbers/{id}/status` answers `PENDING` and then `EXPIRED` — that is the signal to show your customer an "the link expired" message and mint a new one.
+
+## The connect page origin (`postMessage`)
+
+When you embed the connect page in your own site, it talks to the host page over `postMessage` (`connect:paired`, `connect:error`, `connect:expired`). **Both providers use the same host** — it comes from one platform-wide setting, not from the provider — and in production that host is:
+
+```
+https://connect.pilotstatus.com.br
+```
+
+Lock your listener to it, and reject every other origin.
+
+<Note>
+  **Better than hardcoding it:** derive it from the link the API just handed you — `new URL(response.remotePairingUrl).origin`. The host is a deployment setting; a receiver pinned to a literal breaks silently if it ever changes, while one derived from `remotePairingUrl` cannot drift.
 </Note>
 
 ## Errors
@@ -112,6 +166,6 @@ The pairing page uses these token-based endpoints — you can also call them to 
 
 Notes:
 
-- The token expires after **24 hours** or upon **successful connection** (single-use).
+- This is the **`PILOT_STATUS` (QR)** token: it expires after **24 hours** or upon **successful connection** (single-use). A `META` Embedded Signup link is a different credential with a **30-minute** TTL — see [Link lifetime](#link-lifetime-two-different-ttls).
 - `POST .../connect` only works when the state is not `OPEN`.
 - The same connection state shown in the dashboard and the webhooks (`number.created`, `number.connected`) apply.

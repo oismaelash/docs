@@ -749,6 +749,125 @@ Mais as famílias que **não** são o envelope da Meta:
   **Nove campos da Meta nunca são entregues**, nem para uma assinatura `"*"`: `account_alerts`, `automatic_events`, `history`, `messaging_handovers`, `partner_solutions`, `security`, `smb_app_state_sync`, `standby` e `tracking_events`. São internos (backfill de histórico em massa, sincronia de estado da coexistência) ou tráfego administrativo/de segurança, e também não aparecem no seletor de eventos. Todo o resto que a Meta manda de um campo assinado é encaminhado.
 </Note>
 
+<Warning>
+  **Um nome de evento que o provedor do número não emite é descartado em silêncio, não rejeitado.** `POST`/`PATCH` filtram `events` para o conjunto assinável do provedor antes de gravar — então assinar `message.received` num número **Meta** devolve `201`, grava lista vazia e não entrega nada. Releia os `events` do webhook criado e compare com o que você mandou.
+</Warning>
+
+### Saúde do número só chega a quem assina `"*"`
+
+Um número Meta nunca emite `number.disconnected`. O que ele emite é a **família de saúde do número**, e esses nomes **não estão no seletor de eventos** — um webhook só os recebe pelo curinga `"*"`:
+
+| Evento | Dispara quando |
+| --- | --- |
+| `number.health_degraded` | Qualidade caiu para `RED`, ou a Meta pôs o número em `FLAGGED` / `RATE_LIMITED`. O envio é interrompido do nosso lado. |
+| `number.health_blocked` | O `status` do telefone na Meta virou `RESTRICTED` / `BANNED` / `DISABLED` / `DELETED` / `PENDING_DELETION`. |
+| `number.health_shadowban` | Só números web (não-oficiais). |
+| `number.recovered` | O número voltou a saudável no eixo de envio. |
+| `number.inbound_stalled` | O número ainda **envia** normalmente, mas o cano de entrada silenciou lá em cima. Deliberadamente distinto de desconexão: o seu painel mostra a conexão verde. |
+| `number.inbound_recovered` | A entrada voltou. |
+
+Eles usam a forma canônica `{ event, data }` (`data`: `numberId`, `phone`, `displayName`, `createdAt`, e `error` / `errorCode` quando existirem) — **não** o envelope da Meta. Ou seja: uma assinatura `"*"` num número Meta entrega **dois formatos de corpo na mesma URL**: `{ object, entry }` da Meta para os campos assinados, e `{ event, data }` para estes mais `call.*`, `flow.response_received` e `number.*`. Ramifique pela presença de `entry` antes de fazer o parse.
+
+<Note>
+  Se você quiser o tráfego de conversa e o de saúde em endpoints **diferentes**, crie dois webhooks no número: um com os campos Meta que precisa, outro com `"*"`. Veja [quantos webhooks por número](/pt-BR/api/webhooks/configure#quantos-webhooks-por-número).
+</Note>
+
+### Ecos: o que o negócio enviou por fora
+
+`message_echoes` e `smb_message_echoes` carregam uma cópia de mensagem **enviada pelo negócio** — o primeiro para envios feitos por qualquer outra ferramenta na mesma WABA, o segundo para envios feitos pelo **app WhatsApp Business no celular** (coexistência). Num número em coexistência, `smb_message_echoes` é como a resposta digitada pelo atendente no aparelho chega ao seu sistema.
+
+A mensagem ecoada tem a **mesma forma por tipo de uma mensagem recebida** (`text` / `image` / `video` / `audio` / `document` / `sticker` / `location` / `contacts` / `reaction`), mais o destinatário:
+
+| Campo | Notas |
+| --- | --- |
+| `to` | Telefone do destinatário, dígitos E.164. **Condicional** desde o rollout de usernames — ausente num eco endereçado a BSUID. |
+| `to_user_id` | Business-Scoped User ID do destinatário, quando o eco foi endereçado a um. |
+| `group_id` | Presente num eco de grupo, no lugar de `to` / `to_user_id`. |
+
+<Warning>
+  **A chave do array não é estável.** A Meta põe as mensagens ecoadas em `value.message_echoes` em alguns payloads e reaproveita `value.messages` em outros. Leia as duas:
+
+  ```js
+  const echoes = value.message_echoes ?? value.messages ?? [];
+  ```
+
+  Um parser que lê só uma delas perde metade dos ecos sem erro em lugar nenhum.
+</Warning>
+
+### `statuses[]` — é aqui que está a categoria cobrada
+
+No campo `messages`, os status de entrega vêm em `value.statuses`, e cada um carrega o veredito de cobrança da própria Meta. Esta é a resposta autoritativa para "o que a Meta cobrou por esta mensagem" — não precisa ser inferida pelo template.
+
+```json
+{
+  "id": "wamid.HBg…",
+  "status": "delivered",
+  "timestamp": "1771000000",
+  "recipient_id": "5585984387245",
+  "conversation": {
+    "id": "b1f2…",
+    "expiration_timestamp": "1771086400",
+    "origin": { "type": "marketing" }
+  },
+  "pricing": { "pricing_model": "PMP", "category": "marketing", "type": "regular" }
+}
+```
+
+| Campo | O que diz |
+| --- | --- |
+| `pricing.category` | A categoria que a Meta cobrou: `marketing`, `utility`, `authentication`, `service`, `referral_conversion`. |
+| `pricing.type` | Se foi cobrada. `regular` = cobrada. `free_entry_point` = grátis (janela aberta por clique em anúncio CTWA). `free_customer_service` = grátis (dentro da franquia de serviço). |
+| `pricing.pricing_model` | `PMP` na produção atual. |
+| `conversation.origin.type` | Como a janela de cobrança de 24h abriu — mesmo conjunto de valores de `pricing.category`. `referral_conversion` significa que um clique em anúncio a abriu, e é assim que o tráfego de anúncio é reconhecível no lado **de saída**. |
+| `conversation.id` | Id da janela, da Meta. Id **novo** = janela **nova**. |
+| `conversation.expiration_timestamp` | Quando essa janela fecha. |
+
+As combinações efetivamente observadas em produção (levantadas em 30 dias de entregas):
+
+| `pricing_model` | `category` | `type` |
+| --- | --- | --- |
+| `PMP` | `marketing` | `regular` |
+| `PMP` | `utility` | `regular` |
+| `PMP` | `utility` | `free_customer_service` |
+| `PMP` | `service` | `free_customer_service` |
+| `PMP` | `referral_conversion` | `free_entry_point` |
+
+<Note>
+  `conversation.id` e `conversation.expiration_timestamp` são também a forma honesta de responder "um segundo clique no anúncio abriu janela nova ou estendeu a antiga?" — compare os ids em vez de supor. O `pricing.type` então diz se a Meta cobrou.
+</Note>
+
+### Referral de CTWA — onde cai o clique no anúncio
+
+Não existe um campo `referral` separado para assinar. O bloco chega dentro do envelope de `messages`, em `entry[0].changes[0].value.messages[0].referral`, verbatim.
+
+```json
+"referral": {
+  "source_type": "ad",
+  "source_id": "120249791471690207",
+  "source_url": "https://fb.me/…",
+  "headline": "…",
+  "body": "…",
+  "media_type": "video",
+  "video_url": "https://…",
+  "thumbnail_url": "https://…",
+  "ctwa_clid": "…",
+  "welcome_message": { "text": "…" }
+}
+```
+
+<Warning>
+  **`referral` vem só na PRIMEIRA mensagem da conversa.** A Meta não o repete nas seguintes, então quem lê por mensagem vê uma vez e tem de carregar o valor adiante por conta própria.
+</Warning>
+
+- `source_id` é o id do anúncio (`source_type: "ad"`) ou do post (`source_type: "post"`). Trate-o como **chave opaca de agrupamento**: resolvê-lo para nome de campanha/anúncio pela Graph exige `ads_read` na conta de anúncios do anunciante, o que um token de system user do WhatsApp não carrega (volta `GraphMethodException` code 100 / subcode 33).
+- **Não existe UTM** num referral da Meta. Se você precisa dos nomes de campanha, use [`GET /v1/referrals`](/pt-BR/api/referrals) — devolve a linha na hora, com os nomes resolvidos de forma assíncrona (`namesResolvedAt: null` significa "ainda não resolvido, pergunte de novo").
+
+<Warning>
+  **A Meta pode entregar o MESMO `wamid` duas vezes, com conteúdos diferentes.** Medido em produção: primeiro chega um placeholder — `type: "unsupported"`, `errors[].code 131060` *"This message is unavailable."*, sem texto e sem `referral` — e cerca de **425 ms** depois vem a mensagem real, com o texto, a mídia e o `referral`.
+
+  As duas são entregues ao seu webhook. **Deduplicar só pelo wamid descarta a real** e deixa você com um balão vazio e sem atribuição do anúncio. Chaveie por `(wamid, type)`, e trate uma chegada `unsupported` + `131060` como placeholder que nunca pode sobrescrever conteúdo já gravado.
+</Warning>
+
 ## Eventos da camada de migração (Evolution GO e v2)
 
 Um número que você trouxe por uma camada de compatibilidade mantém o vocabulário de eventos **do próprio provedor** — o objetivo da camada é justamente os seus handlers não mudarem:

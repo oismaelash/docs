@@ -30,7 +30,7 @@ curl "https://pilotstatus.com.br/v1/numbers" \
 
 ## GET /v1/numbers/{id} — Full detail of one number
 
-Returns the flat `state`/`isFullyConnected`, a `health` block (`qualityRating`, `messagingLimitTier`, `metaStatus`, `sendable`), and — for **Meta** numbers — a nested camelCase `meta` block with `phone`, `profile`, and `waba` info pulled from the Meta Graph. For non-Meta numbers `meta` is `null`.
+Returns the flat `state`/`isFullyConnected`, a `health` block (see [The `health` block](#the-health-block)), and — for **Meta** numbers — a nested camelCase `meta` block with `phone`, `profile`, and `waba` info pulled from the Meta Graph. For non-Meta numbers `meta` is `null`.
 
 <ParamField query="refresh" type="string">
   Add `?refresh=1` to force a live Meta Graph fetch and persist the snapshot. By default the response is cached (last `meta` snapshot).
@@ -62,8 +62,11 @@ Response (Meta number):
   "updatedAt": "2026-06-30T09:18:33.000Z",
   "health": {
     "qualityRating": "GREEN",
-    "messagingLimitTier": "TIER_2K",
+    "messagingLimitTier": null,
+    "portfolioMessagingLimitTier": "TIER_2K",
     "metaStatus": "CONNECTED",
+    "code": null,
+    "reason": null,
     "sendable": true
   },
   "meta": {
@@ -98,6 +101,87 @@ Response (Meta number):
 ```
 
 For a non-Meta (unofficial / QR) number the same call returns `"provider": "PILOT_STATUS"`, `"meta": null` and `"coexistence": null`.
+
+## The `health` block
+
+`health` is the single place that answers *can this number send right now, and if not, why*. It is derived from Meta's signals by one shared evaluator, so the list, the detail and the dashboard never disagree.
+
+<ResponseField name="health.sendable" type="boolean">
+  The one flag to branch on. `state` / `isFullyConnected` on a Meta number are **derived from it** (`sendable → "OPEN"`, otherwise `"DISCONNECTED"`).
+</ResponseField>
+
+<ResponseField name="health.qualityRating" type="string | null">
+  Meta's quality rating for the number, uppercased and passed through: `GREEN`, `YELLOW`, `RED`, `UNKNOWN`. `null` when Meta reported none. **`RED` stops sending** on our side (`sendable: false`).
+</ResponseField>
+
+<ResponseField name="health.messagingLimitTier" type="string | null">
+  **The number's own** messaging limit (`messaging_limit_tier`), e.g. `TIER_250`, `TIER_1K`, `TIER_2K`, `TIER_10K`, `TIER_100K`, `TIER_UNLIMITED`. `null` when Meta reports none for it — which is itself information: a number with no tier of its own is not a fully registered Cloud API number, and **calling cannot be enabled** for it.
+</ResponseField>
+
+<ResponseField name="health.portfolioMessagingLimitTier" type="string | null">
+  The **Business-Portfolio** limit (`whatsapp_business_manager_messaging_limit`), kept as its own field. Meta returns it even when the per-number tier is missing.
+
+  It used to stand in for `messagingLimitTier` whenever Meta omitted the per-number one, and the substitution was invisible: the panel showed "2K/24h" for a number sitting at `TIER_250`, and the calling-enable gate opened for 17 numbers that had no tier at all. **Which one governs a given send is Meta's call, not ours** — read both, and treat `messagingLimitTier: null` as "this number has no limit of its own", never as "it has the portfolio's".
+</ResponseField>
+
+<ResponseField name="health.metaStatus" type="string | null">
+  Meta's phone-number `status`, uppercased and **passed through verbatim** — we do not enumerate it, because Meta adds values without notice. What we *do* fix is how each one is classified:
+
+  | `metaStatus` | Verdict | `sendable` |
+  | --- | --- | --- |
+  | `RESTRICTED`, `BANNED`, `DISABLED`, `DELETED`, `PENDING_DELETION` | `BLOCKED` | `false` |
+  | `RATE_LIMITED` | `DEGRADED` | `false` |
+  | `FLAGGED` | `DEGRADED` | `false` |
+  | anything else (e.g. `CONNECTED`, `PENDING`) | no opinion from this field | — |
+
+  A value outside both sets contributes nothing to the verdict; quality and the test-number rule below can still block.
+</ResponseField>
+
+<ResponseField name="health.code" type="string | null">
+  Machine-readable cause, `null` when healthy. **Branch on this**, not on `reason`.
+
+  | `code` | Meaning | `sendable` |
+  | --- | --- | --- |
+  | `meta_status_restricted` / `_banned` / `_disabled` / `_deleted` / `_pending_deletion` | Meta blocked the number | `false` |
+  | `meta_status_flagged` | Meta flagged the number | `false` |
+  | `meta_messaging_limit_reached` | Meta reports `RATE_LIMITED` | `false` |
+  | `meta_quality_red` | Quality rating is `RED` | `false` |
+  | `meta_test_number_name_not_approved` | Meta's own `+1 555` test number whose display name is not `APPROVED` — Meta refuses every send with `131037`. `AVAILABLE_WITHOUT_REVIEW` does **not** count as approved here, and this rule applies only to the Meta-provided test number | `false` |
+  | `all_connections_down` / `web_shadowban_463` / `inbound_dammed` / `manual_resume` | Native web (QR) numbers and operator actions — never a Meta number's send verdict | — |
+</ResponseField>
+
+<ResponseField name="health.reason" type="string | null">
+  The human-readable message for the same cause, in Portuguese. **Diagnostic string, not a contract** — the wording changes between releases. Show it; do not parse it.
+</ResponseField>
+
+<Note>
+  **The health transitions are also pushable.** `number.health_degraded`, `number.health_blocked`, `number.recovered`, `number.inbound_stalled` and `number.inbound_recovered` fire on transition — but they are **not in the event picker**, so a webhook receives them only via the `"*"` wildcard. See [number health in the event reference](/api/webhooks/events#number-health-reaches-subscribers-only).
+</Note>
+
+## Refreshing from the Meta Graph
+
+`?refresh=1` is the only thing that reads Meta. **Nothing refreshes `meta` on a schedule for you**: without it, `meta.fetchedAt` stays pinned to whenever the snapshot was last written — typically the moment the number was paired — no matter how much traffic the number has handled since.
+
+What one refresh costs: **four sequential Graph reads** (the phone-number node, the business profile, the WABA, and the calling settings), each independently try/caught, then one write to persist the snapshot. There is **no rate limit of ours** on the call; the ceiling you will meet is Meta's own Graph throttling, shared with every other call made with that number's token.
+
+Because the refresh **persists**, the freshness is not a property of the endpoint: a later `GET /v1/numbers` reads the same snapshot the refresh just wrote. The list is not permanently "weaker" than the detail — it is the same cache.
+
+<Note>
+  **Why `coexistence.evidence` can differ between two calls at the same instant.** Both routes run the same predicate, and it prefers the strongest evidence *present in the snapshot*:
+
+  1. `meta.phone.isOnBizApp` → `meta_is_on_biz_app`
+  2. else `metaIsCoexistence` (recorded from what Meta answered at onboarding) → `history_sync`
+  3. else the fingerprint → `phone_fields` (only ever `LIKELY`)
+  4. else `UNKNOWN`
+
+  `is_on_biz_app` is an **undocumented** Graph field, so it rides the rich field list; if that request fails we fall back to a minimal field set that does not include it. A snapshot without it therefore answers from `history_sync` — same status, weaker evidence. A `?refresh=1` that succeeds puts `isOnBizApp` back in the snapshot, and from then on **both** routes report `meta_is_on_biz_app`.
+</Note>
+
+<Warning>
+  **`UNKNOWN` is not a timing problem, so waiting does not fix it.** It means we hold no evidence at all: no `isOnBizApp` in the snapshot, no onboarding answer, and no fingerprint match. Call `?refresh=1` **immediately** — that is what fetches `is_on_biz_app`, and it normally resolves to `CONFIRMED` or `NO` on that one call.
+
+  If it is *still* `UNKNOWN` after a successful refresh, the rich phone read is failing. Look at `meta.errors` / `meta.graphErrors` in the same response for the reason (an expired token and a removed app both show up there) — retrying on a timer will not help.
+</Warning>
 
 ## Coexistence — and why `platformType` does not answer it
 
