@@ -150,7 +150,7 @@
                   },
                   "settings": {
                     "type": "object",
-                    "description": "Per-number settings the number is BORN with — the same block as `PATCH /v1/numbers/{id}`. This is the only place `historyImportEnabled: true` can be asked for: it defaults to `false`, the provider hands the device history over in a single burst right after the connection, and there is no way to request it afterwards. Every field of the PATCH block is accepted here; the `201` echoes back what the number was created with.",
+                    "description": "Per-number settings the number is BORN with — the same block as `PATCH /v1/numbers/{id}`. This is where `historyImportEnabled` is decided: it defaults to `true` (it was `false` for numbers created between 2026-08-26 and 2026-09-16), the provider hands the device history over in a single burst right after the connection, and there is no way to request it afterwards. Every field of the PATCH block is accepted here; the `201` echoes back what the number was created with.",
                     "properties": {
                       "historyImportEnabled": {
                         "type": "boolean",
@@ -493,8 +493,24 @@
                   },
                   "linkToApiKey": {
                     "type": "boolean",
-                    "description": "Vincular o número resultante à API key chamadora (padrão true).",
+                    "description": "Obsoleto: aceito e ignorado. Nenhuma API key é alterada e `linkedApiKeyId` é sempre null.",
                     "example": "true"
+                  },
+                  "metaFlow": {
+                    "type": "string",
+                    "enum": ["embedded", "credentials"],
+                    "description": "Só META: `embedded` (padrão) roda o Embedded Signup da Meta na página hospedada; `credentials` coleta as credenciais de uma WABA existente.",
+                    "example": "embedded"
+                  },
+                  "settings": {
+                    "type": "object",
+                    "description": "Configurações com que o número NASCE — o mesmo bloco do `PATCH /v1/numbers/{id}`. Vale para os dois providers: no `META` é gravado na linha provisória em que a conexão vai cair. É aqui que se decide o histórico: `settings.historyImportEnabled` tem padrão `true`, o provider entrega o histórico do aparelho uma única vez, logo depois de a pessoa conectar, e mudar a flag depois não o traz de volta nem o desfaz. Valores inválidos respondem `400 INVALID_SETTINGS` e nada é criado.",
+                    "properties": {
+                      "historyImportEnabled": { "type": "boolean", "example": false },
+                      "webhookHistoricalMessages": { "type": "boolean", "example": false },
+                      "ignoreNewsletters": { "type": "boolean", "example": false }
+                    },
+                    "additionalProperties": true
                   }
                 }
               }
@@ -503,14 +519,40 @@
         },
         "responses": {
           "201": {
-            "description": "Link PILOT_STATUS",
+            "description": "Link de pareamento criado. `META` responde com o `numberId` da linha provisória, o link, o `expiresAt` (30 min) e os `settings` com que a linha provisória foi criada.",
             "content": {
               "application/json": {
-                "example": {
-                  "provider": "PILOT_STATUS",
-                  "remotePairingToken": "rp_01HZX...",
-                  "remotePairingUrl": "https://pilotstatus.com.br/connect/rp_01HZX...",
-                  "numberId": "num_01HZX..."
+                "examples": {
+                  "pilot_status": {
+                    "summary": "PILOT_STATUS (QR)",
+                    "value": {
+                      "provider": "PILOT_STATUS",
+                      "remotePairingToken": "rp_01HZX...",
+                      "remotePairingUrl": "https://pilotstatus.com.br/connect/rp_01HZX...",
+                      "numberId": "num_01HZX..."
+                    }
+                  },
+                  "meta": {
+                    "summary": "META (Embedded Signup)",
+                    "value": {
+                      "provider": "META",
+                      "numberId": "num_01HZX...",
+                      "remotePairingUrl": "https://connect.pilotstatus.com.br/connect/eyJhbGciOi...",
+                      "expiresAt": "2026-09-16T14:06:38.000Z",
+                      "settings": {
+                        "historyImportEnabled": true,
+                        "webhookHistoricalMessages": false,
+                        "ignoreNewsletters": false,
+                        "alwaysOnline": null,
+                        "rejectCall": null,
+                        "msgRejectCall": null,
+                        "readMessages": null,
+                        "ignoreGroups": null,
+                        "ignoreStatus": null,
+                        "appliesTo": { "history": "all", "advanced": "none" }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -584,7 +626,7 @@
     "/v1/numbers/{id}": {
       "get": {
         "summary": "Obter número (detalhes Meta)",
-        "description": "Retorna o número + todas as informações da Meta quando for um número da API oficial: bloco `meta` aninhado (phone / profile / waba, camelCase) com qualidade, tier de mensagens, status de verificação, perfil de negócio e dados da WABA, além de `health`. Servido do cache por padrão; passe `?refresh=1` para buscar ao vivo no Graph da Meta e persistir. Número não-Meta retorna `meta: null`. (A mesma rota aceita DELETE para remover; use GET /api/v1/numbers/:id/status para um poll leve só de estado.)",
+        "description": "Retorna o número + todas as informações da Meta quando for um número da API oficial: bloco `meta` aninhado (phone / profile / waba, camelCase) com qualidade, tier de mensagens, status de verificação, perfil de negócio e dados da WABA, além de `health`. Servido do cache por padrão; passe `?refresh=1` para buscar ao vivo no Graph da Meta e persistir. Número não-Meta retorna `meta: null`. (A mesma rota aceita DELETE para remover; use GET /api/v1/numbers/:id/status para um poll leve só de estado.) `historyImport` informa o que aconteceu com o histórico do aparelho na conexão atual: `discarded` (`firstAt`, `lastAt`, `events`) quando o histórico chegou com `settings.historyImportEnabled` em `false` e foi descartado, e `syncRefused` (`at`, `reason: \"SYNC_LIMIT_REACHED\"`) quando a Meta recusou enviá-lo de novo. Os dois são definitivos: a Meta entrega o histórico de um número uma única vez. Os dois vêm `null` quando nada aconteceu.",
         "tags": [
           "Numbers"
         ],
@@ -637,6 +679,10 @@
                       "history": "all",
                       "advanced": "none"
                     }
+                  },
+                  "historyImport": {
+                    "discarded": null,
+                    "syncRefused": null
                   },
                   "health": {
                     "qualityRating": "GREEN",
@@ -804,7 +850,7 @@
                     "properties": {
                       "historyImportEnabled": {
                         "type": "boolean",
-                        "description": "Import the history the provider dumps on connect. Default **false**: the number starts existing at the moment it connected. Ask for it HERE, on creation — the provider hands the history over in a single burst right after the connection and it cannot be requested again, so a PATCH after creating races that burst. Numbers created before 2026-08-26 keep whatever they had.",
+                        "description": "Import the history the provider dumps on connect. Default **true** for numbers created from 2026-09-16 on (it was `false` from 2026-08-26 to 2026-09-16; existing numbers keep what they have). Decide it on creation — the provider hands the history over in a single burst right after the connection and it cannot be requested again, so a PATCH after creating races that burst.",
                         "example": false
                       },
                       "webhookHistoricalMessages": {

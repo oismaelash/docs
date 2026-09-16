@@ -150,7 +150,7 @@
                   },
                   "settings": {
                     "type": "object",
-                    "description": "Per-number settings the number is BORN with — the same block as `PATCH /v1/numbers/{id}`. This is the only place `historyImportEnabled: true` can be asked for: it defaults to `false`, the provider hands the device history over in a single burst right after the connection, and there is no way to request it afterwards. Every field of the PATCH block is accepted here; the `201` echoes back what the number was created with.",
+                    "description": "Per-number settings the number is BORN with — the same block as `PATCH /v1/numbers/{id}`. This is where `historyImportEnabled` is decided: it defaults to `true` (it was `false` for numbers created between 2026-08-26 and 2026-09-16), the provider hands the device history over in a single burst right after the connection, and there is no way to request it afterwards. Every field of the PATCH block is accepted here; the `201` echoes back what the number was created with.",
                     "properties": {
                       "historyImportEnabled": {
                         "type": "boolean",
@@ -493,8 +493,24 @@
                   },
                   "linkToApiKey": {
                     "type": "boolean",
-                    "description": "Link the resulting number to the calling API key (default true).",
+                    "description": "Deprecated: accepted and ignored. No API key is touched and `linkedApiKeyId` is always null.",
                     "example": "true"
+                  },
+                  "metaFlow": {
+                    "type": "string",
+                    "enum": ["embedded", "credentials"],
+                    "description": "META only: `embedded` (default) runs Meta Embedded Signup on the hosted page; `credentials` collects an existing WABA's credentials.",
+                    "example": "embedded"
+                  },
+                  "settings": {
+                    "type": "object",
+                    "description": "Per-number settings the number is BORN with — the same block as `PATCH /v1/numbers/{id}`. Applies to both providers: for `META` it is written on the placeholder the connection lands on. This is the moment to decide history: `settings.historyImportEnabled` defaults to `true`, the provider hands the device history over once, right after the person connects, and changing the flag afterwards cannot bring it back or undo it. Invalid values answer `400 INVALID_SETTINGS` and nothing is created.",
+                    "properties": {
+                      "historyImportEnabled": { "type": "boolean", "example": false },
+                      "webhookHistoricalMessages": { "type": "boolean", "example": false },
+                      "ignoreNewsletters": { "type": "boolean", "example": false }
+                    },
+                    "additionalProperties": true
                   }
                 }
               }
@@ -503,14 +519,40 @@
         },
         "responses": {
           "201": {
-            "description": "PILOT_STATUS link",
+            "description": "Pairing link created. `META` answers with the placeholder `numberId`, the link, its `expiresAt` (30 min) and the `settings` the placeholder was created with.",
             "content": {
               "application/json": {
-                "example": {
-                  "provider": "PILOT_STATUS",
-                  "remotePairingToken": "rp_01HZX...",
-                  "remotePairingUrl": "https://pilotstatus.com.br/connect/rp_01HZX...",
-                  "numberId": "num_01HZX..."
+                "examples": {
+                  "pilot_status": {
+                    "summary": "PILOT_STATUS (QR)",
+                    "value": {
+                      "provider": "PILOT_STATUS",
+                      "remotePairingToken": "rp_01HZX...",
+                      "remotePairingUrl": "https://pilotstatus.com.br/connect/rp_01HZX...",
+                      "numberId": "num_01HZX..."
+                    }
+                  },
+                  "meta": {
+                    "summary": "META (Embedded Signup)",
+                    "value": {
+                      "provider": "META",
+                      "numberId": "num_01HZX...",
+                      "remotePairingUrl": "https://connect.pilotstatus.com.br/connect/eyJhbGciOi...",
+                      "expiresAt": "2026-09-16T14:06:38.000Z",
+                      "settings": {
+                        "historyImportEnabled": true,
+                        "webhookHistoricalMessages": false,
+                        "ignoreNewsletters": false,
+                        "alwaysOnline": null,
+                        "rejectCall": null,
+                        "msgRejectCall": null,
+                        "readMessages": null,
+                        "ignoreGroups": null,
+                        "ignoreStatus": null,
+                        "appliesTo": { "history": "all", "advanced": "none" }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -584,7 +626,7 @@
     "/v1/numbers/{id}": {
       "get": {
         "summary": "Get number (Meta details)",
-        "description": "Returns the number + all Meta info when it is an official-API number: a nested `meta` block (phone / profile / waba, camelCase) with quality, messaging-limit tier, verification status, business profile and WABA data, plus `health`. Served from cache by default; pass `?refresh=1` to fetch live from the Meta Graph and persist. Non-Meta numbers return `meta: null`. (The same route accepts DELETE to remove; use GET /api/v1/numbers/:id/status for a lightweight state-only poll.)",
+        "description": "Returns the number + all Meta info when it is an official-API number: a nested `meta` block (phone / profile / waba, camelCase) with quality, messaging-limit tier, verification status, business profile and WABA data, plus `health`. Served from cache by default; pass `?refresh=1` to fetch live from the Meta Graph and persist. Non-Meta numbers return `meta: null`. (The same route accepts DELETE to remove; use GET /api/v1/numbers/:id/status for a lightweight state-only poll.) `historyImport` reports what happened to the device history of the current connection: `discarded` (`firstAt`, `lastAt`, `events`) when history arrived while `settings.historyImportEnabled` was `false` and was dropped, and `syncRefused` (`at`, `reason: \"SYNC_LIMIT_REACHED\"`) when Meta refused to send it again. Both are final: Meta hands a number's history over once. Both are `null` when nothing happened.",
         "tags": [
           "Numbers"
         ],
@@ -637,6 +679,10 @@
                       "history": "all",
                       "advanced": "none"
                     }
+                  },
+                  "historyImport": {
+                    "discarded": null,
+                    "syncRefused": null
                   },
                   "health": {
                     "qualityRating": "GREEN",
@@ -804,7 +850,7 @@
                     "properties": {
                       "historyImportEnabled": {
                         "type": "boolean",
-                        "description": "Import the history the provider dumps on connect. Default **false**: the number starts existing at the moment it connected. Ask for it HERE, on creation — the provider hands the history over in a single burst right after the connection and it cannot be requested again, so a PATCH after creating races that burst. Numbers created before 2026-08-26 keep whatever they had.",
+                        "description": "Import the history the provider dumps on connect. Default **true** for numbers created from 2026-09-16 on (it was `false` from 2026-08-26 to 2026-09-16; existing numbers keep what they have). Decide it on creation — the provider hands the history over in a single burst right after the connection and it cannot be requested again, so a PATCH after creating races that burst.",
                         "example": false
                       },
                       "webhookHistoricalMessages": {
