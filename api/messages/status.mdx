@@ -53,15 +53,40 @@ curl "https://pilotstatus.com.br/v1/messages/msg_abc" \
   "deliveredAt": "2026-02-24T15:00:07.000Z",
   "readAt": null,
   "externalMessageId": "wamid.HBgLNTUxMTk5OTk5OTk5",
-  "errorMessage": null
+  "errorMessage": null,
+  "origin": "API",
+  "metaPricing": {
+    "conversationId": "…",
+    "originType": "referral_conversion",
+    "category": "referral_conversion",
+    "type": "free_entry_point"
+  }
 }
 ```
 
-<Note>
-  **This response carries no billing information** — no category, no price, no conversation window. The fields above are the whole body; there is nothing hidden behind a query parameter.
+<ResponseField name="origin" type="string | null">
+  Which rail the message went out on: `API`, `MCP`, `CHATWOOT`, `CHAT`, `DASHBOARD`, `SYSTEM`, `APP` (outbound that did **not** go through us — the WhatsApp Business app on the phone, or another tool on the same WABA), or `null`.
 
-  Do **not** infer the billed category from the template you sent: Meta can recategorize a template (`template_category_update`), and the same send can land as `free_entry_point` or `free_customer_service` depending on how the window opened. The authoritative answer for a specific message is Meta's own, and it arrives on your webhook: `pricing.category` and `pricing.type` inside `value.statuses[]` of the [native envelope](/api/webhooks/events#statuses-this-is-where-the-billed-category-is). Capture it there at delivery time and store it against `externalMessageId` (the wamid), which is the field on this response that joins the two.
+  ⚠️ **`null` does not mean "inbound".** For that, read `direction` on [`GET /v1/messages`](/api/messages/list). A `null` on an `OUT` row is unclassified outbound — counting it as inbound undercounts your own sends in a billing report.
+</ResponseField>
+
+<ResponseField name="metaPricing" type="object | null">
+  **Meta's own verdict on what this message was billed as** — `conversationId`, `originType`, `category` and `type`. `null` until Meta reports it.
+
+  `type` separates `regular` (billed) from `free_entry_point` (window opened by an ad click) and `free_customer_service` (inside the service allowance).
+</ResponseField>
+
+<Note>
+  **Do not infer the category from the template you sent.** Meta recategorizes templates (`template_category_update`), and the same send lands as `free_entry_point` or `free_customer_service` depending on how the window opened. Use `metaPricing` above.
+
+  The same information arrives in real time on your webhook, as `pricing.category` / `pricing.type` inside `value.statuses[]` of the [native envelope](/api/webhooks/events#statuses-this-is-where-the-billed-category-is). `externalMessageId` (the wamid) is the field that joins the two.
 </Note>
+
+<Warning>
+  **Messages sent from the phone app carry no billing block.** The ones that arrive via `smb_message_echoes` get delivered and read statuses normally, but `metaPricing` stays `null` and `pricing` never arrives on the webhook — measured in production, with no exception in the sample.
+
+  For a billing report, **count them separately** rather than looking for a field that does not come.
+</Warning>
 
 ## Statuses
 
