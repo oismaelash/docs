@@ -1,0 +1,104 @@
+---
+title: "POST /v1/messages/{id}/resend — Resend a Failed Message"
+sidebarTitle: "Resend a Failed Message"
+description: "Send the stored request of a failed or canceled message again, as a new message."
+mode: "wide"
+---
+
+# Resend a Failed Message
+
+```text
+POST https://pilotstatus.com.br/v1/messages/{id}/resend
+```
+
+Sends the **stored request** of a message that ended in `FAILED` or `CANCELED` again, without you having to keep the original payload.
+
+This creates a **new message** with its own `id` and `correlationId`. The original row is left exactly as it is — its status, its timestamps and its provider message id all stay readable, so the two attempts remain distinguishable afterwards.
+
+<Note>
+  The resend counts against your plan quota, the same as any send. It is a new message, not a retry of the old one.
+</Note>
+
+<Warning>
+  Before building an automatic retry: when a message reaches `FAILED`, the platform has **already** retried it — up to 10 attempts 30s apart, plus a reconciler, plus a delivery check 30 and 60 minutes after the send. `FAILED` means we gave up.
+
+  So a resend right away usually fails for the same reason (number disconnected, template not approved, invalid destination, outside the service window). Read `errorMessage` on [`GET /v1/messages/{id}`](/api/messages/status) and resend once the cause is fixed, rather than resending blindly in a loop.
+</Warning>
+
+## Finding what failed — it differs by connection type
+
+⛔ **An official (Meta Cloud API) number receives no canonical `message.*` event at all.** Not `message.failed`, not `message.sent` — none of the family, whatever the cause of the failure. On those numbers your webhook receives **Meta's native envelope**, so a failure arrives as `value.statuses[].status: "failed"` with an `errors[]` array.
+
+<Warning>
+  **Changed on 2026-09-17.** Until that date `message.sent` and `message.failed` did reach webhooks on official numbers that had subscribed to `"*"`. They no longer do. If your receiver keys off those two events on an official number, switch it to the native envelope's `value.statuses[]` or to the list endpoint below.
+
+  The canonical families that **do** reach an official number are `number.*`, `call.*` and `flow.response_received`.
+</Warning>
+
+On an unofficial number nothing changes: `message.failed` is dispatched as before.
+
+⇒ **The discovery path that works for both connection types is [`GET /v1/messages?status=FAILED`](/api/messages/list).** The message row reaches `FAILED` either way — including for a failure Meta itself reported — so the list and this endpoint agree regardless of how the number is connected.
+
+## Headers
+
+| Header | Required | Description |
+| --- | --- | --- |
+| `x-api-key` | yes | A **number-scoped** API key. A tenant-wide key is refused with `TENANT_SCOPE_NOT_ALLOWED`. |
+| `x-whatsapp-number-id` | when the key is tenant-capable | The number the message belongs to. |
+
+Requires the **`messages:resend`** permission — `ADMIN` and `OWNER`. This is deliberately higher than `messages:send`: a resend spends quota on a send you already paid for once, and it can deliver twice.
+
+## Path parameter
+
+| Parameter | Description |
+| --- | --- |
+| `id` | The message's internal `id`, its `correlationId`, **or** the provider's own message id (wamid). The same identifier contract as [`GET /v1/messages/{id}`](/api/messages/status). |
+
+## Body
+
+**None.** This endpoint accepts no body fields: the message comes from the URL and the content comes from the original send.
+
+Any field you send is refused with `400 UNKNOWN_FIELDS`, naming it. There is no `whatsappInstanceId` override here — a resend always leaves on the number the key points at.
+
+## Example
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/cmf8x2p9k0001/resend" \
+  -H "x-api-key: $PILOT_STATUS_API_KEY"
+```
+
+## Response (202)
+
+```json
+{
+  "id": "cmf9a4t1m0007",
+  "correlationId": "b3f1c8e2-77aa-4c19-9f41-2d0e5a6b8c31",
+  "status": "QUEUED",
+  "createdAt": "2026-09-17T18:42:11.204Z",
+  "origin": "minha-linha",
+  "sourceNumber": "5511999999999",
+  "originalMessageId": "cmf8x2p9k0001"
+}
+```
+
+`originalMessageId` is the message you resent. Everything else is the **new** message, in the same shape [`POST /v1/messages/send`](/api/messages/send) returns — including `flowToken`, when the template carries a Flow button. The resend mints a **new** `flowToken`, so the answer that comes back can be attributed to this attempt and not to the first one.
+
+## Common errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `UNKNOWN_FIELDS` | You sent a body field. This endpoint takes none. |
+| `403` | `PERMISSION_DENIED` | The credential does not carry `messages:resend`. |
+| `404` | `MESSAGE_NOT_FOUND` | No message of yours matches that identifier on that number. |
+| `409` | `MESSAGE_NOT_RESENDABLE` | The message is not `FAILED` or `CANCELED`. See below. |
+| `409` | `RESEND_DELIVERY_WINDOW_EXPIRED` | The original set `deliverUntil` and it has passed. |
+| `409` | `RESEND_ALREADY_IN_FLIGHT` | You resent this same message in the last 120 seconds. |
+| `422` | `RESEND_SNAPSHOT_MISSING` | The message has no stored request to replay — send a new one instead. |
+
+Plus everything [`POST /v1/messages/send`](/api/messages/send) can answer, unchanged: a resend refused for no quota reads exactly like a send refused for no quota.
+
+### Why `SENT` and `QUEUED` are refused
+
+`SENT` does **not** mean settled. It means an acknowledgement arrived; the delivery may still land, and the platform is already watching that message at 30 and 60 minutes and will re-dispatch it itself if it never reached the provider. Resending on top of that gives one message two senders.
+
+`QUEUED` is still being handled by the worker and the reconciler. In both cases the answer names the current status in `details.status`, so you can decide what to do without a second call.
