@@ -1,0 +1,104 @@
+---
+title: "POST /v1/messages/{id}/resend — Reenviar Mensagem que Falhou"
+sidebarTitle: "Reenviar Mensagem que Falhou"
+description: "Envie novamente a requisição guardada de uma mensagem que falhou ou foi cancelada, como uma nova mensagem."
+mode: "wide"
+---
+
+# Reenviar Mensagem que Falhou
+
+```text
+POST https://pilotstatus.com.br/v1/messages/{id}/resend
+```
+
+Envia novamente a **requisição guardada** de uma mensagem que terminou em `FAILED` ou `CANCELED`, sem você precisar ter guardado o payload original.
+
+Isso cria uma **nova mensagem**, com `id` e `correlationId` próprios. A mensagem original fica exatamente como está — status, datas e id da mensagem no provedor continuam legíveis, então as duas tentativas seguem distinguíveis depois.
+
+<Note>
+  O reenvio consome cota do seu plano, como qualquer envio. É uma mensagem nova, não uma retentativa da antiga.
+</Note>
+
+<Warning>
+  Antes de montar retentativa automática: quando uma mensagem chega em `FAILED`, a plataforma **já** tentou — até 10 tentativas a cada 30s, mais um reconciliador, mais uma checagem de entrega 30 e 60 minutos após o envio. `FAILED` quer dizer que desistimos.
+
+  Ou seja, reenviar na hora normalmente falha pela mesma causa (número desconectado, template não aprovado, destino inválido, fora da janela de atendimento). Leia o `errorMessage` em [`GET /v1/messages/{id}`](/pt-BR/api/messages/status) e reenvie quando a causa estiver corrigida, em vez de reenviar às cegas em laço.
+</Warning>
+
+## Como achar o que falhou — muda conforme o tipo de conexão
+
+⛔ **Número oficial (Meta Cloud API) não recebe evento canônico `message.*` nenhum.** Nem `message.failed`, nem `message.sent` — nenhum da família, qualquer que seja a causa da falha. Nesses números o seu webhook recebe o **envelope nativo da Meta**, então uma falha aparece em `value.statuses[].status: "failed"` com um array `errors[]`.
+
+<Warning>
+  **Mudou em 17/09/2026.** Até essa data o `message.sent` e o `message.failed` chegavam a webhooks de números oficiais que tinham assinado `"*"`. Não chegam mais. Se o seu receptor depende desses dois eventos num número oficial, troque para o `value.statuses[]` do envelope nativo ou para a listagem abaixo.
+
+  As famílias canônicas que **continuam** chegando a número oficial são `number.*`, `call.*` e `flow.response_received`.
+</Warning>
+
+Em número não oficial nada muda: o `message.failed` é despachado como antes.
+
+⇒ **O caminho que funciona nos dois tipos de conexão é [`GET /v1/messages?status=FAILED`](/pt-BR/api/messages/list).** A linha da mensagem chega a `FAILED` de qualquer forma — inclusive para falha reportada pela própria Meta — então a listagem e este endpoint concordam independentemente de como o número está conectado.
+
+## Headers
+
+| Header | Obrigatório | Descrição |
+| --- | --- | --- |
+| `x-api-key` | sim | Chave de API **com escopo de número**. Chave de conta inteira é recusada com `TENANT_SCOPE_NOT_ALLOWED`. |
+| `x-whatsapp-number-id` | quando a chave é de conta | O número a que a mensagem pertence. |
+
+Exige a permissão **`messages:resend`** — `ADMIN` e `OWNER`. É deliberadamente mais alta que `messages:send`: um reenvio gasta cota num envio que você já pagou uma vez, e pode entregar duas vezes.
+
+## Parâmetro de caminho
+
+| Parâmetro | Descrição |
+| --- | --- |
+| `id` | O `id` interno da mensagem, o `correlationId` **ou** o id da mensagem no provedor (wamid). O mesmo contrato de identificador de [`GET /v1/messages/{id}`](/pt-BR/api/messages/status). |
+
+## Corpo
+
+**Nenhum.** Este endpoint não aceita campo nenhum no corpo: a mensagem vem da URL e o conteúdo vem do envio original.
+
+Qualquer campo enviado é recusado com `400 UNKNOWN_FIELDS`, nomeando-o. Não existe override de `whatsappInstanceId` aqui — o reenvio sai sempre pelo número da chave.
+
+## Exemplo
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/cmf8x2p9k0001/resend" \
+  -H "x-api-key: $PILOT_STATUS_API_KEY"
+```
+
+## Resposta (202)
+
+```json
+{
+  "id": "cmf9a4t1m0007",
+  "correlationId": "b3f1c8e2-77aa-4c19-9f41-2d0e5a6b8c31",
+  "status": "QUEUED",
+  "createdAt": "2026-09-17T18:42:11.204Z",
+  "origin": "minha-linha",
+  "sourceNumber": "5511999999999",
+  "originalMessageId": "cmf8x2p9k0001"
+}
+```
+
+O `originalMessageId` é a mensagem que você reenviou. Todo o resto é a mensagem **nova**, no mesmo formato que [`POST /v1/messages/send`](/pt-BR/api/messages/send) devolve — incluindo o `flowToken`, quando o template tem botão de Flow. O reenvio gera um `flowToken` **novo**, para que a resposta que voltar seja atribuível a esta tentativa e não à primeira.
+
+## Erros comuns
+
+| Status | Código | Quando |
+| --- | --- | --- |
+| `400` | `UNKNOWN_FIELDS` | Você enviou campo no corpo. Este endpoint não aceita nenhum. |
+| `403` | `PERMISSION_DENIED` | A credencial não carrega `messages:resend`. |
+| `404` | `MESSAGE_NOT_FOUND` | Nenhuma mensagem sua casa com esse identificador nesse número. |
+| `409` | `MESSAGE_NOT_RESENDABLE` | A mensagem não está `FAILED` nem `CANCELED`. Veja abaixo. |
+| `409` | `RESEND_DELIVERY_WINDOW_EXPIRED` | O envio original tinha `deliverUntil` e ele já passou. |
+| `409` | `RESEND_ALREADY_IN_FLIGHT` | Você reenviou esta mesma mensagem nos últimos 120 segundos. |
+| `422` | `RESEND_SNAPSHOT_MISSING` | A mensagem não tem requisição guardada para repetir — envie uma nova. |
+
+Mais tudo o que [`POST /v1/messages/send`](/pt-BR/api/messages/send) pode responder, sem tradução: um reenvio recusado por falta de cota se lê exatamente como um envio recusado por falta de cota.
+
+### Por que `SENT` e `QUEUED` são recusados
+
+`SENT` **não** quer dizer resolvido. Quer dizer que chegou um reconhecimento; a entrega ainda pode acontecer, e a plataforma já está observando essa mensagem aos 30 e aos 60 minutos e vai redespachá-la sozinha se ela nunca tiver chegado ao provedor. Reenviar por cima disso dá dois remetentes para uma mensagem.
+
+`QUEUED` ainda está nas mãos do worker e do reconciliador. Nos dois casos a resposta nomeia o status atual em `details.status`, para você decidir sem uma segunda chamada.
