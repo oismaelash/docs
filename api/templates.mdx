@@ -73,7 +73,7 @@ Up to **10** buttons total; quick-reply and CTA buttons can be mixed.
 | `PHONE_NUMBER` | `text`, `phone_number` (E.164) | up to 1 |
 | `COPY_CODE` | `example` (code to copy) | up to 1 |
 
-- **Dynamic URL button**: URL **ends with a variable** (e.g. `https://loja.com/promo/{{link}}`) — one variable max, never in the domain. Sample value goes in `examples`.
+- **Dynamic URL button**: URL **ends with a variable** (e.g. `https://loja.com/promo/{{link}}`) — one variable max, never in the domain. Sample value goes in `examples`. On send, it is filled by its name (`variables.link`). A template created in Meta's console with a numbered placeholder (`https://ctlnk.io/{{1}}`) is filled by `button_<N>` instead — see [Button placeholders in templates created in Meta](#button-placeholders-in-templates-created-in-meta).
 - **Copy-code**: value goes on the button as `example` (array, e.g. `["PROMO10"]`), alphanumeric only, up to **15** chars. Not for PIX keys or e-mails — put those in the body as a `{{variable}}` instead.
 - Buttons **are** allowed together with a video or document (PDF) header.
 
@@ -86,6 +86,18 @@ When creating/updating via REST or MCP you **must** include an `examples` object
 ```
 
 After saving, `GET /v1/templates/{id}` returns all detected keys in the top-level `variables` array (a `string[]`) — supply all of them in `variables` on send. There is no `latestVersion` object in the public API response.
+
+### Button placeholders in templates created in Meta
+
+A template created in Meta's WhatsApp Manager and synced into Pilot Status (`source: "META"`) with positional placeholders numbers a dynamic URL button's variable on its own: in `https://ctlnk.io/{{1}}`, that `{{1}}` is **not** the body's `{{1}}`. Send its value as `variables["button_<N>"]`, where `N` is the button's position in the template's button list, **starting at 1** — every button counts, static ones included. Pass only the variable part (the URL suffix), not the full URL:
+
+```json
+"variables": { "1": "Maria", "2": "R$ 10,00", "3": "21/09/2026", "button_1": "Gggkf" }
+```
+
+- `GET /v1/templates` and `GET /v1/templates/{id}` list the key in `variables` — `["1", "2", "3", "button_1"]` for the template above.
+- A send without it, or with an empty value, is refused with `400 MISSING_TEMPLATE_VARIABLES` (or `INVALID_TEMPLATE_VARIABLE_VALUE`) naming the key, instead of being accepted and failing later with Meta `131008`.
+- Named placeholders are unchanged: a button created in Pilot Status as `https://loja.com/promo/{{link}}` is filled by `variables.link`.
 
 ## Character limits
 
@@ -243,7 +255,9 @@ Every card here repeats the `QUICK_REPLY` \+ `URL` pair declared in `cardTemplat
 
 ## Not supported
 
-`FLOW`, `LOCATION` (header or button), `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP **autofill/one-tap/zero-tap**, `VOICE_CALL` buttons, and the `NAMED` `parameter_format`. (Session `carousel` — the non-template kind — is covered in the [Send message](/api/messages/send) reference.)
+`FLOW`, `LOCATION` (header or button), `CATALOG`/`MPM`, `LIMITED_TIME_OFFER`, OTP **autofill/one-tap/zero-tap**, and `VOICE_CALL` buttons. (Session `carousel` — the non-template kind — is covered in the [Send message](/api/messages/send) reference.)
+
+The `NAMED` `parameter_format` **is** supported: a template authored in Meta's console with named variables (`{{customer_name}}`) imports with the right variables and sends with `parameter_name` on each parameter.
 
 ## Submit & rejection errors
 
@@ -277,7 +291,9 @@ Link/URL buttons accept a single variable that must be at the **end** of the URL
 | Media header but number missing Meta App ID | Set App ID in number settings | — |
 | Invalid parameter (Meta reason shown) | Review indicated field | `100` |
 | Content flagged abusive (usually button URL domain) | Review button links | `368/1346003` |
-| Display name not approved yet | Wait for Meta approval | `131008` |
+| Display name not approved yet | Wait for Meta approval | `131037` |
+| Required parameter missing (e.g. an unfilled button variable) | Supply every template variable — for a numbered button placeholder in a template created in Meta's console, as `button_<N>` | `131008` |
+| Payment button not enabled for this WABA | Wait for Meta to enable payments | `100/subcode 2388128` |
 | URL button invalid link/variable | Check link and `{{…}}` | `100` |
 | Media upload to Meta failed | Header file reachable \+ valid format | — |
 | Header file too large / unsupported | Image ≤5MB JPEG/PNG, video ≤16MB MP4, PDF ≤10MB | `131002/131003` |
