@@ -108,7 +108,7 @@ Os eventos de chamada normalizados — `call.ringing`, `call.connected`, `call.e
 
 Todo evento de mensagem carrega dois IDs distintos:
 
-- `messageId` — ID da mensagem do WhatsApp/provedor (ex.: `key.id`). Pode ser `null` para falhas que ocorrem antes de o provedor retornar um ID.
+- `messageId` — ID da mensagem do WhatsApp/provedor (ex.: `key.id`). Exceção: num `message.failed` enviado pelo worker ou pelo limite do plano ele traz o id interno, e o corpo plano do reconciliador não tem `messageId` — veja `message.failed` abaixo.
 - `id` — ID interno da mensagem no Pilot Status. Mesmo valor do `id` no `HTTP 202` de `POST /v1/messages/send`.
 - `numberId` — o ID **público** do número que tratou o evento. Em todo evento `number.*` ele agora é sempre o ID do **número** de WhatsApp (veja a [mudança incompatível](#payload-de-number) na família `number.*`).
 - `correlationId` — presente quando o evento se correlaciona a um envio anterior (mesmo valor do `correlationId` do `202`).
@@ -154,8 +154,10 @@ Em **`message.reply`**: **`quotedMessageId`** = o **`messageId`** do **`message.
 | `groupId` | condicional | JID do grupo (somente `message.group`) |
 | `newsletterName` | condicional | nome do canal (somente `message.newsletter`) |
 | `newsletterId` | condicional | JID do canal (somente `message.newsletter`) |
-| `error` | condicional | mensagem de erro (somente `message.failed`) |
-| `errorCode` | condicional | código de erro estável (somente `message.failed`) |
+| `error` | condicional | mensagem de erro — somente `message.failed`, e não em todas as formas (veja `message.failed` abaixo) |
+| `errorCode` | condicional | somente `message.failed`, em dois caminhos de falha (`SEND_FAILED`, `PLAN_LIMIT_REACHED`); não é o `errorCode` da API |
+
+⚠️ O `message.failed` é a exceção: duas das três formas de corpo dele não seguem esta tabela — veja `message.failed` abaixo.
 
 **Semântica de direção de `from`/`to`:**
 
@@ -227,26 +229,69 @@ Em **`message.reply`**: **`quotedMessageId`** = o **`messageId`** do **`message.
 
 ### message.failed
 
-Inclui `error` e, quando disponível, um `errorCode` estável (ex.: `DELIVER_NOT_CONFIRMED`).
+O `message.failed` é enviado só para números não oficiais (web) — um número oficial reporta a falha no `statuses[]` nativo da Meta. O corpo dele **não é uniforme**: depende de onde a falha foi detectada, e fica como está de propósito, porque quem já assina faz o parsing dele. Chegam três formas. Nenhum dos códigos delas é o `errorCode` da API: para classificar uma falha, leia o `errorCode` de [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) — [Códigos de erro do webhook vs da API](/pt-BR/api/messages/log-error-codes#códigos-de-erro-do-webhook-vs-da-api) liga um ao outro.
+
+**1. Forma de status — `error` e `errorCode`.** Enviada quando o provedor reporta a mensagem como falha (`errorCode: "SEND_FAILED"`) e quando o limite de mensagens do plano barra um envio (`errorCode: "PLAN_LIMIT_REACHED"`). Segue os campos comuns acima; o `messageId` é o id do provedor.
 
 ```json
 {
   "event": "message.failed",
   "data": {
-    "to": "+5511999999999",
-    "from": "+5511888888888",
-    "numberId": "cmm0abc123",
-    "messageId": null,
+    "event": "message.failed",
+    "messageId": "3EB0A52298BB1619CB5E",
     "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "internalMessageId": "cmm04obm46zz0qv4ycjp8x6r2",
+    "numberId": "cmm0abc123",
+    "whatsappNumberId": "cmm0num456",
+    "from": "+5511888888888",
+    "to": "+5511999999999",
     "type": "text",
     "fromMe": true,
+    "createdAt": "2026-02-24T15:00:05.000Z",
+    "correlationId": "corr_123",
     "content": "sent text",
-    "error": "Failed to send message via Pilot Status.",
-    "errorCode": "DELIVER_NOT_CONFIRMED",
-    "createdAt": "2026-02-24T15:00:05.000Z"
+    "error": "Falha ao enviar mensagem pela Pilot Status.",
+    "errorCode": "SEND_FAILED"
   }
 }
 ```
+
+A variante do limite do plano não tem `data.event`, `internalMessageId` nem `whatsappNumberId`, e o `messageId` dela é o id interno, porque nada chegou ao provedor.
+
+**2. Forma do worker — `errorMessage`, sem código.** Enviada pelo worker de envio nas falhas dele: destino fora do WhatsApp, shadowban, conexão ausente, desconectada ou removida, card de pedido que falhou depois de o texto sair, a última tentativa com falha, ou um erro inesperado. O `data` traz `messageId`, `internalMessageId`, `correlationId`, `environment`, `destinationNumber`, `content`, `status`, `failedAt` e o motivo em `errorMessage` — **sem `error`, `errorCode`, `id`, `from`, `to`, `type`, `fromMe` nem `createdAt`**. Aqui o `messageId` é o id interno, o mesmo valor de `internalMessageId`. As duas falhas de conexão (nenhuma conexão conectada, nenhuma atribuída) não trazem `internalMessageId` nem `correlationId`; o caminho de erro inesperado acrescenta `sourceNumber`.
+
+```json
+{
+  "event": "message.failed",
+  "data": {
+    "messageId": "cmm04obm46zz0qv4ycjp8x6r2",
+    "internalMessageId": "cmm04obm46zz0qv4ycjp8x6r2",
+    "correlationId": "corr_123",
+    "environment": "LIVE",
+    "destinationNumber": "+5511999999999",
+    "content": "sent text",
+    "status": "FAILED",
+    "failedAt": "2026-02-24T15:00:05.000Z",
+    "errorMessage": "O WhatsApp bloqueou o envio por esta conexão (shadowban). Envie pelo app do WhatsApp e reduza o volume/velocidade."
+  }
+}
+```
+
+**3. Forma plana — `code` no nível de cima.** O reconciliador de mensagens, que falha uma mensagem cujo prazo de entrega venceu, e a checagem desse prazo que o worker faz antes de uma retentativa mandam um corpo **sem `event` e sem `data`**: os campos ficam no nível de cima. Nenhum cabeçalho nomeia o evento, então reconheça esta forma por `status: "FAILED"` com `internalMessageId` no nível de cima. O reconciliador manda `code`: `NUMBER_BLOCKED` quando o número estava bloqueado, `DELIVER_UNTIL_EXPIRED` nos outros casos. A checagem da retentativa não manda `code` e acrescenta `messageId` (o id interno).
+
+```json
+{
+  "internalMessageId": "cmm04obm46zz0qv4ycjp8x6r2",
+  "correlationId": "corr_123",
+  "destinationNumber": "+5511999999999",
+  "status": "FAILED",
+  "code": "NUMBER_BLOCKED",
+  "error": "Mensagem expirou enquanto o envio do número estava bloqueado pelo WhatsApp.",
+  "timestamp": "2026-02-24T15:00:05.000Z"
+}
+```
+
+As três formas também recebem o `idempotencyKey` de primeiro nível descrito em [Deduplicar retentativas](/pt-BR/api/webhooks/configure#deduplicar-retentativas-idempotency-key).
 
 ### message.received
 

@@ -1,40 +1,222 @@
 ---
 title: "Códigos de Erro do Log"
 sidebarTitle: "Códigos de Erro do Log"
-description: "Conjunto fechado de valores de errorCode exibidos em envios com falha nos Logs e na API do painel."
+description: "Todos os valores de errorCode que uma mensagem com falha pode ter, nos endpoints públicos de mensagens e nos Logs."
 mode: "wide"
 ---
 
 # Códigos de Erro do Log
 
-Em **Logs** (`/logs`), o **Código de erro** exibido nos detalhes de um envio com falha é sempre um dos valores abaixo. A API do painel expõe o mesmo valor como **`errorCode`** em `GET /api/logs` (derivado no servidor a partir de campos armazenados; não é o mesmo que `errorMessage`).
+Quando um envio falha, a mensagem carrega um **`errorCode`** legível por máquina, derivado no servidor a partir do que a plataforma registrou sobre a falha. Você o encontra:
 
-## Códigos (conjunto fechado)
+- como `errorCode` em [`GET /v1/messages`](/pt-BR/api/messages/list) (lista) e [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) (detalhe) — o mesmo valor para a mesma mensagem nos dois;
+- como o **Código de erro** nos detalhes de um envio com falha na tela **Logs** do painel (`/logs`).
 
-| Code | Significado |
+O `errorCode` é `null` quando não há erro, e sempre `null` em `DELIVERED`, `READ`, `PLAYED` e `CANCELED`. Ele não é o `errorMessage`: ramifique pelo `errorCode` e trate o `errorMessage` como texto para pessoas — a redação dele não é contrato e pode mudar.
+
+<Warning>
+  **O conjunto cresce.** As tabelas abaixo listam todos os valores que o `errorCode` pode ter hoje, e códigos novos entram à medida que mais falhas ganham nome próprio. Trate um código que você não reconhece como "precisa de revisão", não como erro de parsing.
+</Warning>
+
+O código é calculado toda vez que a mensagem é lida, e não gravado junto com ela. Por isso um código novo nesta página também aparece em mensagens que falharam antes de ele existir, desde que o que foi gravado sobre a falha já o nomeasse.
+
+Duas mudanças funcionam ao contrário. Elas mudam o que é **gravado**, então valem só para mensagens que falharem depois do lançamento; uma mensagem que falhou antes mantém o código que tinha, em geral `SEND_FAILED`:
+
+- o alinhamento dos códigos da Meta no envio, exceto quatro códigos antigos que são corrigidos na leitura (veja **Recusado no envio** na seção da Meta, abaixo);
+- os códigos que o worker agora grava onde antes guardava só texto livre — `MESSAGE_CONTENT_UNAVAILABLE`, `TEMPLATE_RENDER_FAILED`, `META_CREDENTIALS_MISSING`, `WHATSAPP_INSTANCE_NOT_CONNECTED`, `WHATSAPP_INSTANCE_NOT_CONFIGURED`, `META_TEMPLATE_OR_TEXT_MISSING`, `BUTTON_NOT_SENDABLE`, `FLOW_BUTTON_INDEX_INVALID`, `MEDIA_DOWNLOAD_FAILED`, `MEDIA_TRANSCODE_FAILED`, `PROVIDER_UNREACHABLE` — e os casos novos de códigos existentes descritos nas linhas deles (`FEATURE_NOT_SUPPORTED`, `META_MEDIA_UPLOAD_ERROR`, `NUMBER_NOT_FOUND_REMOVED`, `DELIVERY_TIMEOUT`, `INVALID_DESTINATION` e os dois códigos de variáveis de template).
+
+## Plataforma e entrega
+
+| Código | Significado |
 | --- | --- |
-| `DELIVERED_NOT_CONFIRMED` | A mensagem foi **enviada com sucesso**, mas a confirmação de entrega não chegou antes do prazo (**deliverUntil**); marcada como **FAILED** após o prazo. |
-| `TEMPLATE_VERSION_NOT_FOUND` | Template ou versão do template não encontrado para a mensagem. |
-| `INVALID_DESTINATION` | Destino inválido ou falha na normalização E.164. |
-| `PILOT_SELF_NUMBER` | Envio bloqueado para o próprio número da Pilot Status na instância da Pilot Status. |
-| `NEVER_ATTEMPTED_MAX_AGE_EXCEEDED` | A mensagem permaneceu **QUEUED** por 7 dias com zero tentativas de envio (a instância ficou offline o tempo todo); expirou após as verificações automáticas de prazo. |
-| `EXPIRED_AFTER_ATTEMPTS` | **deliverUntil** expirou após pelo menos uma tentativa real de envio. A janela de entrega expirou enquanto o destino estava inacessível. |
-| `MESSAGE_EXPIRED` | Legado: expiração de **deliverUntil** ou comportamento de expiração antigo não coberto pelos códigos acima. |
-| `DELIVERY_TIMEOUT` | Timeout de entrega, instância desconectada/fechada, instância não encontrada no provedor, ou outras falhas de entrega sem um código mais específico acima. |
-| `NUMBER_NOT_FOUND_REMOVED` | A instância/número conectado foi removido no provedor. |
-| `LINKED_WHATSAPP_INSTANCE_NOT_FOUND` | A chave de API estava vinculada a uma instância do WhatsApp que não existe mais (registro removido ou id inválido). |
-| `WHATSAPP_NOT_EXIST` | O número de destino não está registrado no WhatsApp (resposta do provedor indicando número não registrado). |
-| `META_TEMPLATE_NOT_APPROVED` | Template não aprovado para a Meta Cloud API. O template deve ser enviado e aprovado pela Meta antes de enviar mensagens por um número Meta. |
-| `META_OUTSIDE_24H_WINDOW` | Janela de conversa de 24h fechada. Use um template aprovado para enviar mensagem a este número. |
-| `META_NO_CONVERSATION` | Não existe conversa com este número. Inicie com um template aprovado. |
-| `META_RATE_LIMITED` | Limite de envio da Meta atingido. Aguarde alguns minutos e tente novamente. |
-| `META_TOKEN_INVALID` | O token da Meta é inválido ou expirou. Atualize o System Token nas configurações do número. |
-| `META_SEND_FAILED` | Falha genérica de envio da Meta Cloud API. |
-| `FREE_FORM_NOT_SUPPORTED` | Mensagens de formato livre não são suportadas para este provedor de WhatsApp. |
-| `NUMBER_CONNECTION_LIMIT_REACHED` | Um único número de WhatsApp atingiu seu limite de 4 conexões. Remova uma conexão existente antes de adicionar uma nova. HTTP 409. |
-| `META_WABA_NOT_ACCESSIBLE` | O ID da WABA (WhatsApp Business Account) associado a este número não existe ou o system token não tem permissão para acessá-lo. Retornado quando "Sincronizar com a Meta" falha com o código de erro 100 / subcódigo 33 da Meta. |
-| `SEND_FAILED` | Todas as outras falhas (incluindo erros de envio HTTP ou do provedor, mensagens de diagnóstico genéricas e qualquer caso sem um código mais específico acima). |
+| `PLAN_LIMIT_REACHED` | Limite de mensagens do plano atingido. A mensagem não foi enviada porque o limite mensal (ou diário, no plano FREE) foi excedido. |
+| `BILLING_SUSPENDED` | A cobrança da conta está suspensa, então a plataforma parou o envio antes de a mensagem sair. Regularize os créditos ou o cartão para voltar a enviar. `POST /v1/messages/send` já recusa envios novos nessa situação com `422 BILLING_SUSPENDED`; este código marca uma mensagem que já tinha passado por essa checagem. Ela não é enviada nem retentada. |
+| `INVALID_DESTINATION` | Número de destino inválido ou normalização E.164 falhou. Também uma mensagem sem destino nenhum. |
+| `PILOT_SELF_NUMBER` | Tentativa de enviar para o próprio número da Pilot Status usando a instância Pilot Status (bloqueado). |
+| `WHATSAPP_NOT_EXIST` | O número de destino não está cadastrado no WhatsApp (resposta do provedor indicando número não registrado). |
+| `LINKED_WHATSAPP_INSTANCE_NOT_FOUND` | A API key estava vinculada a uma instância WhatsApp que não existe mais (registro removido ou id inválido). |
+| `WHATSAPP_INSTANCE_NOT_CONFIGURED` | A mensagem não tem conexão WhatsApp configurada para envio. Verifique a configuração do número. |
+| `WHATSAPP_INSTANCE_NOT_CONNECTED` | Número não oficial: nem o banco nem uma verificação ao vivo encontraram uma conexão WhatsApp conectada. Verifique se há ao menos uma conexão ativa. |
+| `PROVIDER_UNREACHABLE` | A Pilot Status não conseguiu se conectar ao provedor do WhatsApp em nenhuma tentativa (DNS, conexão recusada, rede inacessível). A requisição nunca saiu, então a mensagem não foi enviada — reenviar não a duplica. |
+| `NUMBER_NOT_FOUND_REMOVED` | A instância/número conectado foi removido no provedor: o provedor respondeu que a conexão não existe. |
+| `NUMBER_DELETED_BEFORE_SEND` | O número que enviaria esta mensagem foi removido entre o momento em que ela entrou na fila e o envio, então ela não tem por onde sair. Ela não é enviada nem retentada. |
+| `NUMBER_CONNECTION_LIMIT_REACHED` | Um único número de WhatsApp atingiu seu limite de 4 conexões. Remova uma conexão existente antes de adicionar uma nova. É a recusa (HTTP 409) de adicionar uma conexão, não de um envio — não espere vê-la numa mensagem. |
+| `DELIVERY_TIMEOUT` | Timeout de entrega, instância desconectada/fechada, ou padrões equivalentes no texto interno. Também uma mensagem que continuou na fila além do tempo limite (7 dias por padrão). |
+| `DELIVERED_NOT_CONFIRMED` | Mensagem foi enviada com sucesso, mas a confirmação de entrega não chegou antes do prazo (deliverUntil); o reconciliador marcou como FAILED. |
+| `EXPIRED_AFTER_ATTEMPTS` | deliverUntil passou após pelo menos uma tentativa real de envio. A janela de entrega expirou com o destino inacessível. |
+| `EXPIRED_WHILE_NUMBER_BLOCKED` | O prazo de entrega (`deliverUntil`) passou sem nenhuma tentativa de envio enquanto o envio do número estava bloqueado pelo WhatsApp (saúde bloqueada ou shadowban), então o reconciliador a falhou em vez de estender o prazo. Não reenvie para um número bloqueado — isso piora o bloqueio. |
+| `EXPIRED_WHILE_INSTANCE_NOT_OPEN` | O prazo de entrega (`deliverUntil`) passou sem nenhuma tentativa de envio enquanto o número estava desconectado, então o reconciliador a falhou em vez de estender o prazo. Reenviar depois que o número reconectar costuma ser o certo. |
+| `NEVER_ATTEMPTED_MAX_AGE_EXCEEDED` | Mensagem ficou QUEUED por 7 dias sem nenhuma tentativa de envio (instância offline o tempo todo); expirou definitivamente pelo reconciliador. |
+| `MESSAGE_EXPIRED` | Legado: expiração por deliverUntil ou padrão interno de mensagem expirada não coberto pelos códigos acima. |
+
+## Composição do template e da mensagem
+
+O template ou a mensagem não pôde ser montado ou enviado como está. A maioria destes também é o `code` de uma recusa `4xx` de `POST /v1/messages/send`; aqui é a mesma recusa caindo numa mensagem registrada — por uma resposta do Chatwoot ou pelo worker.
+
+| Código | Significado |
+| --- | --- |
+| `MESSAGE_CONTENT_UNAVAILABLE` | Não havia o que enviar: o corpo da mensagem está vazio, ou o conteúdo guardado dela não está mais disponível. Envie a mensagem novamente. |
+| `TEMPLATE_VERSION_NOT_FOUND` | Template ou versão de template não encontrada para a mensagem na fila. |
+| `TEMPLATE_RENDER_FAILED` | Não foi possível montar o texto de um template de número não oficial — ele continuou como as variáveis cruas, em geral porque o template foi removido —, então o envio foi recusado em vez de entregar as variáveis cruas. |
+| `MISSING_TEMPLATE_VARIABLES` | O envio falhou porque faltam chaves obrigatórias em `variables` para placeholders `{{...}}` do template (veja `details.missingKeys` na API). Também quando um botão de pagamento do template não tem valor: o envio é recusado em vez de deixar a Meta usar o código de pagamento de exemplo do template. |
+| `INVALID_TEMPLATE_VARIABLE_VALUE` | O envio falhou porque alguma variável do template tem valor inválido (não string, vazio/só espaços, null etc.; veja `details.invalidKeys` na API). Também quando o valor de um botão de pagamento do template está vazio: o envio é recusado em vez de deixar a Meta usar o código de pagamento de exemplo do template. |
+| `TEMPLATE_LIST_INVALID_AFTER_VARIABLES` | O Botão de Lista do template ficou inválido depois de substituir as variáveis (um campo passou do limite). Encurte o texto do template ou o valor da variável. A lista NÃO foi enviada, nem parcialmente. |
+| `TEMPLATE_CAROUSEL_INVALID_AFTER_VARIABLES` | O Carrossel do template ficou inválido depois de substituir as variáveis (por exemplo, o corpo de um card passou do limite). Encurte o texto do template ou o valor da variável. O carrossel NÃO foi enviado, nem parcialmente. |
+| `TEMPLATE_CAROUSEL_MEDIA_NOT_DISPATCHABLE` | A URL da mídia de um card do carrossel não termina em extensão suportada (sem query string, sem objeto de CDN sem extensão). É recusado em vez de entregar o card sem a imagem. |
+| `TEMPLATE_CAROUSEL_NOT_APPROVED_ON_META` | Um template com Carrossel foi enviado por um número oficial (Meta) sem estar aprovado na Meta. Na API oficial o carrossel só sai como template aprovado: envie para aprovação e aguarde. |
+| `SERVICE_WINDOW_CLOSED` | Um template com Botão de Lista foi enviado a um número oficial (Meta) com a janela de atendimento de 24h do contato fechada. A lista é mensagem de sessão: envie um template aprovado para reabrir a conversa. |
+| `FLOW_REQUIRES_META_NUMBER` | O template tem botão de Flow, que só pode ser enviado por um número oficial (Meta). Também é registrado quando o número deixou de ser Meta entre a fila e o envio. |
+| `FLOW_BUTTON_INDEX_INVALID` | O envio de um template com Flow não indicou um botão de Flow válido, então foi recusado para não ser entregue sem o botão. |
+| `BUTTON_NOT_SENDABLE` | Um botão não pode ser enviado por este provedor não oficial: o tipo não é suportado, ou falta o texto ou o destino. É recusado em vez de entregar a mensagem sem o botão. |
+| `FEATURE_NOT_SUPPORTED` | O provedor de WhatsApp do número não suporta este tipo de mensagem: figurinha, Flow, lista ou carrossel. |
+| `FREE_FORM_NOT_SUPPORTED` | Mensagens livres não suportadas para este provedor WhatsApp. |
+
+## Respostas de atendentes no Chatwoot
+
+Uma resposta que um atendente escreveu no Chatwoot e que não pôde ser entregue é registrada como mensagem `FAILED` do número, com `origin: "CHATWOOT"`.
+
+| Código | Significado |
+| --- | --- |
+| `CHATWOOT_CONVERSATION_NOT_MAPPED` | A resposta do atendente não tem conversa mapeada no Pilot Status, e o evento não trouxe telefone do contato para criar uma. |
+| `CHATWOOT_NO_DESTINATION` | A conversa do Chatwoot não tem destino WhatsApp resolvível: nem telefone ou BSUID (conversa direta), nem JID (grupo). |
+| `CHATWOOT_EMPTY_MESSAGE` | A mensagem do atendente não tinha texto nem anexo (por exemplo, uma nota sem corpo). |
+| `CHATWOOT_ATTACHMENT_URL_MISSING` | O anexo do Chatwoot não tem URL pública http(s) — geralmente o `FRONTEND_URL` está mal configurado no Chatwoot. A resposta não é enviada só como texto no lugar. |
+| `CHATWOOT_TEMPLATE_NOT_FOUND` | A resposta usou `/template <nome>` e não existe template com esse nome para este número. Sintaxe: `/template <nome> [var1, var2]`. |
+| `CHATWOOT_SEND_EXCEPTION` | Erro inesperado ao enviar a resposta do atendente. A entrega é retentada, e cada tentativa que falha assim registra a sua própria mensagem `FAILED`. |
+
+## Preparação de mídia em números oficiais
+
+Antes de uma mensagem com mídia ir para a Meta, a Pilot Status baixa o arquivo e, quando precisa, o converte.
+
+| Código | Significado |
+| --- | --- |
+| `MEDIA_DOWNLOAD_FAILED` | A Pilot Status não conseguiu baixar a mídia da URL informada no envio (uma resposta de erro, uma falha de DNS ou de conexão, ou um timeout). Verifique se a URL é pública e acessível. |
+| `MEDIA_TRANSCODE_FAILED` | Não foi possível converter a mídia para um formato aceito pela API oficial (áudio para AAC/MP4, vídeo para H.264, WebP para JPEG). |
+
+## Números não oficiais (web)
+
+| Código | Significado |
+| --- | --- |
+| `WEB_SHADOWBAN` | O próprio WhatsApp recusou o envio num número não oficial (web) com o erro 463 (shadowban): ele está bloqueando envios por esta conexão. Envie pelo app do WhatsApp e reduza o volume/velocidade. |
+| `WEB_PROVIDER_REJECTED` | O próprio WhatsApp recusou o envio num número não oficial (web): a mensagem saiu e o WhatsApp a rejeitou com um número de erro diferente de 463. Não é falha da Pilot Status nem do provedor. Esses números, na maioria, não são documentados, então nenhum significado específico é atribuído a eles. |
+| `MEDIA_REHOST_FAILED` | A mídia enviada em base64 não pôde ser hospedada como URL, e esta conexão não oficial só aceita mídia por URL. Envie a mídia por URL. |
+| `PAYMENT_ORDER_PARTIAL_SEND` | Um envio de pedido sai em duas mensagens: a de texto/botões foi enviada, mas o card de pedido que vem depois falhou. Marcada `FAILED` sem retentativa, para não enviar o texto em duplicidade. |
+
+## Números oficiais — Meta Cloud API
+
+Num número oficial, o envelope nativo de webhook da Meta traz o erro numérico em `statuses[].errors[].code`. A coluna **Código Meta** é como você liga esse número ao `errorCode`. `—` quer dizer que não há número da Meta por trás do código: a plataforma recusou o envio antes de ele chegar à Meta (o `META_MEDIA_TOO_LARGE`, por exemplo, é uma verificação de tamanho), ou — no caso do `META_TOKEN_EXPIRED` — nenhum número o mapeia mais.
+
+Quando a Meta não manda número, ou manda um que esta tabela não mapeia, a falha é classificada pelo texto do erro da Meta, e cai em `META_SEND_FAILED` quando o texto também não bate.
+
+| Código | Código Meta | Significado |
+| --- | --- | --- |
+| `META_TOKEN_INVALID` | `0`, `190` | Token da Meta inválido ou expirado. Atualize o System Token na configuração do número. |
+| `META_TOKEN_EXPIRED` | — | O token de acesso da Meta expirou. Nenhum número da Meta produz mais este código: o `190` agora é `META_TOKEN_INVALID`, porque a Meta não separa token expirado de token inválido. Ele aparece em mensagens que falharam antes dessa mudança, ou quando o texto do erro da Meta diz que o token expirou e não traz um número que esta tabela mapeia. |
+| `META_PERMISSION_DENIED` | `10`, `200`, `203` | Permissão negada pela Meta. O app/token não tem permissão para esta ação (verifique escopos e vínculo com a WABA). |
+| `META_RATE_LIMITED` | `4`, `80007`, `130429`, `131048`, `131056`, `131429` | A Meta limitou os envios. A maioria destes números é limite de vazão — do app, da conta WhatsApp Business ou de um par empresa–cliente: aguarde alguns minutos e envie menos por vez. O `131048` é um limite por spam/qualidade do número (muitas mensagens anteriores bloqueadas ou denunciadas como spam): reduza o volume e envie só para quem optou por receber. |
+| `META_UNKNOWN_OBJECT` | `33` | Objeto inexistente na Meta (ID de número/WABA inválido ou removido). |
+| `META_INVALID_PARAM` | `100` | Parâmetro inválido na requisição à Meta Cloud API. O motivo da Meta, quando ela o dá, está no `errorMessage`. |
+| `META_BLOCKED` | `368` | A conta WhatsApp Business (WABA) vinculada ao app foi restringida ou desativada pela Meta por violação de política da plataforma. Veja o documento de Policy Enforcement da Meta para entender a violação e como resolvê-la. |
+| `META_GENERIC_ERROR` | `131000` | A Meta falhou o envio por um erro desconhecido (“Something went wrong”). Tente novamente; se persistir, abra um chamado no suporte da Meta (Direct Support). |
+| `META_ACCESS_DENIED` | `131005` | Acesso negado pela Meta a este recurso (número/WABA). Verifique se o número está corretamente vinculado ao app. |
+| `META_MISSING_PARAM` | `131008` | Parâmetro obrigatório ausente na requisição à Meta Cloud API. |
+| `META_INVALID_PARAM_VALUE` | `131009` | Valor de parâmetro inválido na requisição à Meta Cloud API. Em template com botão de Flow, costuma ser a cópia local do template desatualizada — sincronize os templates e reenvie. |
+| `META_SERVICE_UNAVAILABLE` | `131016` | Serviço da Meta temporariamente indisponível. Tente novamente em instantes. |
+| `META_RECIPIENT_SELF` | `131021` | O destinatário não pode ser o próprio número remetente. |
+| `META_NO_CONVERSATION` | `131026` | A Meta aceitou o envio mas não conseguiu entregá-lo a este destinatário (“Message undeliverable”) — o número pode não ter WhatsApp. Em mensagens que falharam antes do alinhamento dos códigos no envio, também pode ser um `131048` recusado no envio (limite por spam; veja abaixo). |
+| `META_ACCOUNT_RESTRICTED` | `131031` | Conta WhatsApp Business bloqueada/restringida pela Meta. Verifique o status da conta no Business Manager. |
+| `META_PAYMENT_ISSUE` | `131042` | Pendência de pagamento na conta WhatsApp Business (WABA). A Meta recusa todos os envios até um método de pagamento válido ser cadastrado no WhatsApp Manager → Faturamento. |
+| `META_REREGISTER_PHONE` | `131045` | O número precisa ser registrado novamente na Cloud API (certificado). Refaça o registro do número. |
+| `META_OUTSIDE_24H_WINDOW` | `131047` | Janela de conversa de 24h fechada. Use um template aprovado para enviar a este número. |
+| `META_ENGAGEMENT_LIMIT` | `131049` | Limite de engajamento do destinatário atingido. A Meta bloqueou o envio porque este número recebeu muitas mensagens de marketing recentemente. Tente enviar uma mensagem de utilidade (UTILITY) ou aguarde alguns dias. |
+| `META_UNSUPPORTED_MESSAGE_TYPE` | `131051` | Tipo de mensagem não suportado pela Meta Cloud API. |
+| `META_MEDIA_DOWNLOAD_ERROR` | `131052` | A Meta não conseguiu baixar a mídia. Verifique se ela ainda está disponível na URL; os detalhes da Meta, quando vêm, estão no `errorMessage`. |
+| `META_MEDIA_UPLOAD_ERROR` | `131053` | A Meta não conseguiu fazer o upload da mídia usada na mensagem — por exemplo, um tipo de mídia não suportado. Verifique se o tipo e o tamanho são suportados e se a URL está acessível; o motivo da Meta, quando vem, está no `errorMessage`. Também usado quando a Meta recusa o nosso upload da mídia para o endpoint de mídia dela, antes do envio da mensagem. |
+| `META_MEDIA_TOO_LARGE` | — | Arquivo acima do limite da Meta para esse tipo de mídia (vídeo e áudio 16 MB, imagem 5 MB, documento 100 MB). Comprima o arquivo ou envie um link. |
+| `META_TEMPLATE_PARAM_MISMATCH` | `132000` | Número de parâmetros do template diferente do esperado pela Meta. Ajuste as variáveis enviadas. |
+| `META_TEMPLATE_NOT_FOUND` | `132001` | Template não existe na Meta para este número/idioma. Verifique nome e idioma do template. |
+| `META_TEMPLATE_TEXT_TOO_LONG` | `132005` | O texto final do template (após preencher variáveis) excedeu o limite da Meta. Encurte os valores. |
+| `META_TEMPLATE_FORMAT_POLICY` | `132007` | O template viola a política de formatação de caracteres da Meta. |
+| `META_TEMPLATE_PARAM_FORMAT` | `132012` | Formato de um parâmetro do template incompatível com o esperado pela Meta. |
+| `META_TEMPLATE_PAUSED` | `132015` | O template está pausado pela Meta (baixa qualidade). Aguarde a retomada ou use outro template. |
+| `META_TEMPLATE_DISABLED` | `132016` | O template foi desabilitado pela Meta. Use outro template aprovado. |
+| `META_INCOMPLETE_DEREGISTRATION` | `133000` | Desregistro incompleto do número na Cloud API. Conclua o desregistro antes de registrar novamente. |
+| `META_SERVER_UNAVAILABLE` | `133004` | Servidor da Meta temporariamente indisponível durante o registro/operação. Tente novamente. |
+| `META_2FA_PIN_MISMATCH` | `133005` | PIN de verificação em duas etapas incorreto ao registrar o número. |
+| `META_PHONE_NOT_VERIFIED` | `133006` | O número precisa ser verificado novamente na Meta antes de registrar. |
+| `META_TOO_MANY_PIN_ATTEMPTS` | `133008` | Muitas tentativas de PIN. Aguarde antes de tentar registrar novamente. |
+| `META_PIN_GUESS_TOO_FAST` | `133009` | Tentativas de PIN rápidas demais. Aguarde antes de tentar novamente. |
+| `META_PHONE_NOT_REGISTERED` | `133010` | O número não está registrado na Cloud API. Registre o número antes de enviar mensagens. |
+| `META_WABA_NOT_ACCESSIBLE` | `100` subcódigo `33` (no envio) | A Meta não conseguiu acessar a conta WhatsApp Business (WABA) deste número: ela foi removida/excluída, ou o System Token não tem permissão sobre ela. Reconecte o número na Meta. |
+| `META_GROUPS_NOT_ELIGIBLE` | `100`, `10`, `200`, `803` em operação de grupo (no envio) | A API de Grupos não está habilitada para este número na Meta. O número precisa ser uma Conta Oficial de Negócios (Official Business Account) aprovada e com a API de Grupos liberada. |
+| `META_TEMPLATE_INVALID_BUTTON_URL` | `100` + “is not a valid URI” (no envio) | Um botão de URL do template tem uma URL inválida. Verifique o link e as variáveis `{{...}}`. |
+| `META_NUMBER_INFO_NEEDED` | `131037` (no envio) | O nome de exibição deste número ainda não foi aprovado na Meta. Se o número começa com +1 555, ele é o número de teste fornecido pela Meta: envie o nome de exibição para aprovação no WhatsApp Manager e espere o status `APPROVED`, ou conecte o seu número real. O estado `AVAILABLE_WITHOUT_REVIEW` não libera o envio. |
+| `META_CONTENT_FLAGGED` | `368` subcódigo `1346003` (no envio) | O sistema de integridade da Meta sinalizou o conteúdo do template como abusivo — geralmente a URL de um botão apontando para um domínio marcado, como um placeholder esquecido tipo `exemplo.com`. Revise os links dos botões e use o domínio real do seu negócio. |
+| `META_TEMPLATE_NOT_APPROVED` | — | Template não aprovado na Meta Cloud API. O template precisa ser submetido e aprovado na Meta antes de enviar mensagens via número Meta. A plataforma recusa o envio antes de chamar a Meta: `POST /v1/messages/send` devolve isso como `400`, e a mensagem que ele registra carrega o mesmo `errorCode`. Em mensagens que falharam antes do alinhamento dos códigos no envio, também pode ser um `131053` recusado no envio (erro de upload de mídia; veja abaixo). |
+| `META_TEMPLATE_OR_TEXT_MISSING` | — | O envio pela API oficial chegou sem template aprovado da Meta para citar e sem texto livre. Reenvie; se persistir, fale com o suporte. |
+| `META_CREDENTIALS_MISSING` | — | Um envio de número oficial chegou ao envio sem as credenciais da Meta do número (id do número ou token de acesso). Reconecte o número em Números, ou fale com o suporte se ele aparecer como conectado. |
+| `META_INVALID_DESTINATION` | — | O destino não é um telefone E.164 nem um BSUID, então não pode ser enviado por um número oficial. |
+| `META_BSUID_SEND_DISABLED` | — | O destino é um BSUID, e o envio para BSUID está desligado no momento pela Pilot Status. Use o telefone, se você o tiver. |
+| `META_BSUID_AUTH_TEMPLATE_UNSUPPORTED` | — | A Meta não permite template de autenticação (OTP) para destinatário BSUID; ele exige um telefone. |
+
+<Accordion title="Recusado no envio: os mesmos códigos, com alguns refinamentos">
+  A Meta pode recusar um envio de dois jeitos: na própria requisição de envio, antes de existir um wamid, ou depois, em `statuses[]`. Quando o caminho do envio dá um código para um número da Meta, é o mesmo código que o webhook dá (a coluna acima). Quando não dá, o envio sai como `META_SEND_FAILED`, com o motivo da própria Meta no `errorMessage`.
+
+  Uma recusa no envio traz informação que um webhook de status nunca traz — um subcódigo, a redação da Meta, se a chamada era uma operação de grupo —, então algumas respostas são mais específicas:
+
+  | Código Meta no envio | `errorCode` |
+  | --- | --- |
+  | `100` com "is not a valid URI" | `META_TEMPLATE_INVALID_BUTTON_URL` |
+  | `100` com subcódigo `33`, ou a Meta diz que o objeto não existe ou faltam permissões | `META_WABA_NOT_ACCESSIBLE` |
+  | `100`, um `OAuthException` sobre o token | `META_TOKEN_INVALID` |
+  | `100`, a Meta diz que a API de Grupos não está habilitada | `META_GROUPS_NOT_ELIGIBLE` |
+  | `100`, `10`, `200` ou `803` em operação de grupo | `META_GROUPS_NOT_ELIGIBLE` |
+  | `368` com subcódigo `1346003` | `META_CONTENT_FLAGGED` |
+  | `131037` | `META_NUMBER_INFO_NEEDED` |
+  | `130032` | `META_RATE_LIMITED` |
+
+  **Mensagens que falharam antes deste alinhamento são corrigidas na leitura quando o código antigo não é ambíguo.** Quatro códigos que o caminho do envio não grava mais vinham cada um de um único número da Meta, então uma mensagem antiga que traz um deles é lida com o código de hoje: `META_SPAM_RATE_LIMITED` (`4`, `80007`) como `META_RATE_LIMITED`, `META_TEMPLATE_BAD_PARAM` (`131052`) como `META_MEDIA_DOWNLOAD_ERROR`, `META_BAD_REQUEST` (`100` simples) como `META_INVALID_PARAM`, e `META_UPLOAD_SESSION_INVALID` (`131000`) como `META_GENERIC_ERROR`. Dois ficam como foram gravados, porque o código antigo é ambíguo: um `131048` antigo recusado no envio continua como `META_NO_CONVERSATION` (que também quer dizer o `131026` do webhook), e um `131053` antigo recusado no envio continua como `META_TEMPLATE_NOT_APPROVED` (que também quer dizer a nossa pré-checagem).
+</Accordion>
+
+## Códigos coringa
+
+| Código | Código Meta | Significado |
+| --- | --- | --- |
+| `META_SEND_FAILED` | qualquer outro | Falha genérica no envio pela Meta Cloud API. **Coringa dos números oficiais:** a Meta falhou o envio e nenhum código `META_*` mais específico se aplica — inclusive números de erro que a Meta criou e que ainda não estão nesta tabela. |
+| `SEND_FAILED` | — | Demais falhas: erros HTTP ou de resposta do provedor, JSON interno, configuração, mensagem pública genérica e qualquer caso sem código mais específico acima. **Coringa geral.** |
+
+{/* PENDENTE (coordenador): uma frase sobre o que ainda chega como SEND_FAILED de propósito — aguardando os códigos que o agente do worker está criando para os casos restantes de texto livre. */}
+
+<Note>
+  `BUTTON_NOT_SENDABLE`, `CHATWOOT_SEND_EXCEPTION`, `FEATURE_NOT_SUPPORTED`, `FLOW_BUTTON_INDEX_INVALID`, `FLOW_REQUIRES_META_NUMBER`, `MEDIA_DOWNLOAD_FAILED`, `MEDIA_REHOST_FAILED`, `MEDIA_TRANSCODE_FAILED`, `META_CREDENTIALS_MISSING`, `META_MEDIA_UPLOAD_ERROR`, `META_TEMPLATE_OR_TEXT_MISSING`, `NUMBER_NOT_FOUND_REMOVED`, `PAYMENT_ORDER_PARTIAL_SEND`, `PROVIDER_UNREACHABLE`, `TEMPLATE_RENDER_FAILED` e `WHATSAPP_INSTANCE_NOT_CONNECTED` podem ser registrados com o erro de origem anexado depois do código. O `errorCode` que você recebe continua exato, e esse texto anexado, do provedor ou da exceção, fica interno: ele não é copiado para o `errorMessage`.
+</Note>
 
 <Note>
   Uma mensagem `CANCELED` (cancelada via [`DELETE /v1/messages/cancel`](/pt-BR/api/messages/cancel)) não é um erro de entrega e não carrega um desses códigos.
 </Note>
+
+## Códigos de erro do webhook vs da API
+
+Num número oficial não existe evento canônico `message.*`: a falha chega no envelope nativo da Meta como `statuses[].errors[].code`, que a coluna **Código Meta** acima mapeia. Num número não oficial (web) o `message.failed` é despachado, mas o código dele **não** é o `errorCode` desta página. Ele é anterior, usa valores próprios, e a maioria dos caminhos de falha não manda código nenhum. O payload fica como está de propósito: quem já assina ramifica por ele.
+
+**Para reconciliar, use o valor da API.** Consulte [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) com o `id` ou o `correlationId` da mensagem. O `errorCode` dele é o que bate com esta página, com `GET /v1/messages` e com a tela de Logs.
+
+| Quando a mensagem falhou | Código no corpo do `message.failed` | `errorCode` da API para a mesma mensagem |
+| --- | --- | --- |
+| O limite de mensagens do plano foi atingido | `data.errorCode: "PLAN_LIMIT_REACHED"` | `PLAN_LIMIT_REACHED` |
+| O provedor reportou a mensagem como falha | `data.errorCode: "SEND_FAILED"` | Derivado do erro do provedor: `WEB_SHADOWBAN` (erro 463), `WEB_PROVIDER_REJECTED` (outro número de erro do WhatsApp), senão em geral `SEND_FAILED` |
+| O mesmo, para uma mensagem sem registro na Pilot Status (enviada pelo celular, ou já expurgada) | `data.errorCode: "SEND_FAILED"` | Nenhum — não há mensagem para consultar |
+| Prazo vencido com o número bloqueado (reconciliador) | `code: "NUMBER_BLOCKED"` no nível de cima | `EXPIRED_WHILE_NUMBER_BLOCKED` |
+| Prazo vencido com o número desconectado (reconciliador) | `code: "DELIVER_UNTIL_EXPIRED"` no nível de cima | `EXPIRED_WHILE_INSTANCE_NOT_OPEN` |
+| 7 dias na fila sem nenhuma tentativa (reconciliador) | `code: "DELIVER_UNTIL_EXPIRED"` no nível de cima | `NEVER_ATTEMPTED_MAX_AGE_EXCEEDED` |
+| Prazo vencido depois de pelo menos uma tentativa (reconciliador) | `code: "DELIVER_UNTIL_EXPIRED"` no nível de cima | `EXPIRED_AFTER_ATTEMPTS` |
+| O prazo já tinha vencido quando o envio foi retentado | Nenhum | `EXPIRED_AFTER_ATTEMPTS` |
+| O destino não está no WhatsApp | Nenhum | `WHATSAPP_NOT_EXIST` |
+| O WhatsApp recusou os envios da conexão (shadowban, erro 463) | Nenhum | `WEB_SHADOWBAN` |
+| O card de pedido falhou depois de o texto sair | Nenhum | `PAYMENT_ORDER_PARTIAL_SEND` |
+| Nenhuma conexão WhatsApp conectada (banco e verificação ao vivo) | Nenhum | `WHATSAPP_INSTANCE_NOT_CONNECTED` |
+| Nenhuma conexão WhatsApp atribuída à mensagem | Nenhum | `WHATSAPP_INSTANCE_NOT_CONFIGURED` |
+| A conexão não existe mais no provedor | Nenhum | `NUMBER_NOT_FOUND_REMOVED` |
+| A última tentativa falhou, ou outro erro inesperado | Nenhum | Derivado do erro gravado: recusas nossas mantêm o código (por exemplo `BUTTON_NOT_SENDABLE`, `FEATURE_NOT_SUPPORTED`, `MEDIA_REHOST_FAILED`, `FLOW_REQUIRES_META_NUMBER`), um provedor que não pôde ser alcançado em nenhuma tentativa é `PROVIDER_UNREACHABLE`, as recusas do WhatsApp são `WEB_SHADOWBAN` ou `WEB_PROVIDER_REJECTED`, e o texto cru do provedor em geral é `SEND_FAILED` |
+
+Numa mensagem que falhou antes do lançamento, as quatro últimas linhas ainda podem mostrar o valor antigo — em geral `SEND_FAILED`, às vezes `DELIVERY_TIMEOUT`. As linhas sem código trazem o motivo como texto em `data.errorMessage`. As linhas com `code` no nível de cima, e a do prazo vencido na retentativa, mandam um corpo plano em vez de `{ event, data }`: `internalMessageId`, `correlationId`, `destinationNumber`, `status`, `error` e `timestamp` ficam no nível de cima.
