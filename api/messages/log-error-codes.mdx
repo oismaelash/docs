@@ -23,7 +23,7 @@ The code is computed each time the message is read, not stored with it. So a cod
 Two changes work the other way. They change what is **recorded**, so they apply only to messages that fail after their release; a message that failed earlier keeps the code it had, usually `SEND_FAILED`:
 
 - the send-time alignment of Meta codes, except four legacy codes that are corrected on read (see **Refused at send time** in the Meta section below);
-- the codes the worker now records where it used to store only free text — `MESSAGE_CONTENT_UNAVAILABLE`, `TEMPLATE_RENDER_FAILED`, `META_CREDENTIALS_MISSING`, `WHATSAPP_INSTANCE_NOT_CONNECTED`, `WHATSAPP_INSTANCE_NOT_CONFIGURED`, `META_TEMPLATE_OR_TEXT_MISSING`, `BUTTON_NOT_SENDABLE`, `FLOW_BUTTON_INDEX_INVALID`, `MEDIA_DOWNLOAD_FAILED`, `MEDIA_TRANSCODE_FAILED`, `PROVIDER_UNREACHABLE` — and the new cases of existing codes described in their rows (`FEATURE_NOT_SUPPORTED`, `META_MEDIA_UPLOAD_ERROR`, `NUMBER_NOT_FOUND_REMOVED`, `DELIVERY_TIMEOUT`, `INVALID_DESTINATION` and the two template-variable codes).
+- the codes the worker now records where it used to store only free text — `MESSAGE_CONTENT_UNAVAILABLE`, `TEMPLATE_RENDER_FAILED`, `META_CREDENTIALS_MISSING`, `WHATSAPP_INSTANCE_NOT_CONNECTED`, `WHATSAPP_INSTANCE_NOT_CONFIGURED`, `META_TEMPLATE_OR_TEXT_MISSING`, `BUTTON_NOT_SENDABLE`, `FLOW_BUTTON_INDEX_INVALID`, `MEDIA_DOWNLOAD_FAILED`, `MEDIA_TRANSCODE_FAILED`, `PROVIDER_UNREACHABLE`, `META_DELIVERY_UNKNOWN` — and the new cases of existing codes described in their rows (`FEATURE_NOT_SUPPORTED`, `META_MEDIA_UPLOAD_ERROR`, `NUMBER_NOT_FOUND_REMOVED`, `DELIVERY_TIMEOUT`, `INVALID_DESTINATION` and the two template-variable codes).
 
 ## Platform and delivery
 
@@ -104,7 +104,7 @@ Before a media message goes to Meta, Pilot Status downloads the file and, when n
 
 ## Official numbers — Meta Cloud API
 
-On an official number, Meta's native webhook envelope carries the numeric error in `statuses[].errors[].code`. The **Meta code** column is how you join that number to `errorCode`. `—` means there is no Meta number behind the code: the platform refused the send before it reached Meta (`META_MEDIA_TOO_LARGE`, for example, is a size check), or — for `META_TOKEN_EXPIRED` — no number maps to it any more.
+On an official number, Meta's native webhook envelope carries the numeric error in `statuses[].errors[].code`. The **Meta code** column is how you join that number to `errorCode`. `—` means there is no Meta error number behind the code: the platform refused the send before it reached Meta (`META_MEDIA_TOO_LARGE`, for example, is a size check), no answer came back to read one from (`META_DELIVERY_UNKNOWN`), or — for `META_TOKEN_EXPIRED` — no number maps to it any more.
 
 When Meta sends no number, or one this table does not map, the failure is classified from Meta's error text, and falls back to `META_SEND_FAILED` when the text does not match either.
 
@@ -131,7 +131,7 @@ When Meta sends no number, or one this table does not map, the failure is classi
 | `META_ENGAGEMENT_LIMIT` | `131049` | Recipient engagement limit reached. Meta blocked delivery because this number received too many marketing messages recently. Try sending a UTILITY template or wait a few days. |
 | `META_UNSUPPORTED_MESSAGE_TYPE` | `131051` | Message type not supported by the Meta Cloud API. |
 | `META_MEDIA_DOWNLOAD_ERROR` | `131052` | Meta could not download the media. Check that it is still available at its URL; Meta's details, when given, are in `errorMessage`. |
-| `META_MEDIA_UPLOAD_ERROR` | `131053` | Meta could not upload the media used in the message — for example, an unsupported media type. Check that the type and size are supported and that the URL is reachable; Meta's reason, when given, is in `errorMessage`. Also used when Meta refuses our upload of the media to its media endpoint, before the message is sent. |
+| `META_MEDIA_UPLOAD_ERROR` | `131053` | Meta could not upload the media used in the message — for example, an unsupported media type. Check that the type and size are supported and that the URL is reachable; Meta's reason, when given, is in `errorMessage`. Also used when Meta refuses our upload of the media to its media endpoint, or takes it but returns no media id — both before the message is sent. |
 | `META_MEDIA_TOO_LARGE` | — | File is above Meta's ceiling for this media type (video and audio 16 MB, image 5 MB, document 100 MB). Compress the file or send a link instead. |
 | `META_TEMPLATE_PARAM_MISMATCH` | `132000` | Template parameter count does not match what Meta expects. Adjust the variables sent. |
 | `META_TEMPLATE_NOT_FOUND` | `132001` | Template does not exist at Meta for this number/language. Verify template name and language. |
@@ -155,6 +155,7 @@ When Meta sends no number, or one this table does not map, the failure is classi
 | `META_TEMPLATE_NOT_APPROVED` | — | Template not approved for Meta Cloud API. Template must be submitted and approved by Meta before sending messages via a Meta number. The platform refuses the send before calling Meta: `POST /v1/messages/send` returns it as a `400`, and the message it records carries the same `errorCode`. On messages that failed before the send-time alignment, it can also be a send-time `131053` (a media upload error; see below). |
 | `META_TEMPLATE_OR_TEXT_MISSING` | — | A send on an official number had neither an approved Meta template to cite nor free-form text. Resend; if it persists, contact support. |
 | `META_CREDENTIALS_MISSING` | — | A send from an official number reached the send path without the number's Meta credentials (phone number id or access token). Reconnect the number under Numbers, or contact support if it shows as connected. |
+| `META_DELIVERY_UNKNOWN` | — | The send may have reached Meta, but no message id came back: the connection dropped or timed out after the request left, or Meta answered success with no id or an unreadable body. Delivery is unknown, and this status does not change later — no wamid came back to match Meta's later status to. **Do not resend blindly**: it can deliver twice. To check, look on the number's webhook for a native Meta `statuses[]` whose [`biz_opaque_callback_data`](/api/webhooks/events#matching-a-status-to-your-send-biz_opaque_callback_data) equals this message's `id`, or confirm with the contact. |
 | `META_INVALID_DESTINATION` | — | The destination is neither an E.164 phone number nor a BSUID, so it cannot be sent from an official number. |
 | `META_BSUID_SEND_DISABLED` | — | The destination is a BSUID, and sending to BSUIDs is currently switched off by Pilot Status. Use the phone number if you have it. |
 | `META_BSUID_AUTH_TEMPLATE_UNSUPPORTED` | — | Meta does not allow authentication (OTP) templates to a BSUID recipient; they require a phone number. |
@@ -185,10 +186,10 @@ When Meta sends no number, or one this table does not map, the failure is classi
 | `META_SEND_FAILED` | any other | Generic Meta Cloud API send failure. **Catch-all for official numbers:** Meta failed the send and no more specific `META_*` code applies — including error numbers Meta added that are not in this table yet. |
 | `SEND_FAILED` | — | All other failures: HTTP or provider response errors, internal JSON, configuration issues, generic public messages, and anything without a more specific code above. **General catch-all.** |
 
-{/* PENDING (coordinator): one sentence on what still comes as SEND_FAILED on purpose — waiting for the codes the worker agent is adding for the remaining free-text cases. */}
+`SEND_FAILED` is kept on purpose where there is no verdict to name: the provider's own error text on an unofficial number — on the last attempt, or in a failure status the provider reports — when it matches none of the codes above; a network failure while uploading media to Meta, other than an unreachable provider (the message itself was never sent, so it is a plain failure, not `META_DELIVERY_UNKNOWN`); and an unexpected internal error. A more specific code there would be a guess.
 
 <Note>
-  `BUTTON_NOT_SENDABLE`, `CHATWOOT_SEND_EXCEPTION`, `FEATURE_NOT_SUPPORTED`, `FLOW_BUTTON_INDEX_INVALID`, `FLOW_REQUIRES_META_NUMBER`, `MEDIA_DOWNLOAD_FAILED`, `MEDIA_REHOST_FAILED`, `MEDIA_TRANSCODE_FAILED`, `META_CREDENTIALS_MISSING`, `META_MEDIA_UPLOAD_ERROR`, `META_TEMPLATE_OR_TEXT_MISSING`, `NUMBER_NOT_FOUND_REMOVED`, `PAYMENT_ORDER_PARTIAL_SEND`, `PROVIDER_UNREACHABLE`, `TEMPLATE_RENDER_FAILED` and `WHATSAPP_INSTANCE_NOT_CONNECTED` can be recorded with the underlying error appended after the code. The `errorCode` you receive is still exact, and that appended provider or exception text stays internal: it is not copied into `errorMessage`.
+  `BUTTON_NOT_SENDABLE`, `CHATWOOT_SEND_EXCEPTION`, `FEATURE_NOT_SUPPORTED`, `FLOW_BUTTON_INDEX_INVALID`, `FLOW_REQUIRES_META_NUMBER`, `MEDIA_DOWNLOAD_FAILED`, `MEDIA_REHOST_FAILED`, `MEDIA_TRANSCODE_FAILED`, `META_CREDENTIALS_MISSING`, `META_DELIVERY_UNKNOWN`, `META_MEDIA_UPLOAD_ERROR`, `META_TEMPLATE_OR_TEXT_MISSING`, `NUMBER_NOT_FOUND_REMOVED`, `PAYMENT_ORDER_PARTIAL_SEND`, `PROVIDER_UNREACHABLE`, `TEMPLATE_RENDER_FAILED` and `WHATSAPP_INSTANCE_NOT_CONNECTED` can be recorded with the underlying error appended after the code. The `errorCode` you receive is still exact, and that appended provider or exception text stays internal: it is not copied into `errorMessage`.
 </Note>
 
 <Note>
