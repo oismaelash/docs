@@ -187,7 +187,56 @@ curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wa_abc" \
   -H "x-api-key: ps_your_token_here"
 ```
 
-Remove o registro da Pilot Status e tenta encerrar ou remover a sessão de WhatsApp associada quando aplicável (HTTP 404 das etapas de limpeza é ignorado).
+```json
+{ "ok": true, "restorableUntil": "2026-10-23T12:33:06.604Z" }
+```
+
+É um **soft delete de 30 dias**, não uma exclusão definitiva:
+
+* O aparelho pareado é **desconectado na hora** — o número para de enviar e receber.
+* O número em si (id, API keys, webhooks, histórico de mensagens) fica guardado até `restorableUntil` e depois é apagado de vez por um job.
+* Enquanto está nessa janela, criar o **mesmo telefone** de novo com `POST /v1/numbers` devolve **`409 NUMBER_SOFT_DELETED`** (o corpo traz o `numberId` antigo). Restaure-o, ou purgue antes.
+
+<Note>
+  **Cobrança:** no Pay As You Go, número excluído não é cobrado na próxima virada — purgado ou não. Nos outros planos, excluir **não** reduz a capacidade paga; para pagar por menos números extras, [agende uma redução](/pt-BR/api/extra-numbers).
+</Note>
+
+## POST /v1/numbers/{id}/restore — Desfazer a exclusão
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/wa_abc/restore" \
+  -H "x-api-key: ps_sua_chave_de_tenant"
+```
+
+```json
+{ "ok": true, "requiresReconnect": true }
+```
+
+Traz o número de volta dentro da janela de 30 dias, com o mesmo id, API keys, webhooks e histórico. Restaura o **registro, não a conexão** — o aparelho foi desconectado na exclusão, então reconecte depois com `GET /v1/numbers/{id}/connect` (ou reprovisione um número Meta).
+
+* **`404`** com `code: RESTORE_WINDOW_EXPIRED` depois dos 30 dias.
+* **`409 NUMBER_ALREADY_ACTIVE`** quando o mesmo telefone foi reconectado nesse meio-tempo — use o número ativo.
+
+## DELETE /v1/numbers/{id}/purge — Excluir de forma permanente
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wa_abc/purge" \
+  -H "x-api-key: ps_sua_chave_de_tenant"
+```
+
+```json
+{ "ok": true }
+```
+
+<Warning>
+  **Irreversível.** Purgar destrói o número na hora, com tudo o que depende dele — histórico de mensagens, chats, templates, webhooks e API keys do número — e desregistra na Meta um número oficial. Não há restauração depois.
+</Warning>
+
+* Funciona com um número já excluído com `DELETE /v1/numbers/{id}` — o fluxo comum é excluir e depois purgar — ou com um ativo.
+* Use quando o **mesmo telefone** precisa ser criado de novo em seguida (o caso do `409 NUMBER_SOFT_DELETED`).
+* Não economiza nada na cobrança em relação ao `DELETE`.
+* Chame com uma **key de tenant**. A key presa ao número excluído deixa de autenticar assim que ele é excluído.
+* Com token OAuth / MCP, só o **OWNER** do workspace pode purgar (`403 PERMISSION_DENIED` caso contrário).
 
 ## Webhooks relacionados
 
