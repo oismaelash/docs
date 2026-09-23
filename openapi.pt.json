@@ -1040,7 +1040,7 @@
       },
       "delete": {
         "summary": "Remover número",
-        "description": "Remove permanentemente o número/instância WhatsApp, limpando recursos upstream no provedor. Efeito real e irreversível.",
+        "description": "Exclui o número com um soft delete de 30 dias. O aparelho pareado é desconectado na hora; o número em si é mantido até `restorableUntil` (devolvido na resposta) e depois apagado de vez por um job. Dentro da janela: `POST /v1/numbers/{id}/restore` traz de volta (é preciso reconectar) e `DELETE /v1/numbers/{id}/purge` destrói na hora. Enquanto o número está na janela, criar o MESMO telefone de novo devolve `409 NUMBER_SOFT_DELETED` — um fluxo de excluir-e-recriar precisa purgar antes. Número excluído não é cobrado na próxima virada do Pay As You Go; nos outros planos, excluir NÃO reduz a capacidade paga (veja `DELETE /v1/subscription/extra-numbers`).",
         "tags": [
           "Numbers"
         ],
@@ -1063,7 +1063,8 @@
             "content": {
               "application/json": {
                 "example": {
-                  "ok": true
+                  "ok": true,
+                  "restorableUntil": "2026-10-23T12:33:06.604Z"
                 }
               }
             }
@@ -1134,10 +1135,250 @@
         }
       }
     },
+    "/v1/numbers/{id}/restore": {
+      "post": {
+        "summary": "Restaurar número",
+        "description": "Desfaz o `DELETE /v1/numbers/{id}` dentro da janela de 30 dias (o `restorableUntil` que a exclusão devolveu). Restaura o REGISTRO do número — id, API keys, webhooks, histórico — mas NÃO a conexão: o aparelho foi desconectado na exclusão, então reconecte depois (`GET /v1/numbers/{id}/connect`, ou reprovisionando na Meta). `404` com `code: RESTORE_WINDOW_EXPIRED` depois dos 30 dias; `409 NUMBER_ALREADY_ACTIVE` quando o mesmo telefone foi reconectado nesse meio-tempo — use o número ativo.",
+        "tags": [
+          "Numbers"
+        ],
+        "operationId": "post_numbers_id_restore",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "num_01HZX...",
+            "description": "Id do número excluído (o id do número de WhatsApp)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Número restaurado — é preciso reconectar",
+            "content": {
+              "application/json": {
+                "example": {
+                  "ok": true,
+                  "requiresReconnect": true
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Id desconhecido, nunca excluído, ou janela vencida (`RESTORE_WINDOW_EXPIRED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "A janela de 30 dias para restaurar este número expirou.",
+                  "code": "RESTORE_WINDOW_EXPIRED"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "O mesmo telefone está ativo de novo (`NUMBER_ALREADY_ACTIVE`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Este número já foi reconectado em outro lugar e não pode ser restaurado.",
+                  "code": "NUMBER_ALREADY_ACTIVE"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Limite de taxa excedido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/numbers/{id}/purge": {
+      "delete": {
+        "summary": "Purgar número (exclusão permanente)",
+        "description": "Destrói o número de forma PERMANENTE e imediata — IRREVERSÍVEL, não há restauração depois. Apaga o número e tudo o que depende dele (histórico de mensagens, chats, templates, webhooks do número, as API keys dele) e desregistra na Meta um número oficial. Aceita um número já excluído com `DELETE /v1/numbers/{id}` (o fluxo comum: excluir e depois purgar) ou um ativo. Use quando o MESMO telefone precisa ser criado de novo em seguida. Não economiza nada na cobrança em relação ao `DELETE`. Use uma key de TENANT: a key presa ao número excluído deixa de autenticar assim que ele é excluído. Com token OAuth/MCP, só o OWNER do workspace pode purgar (`403 PERMISSION_DENIED` caso contrário).",
+        "tags": [
+          "Numbers"
+        ],
+        "operationId": "delete_numbers_id_purge",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "num_01HZX...",
+            "description": "Id do número a destruir (ativo ou já excluído)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Número purgado",
+            "content": {
+              "application/json": {
+                "example": {
+                  "ok": true
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token OAuth/MCP de um usuário que não é o OWNER do workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:purge).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Id desconhecido, ou já purgado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Not found"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Limite de taxa excedido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/numbers/{id}/logout": {
       "post": {
         "summary": "Desconectar instância WhatsApp",
-        "description": "Desconecta uma instância WhatsApp (logout) sem removê-la do banco de dados. Isso é diferente do DELETE que remove a instância permanentemente.",
+        "description": "Desconecta uma instância WhatsApp (logout) sem removê-la do banco de dados. Isso é diferente do DELETE, que exclui o número (soft delete de 30 dias; a exclusão permanente é `DELETE /v1/numbers/{id}/purge`).",
         "tags": [
           "Numbers"
         ],
@@ -2364,7 +2605,7 @@
       },
       "delete": {
         "summary": "Remover número extra (On Demand)",
-        "description": "Devolve N slot(s) de número extra pago — o inverso de POST. Requer uma key com escopo de TENANT. SEM estorno do ciclo corrente; só para a cobrança futura. Deletar um número (DELETE /v1/numbers/{id}) já libera o slot automaticamente. Retorna 409 NUMBER_LIMIT_EXCEEDED se a redução deixaria o limite abaixo dos números conectados.\n\n**Requer uma key com escopo de tenant.**",
+        "description": "Agenda a redução de N slot(s) de número extra pago para o PRÓXIMO ciclo — o inverso de POST. Requer uma key com escopo de TENANT. SEM estorno do ciclo corrente; o valor menor é cobrado a partir da próxima virada. Excluir ou purgar um número NÃO reduz a capacidade paga — este é o único caminho. Retorna 409 NUMBER_LIMIT_EXCEEDED se a redução deixaria o limite abaixo dos números conectados, e 409 NOT_APPLICABLE_FOR_PLAN no Pay As You Go (que já cobra só os números que continuam conectados).\n\n**Requer uma key com escopo de tenant.**",
         "tags": [
           "Subscription"
         ],

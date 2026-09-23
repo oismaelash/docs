@@ -187,7 +187,56 @@ curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wa_abc" \
   -H "x-api-key: ps_your_token_here"
 ```
 
-Removes the Pilot Status record and attempts to end or remove the associated WhatsApp session when applicable (HTTP 404 from cleanup steps is ignored).
+```json
+{ "ok": true, "restorableUntil": "2026-10-23T12:33:06.604Z" }
+```
+
+This is a **30-day soft delete**, not a wipe:
+
+* The paired device is **logged out right away** — the number stops sending and receiving.
+* The number itself (id, API keys, webhooks, message history) is kept until `restorableUntil`, then destroyed for good by a background job.
+* While it is in that window, creating the **same phone** again with `POST /v1/numbers` returns **`409 NUMBER_SOFT_DELETED`** (the body carries the old `numberId`). Restore it, or purge it first.
+
+<Note>
+  **Billing:** on Pay As You Go a deleted number is not charged on the next cycle — purged or not. On the other plans deleting does **not** reduce your paid capacity; to pay for fewer extra numbers, [schedule a reduction](/api/extra-numbers).
+</Note>
+
+## POST /v1/numbers/{id}/restore — Undo a delete
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/wa_abc/restore" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json
+{ "ok": true, "requiresReconnect": true }
+```
+
+Brings the number back within its 30-day window, with the same id, API keys, webhooks and history. It restores the **record, not the connection** — the device was logged out on delete, so reconnect it afterwards with `GET /v1/numbers/{id}/connect` (or re-provision a Meta number).
+
+* **`404`** with `code: RESTORE_WINDOW_EXPIRED` once the 30 days are over.
+* **`409 NUMBER_ALREADY_ACTIVE`** when the same phone was reconnected in the meantime — use the active number.
+
+## DELETE /v1/numbers/{id}/purge — Delete permanently
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wa_abc/purge" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json
+{ "ok": true }
+```
+
+<Warning>
+  **Irreversible.** Purging destroys the number immediately, with everything under it — message history, chats, templates, the number's webhooks and API keys — and deregisters a Meta number at Meta. There is no restore after it.
+</Warning>
+
+* Works on a number already deleted with `DELETE /v1/numbers/{id}` — the usual flow is delete, then purge — or on an active one.
+* Use it when the **same phone** has to be created again right away (the `409 NUMBER_SOFT_DELETED` case).
+* It saves nothing on the bill compared to `DELETE`.
+* Call it with a **tenant-scoped key**. A key bound to the deleted number stops authenticating as soon as the number is deleted.
+* With an OAuth / MCP token, only the workspace **OWNER** may purge (`403 PERMISSION_DENIED` otherwise).
 
 ## Related webhooks
 
