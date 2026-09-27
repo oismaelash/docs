@@ -1,0 +1,86 @@
+---
+title: "GET /v1/phone-lines/available — Buscar Números"
+sidebarTitle: "Buscar números"
+description: "Busque os números fixos brasileiros que você pode comprar agora em um DDD. Cada resultado é exatamente o que o POST /v1/phone-lines recebe."
+mode: "wide"
+---
+
+# Buscar números disponíveis
+
+`GET /v1/phone-lines/available` lista os números fixos que podem ser comprados agora em um DDD brasileiro. É o primeiro passo de uma compra: o `number` de cada resultado é exatamente o que [`POST /v1/phone-lines`](/pt-BR/api/phone-lines/purchase) recebe.
+
+<Note>
+  Requer uma chave **com escopo de tenant**. Com um token OAuth / MCP, só o **Proprietário** do workspace pode buscar (`phone_lines:purchase`, a mesma permissão da compra) — caso contrário, `403 PERMISSION_DENIED`.
+</Note>
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/phone-lines/available?ddd=11`
+
+## Parâmetros de query
+
+<ParamField query="ddd" type="string" required>
+  O DDD com dois dígitos, sendo o primeiro de 1 a 9 (ex.: `11`, `21`, `31`). Ausente ou malformado → **400 `INVALID_AREA_CODE`**, e nenhuma chamada é feita à operadora.
+</ParamField>
+
+## Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/phone-lines/available?ddd=11" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Resposta (200)
+{
+  "ddd": "11",
+  "totalAvailable": 2,
+  "numbers": [
+    { "number": "551148637200", "display": "(11) 4863-7200" },
+    { "number": "551148637201", "display": "(11) 4863-7201" }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Campos da resposta
+
+<ResponseField name="ddd" type="string">
+  O DDD que você buscou, repetido na resposta.
+</ResponseField>
+
+<ResponseField name="totalAvailable" type="integer">
+  Quantos números a operadora informa como disponíveis neste DDD. Não presuma que é igual ao tamanho de `numbers`.
+</ResponseField>
+
+<ResponseField name="numbers" type="object[]">
+  Os números retornados por esta busca. Sem paginação.
+</ResponseField>
+
+<ResponseField name="numbers[].number" type="string">
+  Dígitos E.164 **sem** o `+`: `55` + DDD + 8 dígitos, ex.: `551148637200`. Envie este valor para `POST /v1/phone-lines`.
+</ResponseField>
+
+<ResponseField name="numbers[].display" type="string">
+  O mesmo número formatado para leitura humana: `(11) 4863-7200`.
+</ResponseField>
+
+## Bom saber
+
+- **Buscar não é reservar.** Um número listado pode ser comprado por outra pessoa antes que a sua compra chegue a ele; nesse caso, ele volta nos resultados da compra como `NUMBER_UNAVAILABLE` — sem cobrança ou, quando a operadora já o tinha vendido fora da Pilot Status, com o preço estornado para a sua carteira. Busque de novo e escolha outro.
+- **Toda busca chega à nossa operadora** e consome uma cota de requisições compartilhada por toda a plataforma. Busque uma vez, mostre a lista e reutilize-a — não consulte este endpoint periodicamente. Quando a cota se esgota, o endpoint responde `503 SUPPLIER_UNAVAILABLE`.
+- A verificação do titular **não** é necessária para buscar — só para comprar. Veja [Visão geral → verificação do titular](/pt-BR/api/phone-lines/overview#antes-da-primeira-compra-verificação-do-titular).
+
+## Erros
+
+| Status | `code` | Significado |
+| --- | --- | --- |
+| `400` | `INVALID_AREA_CODE` | `ddd` ausente, ou sem dois dígitos começando por 1–9. Corpo: `{ "error": "Invalid area code. \| DDD inválido.", "code": "INVALID_AREA_CODE" }` |
+| `401` | — | Credencial ausente ou inválida. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Chave com escopo de número (ou concessão OAuth por número). Use a chave com escopo de tenant. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | Token OAuth / MCP de um usuário que não é mais membro ativo. |
+| `403` | `PERMISSION_DENIED` | Token OAuth / MCP de um usuário que não é o Proprietário do workspace. |
+| `503` | `SUPPLIER_UNAVAILABLE` | A operadora não respondeu, ou a cota de requisições compartilhada se esgotou. Tente de novo em alguns minutos. |
+| `500` | `INTERNAL_ERROR` | Falha inesperada. |

@@ -1,0 +1,266 @@
+---
+title: "Phone Line Webhook Events — Reference"
+sidebarTitle: "Line webhooks"
+description: "Events of the Phone Lines product — purchase, activation code, renewal, payment failure, suspension, return, cancellation and verification — with payloads, headers, signature verification and retry behaviour."
+mode: "wide"
+---
+
+# Phone line webhooks
+
+Phone lines send their events to **phone-line webhooks**: a registry of their own, separate from the [number webhooks](/api/webhooks/configure). The two never mix:
+
+- A number webhook — even one subscribed to `"*"` — **never** receives a `phone_line.*` event.
+- A phone-line webhook receives **only** `phone_line.*` events, never message or number events.
+
+## Configure (dashboard only)
+
+There is no public API for phone-line webhooks. Manage them in the dashboard under **Phone lines → Line webhooks** (`/linhas/webhooks`), as an **Owner or Admin**:
+
+- **Destination URL** — must be `https`.
+- **Events** — pick one or more of the events below, or **all** (`"*"`). Inside this registry `"*"` means every phone-line event. At least one is required.
+- **Signing secret** — shown **once**, when the webhook is created (it starts with `plwh_`). Store it right away: nothing shows it again, and there is no rotation. To change it, create a new webhook, move your receiver to its secret, and delete the old one.
+- **Pause / resume, and delete.** The dashboard does not edit a webhook's URL or events: create a new webhook and delete the old one.
+- **Delivery log** — per webhook: event, status (pending, delivered, failed), attempts, the HTTP status your endpoint answered and the last error.
+
+A workspace can have more than one phone-line webhook; each receives the events it subscribed to.
+
+## Events
+
+| Event | When it fires |
+| --- | --- |
+| `phone_line.purchased` | A line was bought (dashboard or `POST /v1/phone-lines`) — one event per number bought. |
+| `phone_line.code_received` | The call of a code request was transcribed (`TRANSCRIBED`). `code` can be `null` — see below. |
+| `phone_line.renewed` | A renewal charge succeeded, including a late one that brings a `PAYMENT_PENDING` or `SUSPENDED` line back. |
+| `phone_line.payment_failed` | A renewal charge failed and the line went from `ACTIVE` to `PAYMENT_PENDING`. Once per renewal — the retries that follow do not fire it again. |
+| `phone_line.suspended` | The line was still unpaid 2 days after the failure and is now `SUSPENDED`. |
+| `phone_line.returned` | The line was returned to the carrier (`RETURNED`) — 1 day after suspension, at once when an unpaid line is cancelled, or when it is left out in the dashboard's **Choose which lines to keep**. |
+| `phone_line.canceled` | A line cancelled at period end reached `currentPeriodEnd` and is now `CANCELED`. |
+| `phone_line.verification_updated` | The account holder verification changed state: finished (approved automatically, or sent to manual review), or reviewed (approved, rejected, or another document requested). |
+
+<Note>
+  `phone_line.code_received` fires only when a transcription completes. A request that ends `TIMED_OUT`, `FAILED`, or `CAPTURED` with a failed transcription sends **no** event — if you wait on the webhook, also watch the request's `pollDeadline`, or poll [`GET /v1/phone-lines/activations/{activationId}`](/api/phone-lines/activation-codes#poll-the-request).
+</Note>
+
+## Payload format
+
+Every delivery is a `POST` with a JSON body:
+
+```json
+{
+  "id": "cmg5k4d1v0003dl8example2m",
+  "event": "phone_line.purchased",
+  "createdAt": "2026-10-01T14:03:11.000Z",
+  "data": {
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "number": "551148637200",
+    "currentPeriodEnd": "2026-11-01T14:03:11.000Z"
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `id` | The delivery id — the same on every retry of this delivery. **Dedupe on it.** Each webhook gets its own delivery, so two webhooks subscribed to the same event receive different `id`s. |
+| `event` | The event name. |
+| `createdAt` | ISO 8601 — when the event was recorded. |
+| `data` | The event's fields, below. |
+
+Headers:
+
+| Header | Value |
+| --- | --- |
+| `Content-Type` | `application/json` |
+| `x-pilot-status-signature` | Hex-encoded HMAC-SHA256 of the raw body, keyed with the webhook's secret. |
+| `Idempotency-Key` | Same value as the body's `id`. |
+
+<Note>
+  **Numbers here have no `+`.** `number` is E.164 digits without the plus sign (`551148637200`), exactly as in the `/v1/phone-lines` endpoints — unlike the number webhooks, whose phone fields carry `+`.
+</Note>
+
+## Payloads
+
+`lineId` is the line's `id` in [`GET /v1/phone-lines/{id}`](/api/phone-lines/list#fetch-one-line).
+
+<AccordionGroup>
+  <Accordion title="phone_line.purchased">
+    ```json
+    {
+      "id": "cmg5k4d1v0003dl8example2m",
+      "event": "phone_line.purchased",
+      "createdAt": "2026-10-01T14:03:11.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "currentPeriodEnd": "2026-11-01T14:03:11.000Z"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.code_received">
+    ```json
+    {
+      "id": "cmg5k4d1v0004dl8example3n",
+      "event": "phone_line.code_received",
+      "createdAt": "2026-10-01T14:11:51.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "activationId": "cmg5k3a7c0002ac8example4q",
+        "code": "123456"
+      }
+    }
+    ```
+
+    `code` is `null` when the call was transcribed but no 6-digit code was found in it (the request's `failureReason` is then `no_code_in_transcript`). The recording can be played in the dashboard.
+
+    <Warning>
+      This payload carries the activation code, which is a credential. Verify the signature before trusting it, and do not log the body.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="phone_line.renewed">
+    ```json
+    {
+      "id": "cmg5k4d1v0005dl8example4p",
+      "event": "phone_line.renewed",
+      "createdAt": "2026-11-01T14:17:05.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "currentPeriodEnd": "2026-12-01T14:03:11.000Z"
+      }
+    }
+    ```
+
+    `currentPeriodEnd` is the end of the period just paid for.
+  </Accordion>
+
+  <Accordion title="phone_line.payment_failed">
+    ```json
+    {
+      "id": "cmg5k4d1v0006dl8example5r",
+      "event": "phone_line.payment_failed",
+      "createdAt": "2026-11-01T14:17:05.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.suspended">
+    ```json
+    {
+      "id": "cmg5k4d1v0007dl8example6s",
+      "event": "phone_line.suspended",
+      "createdAt": "2026-11-03T14:17:04.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.returned">
+    ```json
+    {
+      "id": "cmg5k4d1v0008dl8example7t",
+      "event": "phone_line.returned",
+      "createdAt": "2026-11-04T14:17:06.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.canceled">
+    ```json
+    {
+      "id": "cmg5k4d1v0009dl8example8u",
+      "event": "phone_line.canceled",
+      "createdAt": "2026-11-01T14:17:03.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.verification_updated">
+    ```json
+    {
+      "id": "cmg5k4d1v0010dl8example9v",
+      "event": "phone_line.verification_updated",
+      "createdAt": "2026-10-01T13:58:40.000Z",
+      "data": {
+        "verificationId": "cmg5k0v3r0000vf8example7k",
+        "status": "APPROVED"
+      }
+    }
+    ```
+
+    `status` is one of:
+
+    | `status` | Meaning | Can buy? |
+    | --- | --- | --- |
+    | `APPROVED` | Verified. | Yes |
+    | `IN_REVIEW` | Finished, waiting for a manual check. | Yes |
+    | `NEEDS_DOCUMENT` | The reviewer asked for another document (in the dashboard). | No — `VERIFICATION_REQUIRED` |
+    | `REJECTED` | Rejected. | No — `VERIFICATION_REJECTED` |
+
+    There is no public endpoint to read the verification; `verificationId` identifies it in support conversations.
+  </Accordion>
+</AccordionGroup>
+
+## Verify the signature
+
+Every phone-line webhook has a secret, so **every delivery is signed**. `x-pilot-status-signature` is the hex-encoded **HMAC-SHA256 of the raw request body**, keyed with the webhook's secret (the whole string, `plwh_` prefix included). Compute it over the bytes exactly as received — before any JSON parsing — and compare in constant time:
+
+<CodeGroup>
+
+```javascript Node
+const crypto = require("node:crypto");
+
+// rawBody: the request body exactly as received (Buffer or string).
+function isValidSignature(rawBody, signatureHeader, secret) {
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const received = String(signatureHeader ?? "");
+  return (
+    received.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received))
+  );
+}
+```
+
+```python Python
+import hashlib
+import hmac
+
+# raw_body: the request body exactly as received (bytes).
+def is_valid_signature(raw_body: bytes, signature_header: str | None, secret: str) -> bool:
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_header or "")
+```
+
+</CodeGroup>
+
+It is the same computation as the number webhooks, so a receiver that already verifies those works here with this webhook's secret. The signature covers the body only — there is no timestamp header — so rely on `id` to discard duplicates.
+
+## Delivery and retries
+
+- **Answer with any `2xx` within 10 seconds.** Anything else — another status, a timeout, a connection error — counts as a failed attempt.
+- **6 attempts in total**: the first right away, then retries about 30 s, 1 min, 2 min, 4 min and 8 min apart — normally about **15 minutes** end to end. After the last one the delivery is marked failed in the log. A delivery that could not be queued at first is picked up again by an hourly sweep, so its first attempt can come later.
+- **Redirects are not followed.** A `3xx` answer counts as a failed attempt.
+- **At least once.** A retry after your endpoint processed the event but did not answer in time delivers it again, with the same `id`. Order is not guaranteed.
+- **Paused or deleted webhooks.** An event is delivered only to webhooks that are active and subscribed when it happens. Every attempt checks the webhook again: a delivery whose webhook is paused when an attempt is due — including one already in its retries — is marked failed and is not sent later; deleting a webhook drops its pending deliveries. Events are never replayed to a webhook created or resumed afterwards.
+- **Internal destinations are refused.** A URL whose host resolves to a private or internal network address is not called, and is not retried. Such a URL is accepted when the webhook is created — only `https` and the event names are checked then — so every delivery to it is logged as failed. A DNS lookup that fails is different: it is retried like any other failure.
+
+<Tip>
+  Treat these events as notifications, not as the source of truth. When one could have been missed — your endpoint was down for longer than the retries — read the current state with [`GET /v1/phone-lines`](/api/phone-lines/list).
+</Tip>

@@ -1,0 +1,172 @@
+---
+title: "GET /v1/phone-lines — List & Detail"
+sidebarTitle: "List & get lines"
+description: "List the phone lines of your workspace, or fetch one line: status, price, current period, cancellation and the timestamps of every lifecycle step."
+mode: "wide"
+---
+
+# List and inspect phone lines
+
+List every phone line of your workspace, or fetch one by its `id`. Both return the same line object.
+
+<Note>
+  Requires a **tenant-scoped** key. With an OAuth / MCP token, the user must be an **Owner or Admin** (`phone_lines:read`) — `403 PERMISSION_DENIED` otherwise.
+</Note>
+
+## GET /v1/phone-lines — List your lines
+
+Returns the lines of the key's workspace, **newest purchase first**. By default only the lines you still hold (`ACTIVE`, `PAYMENT_PENDING`, `SUSPENDED`); add `includeClosed=true` to include the finished ones (`RETURNED`, `CANCELED`).
+
+<ParamField query="includeClosed" default="false" type="boolean">
+  `true` or `1` includes finished lines; `false`, `0` or absent leaves them out. Any other value (case-sensitive: `TRUE` is refused) → **400 `INVALID_QUERY`**.
+</ParamField>
+
+The list is **not paginated**: it always returns every matching line.
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/phone-lines?includeClosed=true" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Response (200)
+{
+  "lines": [
+    {
+      "id": "cmg5k2l1n0001pl8example9x",
+      "number": "551148637200",
+      "display": "(11) 4863-7200",
+      "ddd": "11",
+      "status": "ACTIVE",
+      "price": 33.9,
+      "currency": "BRL",
+      "purchasedAt": "2026-10-01T14:03:11.000Z",
+      "currentPeriodEnd": "2026-11-01T14:03:11.000Z",
+      "cancelAtPeriodEnd": false,
+      "paymentPendingSince": null,
+      "suspendedAt": null,
+      "returnedAt": null,
+      "canceledAt": null,
+      "activationCount": 1
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Fetch one line
+
+`GET /v1/phone-lines/{id}` returns `{ "line": { … } }` for one line of your workspace, finished lines included.
+
+`{id}` is the line's `id` (from the list, or `lineId` in the purchase result) — **not** the phone number. A line of another workspace answers **404 `LINE_NOT_FOUND`**, the same as one that does not exist.
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Response (200)
+{
+  "line": {
+    "id": "cmg5k2l1n0001pl8example9x",
+    "number": "551148637200",
+    "display": "(11) 4863-7200",
+    "ddd": "11",
+    "status": "PAYMENT_PENDING",
+    "price": 33.9,
+    "currency": "BRL",
+    "purchasedAt": "2026-10-01T14:03:11.000Z",
+    "currentPeriodEnd": "2026-11-01T14:03:11.000Z",
+    "cancelAtPeriodEnd": false,
+    "paymentPendingSince": "2026-11-01T14:17:02.000Z",
+    "suspendedAt": null,
+    "returnedAt": null,
+    "canceledAt": null,
+    "activationCount": 1
+  }
+}
+```
+
+</CodeGroup>
+
+## Line object fields
+
+<ResponseField name="id" type="string">
+  The line id. Use it in every `/v1/phone-lines/{id}` path.
+</ResponseField>
+
+<ResponseField name="number" type="string">
+  E.164 digits **without** `+`, e.g. `551148637200`.
+</ResponseField>
+
+<ResponseField name="display" type="string">
+  The number formatted for people: `(11) 4863-7200`.
+</ResponseField>
+
+<ResponseField name="ddd" type="string">
+  The two-digit area code.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  `ACTIVE`, `PAYMENT_PENDING`, `SUSPENDED`, `RETURNED` or `CANCELED`. See the [line lifecycle](/api/phone-lines/overview#line-lifecycle).
+</ResponseField>
+
+<ResponseField name="price" type="number">
+  Monthly price of **this** line, frozen at purchase (e.g. `33.9`). Every renewal of the line charges this amount.
+</ResponseField>
+
+<ResponseField name="currency" type="string">
+  `BRL` or `USD` — the currency `price` is charged in.
+</ResponseField>
+
+<ResponseField name="purchasedAt" type="string">
+  ISO 8601 — when the line was bought. Renewals count from it: the same day each month, or the month's last day when that day does not exist — and that shorter day then sticks.
+</ResponseField>
+
+<ResponseField name="currentPeriodEnd" type="string">
+  ISO 8601 — end of the paid period. The next renewal is attempted in the first hourly billing run after it. For a line cancelled at period end, when it becomes `CANCELED`.
+</ResponseField>
+
+<ResponseField name="cancelAtPeriodEnd" type="boolean">
+  `true` after a `DELETE` on an `ACTIVE` line: it will not renew and becomes `CANCELED` at `currentPeriodEnd`.
+</ResponseField>
+
+<ResponseField name="paymentPendingSince" type="string | null">
+  ISO 8601 — when the renewal charge failed. The line is suspended 2 days after this. `null` once a renewal succeeds.
+</ResponseField>
+
+<ResponseField name="suspendedAt" type="string | null">
+  ISO 8601 — when the line was suspended. It is returned 1 day after this. `null` once a renewal succeeds.
+</ResponseField>
+
+<ResponseField name="returnedAt" type="string | null">
+  ISO 8601 — when the number was returned to the carrier (`RETURNED`).
+</ResponseField>
+
+<ResponseField name="canceledAt" type="string | null">
+  ISO 8601 — when a line cancelled at period end became `CANCELED`.
+</ResponseField>
+
+<ResponseField name="activationCount" type="integer">
+  How many code requests were opened on this line so far. A `POST …/activations` that answered `503` is not counted.
+</ResponseField>
+
+<Note>
+  `status` is the field to branch on. The timestamps explain how a line got there; `currentPeriodEnd` does not move while a renewal is unpaid, so on a `PAYMENT_PENDING` or `SUSPENDED` line it is already in the past. `returnedAt` and `canceledAt` can appear a moment before `status` changes, while the carrier confirms the return or cancellation.
+</Note>
+
+## Errors
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| `400` | `INVALID_QUERY` | `includeClosed` is not `true`, `false`, `1` or `0`. |
+| `401` | — | Missing or invalid credential. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Number-scoped key (or per-number OAuth grant). Use the tenant-scoped key. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | OAuth / MCP token of a user who is no longer an active member. |
+| `403` | `PERMISSION_DENIED` | OAuth / MCP token of a user who is not Owner or Admin. |
+| `404` | `LINE_NOT_FOUND` | `GET /v1/phone-lines/{id}` only: no such line in your workspace. |
+| `500` | `INTERNAL_ERROR` | Unexpected failure. |

@@ -1,0 +1,84 @@
+---
+title: "GET /v1/phone-lines/available — Search Numbers"
+sidebarTitle: "Search numbers"
+description: "Search the Brazilian landline numbers you can buy right now in an area code (DDD). Each result is exactly what POST /v1/phone-lines takes."
+mode: "wide"
+---
+
+# Search available numbers
+
+`GET /v1/phone-lines/available` lists the landline numbers that can be bought right now in one Brazilian area code (DDD). It is the first step of a purchase: the `number` of each result is exactly what [`POST /v1/phone-lines`](/api/phone-lines/purchase) takes.
+
+<Note>
+  Requires a **tenant-scoped** key. With an OAuth / MCP token, only the workspace **Owner** may search (`phone_lines:purchase`, the same permission as buying) — `403 PERMISSION_DENIED` otherwise.
+</Note>
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/phone-lines/available?ddd=11`
+
+## Query parameters
+
+<ParamField query="ddd" type="string" required>
+  The two-digit area code, first digit 1–9 (e.g. `11`, `21`, `31`). Missing or malformed → **400 `INVALID_AREA_CODE`**, and the carrier is not called.
+</ParamField>
+
+## Example
+
+<CodeGroup>
+  ```bash cURL
+  curl "https://pilotstatus.com.br/v1/phone-lines/available?ddd=11" \
+    -H "x-api-key: ps_your_tenant_scoped_key"
+  ```
+
+  ```json Response (200)
+  {
+    "ddd": "11",
+    "totalAvailable": 2,
+    "numbers": [
+      { "number": "551148637200", "display": "(11) 4863-7200" },
+      { "number": "551148637201", "display": "(11) 4863-7201" }
+    ]
+  }
+  ```
+</CodeGroup>
+
+## Response fields
+
+<ResponseField name="ddd" type="string">
+  The area code you searched, echoed back.
+</ResponseField>
+
+<ResponseField name="totalAvailable" type="integer">
+  How many numbers the carrier reports as available in this area code. Do not assume it equals the length of `numbers`.
+</ResponseField>
+
+<ResponseField name="numbers" type="object[]">
+  The numbers returned by this search. Not paginated.
+</ResponseField>
+
+<ResponseField name="numbers[].number" type="string">
+  E.164 digits **without** `+`: `55` + area code + 8 digits, e.g. `551148637200`. Send this value to `POST /v1/phone-lines`.
+</ResponseField>
+
+<ResponseField name="numbers[].display" type="string">
+  The same number formatted for people: `(11) 4863-7200`.
+</ResponseField>
+
+## Good to know
+
+* **A search is not a reservation.** A listed number can be bought by someone else before your purchase reaches it; that number then comes back in the purchase results as `NUMBER_UNAVAILABLE` — without a charge, or, when the carrier had already sold it outside Pilot Status, with the price refunded to your wallet. Search again and pick another.
+* **Every search reaches our carrier** and draws on a request budget shared by the whole platform. Search once, show the list, and reuse it — do not poll this endpoint. When the budget is exhausted the endpoint answers `503 SUPPLIER_UNAVAILABLE`.
+* Identity verification is **not** required to search — only to buy. See [Overview → identity verification](/api/phone-lines/overview#before-the-first-purchase-identity-verification).
+
+## Errors
+
+| Status | `code`                     | Meaning                                                                         |
+| ------ | -------------------------- | ------------------------------------------------------------------------------- |
+| `400`  | `INVALID_AREA_CODE`        | `ddd` missing, or not two digits starting 1–9. Body: `{ "error": "Invalid area code. \| DDD inválido.", "code": "INVALID_AREA_CODE" }` |
+| `401`  | —                          | Missing or invalid credential.                                                  |
+| `403`  | `NUMBER_SCOPE_NOT_ALLOWED` | Number-scoped key (or per-number OAuth grant). Use the tenant-scoped key.        |
+| `403`  | `WORKSPACE_MEMBERSHIP_REQUIRED` | OAuth / MCP token of a user who is no longer an active member.             |
+| `403`  | `PERMISSION_DENIED`        | OAuth / MCP token of a user who is not the workspace Owner.                     |
+| `503`  | `SUPPLIER_UNAVAILABLE`     | The carrier could not answer, or the shared request budget ran out. Retry in a few minutes. |
+| `500`  | `INTERNAL_ERROR`           | Unexpected failure.                                                             |
