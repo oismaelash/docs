@@ -13,7 +13,7 @@ Buy an extra WhatsApp number via the public API with a **tenant-scoped** key. Pr
   ![Saved card tab in the Plans page](/images/dashboard/saved-card.png)
 </Frame>
 
-Billing runs off a **prepaid wallet**: credits first, saved card for whatever the credits do not cover. Credits can be topped up by card or PIX.
+Billing runs off a **prepaid wallet**: credits first, saved card for whatever the credits do not cover. Credits can be topped up in the dashboard (card or PIX) or through the API (card only).
 
 <Note>
   Number-scoped keys get **403** — use the tenant-scoped key (dashboard **Profile → API**).
@@ -71,7 +71,7 @@ Behaviour:
 - **Free → On Demand conversion.** If you are on the **Free** plan, buying an extra number moves you to On Demand: your current (formerly free, 200-message-limited) number becomes a **paid, unlimited** number **and** the new number is billed too. So buying 1 extra while Free bills you for **2** numbers. Because this changes what you pay, the `POST` returns **409 `CONFIRMATION_REQUIRED`** (with the preview) unless you send `confirm: true`.
 - **Already On Demand / paid.** Buying increments your number count; messages stay unlimited.
 - **Payment.** The prorated cost is taken from your **prepaid wallet** first, then any remainder from your saved card (dashboard **Plans → Cartão**). With neither, the response is `{ "success": true, "charged": false, "checkoutUrl": "https://…" }` — open it to pay the prorated amount; the card you use there is saved for the recurring charge. Once paid, the slot unlocks (webhook) and you can create the number with `POST /v1/numbers`.
-- **The monthly recurrence comes out of the wallet**, not a separate subscription. Each cycle, `paidExtraNumbers × unit price` is debited from your credits, falling back to your saved card. Top the wallet up with `POST /v1/billing/checkout` (`wallet_topup`), which accepts PIX — so you can run On Demand on PIX credits and never save a card.
+- **The monthly recurrence comes out of the wallet**, not a separate subscription. Each cycle, `paidExtraNumbers × unit price` is debited from your credits, falling back to your saved card. Top the wallet up with `POST /v1/billing/checkout` (`wallet_topup`, card only) or in the dashboard, where PIX is also available — so you can run On Demand on PIX credits topped up in the dashboard and never save a card.
 
 <Note>
   Keep either credits or a saved card available. If a cycle's charge cannot be funded, you get **2 days** to add credits or update the card before all your numbers stop **sending** (inbound keeps working). Adding funds reactivates immediately.
@@ -87,7 +87,7 @@ Behaviour:
 
 | Status | `code` | What happened | What to do |
 | --- | --- | --- | --- |
-| `402` | `INSUFFICIENT_FUNDS` | The wallet could not cover the charge **and** there is no usable saved card. This is the only bucket that is genuinely about your balance. | Top the wallet up (`POST /v1/billing/checkout`, `wallet_topup` — PIX works) or save a card. Then retry. |
+| `402` | `INSUFFICIENT_FUNDS` | The wallet could not cover the charge **and** there is no usable saved card. This is the only bucket that is genuinely about your balance. | Top the wallet up (`POST /v1/billing/checkout`, `wallet_topup` — card only; PIX only in the dashboard) or save a card. Then retry. |
 | `402` | `PAYMENT_FAILED` | The charge was attempted and did not complete. Either the issuer declined the card, or the attempt failed for a reason we cannot attribute to your balance. | Fix or replace the card, then retry. Adding credits may also clear it, since credits are spent before the card. |
 | `502` | `PAYMENT_PROVIDER_ERROR` | We could not get an answer out of the payment processor. | **Check your statement before retrying** — see the note below. |
 
@@ -181,10 +181,20 @@ Generates a hosted checkout URL for billing actions:
 curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
   -H "Content-Type: application/json" \
   -H "x-api-key: ps_your_tenant_scoped_key" \
-  -d '{ "purpose": "wallet_topup" }'
+  -d '{ "purpose": "wallet_topup", "amount": 50 }'
 ```
 
-- `purpose: "wallet_topup"` — top up the prepaid wallet.
+- `purpose: "wallet_topup"` — top up the prepaid wallet. **Card only**: the hosted Stripe checkout offers no PIX — PIX top-ups exist only in the dashboard (BRL accounts). **Requires `amount`**: a positive number, in your account currency (the wallet's `BRL` or `USD` — it cannot be chosen per request). Missing, zero, negative or non-numeric returns `400` `{ "error": "amount must be a positive number", "code": "INVALID_AMOUNT" }`.
 - `purpose: "add_card"` — save a card for future On Demand charges.
 
-The response contains a `checkoutUrl` to open in the browser.
+The response contains a `url` to open in the browser. For `wallet_topup` it also carries the `orderId`, `amount` and `currency`:
+
+```json
+{
+  "url": "https://checkout.stripe.com/c/pay/cs_test_…",
+  "purpose": "wallet_topup",
+  "orderId": "…",
+  "amount": 50,
+  "currency": "BRL"
+}
+```

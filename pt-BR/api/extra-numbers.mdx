@@ -13,7 +13,7 @@ Compre um número extra de WhatsApp pela API pública com uma chave **de escopo 
   ![Aba de cartão salvo na página de Planos](/images/dashboard/saved-card.png)
 </Frame>
 
-A cobrança roda sobre uma **carteira pré-paga**: primeiro os créditos, depois o cartão salvo para o que os créditos não cobrirem. Os créditos podem ser recarregados por cartão ou PIX.
+A cobrança roda sobre uma **carteira pré-paga**: primeiro os créditos, depois o cartão salvo para o que os créditos não cobrirem. Os créditos podem ser recarregados pelo painel (cartão ou PIX) ou pela API (só cartão).
 
 <Note>
   Chaves de escopo de número recebem **403** — use a chave de escopo do tenant (painel **Profile → API**).
@@ -71,7 +71,7 @@ Comportamento:
 - **Conversão Free → On Demand.** Se você está no plano **Free**, comprar um número extra move você para o On Demand: seu número atual (antes gratuito, limitado a 200 mensagens) se torna um número **pago e ilimitado** **e** o novo número também é cobrado. Portanto, comprar 1 extra estando no Free cobra você por **2** números. Como isso altera o que você paga, o `POST` retorna **409 `CONFIRMATION_REQUIRED`** (com a prévia) a menos que você envie `confirm: true`.
 - **Já no On Demand / pago.** Comprar incrementa sua contagem de números; as mensagens permanecem ilimitadas.
 - **Pagamento.** O custo proporcional sai primeiro da sua **carteira pré-paga** e o que sobrar vai no cartão salvo (painel **Plans → Cartão**). Sem nenhum dos dois, a resposta é `{ "success": true, "charged": false, "checkoutUrl": "https://…" }` — abra-a para pagar o valor proporcional; o cartão usado ali fica salvo para a cobrança recorrente. Após o pagamento, o slot é desbloqueado (webhook) e você pode criar o número com `POST /v1/numbers`.
-- **A recorrência mensal sai da carteira**, não de uma assinatura à parte. A cada ciclo, `paidExtraNumbers × preço unitário` é debitado dos créditos, com o cartão salvo como reserva. Recarregue com `POST /v1/billing/checkout` (`wallet_topup`), que aceita PIX — dá para rodar On Demand só com créditos de PIX, sem nunca salvar um cartão.
+- **A recorrência mensal sai da carteira**, não de uma assinatura à parte. A cada ciclo, `paidExtraNumbers × preço unitário` é debitado dos créditos, com o cartão salvo como reserva. Recarregue com `POST /v1/billing/checkout` (`wallet_topup`, só cartão) ou pelo painel, onde o PIX também está disponível — dá para rodar On Demand só com créditos de PIX recarregados pelo painel, sem nunca salvar um cartão.
 
 <Note>
   Mantenha créditos ou um cartão salvo disponíveis. Se a cobrança de um ciclo não puder ser paga, você tem **2 dias** para adicionar créditos ou atualizar o cartão antes que seus números parem de **enviar** (o recebimento continua). Adicionar saldo reativa na hora.
@@ -83,7 +83,7 @@ Comportamento:
 
 | Status | `code` | O que aconteceu | O que fazer |
 | --- | --- | --- | --- |
-| `402` | `INSUFFICIENT_FUNDS` | A carteira não cobriu a cobrança **e** não há cartão salvo utilizável. É o único caso que realmente é sobre o seu saldo. | Recarregue a carteira (`POST /v1/billing/checkout`, `wallet_topup` — aceita PIX) ou salve um cartão. Depois tente de novo. |
+| `402` | `INSUFFICIENT_FUNDS` | A carteira não cobriu a cobrança **e** não há cartão salvo utilizável. É o único caso que realmente é sobre o seu saldo. | Recarregue a carteira (`POST /v1/billing/checkout`, `wallet_topup` — só cartão; PIX só pelo painel) ou salve um cartão. Depois tente de novo. |
 | `402` | `PAYMENT_FAILED` | A cobrança foi tentada e não se concluiu. Ou o emissor recusou o cartão, ou a tentativa falhou por um motivo que não conseguimos atribuir ao seu saldo. | Corrija ou troque o cartão e tente de novo. Adicionar créditos também pode resolver, já que os créditos são gastos antes do cartão. |
 | `502` | `PAYMENT_PROVIDER_ERROR` | Não conseguimos obter resposta do processador de pagamento. | **Confira seu extrato antes de tentar de novo** — veja o aviso abaixo. |
 
@@ -177,10 +177,20 @@ Gera uma URL de checkout hospedada para ações de cobrança:
 curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
   -H "Content-Type: application/json" \
   -H "x-api-key: ps_your_tenant_scoped_key" \
-  -d '{ "purpose": "wallet_topup" }'
+  -d '{ "purpose": "wallet_topup", "amount": 50 }'
 ```
 
-- `purpose: "wallet_topup"` — recarrega a carteira pré-paga.
+- `purpose: "wallet_topup"` — recarrega a carteira pré-paga. **Só cartão**: o checkout hospedado do Stripe não oferece PIX — recarga por PIX existe só pelo painel (contas em BRL). **Exige `amount`**: um número positivo, na moeda da sua conta (a da carteira, `BRL` ou `USD` — não dá para escolher por requisição). Ausente, zero, negativo ou não numérico retorna `400` `{ "error": "amount must be a positive number", "code": "INVALID_AMOUNT" }`.
 - `purpose: "add_card"` — salva um cartão para futuras cobranças On Demand.
 
-A resposta contém uma `checkoutUrl` para abrir no navegador.
+A resposta contém uma `url` para abrir no navegador. No `wallet_topup` ela traz também `orderId`, `amount` e `currency`:
+
+```json
+{
+  "url": "https://checkout.stripe.com/c/pay/cs_test_…",
+  "purpose": "wallet_topup",
+  "orderId": "…",
+  "amount": 50,
+  "currency": "BRL"
+}
+```
