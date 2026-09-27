@@ -1,0 +1,266 @@
+---
+title: "Eventos de Webhook das Linhas — Referência"
+sidebarTitle: "Webhooks das linhas"
+description: "Eventos do produto Linhas Telefônicas — compra, código de ativação, renovação, falha de pagamento, suspensão, devolução, cancelamento e verificação — com payloads, headers, verificação de assinatura e retentativas."
+mode: "wide"
+---
+
+# Webhooks das linhas telefônicas
+
+As linhas telefônicas enviam seus eventos para os **webhooks das linhas**: um cadastro próprio, separado dos [webhooks de número](/pt-BR/api/webhooks/configure). Os dois nunca se misturam:
+
+- Um webhook de número — mesmo um inscrito em `"*"` — **nunca** recebe um evento `phone_line.*`.
+- Um webhook de linha recebe **apenas** eventos `phone_line.*`, nunca eventos de mensagem ou de número.
+
+## Configurar (somente pelo painel)
+
+Não há API pública para webhooks de linha. Gerencie-os no painel em **Linhas → Webhooks das linhas** (`/linhas/webhooks`), como **Proprietário ou Administrador**:
+
+- **URL de destino** — precisa ser `https`.
+- **Eventos** — escolha um ou mais dos eventos abaixo, ou **todos** (`"*"`). Neste cadastro, `"*"` significa todos os eventos de linha. É obrigatório escolher pelo menos um.
+- **Segredo de assinatura** — exibido **uma única vez**, quando o webhook é criado (começa com `plwh_`). Guarde-o imediatamente: nada o exibe de novo, e não há rotação. Para trocá-lo, crie um novo webhook, passe seu receptor a usar o segredo dele e exclua o antigo.
+- **Pausar / retomar e excluir.** O painel não edita a URL nem os eventos de um webhook: crie um novo webhook e exclua o antigo.
+- **Log de entregas** — por webhook: evento, status (pendente, entregue, com falha), tentativas, o status HTTP que seu endpoint respondeu e o último erro.
+
+Um workspace pode ter mais de um webhook de linha; cada um recebe os eventos em que se inscreveu.
+
+## Eventos
+
+| Evento | Quando é disparado |
+| --- | --- |
+| `phone_line.purchased` | Uma linha foi comprada (pelo painel ou por `POST /v1/phone-lines`) — um evento por número comprado. |
+| `phone_line.code_received` | A ligação de um pedido de código foi transcrita (`TRANSCRIBED`). `code` pode ser `null` — veja abaixo. |
+| `phone_line.renewed` | Uma cobrança de renovação deu certo, inclusive uma cobrança atrasada que reativa uma linha em `PAYMENT_PENDING` ou `SUSPENDED`. |
+| `phone_line.payment_failed` | Uma cobrança de renovação falhou e a linha passou de `ACTIVE` para `PAYMENT_PENDING`. Uma vez por renovação — as novas tentativas seguintes não o disparam de novo. |
+| `phone_line.suspended` | A linha continuava sem pagamento 2 dias após a falha e agora está `SUSPENDED`. |
+| `phone_line.returned` | A linha foi devolvida à operadora (`RETURNED`) — 1 dia após a suspensão, imediatamente quando uma linha sem pagamento é cancelada, ou quando ela fica de fora no **Escolher quais linhas manter** do painel. |
+| `phone_line.canceled` | Uma linha cancelada no fim do período chegou a `currentPeriodEnd` e agora está `CANCELED`. |
+| `phone_line.verification_updated` | A verificação do titular mudou de estado: foi concluída (aprovada automaticamente ou enviada para análise manual) ou revisada (aprovada, rejeitada ou com outro documento solicitado). |
+
+<Note>
+  `phone_line.code_received` é disparado somente quando uma transcrição é concluída. Um pedido que termina em `TIMED_OUT`, `FAILED` ou `CAPTURED` com falha na transcrição **não** envia evento algum — se você aguarda o webhook, acompanhe também o `pollDeadline` do pedido ou consulte [`GET /v1/phone-lines/activations/{activationId}`](/pt-BR/api/phone-lines/activation-codes#consultar-o-pedido).
+</Note>
+
+## Formato do payload
+
+Toda entrega é um `POST` com corpo JSON:
+
+```json
+{
+  "id": "cmg5k4d1v0003dl8example2m",
+  "event": "phone_line.purchased",
+  "createdAt": "2026-10-01T14:03:11.000Z",
+  "data": {
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "number": "551148637200",
+    "currentPeriodEnd": "2026-11-01T14:03:11.000Z"
+  }
+}
+```
+
+| Campo | Descrição |
+| --- | --- |
+| `id` | O id da entrega — o mesmo em todas as retentativas desta entrega. **Use-o para deduplicar.** Cada webhook recebe sua própria entrega, então dois webhooks inscritos no mesmo evento recebem `id`s diferentes. |
+| `event` | O nome do evento. |
+| `createdAt` | ISO 8601 — quando o evento foi registrado. |
+| `data` | Os campos do evento, descritos abaixo. |
+
+Cabeçalhos:
+
+| Cabeçalho | Valor |
+| --- | --- |
+| `Content-Type` | `application/json` |
+| `x-pilot-status-signature` | HMAC-SHA256 do corpo bruto, codificado em hexadecimal, usando o segredo do webhook como chave. |
+| `Idempotency-Key` | O mesmo valor do `id` do corpo. |
+
+<Note>
+  **Aqui os números não têm `+`.** `number` traz os dígitos E.164 sem o sinal de mais (`551148637200`), exatamente como nos endpoints `/v1/phone-lines` — ao contrário dos webhooks de número, cujos campos de telefone trazem `+`.
+</Note>
+
+## Payloads
+
+`lineId` é o `id` da linha em [`GET /v1/phone-lines/{id}`](/pt-BR/api/phone-lines/list#obter-uma-linha).
+
+<AccordionGroup>
+  <Accordion title="phone_line.purchased">
+    ```json
+    {
+      "id": "cmg5k4d1v0003dl8example2m",
+      "event": "phone_line.purchased",
+      "createdAt": "2026-10-01T14:03:11.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "currentPeriodEnd": "2026-11-01T14:03:11.000Z"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.code_received">
+    ```json
+    {
+      "id": "cmg5k4d1v0004dl8example3n",
+      "event": "phone_line.code_received",
+      "createdAt": "2026-10-01T14:11:51.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "activationId": "cmg5k3a7c0002ac8example4q",
+        "code": "123456"
+      }
+    }
+    ```
+
+    `code` é `null` quando a ligação foi transcrita, mas nenhum código de 6 dígitos foi encontrado nela (nesse caso, o `failureReason` do pedido é `no_code_in_transcript`). A gravação pode ser ouvida no painel.
+
+    <Warning>
+      Este payload traz o código de ativação, que é uma credencial. Verifique a assinatura antes de confiar nele e não registre o corpo em log.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="phone_line.renewed">
+    ```json
+    {
+      "id": "cmg5k4d1v0005dl8example4p",
+      "event": "phone_line.renewed",
+      "createdAt": "2026-11-01T14:17:05.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "currentPeriodEnd": "2026-12-01T14:03:11.000Z"
+      }
+    }
+    ```
+
+    `currentPeriodEnd` é o fim do período que acabou de ser pago.
+  </Accordion>
+
+  <Accordion title="phone_line.payment_failed">
+    ```json
+    {
+      "id": "cmg5k4d1v0006dl8example5r",
+      "event": "phone_line.payment_failed",
+      "createdAt": "2026-11-01T14:17:05.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.suspended">
+    ```json
+    {
+      "id": "cmg5k4d1v0007dl8example6s",
+      "event": "phone_line.suspended",
+      "createdAt": "2026-11-03T14:17:04.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.returned">
+    ```json
+    {
+      "id": "cmg5k4d1v0008dl8example7t",
+      "event": "phone_line.returned",
+      "createdAt": "2026-11-04T14:17:06.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.canceled">
+    ```json
+    {
+      "id": "cmg5k4d1v0009dl8example8u",
+      "event": "phone_line.canceled",
+      "createdAt": "2026-11-01T14:17:03.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.verification_updated">
+    ```json
+    {
+      "id": "cmg5k4d1v0010dl8example9v",
+      "event": "phone_line.verification_updated",
+      "createdAt": "2026-10-01T13:58:40.000Z",
+      "data": {
+        "verificationId": "cmg5k0v3r0000vf8example7k",
+        "status": "APPROVED"
+      }
+    }
+    ```
+
+    `status` é um destes valores:
+
+    | `status` | Significado | Pode comprar? |
+    | --- | --- | --- |
+    | `APPROVED` | Aprovada. | Sim |
+    | `IN_REVIEW` | Concluída, aguardando análise manual. | Sim |
+    | `NEEDS_DOCUMENT` | O revisor pediu outro documento (no painel). | Não — `VERIFICATION_REQUIRED` |
+    | `REJECTED` | Recusada. | Não — `VERIFICATION_REJECTED` |
+
+    Não há endpoint público para ler a verificação; o `verificationId` a identifica nas conversas com o suporte.
+  </Accordion>
+</AccordionGroup>
+
+## Verificar a assinatura
+
+Todo webhook de linha tem um segredo, então **toda entrega é assinada**. `x-pilot-status-signature` é o **HMAC-SHA256 do corpo bruto da requisição**, codificado em hexadecimal, usando o segredo do webhook como chave (a string inteira, incluindo o prefixo `plwh_`). Calcule-o sobre os bytes exatamente como foram recebidos — antes de qualquer parse do JSON — e compare em tempo constante:
+
+<CodeGroup>
+
+```javascript Node
+const crypto = require("node:crypto");
+
+// rawBody: the request body exactly as received (Buffer or string).
+function isValidSignature(rawBody, signatureHeader, secret) {
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const received = String(signatureHeader ?? "");
+  return (
+    received.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received))
+  );
+}
+```
+
+```python Python
+import hashlib
+import hmac
+
+# raw_body: the request body exactly as received (bytes).
+def is_valid_signature(raw_body: bytes, signature_header: str | None, secret: str) -> bool:
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_header or "")
+```
+
+</CodeGroup>
+
+É o mesmo cálculo usado nos webhooks de número, então um receptor que já verifica esses webhooks funciona aqui com o segredo deste webhook. A assinatura cobre apenas o corpo — não há cabeçalho de timestamp —, então use o `id` para descartar duplicatas.
+
+## Entrega e retentativas
+
+- **Responda com qualquer `2xx` em até 10 segundos.** Qualquer outra coisa — outro status, um timeout, um erro de conexão — conta como tentativa com falha.
+- **6 tentativas no total**: a primeira imediatamente, depois novas tentativas com intervalos de cerca de 30 s, 1 min, 2 min, 4 min e 8 min — normalmente cerca de **15 minutos** do início ao fim. Depois da última, a entrega é marcada como falha no log. Uma entrega que não pôde ser enfileirada de início é retomada por uma varredura horária, então a primeira tentativa dela pode vir mais tarde.
+- **Redirecionamentos não são seguidos.** Uma resposta `3xx` conta como tentativa com falha.
+- **Pelo menos uma vez.** Se o seu endpoint processou o evento, mas não respondeu a tempo, a retentativa o entrega de novo, com o mesmo `id`. A ordem não é garantida.
+- **Webhooks pausados ou excluídos.** Um evento é entregue somente aos webhooks que estão ativos e inscritos no momento em que ele acontece. Cada tentativa confere o webhook de novo: uma entrega cujo webhook está pausado quando uma tentativa chega — inclusive uma que já está nas retentativas — é marcada como falha e não é enviada depois; excluir um webhook descarta as entregas pendentes dele. Os eventos nunca são reenviados a um webhook criado ou retomado depois.
+- **Destinos internos são recusados.** Uma URL cujo host resolve para um endereço de rede privada ou interna não é chamada, nem recebe novas tentativas. Uma URL assim é aceita na criação do webhook — nesse momento só o `https` e os nomes dos eventos são conferidos —, então toda entrega para ela fica registrada como falha. Já uma consulta DNS que falha é diferente: recebe novas tentativas como qualquer outra falha.
+
+<Tip>
+  Trate esses eventos como notificações, não como a fonte da verdade. Quando algum puder ter se perdido — seu endpoint ficou fora do ar por mais tempo do que duram as retentativas —, leia o estado atual com [`GET /v1/phone-lines`](/pt-BR/api/phone-lines/list).
+</Tip>

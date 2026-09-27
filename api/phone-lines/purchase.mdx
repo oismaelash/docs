@@ -1,0 +1,195 @@
+---
+title: "POST /v1/phone-lines — Buy Phone Lines"
+sidebarTitle: "Buy lines"
+description: "Buy 1 to 10 Brazilian landline numbers in one request. Each number is charged and acquired on its own; the Idempotency-Key header is required so a retry never buys twice."
+mode: "wide"
+---
+
+# Buy phone lines
+
+`POST /v1/phone-lines` buys **1 to 10** numbers taken from [`GET /v1/phone-lines/available`](/api/phone-lines/available). Each number becomes a line of your workspace, `ACTIVE` and paid for its first month.
+
+<Note>
+  Requires a **tenant-scoped** key. With an OAuth / MCP token, only the workspace **Owner** may buy (`phone_lines:purchase`) — `403 PERMISSION_DENIED` otherwise. The account holder must be verified first, in the dashboard — see [identity verification](/api/phone-lines/overview#before-the-first-purchase-identity-verification).
+</Note>
+
+<Warning>
+  **Real side effect: this charges money.** Each number costs the full monthly price (R\$ 33,90 or US\$ 33.90), taken from your wallet credits first and then from your saved card.
+</Warning>
+
+## Endpoint
+
+`POST https://pilotstatus.com.br/v1/phone-lines`
+
+## Headers
+
+<ParamField header="Idempotency-Key" type="string" required>
+  Any string up to **255 characters** with no control characters — a UUID per purchase is the usual choice. Missing, empty or whitespace-only → **400 `IDEMPOTENCY_KEY_REQUIRED`**; too long or with a control character → **400 `IDEMPOTENCY_KEY_INVALID`**. See [Idempotency](#idempotency).
+</ParamField>
+
+## Request body
+
+<ParamField body="numbers" type="string[]" required>
+  1 to 10 distinct numbers, each exactly as `GET /v1/phone-lines/available` returned it in `number`: E.164 digits **without** `+` — `55`, a two-digit area code starting 1–9, then 8 digits (`551148637200`). Numbers from different area codes can go in the same request.
+</ParamField>
+
+`numbers` is the **only** accepted field. Anything else is refused with **400 `UNKNOWN_FIELDS`**, naming the fields — in particular, the idempotency key is **not** a body field (the dashboard's `requestId` does not exist here).
+
+## Example
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -H "Idempotency-Key: 6f1c2a0e-7b1d-4c2e-9a5f-3d8e1b2c4a70" \
+  -d '{ "numbers": ["551148637200", "551148637201"] }'
+```
+
+```json Response (200)
+{
+  "results": [
+    {
+      "number": "551148637200",
+      "ok": true,
+      "lineId": "cmg5k2l1n0001pl8example9x"
+    },
+    {
+      "number": "551148637201",
+      "ok": false,
+      "code": "PAYMENT_FAILED",
+      "error": "The payment did not go through. Add balance or check your card. | O pagamento não foi concluído. Adicione saldo ou confira seu cartão."
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Response: `200` with one result per number
+
+The numbers are **independent**. Each one is charged and acquired on its own, in the order you sent them, and one that fails does **not** undo the others. So no single status describes the request: it answers **`200`** when it was processed, and the outcome of each number is in `results[i].ok`.
+
+<Warning>
+  **A `200` does not mean you bought anything.** Every item can have failed. Always read `results`.
+</Warning>
+
+<ResponseField name="results" type="object[]">
+  One entry per number, in the order sent.
+</ResponseField>
+
+<ResponseField name="results[].number" type="string">
+  The number, as you sent it.
+</ResponseField>
+
+<ResponseField name="results[].ok" type="boolean">
+  `true` when the line was bought by this request.
+</ResponseField>
+
+<ResponseField name="results[].lineId" type="string">
+  Only when `ok: true`. The new line's `id`, for [`GET /v1/phone-lines/{id}`](/api/phone-lines/list#fetch-one-line) and the [activation-code endpoints](/api/phone-lines/activation-codes).
+</ResponseField>
+
+<ResponseField name="results[].code" type="string">
+  Only when `ok: false`. Why this number failed — see the table below.
+</ResponseField>
+
+<ResponseField name="results[].error" type="string">
+  Only when `ok: false`. Bilingual message (`English | Portuguese`) for that `code`.
+</ResponseField>
+
+| Item `code` | What happened | Charged? | What to do |
+| --- | --- | --- | --- |
+| `REQUEST_ALREADY_PROCESSED` | This `Idempotency-Key` was already used for this number within the last hour — whatever that attempt's outcome was. | Not by this request. | Check `GET /v1/phone-lines`. To try a failed number again, use a **new** key. |
+| `NUMBER_UNAVAILABLE` | The number is already held (by another workspace, or already by yours), is being bought in another request at this moment (yours included), or the carrier no longer has it. | No — or, if it was already charged, refunded to the wallet. | Search again and pick another. |
+| `PAYMENT_FAILED` | Credits plus saved card did not cover the price, or the card charge did not go through. | No — credits taken were put back. | Top up or fix the card, then retry with a **new** key. |
+| `PAYMENT_PROVIDER_ERROR` | The card processor did not answer, so the card **may** have been charged. | Wallet: no. Card: unknown. | Check your card statement **before** retrying — a retry with a new key is a new charge. |
+| `PURCHASE_NOT_COMPLETED` | Charged and acquired, but the line could not be recorded on our side. | Refunded to the wallet. | Retry with a **new** key. |
+| `SUPPLIER_UNAVAILABLE` | The carrier failed while acquiring the number (or its shared request budget ran out). | Refunded to the wallet. | Retry in a few minutes with a **new** key. |
+
+### Order of operations, per number
+
+1. **Reserve** the number under your `Idempotency-Key` (see below). Already reserved → `REQUEST_ALREADY_PROCESSED`.
+2. **Check** that no line holds it — in any workspace, yours included — and that no other purchase of it is in flight → otherwise `NUMBER_UNAVAILABLE`, **nothing charged**.
+3. **Charge** the full monthly price: wallet credits first, the remainder on the saved card. If the card step fails, the credits already taken are put back → `PAYMENT_FAILED`.
+4. **Acquire** the number at the carrier. If that fails, the full price is **refunded to your wallet** — including any part that was paid by card — → `NUMBER_UNAVAILABLE` or `SUPPLIER_UNAVAILABLE`.
+5. **Create** the line: `status: "ACTIVE"`, `currentPeriodEnd` one month ahead, and the `phone_line.purchased` [webhook event](/api/phone-lines/webhooks).
+
+The charge happens before the acquisition on purpose: if the carrier sells us the number, it cannot be undone, and a refund to you is instant.
+
+There is **no checkout link** here (unlike extra numbers): with no credits and no saved card, the item fails with `PAYMENT_FAILED`. Fund the wallet first — in the dashboard (card or PIX), or with [`POST /v1/billing/checkout`](/api/extra-numbers) (`wallet_topup`, card only) — or save a card (`add_card`).
+
+## Whole-request errors
+
+Anything other than `200` means **no number was attempted** by this request, with one exception — `500`, see below. Checks run in this order:
+
+| Status | `code` | When | Extra fields |
+| --- | --- | --- | --- |
+| `401` | — | Missing or invalid credential. |  |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Number-scoped key, or per-number OAuth grant. |  |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | OAuth / MCP token of a user who is no longer an active member. |  |
+| `403` | `PERMISSION_DENIED` | OAuth / MCP token of a user who is not the workspace Owner. |  |
+| `400` | `IDEMPOTENCY_KEY_REQUIRED` | No `Idempotency-Key`, or only whitespace. |  |
+| `400` | `IDEMPOTENCY_KEY_INVALID` | Key over 255 characters, or with a control character (tab included). | `details.maxLength` (`255`) |
+| `400` | `INVALID_BODY` | Body is not a JSON object. |  |
+| `400` | `UNKNOWN_FIELDS` | Body has fields other than `numbers`. | `details.unknownFields` |
+| `400` | `INVALID_NUMBERS` | `numbers` missing, not an array, or has a non-string entry. |  |
+| `400` | `INVALID_SELECTION` | More than 10 numbers. |  |
+| `400` | `INVALID_NUMBERS` | Entries not shaped like a searched number — with `+`, without `55`, wrong length. Refused **before any money moves**. | `details.invalidNumbers` |
+| `403` | `VERIFICATION_REJECTED` | The account holder verification was rejected. |  |
+| `403` | `VERIFICATION_REQUIRED` | The account holder is not verified (or verification is unfinished). |  |
+| `400` | `INVALID_SELECTION` | Zero numbers, or the same number twice. |  |
+| `503` | `SUPPLIER_UNAVAILABLE` | The carrier integration is unavailable before any number is attempted. |  |
+| `500` | `INTERNAL_ERROR` | Unexpected failure. |  |
+
+```json
+{
+  "error": "Not a number from GET /v1/phone-lines/available: +551148637201, 11948637202. Use E.164 digits without \"+\", e.g. 551148637200. | Não é um número de GET /v1/phone-lines/available: +551148637201, 11948637202. Use os dígitos E.164 sem \"+\", ex.: 551148637200.",
+  "code": "INVALID_NUMBERS",
+  "details": { "invalidNumbers": ["+551148637201", "11948637202"] }
+}
+```
+
+<Warning>
+  **A `500` or a timeout does not prove that nothing happened.** The numbers are processed one after another, and a failure midway can come after earlier numbers were already charged and bought. Retry **the same request with the same `Idempotency-Key`**, then list your lines with [`GET /v1/phone-lines`](/api/phone-lines/list) to see which numbers are yours.
+</Warning>
+
+## Idempotency
+
+The `Idempotency-Key` header is mandatory because a client that times out on this request has no other way to know whether money moved. What it guarantees, exactly:
+
+- **The key is tracked per number, for one hour.** Before anything else, each number is recorded under _(your workspace, the key, the number)_. For the next **hour**, sending the same key again with that number charges nothing and buys nothing: the item answers `ok: false`, `REQUEST_ALREADY_PROCESSED`.
+- **A replay does not return the original result.** `REQUEST_ALREADY_PROCESSED` comes back whether the first attempt bought the number or failed. To know which, call [`GET /v1/phone-lines`](/api/phone-lines/list): a number that was bought is in your list.
+- **A number that failed is locked under that key for the hour.** After a `PAYMENT_FAILED` you top up and retry — with a **new** key, or the retry answers `REQUEST_ALREADY_PROCESSED`.
+- **After the hour the key is forgotten.** A number you bought then answers `NUMBER_UNAVAILABLE` (it is yours — there is no second charge); a number that had failed is attempted again. To retry a failed number, always use a new key.
+- **Only the numbers are protected, not the request.** Sending the same key with a _different_ number buys that number.
+- **A request refused as a whole records nothing.** After any `400` or `403` above, fix the request and resend it with the same key.
+- **Concurrent duplicates.** If two deliveries of the same request are in flight together, each number proceeds in one of them; the other gets `REQUEST_ALREADY_PROCESSED` for it.
+- **Scoped to your workspace.** The same key sent by another workspace never collides with yours.
+
+<Note>
+  The record is kept in a cache. If that cache is unavailable, the protection is skipped rather than blocking purchases — two deliveries of the same request that land during such an outage could both charge. Send each purchase once and retry only on a timeout, a `5xx` or a network error.
+</Note>
+
+### Recommended retry pattern
+
+<Steps>
+  <Step title="One key per purchase">
+    Generate a UUID for each purchase the user makes and send it as `Idempotency-Key`. Use a generous client timeout: numbers are processed one after another.
+  </Step>
+  <Step title="On timeout, 5xx or network error">
+    Resend the **same body with the same key**. Numbers already handled come back `REQUEST_ALREADY_PROCESSED`; numbers the first attempt never reached are processed now.
+  </Step>
+  <Step title="Reconcile">
+    Call `GET /v1/phone-lines` and match by `number` to learn which lines you now hold.
+  </Step>
+  <Step title="Retry failures with a new key">
+    For numbers that failed (`PAYMENT_FAILED`, `SUPPLIER_UNAVAILABLE`), fix the cause and send them with a **new** key.
+  </Step>
+</Steps>
+
+## After the purchase
+
+- The line is `ACTIVE` until `currentPeriodEnd` — one month after the purchase — and then renews monthly. See the [line lifecycle](/api/phone-lines/overview#line-lifecycle).
+- Request the WhatsApp activation code with [`POST /v1/phone-lines/{id}/activations`](/api/phone-lines/activation-codes).

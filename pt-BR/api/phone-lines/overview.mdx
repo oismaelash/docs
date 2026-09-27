@@ -1,0 +1,239 @@
+---
+title: "API de Linhas Telefônicas — Visão Geral"
+sidebarTitle: "Visão geral"
+description: "Alugue números fixos brasileiros para ativar contas do WhatsApp Business: escopo da chave, permissões, preço, o ciclo de vida da linha, o fluxo do código de ativação, idempotência e todos os códigos de erro de /v1/phone-lines."
+mode: "wide"
+---
+
+# Linhas telefônicas
+
+Uma **linha telefônica** é um **número fixo** brasileiro que você aluga da Pilot Status para **ativar uma conta do WhatsApp Business** nele — sem chip envolvido. Quando o WhatsApp verifica o número, ele liga para a linha; nós capturamos essa ligação, transcrevemos e entregamos o código de 6 dígitos pela API, pelo painel e por um webhook.
+
+As linhas **só recebem**: não fazem ligações nem enviam SMS, e um número fixo não recebe SMS — o código sempre chega **por ligação**. A linha é um produto à parte: comprar uma não cria nem conecta um número de WhatsApp no seu workspace.
+
+<Note>
+  Todo endpoint `/v1/phone-lines` exige uma chave **com escopo de tenant** (painel **Perfil → API**). A linha pertence ao workspace, não a um número de WhatsApp, então uma chave com escopo de número recebe **403 `NUMBER_SCOPE_NOT_ALLOWED`**.
+</Note>
+
+## Endpoints
+
+| Método | Endpoint | Descrição |
+| --- | --- | --- |
+| `GET` | `/v1/phone-lines/available?ddd=11` | [Buscar os números](/pt-BR/api/phone-lines/available) que você pode comprar em um DDD. |
+| `POST` | `/v1/phone-lines` | [Comprar de 1 a 10 números](/pt-BR/api/phone-lines/purchase). Exige `Idempotency-Key`. |
+| `GET` | `/v1/phone-lines` | [Listar suas linhas](/pt-BR/api/phone-lines/list). |
+| `GET` | `/v1/phone-lines/{id}` | [Obter uma linha](/pt-BR/api/phone-lines/list#obter-uma-linha). |
+| `DELETE` | `/v1/phone-lines/{id}` | [Cancelar uma linha](/pt-BR/api/phone-lines/cancel). |
+| `POST` | `/v1/phone-lines/{id}/activations` | [Preparar a linha para receber um novo código do WhatsApp](/pt-BR/api/phone-lines/activation-codes). |
+| `GET` | `/v1/phone-lines/activations/{activationId}` | [Consultar um pedido de código](/pt-BR/api/phone-lines/activation-codes#consultar-o-pedido). |
+| `GET` | `/v1/phone-lines/{id}/activations` | [Histórico de códigos de uma linha](/pt-BR/api/phone-lines/activation-codes#histórico-de-códigos). |
+
+Os eventos (`phone_line.purchased`, `phone_line.code_received`, …) são entregues aos **webhooks das linhas**, um cadastro separado dos webhooks dos seus números — veja [Webhooks das linhas](/pt-BR/api/phone-lines/webhooks).
+
+## Credenciais e permissões
+
+| Credencial | Resultado em `/v1/phone-lines*` |
+| --- | --- |
+| Chave com escopo de tenant (`x-api-key: ps_…`) | Permitida em todos os endpoints. |
+| Chave com escopo de número | **403 `NUMBER_SCOPE_NOT_ALLOWED`** em todos os endpoints. |
+| Token OAuth / MCP, concessão para o tenant inteiro | Permitido até onde o **papel do usuário por trás do token** permite (tabela abaixo). |
+| Token OAuth / MCP, concessão OAuth por número | **403 `NUMBER_SCOPE_NOT_ALLOWED`** — a concessão OAuth precisa ser para o tenant inteiro. |
+
+Uma chave `ps_` clássica não tem usuário e, portanto, não tem papel: sua autoridade é o seu escopo. Um token OAuth ou MCP carrega um usuário, e o token nunca vai além do papel **atual** desse usuário no workspace:
+
+| Endpoint | Permissão | Proprietário | Administrador | Atendente | Analista |
+| --- | --- | :-: | :-: | :-: | :-: |
+| `GET /v1/phone-lines`, `GET /v1/phone-lines/{id}` | `phone_lines:read` | ✅ | ✅ | — | — |
+| Os três endpoints `…/activations` | `phone_lines:read` | ✅ | ✅ | — | — |
+| `GET /v1/phone-lines/available`, `POST /v1/phone-lines` | `phone_lines:purchase` | ✅ | — | — | — |
+| `DELETE /v1/phone-lines/{id}` | `phone_lines:cancel` | ✅ | — | — | — |
+
+Um papel sem a permissão recebe **403 `PERMISSION_DENIED`**.
+
+<Warning>
+  **O código de ativação é uma credencial.** Quem o tiver pode registrar uma conta do WhatsApp na linha. É por isso que só Proprietário e Administrador leem linhas e códigos, e por isso que toda resposta que pode conter um código é enviada com `Cache-Control: no-store`. Mantenha a chave do tenant no seu backend.
+</Warning>
+
+## Antes da primeira compra: verificação do titular
+
+Alugar uma linha telefônica exige um titular da conta verificado (CNPJ ou CPF, mais a confirmação de contato). **A verificação é feita só no painel** — **Linhas** (`/linhas`) → **Comprar linhas** — e é pedida uma única vez, na primeira compra. Não há endpoint de verificação na API pública.
+
+Pela API, um workspace não verificado pode buscar números e tentar comprar; a compra então responde:
+
+| Estado da verificação | `POST /v1/phone-lines` |
+| --- | --- |
+| Aprovada | Prossegue. |
+| Em análise manual | **Prossegue** — você já pode comprar. |
+| Nunca iniciada, não concluída (código de contato ou documento ainda pendente) ou outro documento solicitado | **403 `VERIFICATION_REQUIRED`** |
+| Recusada | **403 `VERIFICATION_REJECTED`** |
+
+As mudanças de estado da verificação também são entregues como o [evento de webhook](/pt-BR/api/phone-lines/webhooks) `phone_line.verification_updated`.
+
+## Preço e pagamento
+
+- **R\$ 33,90 por linha por mês** para workspaces em BRL, **US\$ 33.90** para workspaces em USD. O preço é **congelado em cada linha no momento da compra**: `price` e `currency` da linha são o que toda renovação dessa linha cobra.
+- **O primeiro mês é cobrado integralmente na compra** — sem cobrança proporcional.
+- **Cada linha tem seu próprio ciclo**, ancorado na data da compra. Ela renova no mesmo dia do mês seguinte; quando esse dia não existe, no último dia do mês, e esse dia mais curto passa a valer daí em diante: comprada em 31/01 → renova em 28/02 (ou 29/02) → 28/03 → 28/04. As datas são calculadas em UTC. O `currentPeriodEnd` da linha é a próxima renovação.
+- **O pagamento sai primeiro da carteira pré-paga**, e o que os créditos não cobrirem é cobrado no seu cartão salvo. Se a etapa do cartão falhar, os créditos já descontados são devolvidos. Recarregue a carteira pelo painel (cartão ou PIX), ou pela API com [`POST /v1/billing/checkout`](/pt-BR/api/extra-numbers) — `wallet_topup` (só cartão) ou `add_card` para salvar um cartão.
+- As linhas estão disponíveis em **todos os planos, inclusive o Free**, **sem limite** de quantas um workspace pode ter. Um único `POST` compra no máximo 10.
+- As linhas compartilham a carteira com o produto WhatsApp. O painel mostra o extrato agrupado por produto.
+
+## Ciclo de vida da linha
+
+```text
+                 renewal fails                2 days unpaid              1 more day unpaid
+   ACTIVE ─────────────────────▶ PAYMENT_PENDING ─────────────▶ SUSPENDED ───────────────▶ RETURNED
+     ▲                                  │                            │                     (final)
+     └──────────── a renewal charge succeeds (retried every 6 hours) ┘
+
+   ACTIVE ── DELETE ──▶ ACTIVE + cancelAtPeriodEnd: true ── period ends ──▶ CANCELED (final)
+   PAYMENT_PENDING / SUSPENDED ── DELETE ──▶ RETURNED (immediately, final)
+```
+
+| `status` | O que significa | Novos códigos de ativação | Renovação cobrada |
+| --- | --- | :-: | :-: |
+| `ACTIVE` | Paga até `currentPeriodEnd`. | ✅ | em `currentPeriodEnd` |
+| `PAYMENT_PENDING` | A cobrança da renovação falhou. `paymentPendingSince` informa quando. Nova tentativa a cada 6 horas. | ✅ | tentada de novo |
+| `SUSPENDED` | Ainda sem pagamento **2 dias** depois de `paymentPendingSince`. Continua sendo sua; o histórico de códigos continua disponível para leitura. `suspendedAt` informa quando. | — | tentada de novo |
+| `RETURNED` | Ainda sem pagamento **1 dia** depois de `suspendedAt`, ou cancelada enquanto estava em atraso. Cancelada na operadora; o número voltou para o estoque de números da operadora. `returnedAt` informa quando. **Definitivo.** | — | nunca |
+| `CANCELED` | Você cancelou uma linha paga e o período pago terminou. `canceledAt` informa quando. **Definitivo.** | — | nunca |
+
+Prazos:
+
+- A **renovação** é tentada quando `currentPeriodEnd` é atingido. O faturamento roda **uma vez por hora**, então a cobrança — e cada transição abaixo — acontece em até cerca de uma hora depois do respectivo prazo.
+- **Uma renovação que falha** leva a linha para `PAYMENT_PENDING` e é tentada de novo **a cada 6 horas**. Créditos ou um cartão adicionados são aproveitados na próxima tentativa; o botão **Pagar tudo** do painel tenta de novo na hora.
+- **2 dias** após a falha, a linha fica `SUSPENDED`; **1 dia** depois, fica `RETURNED`. Da primeira cobrança que falhou até perder o número: cerca de **3 dias**.
+- **Pagar com atraso mantém a data de aniversário.** Quando uma renovação finalmente dá certo — mesmo em `SUSPENDED` — a linha volta para `ACTIVE` e o novo período conta a partir da data original de renovação, não da data do pagamento.
+- Cada etapa envia um aviso e um evento de webhook: `phone_line.payment_failed` (uma vez por renovação, na primeira tentativa que falha), `phone_line.suspended` e `phone_line.returned`. Uma renovação bem-sucedida envia `phone_line.renewed`.
+
+<Warning>
+  **A devolução de um número é irreversível.** O número volta para o estoque de números da operadora e deixa de ser seu; nada desfaz uma devolução, e não há garantia de que você consiga esse número de novo. A conta do WhatsApp ativada nele continua vinculada a esse número: quem alugá-lo em seguida pode pedir um código de verificação para ele. Mantenha créditos ou um cartão salvo disponíveis.
+</Warning>
+
+### Cancelamento
+
+`DELETE /v1/phone-lines/{id}` depende do estado — veja [Cancelar uma linha](/pt-BR/api/phone-lines/cancel):
+
+- **`ACTIVE`** — **sem estorno**. A linha continua `ACTIVE` e utilizável (inclusive para códigos) até `currentPeriodEnd`, com `cancelAtPeriodEnd: true`; ela não é renovada e passa a `CANCELED` no fim do período. Desfazer um cancelamento agendado só é possível no painel.
+- **`PAYMENT_PENDING` / `SUSPENDED`** — não resta período pago, então a linha é **devolvida imediatamente** (`RETURNED`).
+- **`RETURNED` / `CANCELED`** — **409 `NOT_CANCELABLE`**.
+
+## O fluxo do código de ativação
+
+<Steps>
+  <Step title="Prepare a linha">
+    `POST /v1/phone-lines/{id}/activations` (sem corpo). A linha é reiniciada na operadora — assim a gravação de uma ligação anterior nunca é lida como o código desta — e um pedido de código é aberto em `WAITING`, com uma janela de **5 minutos** (`pollDeadline`). Chame este endpoint **antes** de pedir ao WhatsApp que ligue.
+  </Step>
+  <Step title="Peça ao WhatsApp para ligar para a linha">
+    Registre o número no WhatsApp Business e, quando o WhatsApp perguntar como receber o código, escolha a opção de receber o código por **ligação** ("Call me" no app em inglês). A linha é fixa: esperar por um SMS só consome a janela.
+  </Step>
+  <Step title="Capturamos e transcrevemos a ligação">
+    Verificamos a linha **a cada 15 segundos, aproximadamente,** durante a janela. Quando a gravação da ligação aparece, nós a armazenamos, transcrevemos e extraímos o código de 6 dígitos.
+  </Step>
+  <Step title="Leia o código">
+    Consulte `GET /v1/phone-lines/activations/{activationId}` a cada poucos segundos até `status` ser `TRANSCRIBED` (ou outro estado definitivo), ou assine o webhook `phone_line.code_received`. Digite o `code` no WhatsApp.
+  </Step>
+</Steps>
+
+Só pode haver um pedido aguardando por linha de cada vez (**409 `ACTIVATION_IN_PROGRESS`**). Não há limite de quantos códigos uma linha pode pedir ao longo da vida; cada pedido aberto incrementa o `activationCount` da linha. Linhas suspensas e encerradas não podem pedir códigos (**409 `LINE_NOT_ACTIVE`**). A **gravação** da ligação só pode ser ouvida no painel. Detalhes completos, status e casos de borda: [Códigos de ativação](/pt-BR/api/phone-lines/activation-codes).
+
+## Idempotência
+
+`POST /v1/phone-lines` movimenta dinheiro, por isso **exige** o header `Idempotency-Key`. Uma nova tentativa com a mesma chave nunca cobra duas vezes pelo mesmo número dentro de **uma hora**: o item volta com `ok: false` e `REQUEST_ALREADY_PROCESSED`. As regras exatas — inclusive o que uma repetição informa e o que não informa — estão em [Comprar linhas telefônicas → Idempotência](/pt-BR/api/phone-lines/purchase#idempotência).
+
+Os outros endpoints não precisam de chave: leituras são seguras, `DELETE` em uma linha `ACTIVE` não tem efeito na segunda vez, e um segundo `POST …/activations` enquanto outro pedido está aguardando responde `409 ACTIVATION_IN_PROGRESS` em vez de abrir mais um.
+
+## Limites
+
+- **De 1 a 10 números por requisição de compra**, sem duplicados. Sem limite de linhas por workspace.
+- **Um pedido de código aguardando por linha.**
+- **Histórico de códigos:** `limit` de 1–100 por chamada (padrão 20).
+- **As requisições que chegam à nossa operadora — buscar, comprar, pedir um código, cancelar uma linha em atraso — consomem uma cota de requisições compartilhada por toda a plataforma.** Quando ela se esgota, elas respondem **503 `SUPPLIER_UNAVAILABLE`** ("Tente de novo em alguns minutos"), ou o `SUPPLIER_UNAVAILABLE` por número dentro de uma compra. Busque uma vez por DDD e reutilize o resultado, em vez de consultá-lo repetidamente.
+- Não há outro limite de taxa específico para estes endpoints.
+
+## Erros
+
+Todo corpo de erro tem o mesmo envelope. A string `error` traz uma frase em inglês e outra em português separadas por `" | "`; **decida pelo `code`**, nunca pelo texto:
+
+```json
+{
+  "error": "Line not found. | Linha não encontrada.",
+  "code": "LINE_NOT_FOUND"
+}
+```
+
+Erros de validação gerados pelas próprias rotas podem incluir um objeto `details` (`unknownFields`, `invalidNumbers`, `maxLength`). Os erros de autenticação e de escopo compartilhados por toda a API são a exceção à regra bilíngue: um `401` traz só `error` (sem `code`), e os `403` de escopo e de papel trazem um `error` só em inglês. Outros erros comuns a toda a API também podem aparecer aqui — por exemplo `403 WORKSPACE_ARCHIVED` para um workspace arquivado, ou `404 NUMBER_NOT_FOUND` quando um header `x-whatsapp-number-id` não corresponde a nenhum número da sua conta.
+
+| Status | `code` | Onde | O que aconteceu | O que fazer |
+| --- | --- | --- | --- | --- |
+| `401` | — | todos | Credencial ausente ou inválida. | Envie um `x-api-key` válido. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | todos | Chave com escopo de número, ou concessão OAuth por número. | Use a chave com escopo de tenant. |
+| `403` | `PERMISSION_DENIED` | todos | Token OAuth/MCP cujo usuário tem um papel sem a permissão. | Veja a tabela de permissões acima. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | todos | Token OAuth/MCP de um usuário que não é mais membro ativo. | Reconecte com um membro ativo. |
+| `400` | `INVALID_QUERY` | `GET /v1/phone-lines` | `includeClosed` não é `true`/`false`/`1`/`0`. | Corrija a query string. |
+| `400` | `INVALID_AREA_CODE` | `GET …/available` | `ddd` ausente ou não tem dois dígitos começando de 1 a 9. | Envie um DDD válido. |
+| `400` | `IDEMPOTENCY_KEY_REQUIRED` | `POST /v1/phone-lines` | Sem o header `Idempotency-Key` (ou só com espaços em branco). | Envie um — um UUID por compra. |
+| `400` | `IDEMPOTENCY_KEY_INVALID` | `POST /v1/phone-lines` | Chave com mais de 255 caracteres, ou com caracteres de controle. `details.maxLength`. | Encurte-a. |
+| `400` | `INVALID_BODY` | `POST /v1/phone-lines` | O corpo não é um objeto JSON. | Envie `{ "numbers": [...] }`. |
+| `400` | `UNKNOWN_FIELDS` | `POST /v1/phone-lines` | Campos além de `numbers`. `details.unknownFields` diz quais são. | Remova-os. A chave de idempotência vai no header, não no corpo. |
+| `400` | `INVALID_NUMBERS` | `POST /v1/phone-lines` | `numbers` não é um array de strings, ou tem itens que não têm o formato de um número buscado (`details.invalidNumbers`). | Use os valores de `number` retornados por `GET …/available`. |
+| `400` | `INVALID_SELECTION` | `POST /v1/phone-lines` | Zero números, mais de 10, ou o mesmo número duas vezes. | Envie de 1 a 10 números distintos. |
+| `403` | `VERIFICATION_REQUIRED` | `POST /v1/phone-lines` | O titular da conta não está verificado. | Faça a verificação no painel (`/linhas`). |
+| `403` | `VERIFICATION_REJECTED` | `POST /v1/phone-lines` | A verificação foi recusada. | Fale com o suporte. |
+| `400` | `INVALID_LIMIT` | `GET …/{id}/activations` | `limit` não é um inteiro de 1 a 100. | Corrija a query string. |
+| `404` | `LINE_NOT_FOUND` | `…/{id}`, `…/{id}/activations` | Essa linha não existe no seu workspace (a linha de outro workspace responde o mesmo). | Confira o id — é o `id` da linha, não o número de telefone. |
+| `404` | `ACTIVATION_NOT_FOUND` | `GET …/activations/{activationId}` | Esse pedido de código não existe no seu workspace. | Confira o id. |
+| `409` | `NOT_CANCELABLE` | `DELETE …/{id}` | A linha já está `RETURNED` ou `CANCELED`. | Nada a fazer. |
+| `409` | `LINE_NOT_ACTIVE` | `POST …/{id}/activations` | A linha está `SUSPENDED`, `RETURNED` ou `CANCELED`. | Pague primeiro a linha suspensa; uma linha encerrada não recebe códigos. |
+| `409` | `ACTIVATION_IN_PROGRESS` | `POST …/{id}/activations` | Um pedido nesta linha ainda está aguardando a ligação. | Consulte o pedido que está aguardando, ou tente de novo depois do `pollDeadline` dele. |
+| `503` | `SUPPLIER_UNAVAILABLE` | busca, compra, cancelamento, ativações | Não foi possível falar com a operadora, ela recusou, ou a cota compartilhada se esgotou. No `POST …/activations` também pode significar que não conseguimos começar a monitorar a linha: um pedido `FAILED` (`poll_not_scheduled`) fica então no histórico. | Tente de novo em alguns minutos — um novo pedido de código já é aceito na hora. |
+| `500` | `INTERNAL_ERROR` | todos | Falha inesperada. | Tente de novo. No `POST /v1/phone-lines`, tente de novo com a **mesma** chave e depois liste suas linhas. |
+
+### Resultados por número de uma compra
+
+`POST /v1/phone-lines` responde `200` com um resultado por número. Um item que falhou traz `code` e um `error` bilíngue, mas **nenhum status HTTP próprio** — a requisição como um todo foi processada:
+
+| `code` do item | O que aconteceu | Cobrado? |
+| --- | --- | --- |
+| `REQUEST_ALREADY_PROCESSED` | Este `Idempotency-Key` já foi usado para este número na última hora. | Não (não por esta requisição). |
+| `NUMBER_UNAVAILABLE` | Uma linha já tem o número (em qualquer workspace, inclusive o seu), outra compra dele está em andamento, ou a operadora não o tem mais. | Não — ou estornado para a carteira. |
+| `PAYMENT_FAILED` | Os créditos mais o cartão salvo não cobriram o preço, ou a cobrança no cartão não passou (recusada, exigiu autenticação adicional ou outro erro de pagamento). | Não — os créditos descontados foram devolvidos. |
+| `PAYMENT_PROVIDER_ERROR` | A processadora do cartão não respondeu. O cartão **pode** ter sido cobrado. | Carteira: não. Cartão: confira a fatura. |
+| `PURCHASE_NOT_COMPLETED` | Cobrado, mas a linha não pôde ser registrada. | Estornado para a carteira. |
+| `SUPPLIER_UNAVAILABLE` | A operadora falhou ao adquirir o número. | Estornado para a carteira. |
+
+Um estorno após uma cobrança sempre vai para a **carteira**, inclusive qualquer parte que tenha sido paga com cartão. Veja [Comprar linhas telefônicas](/pt-BR/api/phone-lines/purchase) para a semântica completa.
+
+<Accordion title="Mensagens de erro exatas">
+  | `code` | `error` |
+  | --- | --- |
+  | `INVALID_AREA_CODE` | `Invalid area code. \| DDD inválido.` |
+  | `INVALID_SELECTION` | `Pick between 1 and 10 numbers from the search. \| Escolha entre 1 e 10 números da busca.` |
+  | `VERIFICATION_REQUIRED` | `Verify the account holder before buying a line. \| Verifique o titular da conta antes de comprar uma linha.` |
+  | `VERIFICATION_REJECTED` | `The account holder verification was rejected. \| A verificação do titular foi recusada.` |
+  | `REQUEST_ALREADY_PROCESSED` | `This request was already processed. Check your lines, or send a new request id (Idempotency-Key in the API) to try again. \| Este pedido já foi processado. Confira suas linhas, ou envie um novo id de pedido (Idempotency-Key na API) para tentar de novo.` |
+  | `NUMBER_UNAVAILABLE` | `This number is no longer available. Pick another one. \| Este número não está mais disponível. Escolha outro.` |
+  | `PAYMENT_FAILED` | `The payment did not go through. Add balance or check your card. \| O pagamento não foi concluído. Adicione saldo ou confira seu cartão.` |
+  | `PAYMENT_PROVIDER_ERROR` | `The card processor did not answer, so we cannot tell whether your card was charged. Your wallet was not debited; check your card statement before trying again. \| A operadora do cartão não respondeu, então não sabemos se o cartão foi cobrado. Sua carteira não foi debitada; confira a fatura do cartão antes de tentar de novo.` |
+  | `PURCHASE_NOT_COMPLETED` | `The purchase could not be completed. The amount charged was returned to your wallet as balance. \| A compra não pôde ser concluída. O valor cobrado voltou para sua carteira como saldo.` |
+  | `SUPPLIER_UNAVAILABLE` | `Phone lines are temporarily unavailable. Try again in a few minutes. \| As linhas estão temporariamente indisponíveis. Tente de novo em alguns minutos.` |
+  | `LINE_NOT_FOUND` | `Line not found. \| Linha não encontrada.` |
+  | `LINE_NOT_ACTIVE` | `This line is not active, so it cannot receive a new code. \| Esta linha não está ativa, então não pode receber um novo código.` |
+  | `ACTIVATION_IN_PROGRESS` | `A code request is already waiting for the call on this line. \| Já existe um pedido de código esperando a ligação nesta linha.` |
+  | `ACTIVATION_NOT_FOUND` | `Code request not found. \| Pedido de código não encontrado.` |
+  | `NOT_CANCELABLE` | `This line cannot be cancelled now. \| Esta linha não pode ser cancelada agora.` |
+  | `INTERNAL_ERROR` | `Unexpected error. \| Erro inesperado.` |
+
+  Os erros de validação das próprias rotas (`INVALID_QUERY`, `INVALID_LIMIT`, `IDEMPOTENCY_KEY_*`, `INVALID_BODY`, `UNKNOWN_FIELDS`, `INVALID_NUMBERS`) montam a mensagem a partir da requisição — ela cita o campo ou os números com problema — e seguem o mesmo padrão `English | Portuguese`.
+</Accordion>
+
+## Só no painel
+
+Estes itens não têm endpoint na API pública; use o painel (**Linhas**, `/linhas`):
+
+- Verificação do titular (envio de documento e código de contato).
+- Ouvir a gravação da ligação de um pedido de código.
+- Desfazer um cancelamento agendado.
+- **Pagar tudo** e **Escolher quais linhas manter** para linhas em atraso.
+- O extrato da carteira agrupado por produto.
+- Criar e gerenciar [webhooks das linhas](/pt-BR/api/phone-lines/webhooks) e ler o log de entregas deles.

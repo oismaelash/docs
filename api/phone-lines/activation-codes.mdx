@@ -1,0 +1,198 @@
+---
+title: "POST /v1/phone-lines/{id}/activations — Activation Codes"
+sidebarTitle: "Activation codes"
+description: "Get the WhatsApp verification code of a phone line: open a 5-minute capture window, ask WhatsApp to call the line, then poll the request until the transcribed code arrives."
+mode: "wide"
+---
+
+# Get the WhatsApp activation code
+
+WhatsApp verifies a landline **by calling it** and speaking a 6-digit code. These endpoints capture that call for you: you open a capture window on the line, ask WhatsApp to call, and read the code — transcribed from the call — from the API.
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/v1/phone-lines/{id}/activations` | Open a new code request on the line (5-minute window). |
+| `GET` | `/v1/phone-lines/activations/{activationId}` | Poll one request: its `status` and, when ready, `code`. |
+| `GET` | `/v1/phone-lines/{id}/activations` | The line's code history, newest first. |
+
+<Note>
+  Requires a **tenant-scoped** key. With an OAuth / MCP token, the user must be an **Owner or Admin** (`phone_lines:read`) — `403 PERMISSION_DENIED` otherwise. Every response that carries an activation is sent with `Cache-Control: no-store`: **the code is a credential** — whoever holds it can register a WhatsApp account on the line.
+</Note>
+
+## How it works
+
+<Steps>
+  <Step title="Open a request — before WhatsApp calls">
+    `POST /v1/phone-lines/{id}/activations`. The line is reset at the carrier, so the recording of an earlier call can never be read as this one's code, and a request opens in `WAITING` until `pollDeadline` — **5 minutes** later. A call that arrives before this request exists is not captured.
+  </Step>
+  <Step title="Ask WhatsApp to call the line">
+    Register the number in WhatsApp Business and, when asked how to receive the code, choose the **phone call** option ("Call me"). The line is a landline and does not receive SMS — waiting for an SMS only burns the window.
+  </Step>
+  <Step title="We capture and transcribe">
+    We check the line **about every 15 seconds** while the window is open. When a recording appears we store it (`CAPTURED`), transcribe it and extract the code (`TRANSCRIBED`).
+  </Step>
+  <Step title="Read the code">
+    Poll `GET /v1/phone-lines/activations/{activationId}` every few seconds — or listen for the [`phone_line.code_received`](/api/phone-lines/webhooks) webhook — and type `code` into WhatsApp.
+  </Step>
+</Steps>
+
+## Request a code
+
+`POST https://pilotstatus.com.br/v1/phone-lines/{id}/activations` — no body. Answers **`201`** with the new request.
+
+- Allowed while the line is `ACTIVE` or `PAYMENT_PENDING` (including an `ACTIVE` line cancelled at period end). A `SUSPENDED`, `RETURNED` or `CANCELED` line gets **409 `LINE_NOT_ACTIVE`**.
+- **One waiting request per line.** While a request is `WAITING` and its `pollDeadline` is still ahead, another `POST` answers **409 `ACTIVATION_IN_PROGRESS`** — poll the one you have instead.
+- **No limit on requests over time.** Ask again whenever you need to (re-registering WhatsApp, a window that timed out); each request that opens increments the line's `activationCount`.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activations" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Response (201)
+{
+  "activation": {
+    "id": "cmg5k3a7c0002ac8example4q",
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "status": "WAITING",
+    "requestedAt": "2026-10-01T14:10:00.000Z",
+    "pollDeadline": "2026-10-01T14:15:00.000Z",
+    "code": null,
+    "capturedAt": null,
+    "transcribedAt": null,
+    "failureReason": null,
+    "hasAudio": false
+  }
+}
+```
+
+</CodeGroup>
+
+## Poll the request
+
+`GET https://pilotstatus.com.br/v1/phone-lines/activations/{activationId}` returns `{ "activation": { … } }`. A request of another workspace answers **404 `ACTIVATION_NOT_FOUND`**, the same as one that does not exist.
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Response (200)
+{
+  "activation": {
+    "id": "cmg5k3a7c0002ac8example4q",
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "status": "TRANSCRIBED",
+    "requestedAt": "2026-10-01T14:10:00.000Z",
+    "pollDeadline": "2026-10-01T14:15:00.000Z",
+    "code": "123456",
+    "capturedAt": "2026-10-01T14:11:42.000Z",
+    "transcribedAt": "2026-10-01T14:11:51.000Z",
+    "failureReason": null,
+    "hasAudio": true
+  }
+}
+```
+
+</CodeGroup>
+
+Polling every few seconds is plenty: the status can only move after our next 15-second check of the line.
+
+### Statuses
+
+| `status` | `code` | `failureReason` | `hasAudio` | What it means | Next step |
+| --- | --- | --- | :-: | --- | --- |
+| `WAITING` | `null` | `null` | `false` | The window is open and no call has been captured yet. | Keep polling. Make sure WhatsApp was asked to **call**. |
+| `CAPTURED` | `null` | `null` | `true` | The call was recorded; the transcription is running. | Keep polling. |
+| `CAPTURED` | `null` | `transcription_failed` | `true` | Recorded, but the transcription failed. **Final.** | Listen to the recording in the dashboard. |
+| `TRANSCRIBED` | `"123456"` | `null` | `true` | The code was read. **Final.** | Type it into WhatsApp. |
+| `TRANSCRIBED` | `null` | `no_code_in_transcript` | `true` | The call was transcribed but no 6-digit code was found in it. **Final.** | Listen to the recording in the dashboard, or request a new code. |
+| `TIMED_OUT` | `null` | `no_call_in_window` | `false` | No call was captured before `pollDeadline`. **Final.** | Request a new code, then ask WhatsApp to call again. |
+| `FAILED` | `null` | `audio_download_failed`, `audio_store_failed` | `false` | A recording appeared but could not be downloaded or stored. **Final.** | Request a new code. |
+| `FAILED` | `null` | `poll_not_scheduled` | `false` | We could not start watching the line (the `POST` answered `503`). **Final.** | Request a new code — allowed right away. |
+
+<Warning>
+  **Do not stop polling at the first status that is not `WAITING`.** `CAPTURED` is also the in-between state while the transcription runs: keep polling while `status` is `WAITING`, or `CAPTURED` with `failureReason: null`. And `TRANSCRIBED` does not guarantee a code — check `code`. The transcription takes seconds: if a request stays `CAPTURED` with `failureReason: null` for more than a few minutes, treat it as failed — listen to the recording in the dashboard, or request a new code.
+</Warning>
+
+- `TIMED_OUT` is recorded at the first check after `pollDeadline`, so it can show up to about 15 seconds after the deadline. That check closes the request without looking for a recording, so a call that lands in the last seconds of the window can be missed — ask WhatsApp to call as soon as the request is open. If a request still reads `WAITING` well after its `pollDeadline`, treat it as timed out: a new `POST` is already allowed, because the one-at-a-time rule only counts requests whose `pollDeadline` is still ahead.
+- `failureReason` is always one of the fixed values in the table (`no_call_in_window`, `no_code_in_transcript`, `transcription_failed`, `audio_download_failed`, `audio_store_failed`, `poll_not_scheduled`) or `null`. You can branch on it; treat an unknown value as a failure, since new ones may be added.
+- **The code comes from speech-to-text.** WhatsApp speaks the code during the call; we transcribe the recording and keep the 6-digit sequence heard most often. If WhatsApp rejects the code, listen to the recording in the dashboard.
+- **The recording is dashboard-only.** `hasAudio: true` only tells you there is one to play in **Phone lines** → the line. There is no audio endpoint in the public API, and the raw transcription is never returned.
+
+## Code history
+
+`GET https://pilotstatus.com.br/v1/phone-lines/{id}/activations` returns the line's requests, **newest first**, codes included: `{ "activations": [ … ] }`. It works on suspended lines too — they keep their history.
+
+<ParamField query="limit" default="20" type="integer">
+  1 to 100. Anything else (0, 101, a decimal, text, empty) → **400 `INVALID_LIMIT`**.
+</ParamField>
+
+A line of another workspace answers **404 `LINE_NOT_FOUND`** — never an empty list.
+
+```bash
+curl "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activations?limit=5" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+## Activation object fields
+
+<ResponseField name="id" type="string">
+  The request id (`activationId`).
+</ResponseField>
+
+<ResponseField name="lineId" type="string">
+  The line the request belongs to.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  `WAITING`, `CAPTURED`, `TRANSCRIBED`, `TIMED_OUT` or `FAILED` — see [Statuses](#statuses).
+</ResponseField>
+
+<ResponseField name="requestedAt" type="string">
+  ISO 8601 — when the request was opened.
+</ResponseField>
+
+<ResponseField name="pollDeadline" type="string">
+  ISO 8601 — end of the capture window, 5 minutes after the request.
+</ResponseField>
+
+<ResponseField name="code" type="string | null">
+  The 6-digit code, once `TRANSCRIBED` and found. `null` otherwise.
+</ResponseField>
+
+<ResponseField name="capturedAt" type="string | null">
+  ISO 8601 — when the call recording was stored.
+</ResponseField>
+
+<ResponseField name="transcribedAt" type="string | null">
+  ISO 8601 — when the transcription finished.
+</ResponseField>
+
+<ResponseField name="failureReason" type="string | null">
+  Why a final request has no code — see [Statuses](#statuses).
+</ResponseField>
+
+<ResponseField name="hasAudio" type="boolean">
+  Whether a recording of the call is stored and can be played in the dashboard.
+</ResponseField>
+
+## Errors
+
+| Status | `code` | Where | Meaning |
+| --- | --- | --- | --- |
+| `400` | `INVALID_LIMIT` | history | `limit` is not an integer from 1 to 100. |
+| `401` | — | all | Missing or invalid credential. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | all | Number-scoped key (or per-number OAuth grant). Use the tenant-scoped key. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | all | OAuth / MCP token of a user who is no longer an active member. |
+| `403` | `PERMISSION_DENIED` | all | OAuth / MCP token of a user who is not Owner or Admin. |
+| `404` | `LINE_NOT_FOUND` | `POST`, history | No such line in your workspace. |
+| `404` | `ACTIVATION_NOT_FOUND` | poll | No such request in your workspace. |
+| `409` | `LINE_NOT_ACTIVE` | `POST` | The line is `SUSPENDED`, `RETURNED` or `CANCELED`. Nothing was created. |
+| `409` | `ACTIVATION_IN_PROGRESS` | `POST` | A request on this line is still waiting for the call. |
+| `503` | `SUPPLIER_UNAVAILABLE` | `POST` | The carrier could not reset the line (nothing created), or we could not start watching it (a `FAILED` request with `poll_not_scheduled` stays in the history). Retry — a new `POST` is allowed right away. |
+| `500` | `INTERNAL_ERROR` | all | Unexpected failure. |

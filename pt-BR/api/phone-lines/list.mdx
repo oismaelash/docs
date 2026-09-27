@@ -1,0 +1,172 @@
+---
+title: "GET /v1/phone-lines — Listar e detalhar"
+sidebarTitle: "Listar e obter linhas"
+description: "Liste as linhas telefônicas do seu workspace ou obtenha uma linha: status, preço, período atual, cancelamento e as datas de cada etapa do ciclo de vida."
+mode: "wide"
+---
+
+# Listar e consultar linhas telefônicas
+
+Liste todas as linhas telefônicas do seu workspace ou obtenha uma pelo `id`. As duas rotas retornam o mesmo objeto linha.
+
+<Note>
+  Exige uma chave **com escopo de tenant**. Com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:read`) — caso contrário, `403 PERMISSION_DENIED`.
+</Note>
+
+## GET /v1/phone-lines — Listar suas linhas
+
+Retorna as linhas do workspace da chave, **da compra mais recente para a mais antiga**. Por padrão, só as linhas que você ainda mantém (`ACTIVE`, `PAYMENT_PENDING`, `SUSPENDED`); adicione `includeClosed=true` para incluir as encerradas (`RETURNED`, `CANCELED`).
+
+<ParamField query="includeClosed" default="false" type="boolean">
+  `true` ou `1` inclui as linhas encerradas; `false`, `0` ou ausente as deixa de fora. Qualquer outro valor (a comparação diferencia maiúsculas: `TRUE` é recusado) → **400 `INVALID_QUERY`**.
+</ParamField>
+
+A lista **não é paginada**: ela sempre retorna todas as linhas correspondentes.
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/phone-lines?includeClosed=true" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Resposta (200)
+{
+  "lines": [
+    {
+      "id": "cmg5k2l1n0001pl8example9x",
+      "number": "551148637200",
+      "display": "(11) 4863-7200",
+      "ddd": "11",
+      "status": "ACTIVE",
+      "price": 33.9,
+      "currency": "BRL",
+      "purchasedAt": "2026-10-01T14:03:11.000Z",
+      "currentPeriodEnd": "2026-11-01T14:03:11.000Z",
+      "cancelAtPeriodEnd": false,
+      "paymentPendingSince": null,
+      "suspendedAt": null,
+      "returnedAt": null,
+      "canceledAt": null,
+      "activationCount": 1
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Obter uma linha
+
+`GET /v1/phone-lines/{id}` retorna `{ "line": { … } }` para uma linha do seu workspace, incluindo as encerradas.
+
+`{id}` é o `id` da linha (da lista, ou `lineId` no resultado da compra) — **não** o número de telefone. Uma linha de outro workspace responde **404 `LINE_NOT_FOUND`**, exatamente como uma linha que não existe.
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Resposta (200)
+{
+  "line": {
+    "id": "cmg5k2l1n0001pl8example9x",
+    "number": "551148637200",
+    "display": "(11) 4863-7200",
+    "ddd": "11",
+    "status": "PAYMENT_PENDING",
+    "price": 33.9,
+    "currency": "BRL",
+    "purchasedAt": "2026-10-01T14:03:11.000Z",
+    "currentPeriodEnd": "2026-11-01T14:03:11.000Z",
+    "cancelAtPeriodEnd": false,
+    "paymentPendingSince": "2026-11-01T14:17:02.000Z",
+    "suspendedAt": null,
+    "returnedAt": null,
+    "canceledAt": null,
+    "activationCount": 1
+  }
+}
+```
+
+</CodeGroup>
+
+## Campos do objeto linha
+
+<ResponseField name="id" type="string">
+  O id da linha. Use-o em todo caminho `/v1/phone-lines/{id}`.
+</ResponseField>
+
+<ResponseField name="number" type="string">
+  Dígitos E.164 **sem** o `+`, por exemplo `551148637200`.
+</ResponseField>
+
+<ResponseField name="display" type="string">
+  O número formatado para leitura humana: `(11) 4863-7200`.
+</ResponseField>
+
+<ResponseField name="ddd" type="string">
+  O DDD, com dois dígitos.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  `ACTIVE`, `PAYMENT_PENDING`, `SUSPENDED`, `RETURNED` ou `CANCELED`. Veja o [ciclo de vida da linha](/pt-BR/api/phone-lines/overview#ciclo-de-vida-da-linha).
+</ResponseField>
+
+<ResponseField name="price" type="number">
+  Preço mensal **desta** linha, congelado na compra (por exemplo, `33.9`). Toda renovação da linha cobra esse valor.
+</ResponseField>
+
+<ResponseField name="currency" type="string">
+  `BRL` ou `USD` — a moeda em que o `price` é cobrado.
+</ResponseField>
+
+<ResponseField name="purchasedAt" type="string">
+  ISO 8601 — quando a linha foi comprada. As renovações contam a partir desta data: no mesmo dia de cada mês, ou no último dia do mês quando esse dia não existe — e esse dia mais curto passa a valer daí em diante.
+</ResponseField>
+
+<ResponseField name="currentPeriodEnd" type="string">
+  ISO 8601 — fim do período pago. A próxima renovação é tentada na primeira execução horária do faturamento depois dele. Para uma linha cancelada no fim do período, é quando ela passa a `CANCELED`.
+</ResponseField>
+
+<ResponseField name="cancelAtPeriodEnd" type="boolean">
+  `true` depois de um `DELETE` em uma linha `ACTIVE`: ela não será renovada e passa a `CANCELED` em `currentPeriodEnd`.
+</ResponseField>
+
+<ResponseField name="paymentPendingSince" type="string | null">
+  ISO 8601 — quando a cobrança da renovação falhou. A linha é suspensa 2 dias depois disso. Volta a ser `null` quando uma renovação é bem-sucedida.
+</ResponseField>
+
+<ResponseField name="suspendedAt" type="string | null">
+  ISO 8601 — quando a linha foi suspensa. Ela é devolvida 1 dia depois disso. Volta a ser `null` quando uma renovação é bem-sucedida.
+</ResponseField>
+
+<ResponseField name="returnedAt" type="string | null">
+  ISO 8601 — quando o número foi devolvido à operadora (`RETURNED`).
+</ResponseField>
+
+<ResponseField name="canceledAt" type="string | null">
+  ISO 8601 — quando uma linha cancelada no fim do período passou a `CANCELED`.
+</ResponseField>
+
+<ResponseField name="activationCount" type="integer">
+  Quantos pedidos de código foram abertos nesta linha até agora. Um `POST …/activations` que respondeu `503` não é contado.
+</ResponseField>
+
+<Note>
+  `status` é o campo em que a sua lógica deve se basear. Os campos de data explicam como a linha chegou até ali; `currentPeriodEnd` não muda enquanto uma renovação está em atraso, então, em uma linha `PAYMENT_PENDING` ou `SUSPENDED`, ele já está no passado. `returnedAt` e `canceledAt` podem aparecer um instante antes de o `status` mudar, enquanto a operadora confirma a devolução ou o cancelamento.
+</Note>
+
+## Erros
+
+| Status | `code` | Significado |
+| --- | --- | --- |
+| `400` | `INVALID_QUERY` | `includeClosed` não é `true`, `false`, `1` nem `0`. |
+| `401` | — | Credencial ausente ou inválida. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Chave com escopo de número (ou concessão OAuth por número). Use a chave com escopo de tenant. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | Token OAuth / MCP de um usuário que não é mais membro ativo. |
+| `403` | `PERMISSION_DENIED` | Token OAuth / MCP de um usuário que não é Proprietário nem Administrador. |
+| `404` | `LINE_NOT_FOUND` | Só em `GET /v1/phone-lines/{id}`: essa linha não existe no seu workspace. |
+| `500` | `INTERNAL_ERROR` | Falha inesperada. |

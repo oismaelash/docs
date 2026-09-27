@@ -1,0 +1,92 @@
+---
+title: "DELETE /v1/phone-lines/{id} — Cancelar uma Linha"
+sidebarTitle: "Cancelar uma linha"
+description: "Cancele uma linha telefônica. Uma linha paga continua utilizável até o fim do período, sem estorno; uma linha em atraso é devolvida à operadora na hora e de forma definitiva."
+mode: "wide"
+---
+
+# Cancelar uma linha telefônica
+
+`DELETE /v1/phone-lines/{id}` cancela uma linha e responde com a linha **como ela fica depois**. O que acontece depende do `status` da linha.
+
+<Note>
+  Exige uma chave **com escopo de tenant**. Com um token OAuth / MCP, só o **Proprietário** do workspace pode cancelar (`phone_lines:cancel`) — caso contrário, `403 PERMISSION_DENIED`.
+</Note>
+
+## Endpoint
+
+`DELETE https://pilotstatus.com.br/v1/phone-lines/{id}`
+
+Sem corpo. `{id}` é o `id` da linha, não o número de telefone.
+
+## O que acontece, por status
+
+| `status` antes | Resultado | Resposta |
+| --- | --- | --- |
+| `ACTIVE` | **Cancelada no fim do período, sem estorno.** A linha continua `ACTIVE` e totalmente utilizável — inclusive para códigos de ativação — até `currentPeriodEnd`. Ela não é renovada e passa a `CANCELED` quando o período termina. | `200`, `status: "ACTIVE"`, `cancelAtPeriodEnd: true` |
+| `ACTIVE`, já cancelada | Nada muda — chamar de novo é seguro. | `200`, a mesma linha |
+| `PAYMENT_PENDING`, `SUSPENDED` | **Devolvida imediatamente.** Não resta período pago, então o número volta agora para o estoque de números da operadora. **Irreversível.** | `200`, `status: "RETURNED"` |
+| `RETURNED`, `CANCELED` | A chamada é recusada — a linha já está encerrada. | `409 NOT_CANCELABLE` |
+
+<Warning>
+  **Um número devolvido deixa de ser seu de vez**: nada desfaz uma devolução, e não há garantia de que você consiga esse número de novo. A conta do WhatsApp ativada nele continua vinculada a esse número — quem alugá-lo em seguida pode pedir um código de verificação para ele. Cancelar uma linha em atraso faz isso **na hora**, sem período de carência.
+</Warning>
+
+Se a devolução da mesma linha em atraso já estiver em andamento — iniciada pela execução horária do faturamento ou pelo **Escolher quais linhas manter** do painel —, a chamada responde `200` com a linha como ela está, possivelmente ainda `PAYMENT_PENDING` ou `SUSPENDED`, e esse processo conclui a devolução. Leia a linha de novo para confirmar `RETURNED`.
+
+Mudou de ideia sobre uma linha `ACTIVE`? Desfazer um cancelamento agendado só é possível no painel, pelo Proprietário do workspace (**Linhas** → a linha → **Desistir do cancelamento**), enquanto a linha ainda estiver `ACTIVE`.
+
+## Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl -X DELETE "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Resposta (200) — linha paga
+{
+  "line": {
+    "id": "cmg5k2l1n0001pl8example9x",
+    "number": "551148637200",
+    "display": "(11) 4863-7200",
+    "ddd": "11",
+    "status": "ACTIVE",
+    "price": 33.9,
+    "currency": "BRL",
+    "purchasedAt": "2026-10-01T14:03:11.000Z",
+    "currentPeriodEnd": "2026-11-01T14:03:11.000Z",
+    "cancelAtPeriodEnd": true,
+    "paymentPendingSince": null,
+    "suspendedAt": null,
+    "returnedAt": null,
+    "canceledAt": null,
+    "activationCount": 1
+  }
+}
+```
+
+</CodeGroup>
+
+O corpo é o [objeto linha](/pt-BR/api/phone-lines/list#campos-do-objeto-linha).
+
+## Eventos
+
+- Uma linha cancelada no fim do período envia `phone_line.canceled` quando passa a `CANCELED` — normalmente em até cerca de uma hora depois de `currentPeriodEnd`; se a operadora não confirmar, uma nova tentativa é feita a cada execução horária.
+- Uma linha em atraso devolvida por esta chamada envia `phone_line.returned` na hora.
+
+Veja [Webhooks das linhas telefônicas](/pt-BR/api/phone-lines/webhooks).
+
+## Erros
+
+| Status | `code` | Significado |
+| --- | --- | --- |
+| `401` | — | Credencial ausente ou inválida. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Chave com escopo de número (ou concessão OAuth por número). Use a chave com escopo de tenant. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | Token OAuth / MCP de um usuário que não é mais membro ativo. |
+| `403` | `PERMISSION_DENIED` | Token OAuth / MCP de um usuário que não é o Proprietário do workspace. |
+| `404` | `LINE_NOT_FOUND` | Essa linha não existe no seu workspace. Uma linha de outro workspace recebe a mesma resposta e não é alterada. |
+| `409` | `NOT_CANCELABLE` | A linha já está `RETURNED` ou `CANCELED`. |
+| `503` | `SUPPLIER_UNAVAILABLE` | Só para linha em atraso: a operadora não confirmou a devolução. **Esta chamada não alterou a linha** — tente de novo em alguns minutos. |
+| `500` | `INTERNAL_ERROR` | Falha inesperada. |

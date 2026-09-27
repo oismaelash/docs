@@ -1,0 +1,92 @@
+---
+title: "DELETE /v1/phone-lines/{id} — Cancel a Line"
+sidebarTitle: "Cancel a line"
+description: "Cancel a phone line. A paid line stays usable until the end of its period and is not refunded; an unpaid line is returned to the carrier immediately and for good."
+mode: "wide"
+---
+
+# Cancel a phone line
+
+`DELETE /v1/phone-lines/{id}` cancels a line and answers the line **as it is afterwards**. What happens depends on the line's `status`.
+
+<Note>
+  Requires a **tenant-scoped** key. With an OAuth / MCP token, only the workspace **Owner** may cancel (`phone_lines:cancel`) — `403 PERMISSION_DENIED` otherwise.
+</Note>
+
+## Endpoint
+
+`DELETE https://pilotstatus.com.br/v1/phone-lines/{id}`
+
+No body. `{id}` is the line's `id`, not the phone number.
+
+## What happens, by status
+
+| `status` before | Result | Response |
+| --- | --- | --- |
+| `ACTIVE` | **Cancelled at period end, no refund.** The line stays `ACTIVE` and fully usable — activation codes included — until `currentPeriodEnd`. It is not renewed, and becomes `CANCELED` when the period ends. | `200`, `status: "ACTIVE"`, `cancelAtPeriodEnd: true` |
+| `ACTIVE`, already cancelled | Nothing changes — calling again is safe. | `200`, same line |
+| `PAYMENT_PENDING`, `SUSPENDED` | **Returned immediately.** There is no paid period left, so the number goes back to the carrier's pool now. **Irreversible.** | `200`, `status: "RETURNED"` |
+| `RETURNED`, `CANCELED` | Refused — the line is already finished. | `409 NOT_CANCELABLE` |
+
+<Warning>
+  **A returned number stops being yours for good**: nothing undoes a return, and there is no guarantee you can ever get it again. The WhatsApp account activated on it stays tied to that number — whoever rents it next can request a verification code for it. Cancelling an unpaid line does this **at once**, with no grace period.
+</Warning>
+
+If a return of the same unpaid line is already under way — started by the hourly billing run or by the dashboard's **Choose which lines to keep** — the call answers `200` with the line as it stands, possibly still `PAYMENT_PENDING` or `SUSPENDED`, and that process completes the return. Read the line again to confirm `RETURNED`.
+
+Changed your mind about an `ACTIVE` line? Undoing a scheduled cancellation is available in the dashboard only, to the workspace Owner (**Phone lines** → the line → **Undo cancellation**), while the line is still `ACTIVE`.
+
+## Example
+
+<CodeGroup>
+
+```bash cURL
+curl -X DELETE "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Response (200) — paid line
+{
+  "line": {
+    "id": "cmg5k2l1n0001pl8example9x",
+    "number": "551148637200",
+    "display": "(11) 4863-7200",
+    "ddd": "11",
+    "status": "ACTIVE",
+    "price": 33.9,
+    "currency": "BRL",
+    "purchasedAt": "2026-10-01T14:03:11.000Z",
+    "currentPeriodEnd": "2026-11-01T14:03:11.000Z",
+    "cancelAtPeriodEnd": true,
+    "paymentPendingSince": null,
+    "suspendedAt": null,
+    "returnedAt": null,
+    "canceledAt": null,
+    "activationCount": 1
+  }
+}
+```
+
+</CodeGroup>
+
+The body is the [line object](/api/phone-lines/list#line-object-fields).
+
+## Events
+
+- A line cancelled at period end sends `phone_line.canceled` when it becomes `CANCELED` — usually within about an hour after `currentPeriodEnd`; if the carrier does not confirm, it is retried at each hourly run.
+- An unpaid line returned by this call sends `phone_line.returned` right away.
+
+See [Phone line webhooks](/api/phone-lines/webhooks).
+
+## Errors
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| `401` | — | Missing or invalid credential. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Number-scoped key (or per-number OAuth grant). Use the tenant-scoped key. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | OAuth / MCP token of a user who is no longer an active member. |
+| `403` | `PERMISSION_DENIED` | OAuth / MCP token of a user who is not the workspace Owner. |
+| `404` | `LINE_NOT_FOUND` | No such line in your workspace. A line of another workspace answers the same, and is left untouched. |
+| `409` | `NOT_CANCELABLE` | The line is already `RETURNED` or `CANCELED`. |
+| `503` | `SUPPLIER_UNAVAILABLE` | Unpaid line only: the carrier did not confirm the return. **This call did not change the line** — retry in a few minutes. |
+| `500` | `INTERNAL_ERROR` | Unexpected failure. |
