@@ -1,7 +1,7 @@
 ---
 title: "Phone Line Webhook Events — Reference"
 sidebarTitle: "Line webhooks"
-description: "Events of the Phone Lines product — purchase, activation code, renewal, payment failure, suspension, return, cancellation and verification — with payloads, headers, signature verification and retry behaviour."
+description: "Events of the Phone Lines product — purchase, activation call and code, renewal, payment failure, suspension, return, cancellation and verification — with payloads, headers, signature verification and retry behaviour."
 mode: "wide"
 ---
 
@@ -16,10 +16,11 @@ Phone lines send their events to **phone-line webhooks**: a registry of their ow
 
 There is no public API for phone-line webhooks. Manage them in the dashboard under **Phone lines → Line webhooks** (`/linhas/webhooks`), as an **Owner or Admin**:
 
-- **Destination URL** — must be `https`.
+- **Name** — optional, up to 100 characters, to tell your webhooks apart in the list. Left blank, the webhook is named after the URL's host (`hooks.example.com`), as number webhooks are. The name is not sent in the deliveries.
+- **Destination URL** — must be `https`, and must reach a public address. A URL that points to an internal or private network address — `localhost`, a loopback or private IP, a host name without a dot, or a name that resolves to one of those — is refused when you save it (`WEBHOOK_URL_REFUSED`), since it would never be called.
 - **Events** — pick one or more of the events below, or **all** (`"*"`). Inside this registry `"*"` means every phone-line event. At least one is required.
 - **Signing secret** — shown **once**, when the webhook is created (it starts with `plwh_`). Store it right away: nothing shows it again, and there is no rotation. To change it, create a new webhook, move your receiver to its secret, and delete the old one.
-- **Pause / resume, and delete.** The dashboard does not edit a webhook's URL or events: create a new webhook and delete the old one.
+- **Pause / resume, edit (name, URL and events), and delete.** Editing never changes the signing secret. A new URL is checked the same way as on creation; saving without changing the URL does not check it again, so a webhook can always be paused.
 - **Delivery log** — per webhook: event, status (pending, delivered, failed), attempts, the HTTP status your endpoint answered and the last error.
 
 A workspace can have more than one phone-line webhook; each receives the events it subscribed to.
@@ -29,7 +30,9 @@ A workspace can have more than one phone-line webhook; each receives the events 
 | Event | When it fires |
 | --- | --- |
 | `phone_line.purchased` | A line was bought (dashboard or `POST /v1/phone-lines`) — one event per number bought. |
-| `phone_line.code_received` | The call of a code request was transcribed (`TRANSCRIBED`). `code` can be `null` — see below. |
+| `phone_line.audio_received` | The call of a code request was captured and its recording stored (`CAPTURED`) — before the code is read, which can take a few minutes. |
+| `phone_line.code_received` | A code request finished: **once per request**, with the `code`, or with `code: null` and its `failureReason` when it ended without one. |
+| `phone_line.code_failed` | A code request ended without a code, for good — once, with the `reason`. Always paired with a `phone_line.code_received` whose `code` is `null`. |
 | `phone_line.renewed` | A renewal charge succeeded, including a late one that brings a `PAYMENT_PENDING` or `SUSPENDED` line back. |
 | `phone_line.payment_failed` | A renewal charge failed and the line went from `ACTIVE` to `PAYMENT_PENDING`. Once per renewal — the retries that follow do not fire it again. |
 | `phone_line.suspended` | The line was still unpaid 2 days after the failure and is now `SUSPENDED`. |
@@ -38,7 +41,9 @@ A workspace can have more than one phone-line webhook; each receives the events 
 | `phone_line.verification_updated` | The account holder verification changed state: finished (approved automatically, or sent to manual review), or reviewed (approved, rejected, or another document requested). |
 
 <Note>
-  `phone_line.code_received` fires only when a transcription completes. A request that ends `TIMED_OUT`, `FAILED`, or `CAPTURED` with a failed transcription sends **no** event — if you wait on the webhook, also watch the request's `pollDeadline`, or poll [`GET /v1/phone-lines/activations/{activationId}`](/api/phone-lines/activation-codes#poll-the-request).
+  Every accepted code request ends with **one** `phone_line.code_received` — with the code, or with `code: null` — so waiting on that event alone is enough. A failed transcription is retried from the stored recording (up to 3 attempts in all); only the final outcome is sent, never the attempts in between. A request refused at creation (`503 SUPPLIER_UNAVAILABLE`, `poll_not_scheduled`) sends no event: its caller already got the error.
+
+  `phone_line.audio_received` and `phone_line.code_failed` were added on 2026-09-28. A webhook subscribed to all events (`"*"`) receives them; a webhook with an explicit list receives only the events it lists — edit it to add them.
 </Note>
 
 ## Payload format
@@ -107,16 +112,53 @@ Headers:
         "lineId": "cmg5k2l1n0001pl8example9x",
         "number": "551148637200",
         "activationId": "cmg5k3a7c0002ac8example4q",
-        "code": "123456"
+        "code": "123456",
+        "failureReason": null
       }
     }
     ```
 
-    `code` is `null` when the call was transcribed but no 6-digit code was found in it (the request's `failureReason` is then `no_code_in_transcript`). The recording can be played in the dashboard.
+    `code` is `null` when the request ended without one; `failureReason` then says why, with the request's own [`failureReason`](/api/phone-lines/activation-codes#statuses): `no_code_in_transcript`, `transcription_failed` (all 3 attempts failed), `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` or `audio_store_failed`. When there is a recording, it can be played in the dashboard.
 
     <Warning>
       This payload carries the activation code, which is a credential. Verify the signature before trusting it, and do not log the body.
     </Warning>
+  </Accordion>
+
+  <Accordion title="phone_line.audio_received">
+    ```json
+    {
+      "id": "cmg5k4c9t0011dl8example7m",
+      "event": "phone_line.audio_received",
+      "createdAt": "2026-10-01T14:11:42.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "activationId": "cmg5k3a7c0002ac8example4q",
+        "capturedAt": "2026-10-01T14:11:42.000Z"
+      }
+    }
+    ```
+
+    The call arrived and its recording is stored; the code is being read. Sent once per request. Neither the recording nor its transcription is ever sent. A call whose recording could not be downloaded or stored sends no `audio_received` — only `code_failed` and `code_received`.
+  </Accordion>
+
+  <Accordion title="phone_line.code_failed">
+    ```json
+    {
+      "id": "cmg5k4f2w0012dl8example8p",
+      "event": "phone_line.code_failed",
+      "createdAt": "2026-10-01T14:15:14.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "activationId": "cmg5k3a7c0002ac8example4q",
+        "reason": "no_call_in_window"
+      }
+    }
+    ```
+
+    `reason` is the request's `failureReason` — see [Statuses](/api/phone-lines/activation-codes#statuses). The same value comes in the `failureReason` of the `phone_line.code_received` sent with it.
   </Accordion>
 
   <Accordion title="phone_line.renewed">
@@ -259,7 +301,7 @@ It is the same computation as the number webhooks, so a receiver that already ve
 - **Redirects are not followed.** A `3xx` answer counts as a failed attempt.
 - **At least once.** A retry after your endpoint processed the event but did not answer in time delivers it again, with the same `id`. Order is not guaranteed.
 - **Paused or deleted webhooks.** An event is delivered only to webhooks that are active and subscribed when it happens. Every attempt checks the webhook again: a delivery whose webhook is paused when an attempt is due — including one already in its retries — is marked failed and is not sent later; deleting a webhook drops its pending deliveries. Events are never replayed to a webhook created or resumed afterwards.
-- **Internal destinations are refused.** A URL whose host resolves to a private or internal network address is not called, and is not retried. Such a URL is accepted when the webhook is created — only `https` and the event names are checked then — so every delivery to it is logged as failed. A DNS lookup that fails is different: it is retried like any other failure.
+- **Internal destinations are refused.** A URL whose host resolves to a private or internal network address is not called, and is not retried. Such a URL is already refused when you save the webhook; this covers a name whose DNS moved inside afterwards. A DNS lookup that fails is different: it does not block saving, and at delivery it is retried like any other failure.
 
 <Tip>
   Treat these events as notifications, not as the source of truth. When one could have been missed — your endpoint was down for longer than the retries — read the current state with [`GET /v1/phone-lines`](/api/phone-lines/list).

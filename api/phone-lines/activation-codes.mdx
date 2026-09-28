@@ -1,7 +1,7 @@
 ---
 title: "POST /v1/phone-lines/{id}/activations — Activation Codes"
 sidebarTitle: "Activation codes"
-description: "Get the WhatsApp verification code of a phone line: open a 5-minute capture window, ask WhatsApp to call the line, then poll the request until the transcribed code arrives."
+description: "Get the WhatsApp verification code of a phone line: open a 5-minute capture window, ask WhatsApp to call the line, then poll the request until the transcribed code arrives — or cancel the wait to ask again."
 mode: "wide"
 ---
 
@@ -14,6 +14,7 @@ WhatsApp verifies a landline **by calling it** and speaking a 6-digit code. Thes
 | `POST` | `/v1/phone-lines/{id}/activations` | Open a new code request on the line (5-minute window). |
 | `GET` | `/v1/phone-lines/activations/{activationId}` | Poll one request: its `status` and, when ready, `code`. |
 | `GET` | `/v1/phone-lines/{id}/activations` | The line's code history, newest first. |
+| `POST` | `/v1/phone-lines/{id}/activations/{activationId}/cancel` | Stop waiting for the call, to ask for a new code right away. |
 
 <Note>
   Requires a **tenant-scoped** key. With an OAuth / MCP token, the user must be an **Owner or Admin** (`phone_lines:read`) — `403 PERMISSION_DENIED` otherwise. Every response that carries an activation is sent with `Cache-Control: no-store`: **the code is a credential** — whoever holds it can register a WhatsApp account on the line.
@@ -29,7 +30,7 @@ WhatsApp verifies a landline **by calling it** and speaking a 6-digit code. Thes
     Register the number in WhatsApp Business and, when asked how to receive the code, choose the **phone call** option ("Call me"). The line is a landline and does not receive SMS — waiting for an SMS only burns the window.
   </Step>
   <Step title="We capture and transcribe">
-    We check the line **about every 15 seconds** while the window is open. When a recording appears we store it (`CAPTURED`), transcribe it and extract the code (`TRANSCRIBED`).
+    We check the line **about every 15 seconds** while the window is open, and once more right after it closes. When a recording appears we store it (`CAPTURED`), transcribe it and extract the code (`TRANSCRIBED`). A failed transcription is retried from the stored recording — up to **3 attempts** in all — so reading the code usually takes seconds, but can take a few minutes.
   </Step>
   <Step title="Read the code">
     Poll `GET /v1/phone-lines/activations/{activationId}` every few seconds — or listen for the [`phone_line.code_received`](/api/phone-lines/webhooks) webhook — and type `code` into WhatsApp.
@@ -41,7 +42,7 @@ WhatsApp verifies a landline **by calling it** and speaking a 6-digit code. Thes
 `POST https://pilotstatus.com.br/v1/phone-lines/{id}/activations` — no body. Answers **`201`** with the new request.
 
 - Allowed while the line is `ACTIVE` or `PAYMENT_PENDING` (including an `ACTIVE` line cancelled at period end). A `SUSPENDED`, `RETURNED` or `CANCELED` line gets **409 `LINE_NOT_ACTIVE`**.
-- **One waiting request per line.** While a request is `WAITING` and its `pollDeadline` is still ahead, another `POST` answers **409 `ACTIVATION_IN_PROGRESS`** — poll the one you have instead.
+- **One waiting request per line.** While a request is `WAITING` and its `pollDeadline` is still ahead, another `POST` answers **409 `ACTIVATION_IN_PROGRESS`** — poll the one you have instead, or [cancel it](#cancel-a-wait) to ask again right away.
 - **No limit on requests over time.** Ask again whenever you need to (re-registering WhatsApp, a window that timed out); each request that opens increments the line's `activationCount`.
 
 <CodeGroup>
@@ -107,22 +108,58 @@ Polling every few seconds is plenty: the status can only move after our next 15-
 | `status` | `code` | `failureReason` | `hasAudio` | What it means | Next step |
 | --- | --- | --- | :-: | --- | --- |
 | `WAITING` | `null` | `null` | `false` | The window is open and no call has been captured yet. | Keep polling. Make sure WhatsApp was asked to **call**. |
-| `CAPTURED` | `null` | `null` | `true` | The call was recorded; the transcription is running. | Keep polling. |
-| `CAPTURED` | `null` | `transcription_failed` | `true` | Recorded, but the transcription failed. **Final.** | Listen to the recording in the dashboard. |
+| `CAPTURED` | `null` | `null` | `false`, then `true` | The call arrived. We are storing its recording (`hasAudio` turns `true` once it is stored) and reading the code — retries included. | Keep polling. |
+| `CAPTURED` | `null` | `transcription_failed` | `true` | Recorded, but all 3 transcription attempts failed. **Final.** | Listen to the recording in the dashboard. |
 | `TRANSCRIBED` | `"123456"` | `null` | `true` | The code was read. **Final.** | Type it into WhatsApp. |
 | `TRANSCRIBED` | `null` | `no_code_in_transcript` | `true` | The call was transcribed but no 6-digit code was found in it. **Final.** | Listen to the recording in the dashboard, or request a new code. |
-| `TIMED_OUT` | `null` | `no_call_in_window` | `false` | No call was captured before `pollDeadline`. **Final.** | Request a new code, then ask WhatsApp to call again. |
+| `TIMED_OUT` | `null` | `no_call_in_window` | `false` | No call arrived before `pollDeadline`. **Final.** | Request a new code, then ask WhatsApp to call again. |
+| `TIMED_OUT` | `null` | `canceled_by_customer` | `false` | The wait was [cancelled](#cancel-a-wait) — through the API or the dashboard's **Cancel wait**. **Final.** | Request a new code — allowed right away. |
 | `FAILED` | `null` | `audio_download_failed`, `audio_store_failed` | `false` | A recording appeared but could not be downloaded or stored. **Final.** | Request a new code. |
 | `FAILED` | `null` | `poll_not_scheduled` | `false` | We could not start watching the line (the `POST` answered `503`). **Final.** | Request a new code — allowed right away. |
 
 <Warning>
-  **Do not stop polling at the first status that is not `WAITING`.** `CAPTURED` is also the in-between state while the transcription runs: keep polling while `status` is `WAITING`, or `CAPTURED` with `failureReason: null`. And `TRANSCRIBED` does not guarantee a code — check `code`. The transcription takes seconds: if a request stays `CAPTURED` with `failureReason: null` for more than a few minutes, treat it as failed — listen to the recording in the dashboard, or request a new code.
+  **Do not stop polling at the first status that is not `WAITING`.** `CAPTURED` is also the in-between state while the code is being read: keep polling while `status` is `WAITING`, or `CAPTURED` with `failureReason: null`. And `TRANSCRIBED` does not guarantee a code — check `code`. Reading the code usually takes seconds, but a failed transcription is retried from the stored recording — up to 3 attempts in all — so a request can stay `CAPTURED` with `failureReason: null` for a few minutes. It then ends with the code (`TRANSCRIBED`) or with `transcription_failed`.
 </Warning>
 
-- `TIMED_OUT` is recorded at the first check after `pollDeadline`, so it can show up to about 15 seconds after the deadline. That check closes the request without looking for a recording, so a call that lands in the last seconds of the window can be missed — ask WhatsApp to call as soon as the request is open. If a request still reads `WAITING` well after its `pollDeadline`, treat it as timed out: a new `POST` is already allowed, because the one-at-a-time rule only counts requests whose `pollDeadline` is still ahead.
-- `failureReason` is always one of the fixed values in the table (`no_call_in_window`, `no_code_in_transcript`, `transcription_failed`, `audio_download_failed`, `audio_store_failed`, `poll_not_scheduled`) or `null`. You can branch on it; treat an unknown value as a failure, since new ones may be added.
+- `TIMED_OUT` is recorded at the first check after `pollDeadline`, so it can show up to about 15 seconds after the deadline. That check still reads the line one last time: a call that lands in the window's last seconds is captured, not lost — so a request can also move from `WAITING` to `CAPTURED` just after its `pollDeadline`. If a request still reads `WAITING` well after its `pollDeadline`, treat it as timed out: a new `POST` is already allowed, because the one-at-a-time rule only counts requests whose `pollDeadline` is still ahead.
+- `failureReason` is always one of the fixed values in the table (`no_call_in_window`, `canceled_by_customer`, `no_code_in_transcript`, `transcription_failed`, `audio_download_failed`, `audio_store_failed`, `poll_not_scheduled`) or `null`. You can branch on it; treat an unknown value as a failure, since new ones may be added.
 - **The code comes from speech-to-text.** WhatsApp speaks the code during the call; we transcribe the recording and keep the 6-digit sequence heard most often. If WhatsApp rejects the code, listen to the recording in the dashboard.
 - **The recording is dashboard-only.** `hasAudio: true` only tells you there is one to play in **Phone lines** → the line. There is no audio endpoint in the public API, and the raw transcription is never returned.
+
+## Cancel a wait
+
+`POST https://pilotstatus.com.br/v1/phone-lines/{id}/activations/{activationId}/cancel` — no body. Ends a request that is still `WAITING`, so the next `POST /v1/phone-lines/{id}/activations` is accepted at once instead of answering `409 ACTIVATION_IN_PROGRESS` until the window closes. Same credentials and permission as the other activation endpoints (`phone_lines:read`).
+
+Answers **`200`** with `{ "activation": { … } }`, now `TIMED_OUT` with `failureReason: "canceled_by_customer"`, sent with `Cache-Control: no-store`. The line is no longer watched for that request. Like any request that ends without a code, it sends [`phone_line.code_failed`](/api/phone-lines/webhooks#payloads) and [`phone_line.code_received`](/api/phone-lines/webhooks#payloads) (with `code: null`) once, with `canceled_by_customer` — so an integration waiting on the webhook learns about a wait cancelled from the dashboard, too.
+
+- **A call that already arrived is never thrown away.** Once the call is captured the request is no longer `WAITING`, and the cancel answers **409 `ACTIVATION_NOT_WAITING`** — keep polling: its code is being read. The same 409 answers a request that already ended. Nothing changes in either case.
+- `{id}` must be the line the request belongs to. A line that is not in your workspace answers **404 `LINE_NOT_FOUND`**; a request that is not on that line — or not in your workspace — answers **404 `ACTIVATION_NOT_FOUND`**.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activations/cmg5k3a7c0002ac8example4q/cancel" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Response (200)
+{
+  "activation": {
+    "id": "cmg5k3a7c0002ac8example4q",
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "status": "TIMED_OUT",
+    "requestedAt": "2026-10-01T14:10:00.000Z",
+    "pollDeadline": "2026-10-01T14:15:00.000Z",
+    "code": null,
+    "capturedAt": null,
+    "transcribedAt": null,
+    "failureReason": "canceled_by_customer",
+    "hasAudio": false
+  }
+}
+```
+
+</CodeGroup>
 
 ## Code history
 
@@ -190,9 +227,10 @@ curl "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activa
 | `403` | `NUMBER_SCOPE_NOT_ALLOWED` | all | Number-scoped key (or per-number OAuth grant). Use the tenant-scoped key. |
 | `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | all | OAuth / MCP token of a user who is no longer an active member. |
 | `403` | `PERMISSION_DENIED` | all | OAuth / MCP token of a user who is not Owner or Admin. |
-| `404` | `LINE_NOT_FOUND` | `POST`, history | No such line in your workspace. |
-| `404` | `ACTIVATION_NOT_FOUND` | poll | No such request in your workspace. |
+| `404` | `LINE_NOT_FOUND` | `POST`, history, cancel | No such line in your workspace. |
+| `404` | `ACTIVATION_NOT_FOUND` | poll, cancel | No such request in your workspace (for cancel: on that line). |
 | `409` | `LINE_NOT_ACTIVE` | `POST` | The line is `SUSPENDED`, `RETURNED` or `CANCELED`. Nothing was created. |
-| `409` | `ACTIVATION_IN_PROGRESS` | `POST` | A request on this line is still waiting for the call. |
+| `409` | `ACTIVATION_IN_PROGRESS` | `POST` | A request on this line is still waiting for the call. Poll it, or cancel it to ask again now. |
+| `409` | `ACTIVATION_NOT_WAITING` | cancel | The call was already captured (its code is being read) or the request already ended. Nothing changed. |
 | `503` | `SUPPLIER_UNAVAILABLE` | `POST` | The carrier could not reset the line (nothing created), or we could not start watching it (a `FAILED` request with `poll_not_scheduled` stays in the history). Retry — a new `POST` is allowed right away. |
 | `500` | `INTERNAL_ERROR` | all | Unexpected failure. |
