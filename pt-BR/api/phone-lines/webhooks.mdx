@@ -1,7 +1,7 @@
 ---
 title: "Eventos de Webhook das Linhas — Referência"
 sidebarTitle: "Webhooks das linhas"
-description: "Eventos do produto Linhas Telefônicas — compra, código de ativação, renovação, falha de pagamento, suspensão, devolução, cancelamento e verificação — com payloads, headers, verificação de assinatura e retentativas."
+description: "Eventos do produto Linhas Telefônicas — compra, ligação e código de ativação, renovação, falha de pagamento, suspensão, devolução, cancelamento e verificação — com payloads, headers, verificação de assinatura e retentativas."
 mode: "wide"
 ---
 
@@ -16,10 +16,11 @@ As linhas telefônicas enviam seus eventos para os **webhooks das linhas**: um c
 
 Não há API pública para webhooks de linha. Gerencie-os no painel em **Linhas → Webhooks das linhas** (`/linhas/webhooks`), como **Proprietário ou Administrador**:
 
-- **URL de destino** — precisa ser `https`.
+- **Nome** — opcional, até 100 caracteres, para distinguir seus webhooks na lista. Se ficar em branco, o webhook recebe o nome do host da URL (`hooks.example.com`), como nos webhooks de número. O nome não é enviado nas entregas.
+- **URL de destino** — precisa ser `https` e apontar para um endereço público. Uma URL que aponte para um endereço interno ou de rede privada — `localhost`, um IP de loopback ou privado, um host sem ponto, ou um nome que resolva para um desses — é recusada ao salvar (`WEBHOOK_URL_REFUSED`), já que nunca seria chamada.
 - **Eventos** — escolha um ou mais dos eventos abaixo, ou **todos** (`"*"`). Neste cadastro, `"*"` significa todos os eventos de linha. É obrigatório escolher pelo menos um.
 - **Segredo de assinatura** — exibido **uma única vez**, quando o webhook é criado (começa com `plwh_`). Guarde-o imediatamente: nada o exibe de novo, e não há rotação. Para trocá-lo, crie um novo webhook, passe seu receptor a usar o segredo dele e exclua o antigo.
-- **Pausar / retomar e excluir.** O painel não edita a URL nem os eventos de um webhook: crie um novo webhook e exclua o antigo.
+- **Pausar / retomar, editar (nome, URL e eventos) e excluir.** Editar nunca muda o segredo de assinatura. Uma URL nova é conferida do mesmo jeito que na criação; salvar sem mudar a URL não a confere de novo, então um webhook sempre pode ser pausado.
 - **Log de entregas** — por webhook: evento, status (pendente, entregue, com falha), tentativas, o status HTTP que seu endpoint respondeu e o último erro.
 
 Um workspace pode ter mais de um webhook de linha; cada um recebe os eventos em que se inscreveu.
@@ -29,7 +30,9 @@ Um workspace pode ter mais de um webhook de linha; cada um recebe os eventos em 
 | Evento | Quando é disparado |
 | --- | --- |
 | `phone_line.purchased` | Uma linha foi comprada (pelo painel ou por `POST /v1/phone-lines`) — um evento por número comprado. |
-| `phone_line.code_received` | A ligação de um pedido de código foi transcrita (`TRANSCRIBED`). `code` pode ser `null` — veja abaixo. |
+| `phone_line.audio_received` | A ligação de um pedido de código foi capturada e a gravação armazenada (`CAPTURED`) — antes de o código ser lido, o que pode levar alguns minutos. |
+| `phone_line.code_received` | Um pedido de código terminou: **uma vez por pedido**, com o `code`, ou com `code: null` e o `failureReason` quando terminou sem código. |
+| `phone_line.code_failed` | Um pedido de código terminou sem código, de forma definitiva — uma vez, com o `reason`. Sempre acompanhado de um `phone_line.code_received` com `code` `null`. |
 | `phone_line.renewed` | Uma cobrança de renovação deu certo, inclusive uma cobrança atrasada que reativa uma linha em `PAYMENT_PENDING` ou `SUSPENDED`. |
 | `phone_line.payment_failed` | Uma cobrança de renovação falhou e a linha passou de `ACTIVE` para `PAYMENT_PENDING`. Uma vez por renovação — as novas tentativas seguintes não o disparam de novo. |
 | `phone_line.suspended` | A linha continuava sem pagamento 2 dias após a falha e agora está `SUSPENDED`. |
@@ -38,7 +41,9 @@ Um workspace pode ter mais de um webhook de linha; cada um recebe os eventos em 
 | `phone_line.verification_updated` | A verificação do titular mudou de estado: foi concluída (aprovada automaticamente ou enviada para análise manual) ou revisada (aprovada, rejeitada ou com outro documento solicitado). |
 
 <Note>
-  `phone_line.code_received` é disparado somente quando uma transcrição é concluída. Um pedido que termina em `TIMED_OUT`, `FAILED` ou `CAPTURED` com falha na transcrição **não** envia evento algum — se você aguarda o webhook, acompanhe também o `pollDeadline` do pedido ou consulte [`GET /v1/phone-lines/activations/{activationId}`](/pt-BR/api/phone-lines/activation-codes#consultar-o-pedido).
+  Todo pedido de código aceito termina com **um** `phone_line.code_received` — com o código, ou com `code: null` —, então aguardar só esse evento basta. Uma transcrição que falha é refeita a partir da gravação armazenada (até 3 tentativas no total); só o resultado final é enviado, nunca as tentativas intermediárias. Um pedido recusado na criação (`503 SUPPLIER_UNAVAILABLE`, `poll_not_scheduled`) não envia evento: quem o fez já recebeu o erro.
+
+  `phone_line.audio_received` e `phone_line.code_failed` foram adicionados em 28/09/2026. Um webhook inscrito em todos os eventos (`"*"`) os recebe; um webhook com uma lista explícita recebe só os eventos da lista — edite-o para incluí-los.
 </Note>
 
 ## Formato do payload
@@ -107,16 +112,53 @@ Cabeçalhos:
         "lineId": "cmg5k2l1n0001pl8example9x",
         "number": "551148637200",
         "activationId": "cmg5k3a7c0002ac8example4q",
-        "code": "123456"
+        "code": "123456",
+        "failureReason": null
       }
     }
     ```
 
-    `code` é `null` quando a ligação foi transcrita, mas nenhum código de 6 dígitos foi encontrado nela (nesse caso, o `failureReason` do pedido é `no_code_in_transcript`). A gravação pode ser ouvida no painel.
+    `code` é `null` quando o pedido terminou sem código; `failureReason` diz o motivo, com o próprio [`failureReason`](/pt-BR/api/phone-lines/activation-codes#status) do pedido: `no_code_in_transcript`, `transcription_failed` (as 3 tentativas falharam), `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` ou `audio_store_failed`. Quando há gravação, ela pode ser ouvida no painel.
 
     <Warning>
       Este payload traz o código de ativação, que é uma credencial. Verifique a assinatura antes de confiar nele e não registre o corpo em log.
     </Warning>
+  </Accordion>
+
+  <Accordion title="phone_line.audio_received">
+    ```json
+    {
+      "id": "cmg5k4c9t0011dl8example7m",
+      "event": "phone_line.audio_received",
+      "createdAt": "2026-10-01T14:11:42.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "activationId": "cmg5k3a7c0002ac8example4q",
+        "capturedAt": "2026-10-01T14:11:42.000Z"
+      }
+    }
+    ```
+
+    A ligação chegou e a gravação está armazenada; o código está sendo lido. Enviado uma vez por pedido. Nem a gravação nem a transcrição são enviadas. Uma ligação cuja gravação não pôde ser baixada ou armazenada não envia `audio_received` — só `code_failed` e `code_received`.
+  </Accordion>
+
+  <Accordion title="phone_line.code_failed">
+    ```json
+    {
+      "id": "cmg5k4f2w0012dl8example8p",
+      "event": "phone_line.code_failed",
+      "createdAt": "2026-10-01T14:15:14.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "activationId": "cmg5k3a7c0002ac8example4q",
+        "reason": "no_call_in_window"
+      }
+    }
+    ```
+
+    `reason` é o `failureReason` do pedido — veja [Status](/pt-BR/api/phone-lines/activation-codes#status). O mesmo valor vem no `failureReason` do `phone_line.code_received` enviado junto.
   </Accordion>
 
   <Accordion title="phone_line.renewed">
@@ -259,7 +301,7 @@ def is_valid_signature(raw_body: bytes, signature_header: str | None, secret: st
 - **Redirecionamentos não são seguidos.** Uma resposta `3xx` conta como tentativa com falha.
 - **Pelo menos uma vez.** Se o seu endpoint processou o evento, mas não respondeu a tempo, a retentativa o entrega de novo, com o mesmo `id`. A ordem não é garantida.
 - **Webhooks pausados ou excluídos.** Um evento é entregue somente aos webhooks que estão ativos e inscritos no momento em que ele acontece. Cada tentativa confere o webhook de novo: uma entrega cujo webhook está pausado quando uma tentativa chega — inclusive uma que já está nas retentativas — é marcada como falha e não é enviada depois; excluir um webhook descarta as entregas pendentes dele. Os eventos nunca são reenviados a um webhook criado ou retomado depois.
-- **Destinos internos são recusados.** Uma URL cujo host resolve para um endereço de rede privada ou interna não é chamada, nem recebe novas tentativas. Uma URL assim é aceita na criação do webhook — nesse momento só o `https` e os nomes dos eventos são conferidos —, então toda entrega para ela fica registrada como falha. Já uma consulta DNS que falha é diferente: recebe novas tentativas como qualquer outra falha.
+- **Destinos internos são recusados.** Uma URL cujo host resolve para um endereço de rede privada ou interna não é chamada, nem recebe novas tentativas. Uma URL assim já é recusada quando você salva o webhook; isto cobre um nome cujo DNS passou a apontar para dentro depois. Já uma consulta DNS que falha é diferente: não impede salvar e, na entrega, recebe novas tentativas como qualquer outra falha.
 
 <Tip>
   Trate esses eventos como notificações, não como a fonte da verdade. Quando algum puder ter se perdido — seu endpoint ficou fora do ar por mais tempo do que duram as retentativas —, leia o estado atual com [`GET /v1/phone-lines`](/pt-BR/api/phone-lines/list).

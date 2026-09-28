@@ -1,7 +1,7 @@
 ---
 title: "POST /v1/phone-lines/{id}/activations — Códigos de Ativação"
 sidebarTitle: "Códigos de ativação"
-description: "Obtenha o código de verificação do WhatsApp de uma linha telefônica: abra uma janela de captura de 5 minutos, peça ao WhatsApp que ligue para a linha e consulte o pedido até o código transcrito chegar."
+description: "Obtenha o código de verificação do WhatsApp de uma linha telefônica: abra uma janela de captura de 5 minutos, peça ao WhatsApp que ligue para a linha e consulte o pedido até o código transcrito chegar — ou cancele a espera para pedir de novo."
 mode: "wide"
 ---
 
@@ -14,6 +14,7 @@ O WhatsApp verifica um número fixo **ligando para ele** e falando um código de
 | `POST` | `/v1/phone-lines/{id}/activations` | Abre um novo pedido de código na linha (janela de 5 minutos). |
 | `GET` | `/v1/phone-lines/activations/{activationId}` | Consulta um pedido: o `status` e, quando estiver pronto, o `code`. |
 | `GET` | `/v1/phone-lines/{id}/activations` | O histórico de códigos da linha, do mais recente para o mais antigo. |
+| `POST` | `/v1/phone-lines/{id}/activations/{activationId}/cancel` | Encerra a espera pela ligação, para pedir um novo código na hora. |
 
 <Note>
   Exige uma chave **com escopo de tenant**. Com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:read`) — caso contrário, `403 PERMISSION_DENIED`. Toda resposta que traz um pedido de código é enviada com `Cache-Control: no-store`: **o código é uma credencial** — quem o tiver pode registrar uma conta de WhatsApp na linha.
@@ -29,7 +30,7 @@ O WhatsApp verifica um número fixo **ligando para ele** e falando um código de
     Registre o número no WhatsApp Business e, quando for perguntado como receber o código, escolha a opção de receber o código por **ligação** ("Call me" no app em inglês). A linha é um número fixo e não recebe SMS — esperar por um SMS só consome a janela.
   </Step>
   <Step title="Nós capturamos e transcrevemos">
-    Verificamos a linha **a cada 15 segundos, aproximadamente,** enquanto a janela está aberta. Quando aparece uma gravação, nós a armazenamos (`CAPTURED`), a transcrevemos e extraímos o código (`TRANSCRIBED`).
+    Verificamos a linha **a cada 15 segundos, aproximadamente,** enquanto a janela está aberta, e mais uma vez logo depois que ela fecha. Quando aparece uma gravação, nós a armazenamos (`CAPTURED`), a transcrevemos e extraímos o código (`TRANSCRIBED`). Uma transcrição que falha é refeita a partir da gravação armazenada — até **3 tentativas** no total —, então ler o código costuma levar segundos, mas pode levar alguns minutos.
   </Step>
   <Step title="Leia o código">
     Consulte `GET /v1/phone-lines/activations/{activationId}` a cada alguns segundos — ou aguarde o webhook [`phone_line.code_received`](/pt-BR/api/phone-lines/webhooks) — e digite o `code` no WhatsApp.
@@ -41,7 +42,7 @@ O WhatsApp verifica um número fixo **ligando para ele** e falando um código de
 `POST https://pilotstatus.com.br/v1/phone-lines/{id}/activations` — sem corpo. Responde **`201`** com o novo pedido.
 
 - Permitido enquanto a linha está `ACTIVE` ou `PAYMENT_PENDING` (incluindo uma linha `ACTIVE` cancelada no fim do período). Uma linha `SUSPENDED`, `RETURNED` ou `CANCELED` recebe **409 `LINE_NOT_ACTIVE`**.
-- **Um pedido em espera por linha.** Enquanto um pedido estiver em `WAITING` e seu `pollDeadline` ainda não tiver passado, outro `POST` responde **409 `ACTIVATION_IN_PROGRESS`** — em vez disso, consulte o pedido que você já tem.
+- **Um pedido em espera por linha.** Enquanto um pedido estiver em `WAITING` e seu `pollDeadline` ainda não tiver passado, outro `POST` responde **409 `ACTIVATION_IN_PROGRESS`** — em vez disso, consulte o pedido que você já tem, ou [cancele-o](#cancelar-a-espera) para pedir de novo na hora.
 - **Sem limite de pedidos ao longo do tempo.** Peça de novo sempre que precisar (um novo registro do WhatsApp, uma janela que expirou); cada pedido aberto incrementa o `activationCount` da linha.
 
 <CodeGroup>
@@ -107,22 +108,58 @@ Consultar a cada alguns segundos é suficiente: o status só pode mudar depois d
 | `status` | `code` | `failureReason` | `hasAudio` | O que significa | Próximo passo |
 | --- | --- | --- | :-: | --- | --- |
 | `WAITING` | `null` | `null` | `false` | A janela está aberta e nenhuma ligação foi capturada ainda. | Continue consultando. Confira se você pediu ao WhatsApp para **ligar**. |
-| `CAPTURED` | `null` | `null` | `true` | A ligação foi gravada; a transcrição está em andamento. | Continue consultando. |
-| `CAPTURED` | `null` | `transcription_failed` | `true` | Gravada, mas a transcrição falhou. **Definitivo.** | Ouça a gravação no painel. |
+| `CAPTURED` | `null` | `null` | `false`, depois `true` | A ligação chegou. Estamos armazenando a gravação (`hasAudio` passa a `true` quando ela está armazenada) e lendo o código — com as novas tentativas. | Continue consultando. |
+| `CAPTURED` | `null` | `transcription_failed` | `true` | Gravada, mas as 3 tentativas de transcrição falharam. **Definitivo.** | Ouça a gravação no painel. |
 | `TRANSCRIBED` | `"123456"` | `null` | `true` | O código foi lido. **Definitivo.** | Digite-o no WhatsApp. |
 | `TRANSCRIBED` | `null` | `no_code_in_transcript` | `true` | A ligação foi transcrita, mas nenhum código de 6 dígitos foi encontrado nela. **Definitivo.** | Ouça a gravação no painel ou solicite um novo código. |
-| `TIMED_OUT` | `null` | `no_call_in_window` | `false` | Nenhuma ligação foi capturada antes de `pollDeadline`. **Definitivo.** | Solicite um novo código e peça ao WhatsApp para ligar de novo. |
+| `TIMED_OUT` | `null` | `no_call_in_window` | `false` | Nenhuma ligação chegou antes de `pollDeadline`. **Definitivo.** | Solicite um novo código e peça ao WhatsApp para ligar de novo. |
+| `TIMED_OUT` | `null` | `canceled_by_customer` | `false` | A espera foi [cancelada](#cancelar-a-espera) — pela API ou pelo **Cancelar espera** do painel. **Definitivo.** | Solicite um novo código — permitido imediatamente. |
 | `FAILED` | `null` | `audio_download_failed`, `audio_store_failed` | `false` | Uma gravação apareceu, mas não pôde ser baixada ou armazenada. **Definitivo.** | Solicite um novo código. |
 | `FAILED` | `null` | `poll_not_scheduled` | `false` | Não conseguimos começar a monitorar a linha (o `POST` respondeu `503`). **Definitivo.** | Solicite um novo código — permitido imediatamente. |
 
 <Warning>
-  **Não pare de consultar no primeiro status diferente de `WAITING`.** `CAPTURED` também é o estado intermediário enquanto a transcrição está em andamento: continue consultando enquanto `status` for `WAITING`, ou `CAPTURED` com `failureReason: null`. E `TRANSCRIBED` não garante um código — verifique `code`. A transcrição leva segundos: se um pedido ficar em `CAPTURED` com `failureReason: null` por mais de alguns minutos, trate-o como falho — ouça a gravação no painel ou solicite um novo código.
+  **Não pare de consultar no primeiro status diferente de `WAITING`.** `CAPTURED` também é o estado intermediário enquanto o código está sendo lido: continue consultando enquanto `status` for `WAITING`, ou `CAPTURED` com `failureReason: null`. E `TRANSCRIBED` não garante um código — verifique `code`. Ler o código costuma levar segundos, mas uma transcrição que falha é refeita a partir da gravação armazenada — até 3 tentativas no total —, então um pedido pode ficar em `CAPTURED` com `failureReason: null` por alguns minutos. Depois ele termina com o código (`TRANSCRIBED`) ou com `transcription_failed`.
 </Warning>
 
-- `TIMED_OUT` é registrado na primeira verificação depois de `pollDeadline`, então pode aparecer até cerca de 15 segundos depois do prazo. Essa verificação encerra o pedido sem procurar uma gravação, então uma ligação que chegue nos últimos segundos da janela pode se perder — peça ao WhatsApp que ligue assim que o pedido estiver aberto. Se um pedido ainda estiver em `WAITING` bem depois do seu `pollDeadline`, trate-o como expirado: um novo `POST` já é permitido, porque a regra de um pedido por vez só conta pedidos cujo `pollDeadline` ainda não passou.
-- `failureReason` é sempre um dos valores fixos da tabela (`no_call_in_window`, `no_code_in_transcript`, `transcription_failed`, `audio_download_failed`, `audio_store_failed`, `poll_not_scheduled`) ou `null`. Você pode tomar decisões com base nele; trate um valor desconhecido como falha, já que novos valores podem ser adicionados.
+- `TIMED_OUT` é registrado na primeira verificação depois de `pollDeadline`, então pode aparecer até cerca de 15 segundos depois do prazo. Essa verificação ainda lê a linha uma última vez: uma ligação que chegue nos últimos segundos da janela é capturada, não se perde — então um pedido também pode passar de `WAITING` para `CAPTURED` logo depois do seu `pollDeadline`. Se um pedido ainda estiver em `WAITING` bem depois do seu `pollDeadline`, trate-o como expirado: um novo `POST` já é permitido, porque a regra de um pedido por vez só conta pedidos cujo `pollDeadline` ainda não passou.
+- `failureReason` é sempre um dos valores fixos da tabela (`no_call_in_window`, `canceled_by_customer`, `no_code_in_transcript`, `transcription_failed`, `audio_download_failed`, `audio_store_failed`, `poll_not_scheduled`) ou `null`. Você pode tomar decisões com base nele; trate um valor desconhecido como falha, já que novos valores podem ser adicionados.
 - **O código vem de reconhecimento de fala.** O WhatsApp fala o código durante a ligação; transcrevemos a gravação e ficamos com a sequência de 6 dígitos ouvida com mais frequência. Se o WhatsApp rejeitar o código, ouça a gravação no painel.
 - **A gravação fica só no painel.** `hasAudio: true` só indica que existe uma gravação para ouvir em **Linhas** → a linha em questão. Não há endpoint de áudio na API pública, e a transcrição bruta nunca é retornada.
+
+## Cancelar a espera
+
+`POST https://pilotstatus.com.br/v1/phone-lines/{id}/activations/{activationId}/cancel` — sem corpo. Encerra um pedido que ainda está em `WAITING`, para que o próximo `POST /v1/phone-lines/{id}/activations` seja aceito na hora, em vez de responder `409 ACTIVATION_IN_PROGRESS` até a janela fechar. Mesmas credenciais e mesma permissão dos outros endpoints de ativação (`phone_lines:read`).
+
+Responde **`200`** com `{ "activation": { … } }`, agora `TIMED_OUT` com `failureReason: "canceled_by_customer"`, enviado com `Cache-Control: no-store`. A linha deixa de ser monitorada para esse pedido. Como todo pedido que termina sem código, ele envia [`phone_line.code_failed`](/pt-BR/api/phone-lines/webhooks#payloads) e [`phone_line.code_received`](/pt-BR/api/phone-lines/webhooks#payloads) (com `code: null`) uma vez, com `canceled_by_customer` — assim uma integração que aguarda o webhook também fica sabendo de uma espera cancelada pelo painel.
+
+- **Uma ligação que já chegou nunca é descartada.** Depois que a ligação é capturada, o pedido não está mais em `WAITING`, e o cancelamento responde **409 `ACTIVATION_NOT_WAITING`** — continue consultando: o código dele está sendo lido. O mesmo 409 responde a um pedido que já terminou. Nada muda em nenhum dos casos.
+- `{id}` precisa ser a linha à qual o pedido pertence. Uma linha que não é do seu workspace responde **404 `LINE_NOT_FOUND`**; um pedido que não é dessa linha — ou não é do seu workspace — responde **404 `ACTIVATION_NOT_FOUND`**.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activations/cmg5k3a7c0002ac8example4q/cancel" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Resposta (200)
+{
+  "activation": {
+    "id": "cmg5k3a7c0002ac8example4q",
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "status": "TIMED_OUT",
+    "requestedAt": "2026-10-01T14:10:00.000Z",
+    "pollDeadline": "2026-10-01T14:15:00.000Z",
+    "code": null,
+    "capturedAt": null,
+    "transcribedAt": null,
+    "failureReason": "canceled_by_customer",
+    "hasAudio": false
+  }
+}
+```
+
+</CodeGroup>
 
 ## Histórico de códigos
 
@@ -190,9 +227,10 @@ curl "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activa
 | `403` | `NUMBER_SCOPE_NOT_ALLOWED` | todos | Chave com escopo de número (ou concessão OAuth por número). Use a chave com escopo de tenant. |
 | `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | todos | Token OAuth / MCP de um usuário que não é mais membro ativo. |
 | `403` | `PERMISSION_DENIED` | todos | Token OAuth / MCP de um usuário que não é Proprietário nem Administrador. |
-| `404` | `LINE_NOT_FOUND` | `POST`, histórico | Nenhuma linha com esse id no seu workspace. |
-| `404` | `ACTIVATION_NOT_FOUND` | consulta | Nenhum pedido com esse id no seu workspace. |
+| `404` | `LINE_NOT_FOUND` | `POST`, histórico, cancelamento | Nenhuma linha com esse id no seu workspace. |
+| `404` | `ACTIVATION_NOT_FOUND` | consulta, cancelamento | Nenhum pedido com esse id no seu workspace (no cancelamento: nessa linha). |
 | `409` | `LINE_NOT_ACTIVE` | `POST` | A linha está `SUSPENDED`, `RETURNED` ou `CANCELED`. Nada foi criado. |
-| `409` | `ACTIVATION_IN_PROGRESS` | `POST` | Um pedido nesta linha ainda está aguardando a ligação. |
+| `409` | `ACTIVATION_IN_PROGRESS` | `POST` | Um pedido nesta linha ainda está aguardando a ligação. Consulte-o, ou cancele-o para pedir de novo agora. |
+| `409` | `ACTIVATION_NOT_WAITING` | cancelamento | A ligação já foi capturada (o código está sendo lido) ou o pedido já terminou. Nada mudou. |
 | `503` | `SUPPLIER_UNAVAILABLE` | `POST` | A operadora não conseguiu reiniciar a linha (nada foi criado), ou não conseguimos começar a monitorá-la (um pedido `FAILED` com `poll_not_scheduled` permanece no histórico). Tente de novo — um novo `POST` é permitido imediatamente. |
 | `500` | `INTERNAL_ERROR` | todos | Falha inesperada. |

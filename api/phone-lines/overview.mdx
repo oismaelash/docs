@@ -27,6 +27,7 @@ Lines are **receive-only**: they do not place calls or send SMS, and a landline 
 | `POST` | `/v1/phone-lines/{id}/activations` | [Get ready to receive a new WhatsApp code](/api/phone-lines/activation-codes). |
 | `GET` | `/v1/phone-lines/activations/{activationId}` | [Poll one code request](/api/phone-lines/activation-codes#poll-the-request). |
 | `GET` | `/v1/phone-lines/{id}/activations` | [Code history of a line](/api/phone-lines/activation-codes#code-history). |
+| `POST` | `/v1/phone-lines/{id}/activations/{activationId}/cancel` | [Cancel a wait](/api/phone-lines/activation-codes#cancel-a-wait) to ask for a new code right away. |
 
 Events (`phone_line.purchased`, `phone_line.code_received`, …) are delivered to **phone-line webhooks**, a registry separate from your number webhooks — see [Phone line webhooks](/api/phone-lines/webhooks).
 
@@ -44,7 +45,7 @@ A classic `ps_` key has no user and therefore no role: its authority is its scop
 | Endpoint | Permission | Owner | Admin | Agent | Analyst |
 | --- | --- | :-: | :-: | :-: | :-: |
 | `GET /v1/phone-lines`, `GET /v1/phone-lines/{id}` | `phone_lines:read` | ✅ | ✅ | — | — |
-| All three `…/activations` endpoints | `phone_lines:read` | ✅ | ✅ | — | — |
+| All four `…/activations` endpoints (cancel included) | `phone_lines:read` | ✅ | ✅ | — | — |
 | `GET /v1/phone-lines/available`, `POST /v1/phone-lines` | `phone_lines:purchase` | ✅ | — | — | — |
 | `DELETE /v1/phone-lines/{id}` | `phone_lines:cancel` | ✅ | — | — | — |
 
@@ -128,14 +129,14 @@ Timing:
     Register the number in WhatsApp Business and, when WhatsApp asks how to receive the code, choose the **phone call** option ("Call me"). The line is a landline: waiting for an SMS only burns the window.
   </Step>
   <Step title="We capture and transcribe the call">
-    We check the line **about every 15 seconds** during the window. When the call's recording appears we store it, transcribe it and extract the 6-digit code.
+    We check the line **about every 15 seconds** during the window, and once more right after it closes. When the call's recording appears we store it, transcribe it and extract the 6-digit code — retrying a failed transcription from the stored recording, up to 3 attempts in all.
   </Step>
   <Step title="Read the code">
     Poll `GET /v1/phone-lines/activations/{activationId}` every few seconds until `status` is `TRANSCRIBED` (or another final state), or subscribe to the `phone_line.code_received` webhook. Type `code` into WhatsApp.
   </Step>
 </Steps>
 
-Only one request per line can be waiting at a time (**409 `ACTIVATION_IN_PROGRESS`**). There is no limit on how many codes a line requests over its life; each request that opens increments the line's `activationCount`. Suspended and finished lines cannot request codes (**409 `LINE_NOT_ACTIVE`**). The call **recording** can be listened to in the dashboard only. Full detail, statuses and edge cases: [Activation codes](/api/phone-lines/activation-codes).
+Only one request per line can be waiting at a time (**409 `ACTIVATION_IN_PROGRESS`**); [cancel the wait](/api/phone-lines/activation-codes#cancel-a-wait) to ask again before its window closes. There is no limit on how many codes a line requests over its life; each request that opens increments the line's `activationCount`. Suspended and finished lines cannot request codes (**409 `LINE_NOT_ACTIVE`**). The call **recording** can be listened to in the dashboard only. Full detail, statuses and edge cases: [Activation codes](/api/phone-lines/activation-codes).
 
 ## Idempotency
 
@@ -181,11 +182,12 @@ Validation errors raised by the routes themselves may add a `details` object (`u
 | `403` | `VERIFICATION_REQUIRED` | `POST /v1/phone-lines` | The account holder is not verified. | Verify in the dashboard (`/linhas`). |
 | `403` | `VERIFICATION_REJECTED` | `POST /v1/phone-lines` | The verification was rejected. | Talk to support. |
 | `400` | `INVALID_LIMIT` | `GET …/{id}/activations` | `limit` is not an integer from 1 to 100. | Fix the query. |
-| `404` | `LINE_NOT_FOUND` | `…/{id}`, `…/{id}/activations` | No such line in your workspace (another workspace's line reads the same). | Check the id — it is the line `id`, not the phone number. |
-| `404` | `ACTIVATION_NOT_FOUND` | `GET …/activations/{activationId}` | No such code request in your workspace. | Check the id. |
+| `404` | `LINE_NOT_FOUND` | `…/{id}`, `…/{id}/activations`, `…/cancel` | No such line in your workspace (another workspace's line reads the same). | Check the id — it is the line `id`, not the phone number. |
+| `404` | `ACTIVATION_NOT_FOUND` | `GET …/activations/{activationId}`, `…/cancel` | No such code request in your workspace (for cancel: on that line). | Check the id. |
 | `409` | `NOT_CANCELABLE` | `DELETE …/{id}` | The line is already `RETURNED` or `CANCELED`. | Nothing to do. |
 | `409` | `LINE_NOT_ACTIVE` | `POST …/{id}/activations` | The line is `SUSPENDED`, `RETURNED` or `CANCELED`. | Pay a suspended line first; a finished line gets no codes. |
-| `409` | `ACTIVATION_IN_PROGRESS` | `POST …/{id}/activations` | A request on this line is still waiting for the call. | Poll the waiting one, or retry after its `pollDeadline`. |
+| `409` | `ACTIVATION_IN_PROGRESS` | `POST …/{id}/activations` | A request on this line is still waiting for the call. | Poll the waiting one, cancel it, or retry after its `pollDeadline`. |
+| `409` | `ACTIVATION_NOT_WAITING` | `POST …/activations/{activationId}/cancel` | The call was already captured (its code is being read), or the request already ended. Nothing changed. | Keep polling the request. |
 | `503` | `SUPPLIER_UNAVAILABLE` | search, purchase, cancel, activations | The carrier could not be reached, refused, or the shared budget ran out. On `POST …/activations` it can also mean we could not start watching the line: a `FAILED` request (`poll_not_scheduled`) then stays in the history. | Retry in a few minutes — a new code request is allowed right away. |
 | `500` | `INTERNAL_ERROR` | all | Unexpected failure. | Retry. On `POST /v1/phone-lines`, retry with the **same** key and then list your lines. |
 
@@ -221,6 +223,7 @@ A refund after a charge always goes to the **wallet**, including any part that w
   | `LINE_NOT_ACTIVE` | `This line is not active, so it cannot receive a new code. \| Esta linha não está ativa, então não pode receber um novo código.` |
   | `ACTIVATION_IN_PROGRESS` | `A code request is already waiting for the call on this line. \| Já existe um pedido de código esperando a ligação nesta linha.` |
   | `ACTIVATION_NOT_FOUND` | `Code request not found. \| Pedido de código não encontrado.` |
+  | `ACTIVATION_NOT_WAITING` | `This code request is no longer waiting for the call: the call was already captured, or the request already ended. \| Este pedido de código não está mais esperando a ligação: a ligação já foi capturada ou o pedido já terminou.` |
   | `NOT_CANCELABLE` | `This line cannot be cancelled now. \| Esta linha não pode ser cancelada agora.` |
   | `INTERNAL_ERROR` | `Unexpected error. \| Erro inesperado.` |
 
