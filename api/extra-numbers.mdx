@@ -1,7 +1,7 @@
 ---
 title: "Extra Numbers & On Demand"
 sidebarTitle: "Extra numbers"
-description: "Buy extra WhatsApp numbers via /v1/subscription/extra-numbers — prorated first charge, Free → On Demand conversion, and payment from the prepaid wallet, a saved card, or a checkout URL."
+description: "Buy extra WhatsApp numbers via /v1/subscription/extra-numbers — prorated first charge, Free → On Demand conversion, and payment from the prepaid wallet or a saved card."
 mode: "wide"
 ---
 
@@ -55,7 +55,7 @@ Returns the cost and whether buying converts the plan. `proratedTotal` is what y
   **You only pay for the days left in the cycle.** The first charge is prorated: `proratedUnitPrice = unitPriceMonthly × (remainingDays / totalDaysInCycle)`. In the example above, half the cycle is left, so 2 numbers × R\$14,95 = **R\$29,90 now**, and **R\$59,80/month** from the next cycle on.
 </Note>
 
-`fundingSource` tells you how the charge will be covered — `credits`, `card`, `credits+card`, or `none`. When it is `none`, `canFund` is `false` and the `POST` returns a `checkoutUrl` instead of charging.
+`fundingSource` tells you how the charge will be covered — `credits` (the wallet covers all of `proratedTotal`), `credits+card` (part credits, the rest on the saved card), `card`, or `none`. `none` means the wallet does not cover `proratedTotal` **and** there is no saved card (`hasSavedCard: false`): `canFund` is `false`, and the `POST` answers **`402 INSUFFICIENT_FUNDS`** without charging anything. It does **not** return a checkout link — top the wallet up or save a card first (`POST /v1/billing/checkout`, below).
 
 ## POST /v1/subscription/extra-numbers — Buy
 
@@ -70,7 +70,7 @@ Behaviour:
 
 - **Free → On Demand conversion.** If you are on the **Free** plan, buying an extra number moves you to On Demand: your current (formerly free, 200-message-limited) number becomes a **paid, unlimited** number **and** the new number is billed too. So buying 1 extra while Free bills you for **2** numbers. Because this changes what you pay, the `POST` returns **409 `CONFIRMATION_REQUIRED`** (with the preview) unless you send `confirm: true`.
 - **Already On Demand / paid.** Buying increments your number count; messages stay unlimited.
-- **Payment.** The prorated cost is taken from your **prepaid wallet** first, then any remainder from your saved card (dashboard **Plans → Cartão**). With neither, the response is `{ "success": true, "charged": false, "checkoutUrl": "https://…" }` — open it to pay the prorated amount; the card you use there is saved for the recurring charge. Once paid, the slot unlocks (webhook) and you can create the number with `POST /v1/numbers`.
+- **Payment.** The prorated cost is charged **on the spot**: from your **prepaid wallet** first, then any remainder from your saved card (dashboard **Plans → Cartão**, or `POST /v1/billing/checkout` with `add_card`). A successful purchase answers `{ "success": true, "charged": true, … }` — `creditsUsed` and `cardCharged` show how the charge was split, and `paidExtraNumbers` already includes the new slot, so you can create the number with `POST /v1/numbers` right away. **This route never returns a checkout link** (there is no `checkoutUrl`, and `charged` is never `false`): with neither enough credits nor a saved card it returns **`402 INSUFFICIENT_FUNDS`** — nothing is charged, and any credits it had started to use are put back. Top up or save a card, then retry.
 - **The monthly recurrence comes out of the wallet**, not a separate subscription. Each cycle, `paidExtraNumbers × unit price` is debited from your credits, falling back to your saved card. Top the wallet up with `POST /v1/billing/checkout` (`wallet_topup`, card only) or in the dashboard, where PIX is also available — so you can run On Demand on PIX credits topped up in the dashboard and never save a card.
 
 <Note>
@@ -92,6 +92,18 @@ Behaviour:
 | `502` | `PAYMENT_PROVIDER_ERROR` | We could not get an answer out of the payment processor. | **Check your statement before retrying** — see the note below. |
 
 Every one of these bodies carries `proratedTotal` and `currency`, so you can show the amount that was attempted. `INSUFFICIENT_FUNDS` also carries `walletReason` (`NO_CARD` or `INSUFFICIENT_CREDITS`).
+
+This is the `INSUFFICIENT_FUNDS` body when the credits do not cover the charge and there is no saved card (`error` is a human-readable message, in Portuguese — branch on `code`):
+
+```json
+{
+  "error": "Saldo insuficiente na carteira e cartão indisponível para cobrar o número extra. Adicione créditos ou um cartão.",
+  "code": "INSUFFICIENT_FUNDS",
+  "proratedTotal": 29.9,
+  "currency": "BRL",
+  "walletReason": "NO_CARD"
+}
+```
 
 <Note>
   **In all three cases the extra number was _not_ added.** Your `paidExtraNumbers` is unchanged and no slot was unlocked — every write is downstream of a successful charge.
