@@ -30,13 +30,13 @@ Um workspace pode ter mais de um webhook de linha; cada um recebe os eventos em 
 | Evento | Quando é disparado |
 | --- | --- |
 | `phone_line.purchased` | Uma linha foi comprada (pelo painel ou por `POST /v1/phone-lines`) — um evento por número comprado. |
-| `phone_line.audio_received` | A ligação de um pedido de código foi capturada e a gravação armazenada (`CAPTURED`) — antes de o código ser lido, o que pode levar alguns minutos. |
+| `phone_line.audio_received` | A ligação de um pedido de código foi capturada e a gravação armazenada (`CAPTURED`) — antes de o código ser lido, o que pode levar alguns minutos. Traz a [`audioUrl`](#a-url-da-gravação) da gravação. |
 | `phone_line.code_received` | Um pedido de código terminou: **uma vez por pedido**, com o `code`, ou com `code: null` e o `failureReason` quando terminou sem código. |
 | `phone_line.code_failed` | Um pedido de código terminou sem código, de forma definitiva — uma vez, com o `reason`. Sempre acompanhado de um `phone_line.code_received` com `code` `null`. |
 | `phone_line.renewed` | Uma cobrança de renovação deu certo, inclusive uma cobrança atrasada que reativa uma linha em `PAYMENT_PENDING` ou `SUSPENDED`. |
 | `phone_line.payment_failed` | Uma cobrança de renovação falhou e a linha passou de `ACTIVE` para `PAYMENT_PENDING`. Uma vez por renovação — as novas tentativas seguintes não o disparam de novo. |
 | `phone_line.suspended` | A linha continuava sem pagamento 2 dias após a falha e agora está `SUSPENDED`. |
-| `phone_line.returned` | A linha foi devolvida à operadora (`RETURNED`) — 1 dia após a suspensão, imediatamente quando uma linha sem pagamento é cancelada, ou quando ela fica de fora no **Escolher quais linhas manter** do painel. |
+| `phone_line.returned` | A linha foi devolvida à operadora (`RETURNED`) — 1 dia após a suspensão, imediatamente quando uma linha sem pagamento é cancelada ou fica de fora no **Escolher quais linhas manter** do painel, ou 3 dias depois da recusa da verificação do titular sob a qual foi comprada. `reason` diz qual. |
 | `phone_line.canceled` | Uma linha cancelada no fim do período chegou a `currentPeriodEnd` e agora está `CANCELED`. |
 | `phone_line.verification_updated` | A verificação do titular mudou de estado: foi concluída (aprovada automaticamente ou enviada para análise manual) ou revisada (aprovada, rejeitada ou com outro documento solicitado). |
 
@@ -85,6 +85,25 @@ Todo evento sobre uma linha — todos, menos `phone_line.verification_updated` �
   **Aqui os números não têm `+`.** `number` traz os dígitos E.164 sem o sinal de mais (`551148637200`), exatamente como nos endpoints `/v1/phone-lines` — ao contrário dos webhooks de número, cujos campos de telefone trazem `+`.
 </Note>
 
+## A URL da gravação
+
+Os três eventos de um pedido de código — `phone_line.audio_received`, `phone_line.code_received` e `phone_line.code_failed` — trazem **`audioUrl`**: a URL absoluta de [`GET /v1/phone-lines/activations/{activationId}/audio`](/pt-BR/api/phone-lines/activation-codes#baixar-a-gravação), que serve a gravação da ligação.
+
+```text
+https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio
+```
+
+- **Quando o pedido tem gravação, ela está lá.** `phone_line.audio_received` sempre a traz — ele é enviado depois que a gravação é armazenada. `phone_line.code_received` e `phone_line.code_failed` a trazem sempre que a ligação foi armazenada: com o código, e também quando nenhum código pôde ser lido (`no_code_in_transcript`, `transcription_failed`), que é justamente quando você mais quer ouvir.
+- **`null` quando não há gravação** — a chave vem sempre. É um pedido que terminou antes de qualquer ligação ser armazenada: `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` ou `audio_store_failed`.
+- **Ela não contém credencial.** Busque-a com a sua chave **com escopo de tenant** (`x-api-key`), como qualquer endpoint `/v1/phone-lines`; sem chave ela responde `401`, e a chave de outro workspace recebe `404`. Guardar ou registrar a URL em log não expõe a gravação.
+- **Ela para de responder quando a linha sai do seu workspace.** Uma linha `RETURNED` ou `CANCELED` tem as gravações apagadas, e a URL passa a responder `404`.
+
+```bash
+curl "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -o activation.wav
+```
+
 ## Payloads
 
 `lineId` é o `id` da linha em [`GET /v1/phone-lines/{id}`](/pt-BR/api/phone-lines/list#obter-uma-linha).
@@ -118,12 +137,13 @@ Todo evento sobre uma linha — todos, menos `phone_line.verification_updated` �
         "name": "Suporte SP",
         "activationId": "cmg5k3a7c0002ac8example4q",
         "code": "123456",
-        "failureReason": null
+        "failureReason": null,
+        "audioUrl": "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio"
       }
     }
     ```
 
-    `code` é `null` quando o pedido terminou sem código; `failureReason` diz o motivo, com o próprio [`failureReason`](/pt-BR/api/phone-lines/activation-codes#status) do pedido: `no_code_in_transcript`, `transcription_failed` (as 3 tentativas falharam), `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` ou `audio_store_failed`. Quando há gravação, ela pode ser ouvida no painel.
+    `code` é `null` quando o pedido terminou sem código; `failureReason` diz o motivo, com o próprio [`failureReason`](/pt-BR/api/phone-lines/activation-codes#status) do pedido: `no_code_in_transcript`, `transcription_failed` (as 3 tentativas falharam), `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` ou `audio_store_failed`. `audioUrl` é a gravação, ou `null` quando o pedido não tem gravação — veja [A URL da gravação](#a-url-da-gravação).
 
     <Warning>
       Este payload traz o código de ativação, que é uma credencial. Verifique a assinatura antes de confiar nele e não registre o corpo em log.
@@ -141,12 +161,13 @@ Todo evento sobre uma linha — todos, menos `phone_line.verification_updated` �
         "number": "551148637200",
         "name": "Suporte SP",
         "activationId": "cmg5k3a7c0002ac8example4q",
-        "capturedAt": "2026-10-01T14:11:42.000Z"
+        "capturedAt": "2026-10-01T14:11:42.000Z",
+        "audioUrl": "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio"
       }
     }
     ```
 
-    A ligação chegou e a gravação está armazenada; o código está sendo lido. Enviado uma vez por pedido. Nem a gravação nem a transcrição são enviadas. Uma ligação cuja gravação não pôde ser baixada ou armazenada não envia `audio_received` — só `code_failed` e `code_received`.
+    A ligação chegou e a gravação está armazenada; o código está sendo lido. Enviado uma vez por pedido. `audioUrl` sempre vem preenchida aqui: [baixe a gravação](/pt-BR/api/phone-lines/activation-codes#baixar-a-gravação) com a sua chave. A gravação em si nunca vai no corpo, e a transcrição nunca é enviada. Uma ligação cuja gravação não pôde ser baixada ou armazenada não envia `audio_received` — só `code_failed` e `code_received`.
   </Accordion>
 
   <Accordion title="phone_line.code_failed">
@@ -160,12 +181,13 @@ Todo evento sobre uma linha — todos, menos `phone_line.verification_updated` �
         "number": "551148637200",
         "name": "Suporte SP",
         "activationId": "cmg5k3a7c0002ac8example4q",
-        "reason": "no_call_in_window"
+        "reason": "no_call_in_window",
+        "audioUrl": null
       }
     }
     ```
 
-    `reason` é o `failureReason` do pedido — veja [Status](/pt-BR/api/phone-lines/activation-codes#status). O mesmo valor vem no `failureReason` do `phone_line.code_received` enviado junto.
+    `reason` é o `failureReason` do pedido — veja [Status](/pt-BR/api/phone-lines/activation-codes#status). O mesmo valor vem no `failureReason` do `phone_line.code_received` enviado junto. `audioUrl` é `null` aqui porque nenhuma ligação chegou; com `no_code_in_transcript` ou `transcription_failed`, ela aponta para a gravação.
   </Accordion>
 
   <Accordion title="phone_line.renewed">
@@ -225,10 +247,21 @@ Todo evento sobre uma linha — todos, menos `phone_line.verification_updated` �
       "data": {
         "lineId": "cmg5k2l1n0001pl8example9x",
         "number": "551148637200",
-        "name": "Suporte SP"
+        "name": "Suporte SP",
+        "reason": "unpaid"
       }
     }
     ```
+
+    `reason` diz por que a linha voltou para a operadora — um código estável em snake_case:
+
+    | `reason` | Quando |
+    | --- | --- |
+    | `unpaid` | Continuou sem pagamento 1 dia depois da suspensão. |
+    | `canceled_by_customer` | Você abriu mão de uma linha em atraso: [`DELETE /v1/phone-lines/{id}`](/pt-BR/api/phone-lines/cancel) em uma linha `PAYMENT_PENDING` ou `SUSPENDED`, ou **Escolher quais linhas manter** no painel. |
+    | `verification_rejected` | A linha foi comprada enquanto a verificação do titular estava em análise manual, e essa análise foi recusada. Enviado 3 dias depois da recusa; toda cobrança que a linha pagou é estornada para a carteira. |
+
+    Trate um `reason` desconhecido como uma devolução do mesmo jeito. O histórico de códigos da linha — códigos e gravações das ligações — é apagado quando ela é devolvida.
   </Accordion>
 
   <Accordion title="phone_line.canceled">
@@ -265,10 +298,10 @@ Todo evento sobre uma linha — todos, menos `phone_line.verification_updated` �
     | --- | --- | --- |
     | `APPROVED` | Aprovada. | Sim |
     | `IN_REVIEW` | Concluída, aguardando análise manual. | Sim |
-    | `NEEDS_DOCUMENT` | O revisor pediu outro documento (no painel). | Não — `VERIFICATION_REQUIRED` |
-    | `REJECTED` | Recusada. | Não — `VERIFICATION_REJECTED` |
+    | `NEEDS_DOCUMENT` | O revisor pediu outro documento. | Não — `VERIFICATION_REQUIRED` |
+    | `REJECTED` | Recusada. As linhas compradas enquanto ela estava `IN_REVIEW` são devolvidas 3 dias depois, com as cobranças estornadas para a carteira. | Não — `VERIFICATION_REJECTED` |
 
-    Não há endpoint público para ler a verificação; o `verificationId` a identifica nas conversas com o suporte.
+    Leia o estado completo — documento mascarado, canais de contato, a observação do revisor — com [`GET /v1/phone-lines/verification`](/pt-BR/api/phone-lines/verification#ler-o-estado). O `verificationId` é o `verification.id` dela, e também a identifica nas conversas com o suporte.
   </Accordion>
 </AccordionGroup>
 
