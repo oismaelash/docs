@@ -1,7 +1,7 @@
 ---
 title: "Phone Lines API — Overview"
 sidebarTitle: "Overview"
-description: "Rent Brazilian landline numbers to activate WhatsApp Business accounts: key scope, permissions, pricing, the line lifecycle, the activation-code flow, idempotency and every error code of /v1/phone-lines."
+description: "Rent Brazilian landline numbers to activate WhatsApp Business accounts: key scope, permissions, holder verification, pricing, the line lifecycle, the activation-code flow, idempotency and every error code of /v1/phone-lines."
 mode: "wide"
 ---
 
@@ -21,11 +21,17 @@ Lines are **receive-only**: they do not place calls or send SMS, and a landline 
 | --- | --- | --- |
 | `GET` | `/v1/phone-lines/available?ddd=11` | [Search the numbers](/api/phone-lines/available) you can buy in an area code. |
 | `POST` | `/v1/phone-lines` | [Buy 1 to 10 numbers](/api/phone-lines/purchase). Requires `Idempotency-Key`. |
+| `GET` | `/v1/phone-lines/verification` | [Account holder verification](/api/phone-lines/verification#read-the-state): can this workspace buy? |
+| `POST` | `/v1/phone-lines/verification` | [Submit the holder's data and document](/api/phone-lines/verification#submit). Requires `Idempotency-Key`. |
+| `POST` | `/v1/phone-lines/verification/contact/{channel}/confirm` | [Confirm a contact code](/api/phone-lines/verification#confirm-a-code). |
+| `POST` | `/v1/phone-lines/verification/contact/{channel}/send` | [Send a new contact code](/api/phone-lines/verification#send-a-new-code). |
+| `POST` | `/v1/phone-lines/verification/document` | [Send a new document](/api/phone-lines/verification#send-a-new-document). |
 | `GET` | `/v1/phone-lines` | [List your lines](/api/phone-lines/list). |
 | `GET` | `/v1/phone-lines/{id}` | [Fetch one line](/api/phone-lines/list#fetch-one-line). |
 | `DELETE` | `/v1/phone-lines/{id}` | [Cancel a line](/api/phone-lines/cancel). |
 | `POST` | `/v1/phone-lines/{id}/activations` | [Get ready to receive a new WhatsApp code](/api/phone-lines/activation-codes). |
 | `GET` | `/v1/phone-lines/activations/{activationId}` | [Poll one code request](/api/phone-lines/activation-codes#poll-the-request). |
+| `GET` | `/v1/phone-lines/activations/{activationId}/audio` | [Download the call recording](/api/phone-lines/activation-codes#download-the-recording) of a code request. |
 | `GET` | `/v1/phone-lines/{id}/activations` | [Code history of a line](/api/phone-lines/activation-codes#code-history). |
 | `POST` | `/v1/phone-lines/{id}/activations/{activationId}/cancel` | [Cancel a wait](/api/phone-lines/activation-codes#cancel-a-wait) to ask for a new code right away. |
 
@@ -45,9 +51,10 @@ A classic `ps_` key has no user and therefore no role: its authority is its scop
 | Endpoint | Permission | Owner | Admin | Agent | Analyst |
 | --- | --- | :-: | :-: | :-: | :-: |
 | `GET /v1/phone-lines`, `GET /v1/phone-lines/{id}` | `phone_lines:read` | ✅ | ✅ | — | — |
-| All four `…/activations` endpoints (cancel included) | `phone_lines:read` | ✅ | ✅ | — | — |
+| All four `…/activations` endpoints (cancel included) and the recording (`…/audio`) | `phone_lines:read` | ✅ | ✅ | — | — |
 | `GET /v1/phone-lines/available`, `POST /v1/phone-lines` | `phone_lines:purchase` | ✅ | — | — | — |
 | `DELETE /v1/phone-lines/{id}` | `phone_lines:cancel` | ✅ | — | — | — |
+| Every `/v1/phone-lines/verification…` endpoint | `phone_lines:purchase` | ✅ | — | — | — |
 
 A role that lacks the permission gets **403 `PERMISSION_DENIED`**.
 
@@ -57,9 +64,9 @@ A role that lacks the permission gets **403 `PERMISSION_DENIED`**.
 
 ## Before the first purchase: identity verification
 
-Renting a phone line requires a verified account holder (CNPJ or CPF, plus contact confirmation). **Verification is done in the dashboard only** — **Phone lines** (`/linhas`) → **Buy phone lines** — and is asked for once, on the first purchase. There is no verification endpoint in the public API.
+Renting a phone line requires a verified account holder (CNPJ or CPF, the document that shows it, plus contact confirmation), asked for once, before the first purchase. It can be done **through the API** — [`/v1/phone-lines/verification`](/api/phone-lines/verification): submit the data and the document, confirm the contact codes, read the decision — or in the dashboard (**Phone lines** (`/linhas`) → **Buy phone lines**). Both are the same verification: whichever you use, the other sees the result.
 
-Through the API, an unverified workspace can search numbers and try to buy; the purchase then answers:
+An unverified workspace can search numbers and try to buy; the purchase then answers:
 
 | Verification state | `POST /v1/phone-lines` |
 | --- | --- |
@@ -67,6 +74,8 @@ Through the API, an unverified workspace can search numbers and try to buy; the 
 | Under manual review | **Proceeds** — you can already buy. |
 | Never started, not finished (contact code or document still missing), or another document requested | **403 `VERIFICATION_REQUIRED`** |
 | Rejected | **403 `VERIFICATION_REJECTED`** |
+
+**A rejected review takes back what it let through.** Buying while the verification is under manual review is allowed, but it depends on the review. If the review is rejected, the lines bought during it go back: **3 days after the rejection** — the deadline the rejection notice announces — each one you still hold is returned to the carrier (`phone_line.returned` with `reason: "verification_rejected"`), and every charge those lines paid — purchase and renewals, card portions included — is **refunded to the wallet**. Until then they keep working, and they are not renewed. Lines bought under an earlier, approved verification are not affected.
 
 Changes of verification state are also delivered as the `phone_line.verification_updated` [webhook event](/api/phone-lines/webhooks).
 
@@ -96,19 +105,19 @@ Changes of verification state are also delivered as the `phone_line.verification
 | `ACTIVE` | Paid through `currentPeriodEnd`. | ✅ | at `currentPeriodEnd` |
 | `PAYMENT_PENDING` | The renewal charge failed. `paymentPendingSince` says when. Retried every 6 hours. | ✅ | retried |
 | `SUSPENDED` | Still unpaid **2 days** after `paymentPendingSince`. Still yours; its code history stays readable. `suspendedAt` says when. | — | retried |
-| `RETURNED` | Still unpaid **1 day** after `suspendedAt`, or cancelled while unpaid. Cancelled at the carrier; the number went back to the pool. `returnedAt` says when. **Final.** | — | never |
+| `RETURNED` | Still unpaid **1 day** after `suspendedAt`, cancelled while unpaid, or bought during a verification review that was [rejected](#before-the-first-purchase-identity-verification). Cancelled at the carrier; the number went back to the pool. `returnedAt` says when. **Final.** | — | never |
 | `CANCELED` | You cancelled a paid line and its paid period ran out. `canceledAt` says when. **Final.** | — | never |
 
 Timing:
 
 - **Renewal** is attempted when `currentPeriodEnd` is reached. Billing runs **once an hour**, so the charge — and every transition below — happens within about an hour after its deadline.
-- **A failed renewal** moves the line to `PAYMENT_PENDING` and is retried **every 6 hours**. Adding credits or a card is picked up at the next retry; the dashboard's **Pay for all** button retries at once.
+- **A failed renewal** moves the line to `PAYMENT_PENDING` and is retried **every 6 hours**. Adding credits or a card is picked up at the next retry; the dashboard retries at once — **Pay for all**, on the list of lines, charges every unpaid line, and **Pay … now** (or **Pay … and reactivate**) on a line's page charges that line only.
 - **2 days** after the failure the line is `SUSPENDED`; **1 day** later it is `RETURNED`. From the first failed charge to losing the number: about **3 days**.
 - **A late payment keeps the anniversary.** When a renewal finally succeeds — even while `SUSPENDED` — the line goes back to `ACTIVE` and the new period runs from the original renewal date, not from the payment date.
 - Each step sends a notice and a webhook event: `phone_line.payment_failed` (once per renewal, on its first failed attempt), `phone_line.suspended` and `phone_line.returned`. A successful renewal sends `phone_line.renewed`.
 
 <Warning>
-  **Returning a number is irreversible.** The number goes back to the carrier's pool and stops being yours; nothing undoes a return, and there is no guarantee you can ever get that number again. The WhatsApp account activated on it stays tied to that number: whoever rents it next can request a verification code for it. Keep credits or a saved card available.
+  **Returning a number is irreversible.** The number goes back to the carrier's pool and stops being yours; nothing undoes a return, and there is no guarantee that number can be bought back. The WhatsApp account activated on it stays tied to that number: whoever rents it next can request a verification code for it. The line's code history — codes and call recordings — is deleted, as it is when a cancelled line reaches `CANCELED`. Keep credits or a saved card available.
 </Warning>
 
 ### Cancelling
@@ -136,13 +145,13 @@ Timing:
   </Step>
 </Steps>
 
-Only one request per line can be waiting at a time (**409 `ACTIVATION_IN_PROGRESS`**); [cancel the wait](/api/phone-lines/activation-codes#cancel-a-wait) to ask again before its window closes. There is no limit on how many codes a line requests over its life; each request that opens increments the line's `activationCount`. Suspended and finished lines cannot request codes (**409 `LINE_NOT_ACTIVE`**). The call **recording** can be listened to in the dashboard only. Full detail, statuses and edge cases: [Activation codes](/api/phone-lines/activation-codes).
+Only one request per line can be waiting at a time (**409 `ACTIVATION_IN_PROGRESS`**); [cancel the wait](/api/phone-lines/activation-codes#cancel-a-wait) to ask again before its window closes. There is no limit on how many codes a line requests over its life; each request that opens increments the line's `activationCount`. Suspended and finished lines cannot request codes (**409 `LINE_NOT_ACTIVE`**). The call **recording** can be downloaded with [`GET /v1/phone-lines/activations/{activationId}/audio`](/api/phone-lines/activation-codes#download-the-recording) — the code webhooks carry that URL as `audioUrl` — or played in the dashboard. Full detail, statuses and edge cases: [Activation codes](/api/phone-lines/activation-codes).
 
 ## Idempotency
 
 `POST /v1/phone-lines` moves money, so it **requires** an `Idempotency-Key` header. A retry with the same key never charges twice for the same number within **one hour**: the item comes back `ok: false` with `REQUEST_ALREADY_PROCESSED`. The exact rules — including what a replay does and does not tell you — are in [Buy phone lines → Idempotency](/api/phone-lines/purchase#idempotency).
 
-The other endpoints need no key: reads are safe, `DELETE` on an `ACTIVE` line is a no-op the second time, and a second `POST …/activations` while one is waiting answers `409 ACTIVATION_IN_PROGRESS` instead of opening another.
+The verification submit (`POST /v1/phone-lines/verification`) also **requires** one — see [Verification → Idempotency](/api/phone-lines/verification#idempotency). The other endpoints need no key: reads are safe, `DELETE` on an `ACTIVE` line is a no-op the second time, and a second `POST …/activations` while one is waiting answers `409 ACTIVATION_IN_PROGRESS` instead of opening another.
 
 ## Limits
 
@@ -150,6 +159,7 @@ The other endpoints need no key: reads are safe, `DELETE` on an `ACTIVE` line is
 - **One waiting code request per line.**
 - **Code history:** `limit` 1–100 per call (default 20).
 - **Calls that reach our carrier — searching, buying, requesting a code, cancelling an unpaid line — draw on a request budget that is shared by the whole platform.** When it runs out they answer **503 `SUPPLIER_UNAVAILABLE`** ("Try again in a few minutes"), or the per-number `SUPPLIER_UNAVAILABLE` inside a purchase. Search once per area code and reuse the result instead of polling it.
+- **Verification:** 10 submissions per hour per workspace (the submit and the document together) → **429 `RATE_LIMITED`** with `Retry-After`; contact codes are limited as described in [Verification → Limits](/api/phone-lines/verification#limits).
 - There is no other rate limit specific to these endpoints.
 
 ## Errors
@@ -163,7 +173,7 @@ Every error body has the same envelope. The `error` string carries an English se
 }
 ```
 
-Validation errors raised by the routes themselves may add a `details` object (`unknownFields`, `invalidNumbers`, `maxLength`). The authentication and scope errors shared by the whole API are the exception to the bilingual rule: a `401` carries only `error` (no `code`), and the `403`s for scope and role carry an English-only `error`. Other errors shared by the whole API can also answer here — for example `403 WORKSPACE_ARCHIVED` for an archived workspace, or `404 NUMBER_NOT_FOUND` when an `x-whatsapp-number-id` header names no number of your account.
+Validation errors raised by the routes themselves may add a `details` object (`unknownFields`, `invalidNumbers`, `maxLength`). The authentication and scope errors shared by the whole API are the exception to the bilingual rule: a `401` carries only `error` (no `code`), and the `403`s for scope and role carry an English-only `error`. Other errors shared by the whole API can also answer here — for example `403 WORKSPACE_ARCHIVED` for an archived workspace, or `404 NUMBER_NOT_FOUND` when an `x-whatsapp-number-id` header names no number of your account. The verification endpoints have codes of their own, listed in [Verification → Errors](/api/phone-lines/verification#errors).
 
 | Status | `code` | Where | What happened | What to do |
 | --- | --- | --- | --- | --- |
@@ -179,11 +189,11 @@ Validation errors raised by the routes themselves may add a `details` object (`u
 | `400` | `UNKNOWN_FIELDS` | `POST /v1/phone-lines` | Fields other than `numbers`. `details.unknownFields` names them. | Remove them. The idempotency key goes in the header, not the body. |
 | `400` | `INVALID_NUMBERS` | `POST /v1/phone-lines` | `numbers` is not an array of strings, or has entries not shaped like a searched number (`details.invalidNumbers`). | Use `number` values from `GET …/available`. |
 | `400` | `INVALID_SELECTION` | `POST /v1/phone-lines` | Zero numbers, more than 10, or the same number twice. | Send 1–10 distinct numbers. |
-| `403` | `VERIFICATION_REQUIRED` | `POST /v1/phone-lines` | The account holder is not verified. | Verify in the dashboard (`/linhas`). |
+| `403` | `VERIFICATION_REQUIRED` | `POST /v1/phone-lines` | The account holder is not verified. | [Verify](/api/phone-lines/verification) through the API or in the dashboard. |
 | `403` | `VERIFICATION_REJECTED` | `POST /v1/phone-lines` | The verification was rejected. | Talk to support. |
 | `400` | `INVALID_LIMIT` | `GET …/{id}/activations` | `limit` is not an integer from 1 to 100. | Fix the query. |
 | `404` | `LINE_NOT_FOUND` | `…/{id}`, `…/{id}/activations`, `…/cancel` | No such line in your workspace (another workspace's line reads the same). | Check the id — it is the line `id`, not the phone number. |
-| `404` | `ACTIVATION_NOT_FOUND` | `GET …/activations/{activationId}`, `…/cancel` | No such code request in your workspace (for cancel: on that line). | Check the id. |
+| `404` | `ACTIVATION_NOT_FOUND` | `GET …/activations/{activationId}`, `…/audio`, `…/cancel` | No such code request in your workspace (for cancel: on that line). For `…/audio`, also a request with no recording (`hasAudio: false`) or of a `RETURNED` / `CANCELED` line. | Check the id; for the recording, check `hasAudio`. |
 | `409` | `NOT_CANCELABLE` | `DELETE …/{id}` | The line is already `RETURNED` or `CANCELED`. | Nothing to do. |
 | `409` | `LINE_NOT_ACTIVE` | `POST …/{id}/activations` | The line is `SUSPENDED`, `RETURNED` or `CANCELED`. | Pay a suspended line first; a finished line gets no codes. |
 | `409` | `ACTIVATION_IN_PROGRESS` | `POST …/{id}/activations` | A request on this line is still waiting for the call. | Poll the waiting one, cancel it, or retry after its `pollDeadline`. |
@@ -234,10 +244,8 @@ A refund after a charge always goes to the **wallet**, including any part that w
 
 These have no public API endpoint; use the dashboard (**Phone lines**, `/linhas`):
 
-- Identity verification (document upload and contact code).
-- Listening to the call recording of a code request.
 - Undoing a scheduled cancellation.
 - Naming or renaming a line (**Edit name** on the line's page). The API only reads it: [`name`](/api/phone-lines/list#line-object-fields) on the line object and in the line's webhook events.
-- **Pay for all** and **Choose which lines to keep** for unpaid lines.
+- Paying unpaid lines right away (**Pay for all**, or **Pay … now** / **Pay … and reactivate** on one line's page) and **Choose which lines to keep**.
 - The wallet statement grouped by product.
 - Creating and managing [phone-line webhooks](/api/phone-lines/webhooks) and reading their delivery log.

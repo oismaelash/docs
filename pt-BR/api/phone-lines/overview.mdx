@@ -1,7 +1,7 @@
 ---
 title: "API de Linhas Telefônicas — Visão Geral"
 sidebarTitle: "Visão geral"
-description: "Alugue números fixos brasileiros para ativar contas do WhatsApp Business: escopo da chave, permissões, preço, o ciclo de vida da linha, o fluxo do código de ativação, idempotência e todos os códigos de erro de /v1/phone-lines."
+description: "Alugue números fixos brasileiros para ativar contas do WhatsApp Business: escopo da chave, permissões, verificação do titular, preço, o ciclo de vida da linha, o fluxo do código de ativação, idempotência e todos os códigos de erro de /v1/phone-lines."
 mode: "wide"
 ---
 
@@ -21,11 +21,17 @@ As linhas **só recebem**: não fazem ligações nem enviam SMS, e um número fi
 | --- | --- | --- |
 | `GET` | `/v1/phone-lines/available?ddd=11` | [Buscar os números](/pt-BR/api/phone-lines/available) que você pode comprar em um DDD. |
 | `POST` | `/v1/phone-lines` | [Comprar de 1 a 10 números](/pt-BR/api/phone-lines/purchase). Exige `Idempotency-Key`. |
+| `GET` | `/v1/phone-lines/verification` | [Verificação do titular](/pt-BR/api/phone-lines/verification#ler-o-estado): este workspace pode comprar? |
+| `POST` | `/v1/phone-lines/verification` | [Enviar os dados e o documento do titular](/pt-BR/api/phone-lines/verification#enviar-os-dados). Exige `Idempotency-Key`. |
+| `POST` | `/v1/phone-lines/verification/contact/{channel}/confirm` | [Confirmar um código de contato](/pt-BR/api/phone-lines/verification#confirmar-um-código). |
+| `POST` | `/v1/phone-lines/verification/contact/{channel}/send` | [Enviar um novo código de contato](/pt-BR/api/phone-lines/verification#enviar-um-novo-código). |
+| `POST` | `/v1/phone-lines/verification/document` | [Enviar um novo documento](/pt-BR/api/phone-lines/verification#enviar-um-novo-documento). |
 | `GET` | `/v1/phone-lines` | [Listar suas linhas](/pt-BR/api/phone-lines/list). |
 | `GET` | `/v1/phone-lines/{id}` | [Obter uma linha](/pt-BR/api/phone-lines/list#obter-uma-linha). |
 | `DELETE` | `/v1/phone-lines/{id}` | [Cancelar uma linha](/pt-BR/api/phone-lines/cancel). |
 | `POST` | `/v1/phone-lines/{id}/activations` | [Preparar a linha para receber um novo código do WhatsApp](/pt-BR/api/phone-lines/activation-codes). |
 | `GET` | `/v1/phone-lines/activations/{activationId}` | [Consultar um pedido de código](/pt-BR/api/phone-lines/activation-codes#consultar-o-pedido). |
+| `GET` | `/v1/phone-lines/activations/{activationId}/audio` | [Baixar a gravação da ligação](/pt-BR/api/phone-lines/activation-codes#baixar-a-gravação) de um pedido de código. |
 | `GET` | `/v1/phone-lines/{id}/activations` | [Histórico de códigos de uma linha](/pt-BR/api/phone-lines/activation-codes#histórico-de-códigos). |
 | `POST` | `/v1/phone-lines/{id}/activations/{activationId}/cancel` | [Cancelar a espera](/pt-BR/api/phone-lines/activation-codes#cancelar-a-espera) para pedir um novo código na hora. |
 
@@ -45,9 +51,10 @@ Uma chave `ps_` clássica não tem usuário e, portanto, não tem papel: sua aut
 | Endpoint | Permissão | Proprietário | Administrador | Atendente | Analista |
 | --- | --- | :-: | :-: | :-: | :-: |
 | `GET /v1/phone-lines`, `GET /v1/phone-lines/{id}` | `phone_lines:read` | ✅ | ✅ | — | — |
-| Os quatro endpoints `…/activations` (inclusive o cancelamento) | `phone_lines:read` | ✅ | ✅ | — | — |
+| Os quatro endpoints `…/activations` (inclusive o cancelamento) e a gravação (`…/audio`) | `phone_lines:read` | ✅ | ✅ | — | — |
 | `GET /v1/phone-lines/available`, `POST /v1/phone-lines` | `phone_lines:purchase` | ✅ | — | — | — |
 | `DELETE /v1/phone-lines/{id}` | `phone_lines:cancel` | ✅ | — | — | — |
+| Todos os endpoints `/v1/phone-lines/verification…` | `phone_lines:purchase` | ✅ | — | — | — |
 
 Um papel sem a permissão recebe **403 `PERMISSION_DENIED`**.
 
@@ -57,9 +64,9 @@ Um papel sem a permissão recebe **403 `PERMISSION_DENIED`**.
 
 ## Antes da primeira compra: verificação do titular
 
-Alugar uma linha telefônica exige um titular da conta verificado (CNPJ ou CPF, mais a confirmação de contato). **A verificação é feita só no painel** — **Linhas** (`/linhas`) → **Comprar linhas** — e é pedida uma única vez, na primeira compra. Não há endpoint de verificação na API pública.
+Alugar uma linha telefônica exige um titular da conta verificado (CNPJ ou CPF, o documento que o comprova, mais a confirmação de contato), pedido uma única vez, antes da primeira compra. Ela pode ser feita **pela API** — [`/v1/phone-lines/verification`](/pt-BR/api/phone-lines/verification): envie os dados e o documento, confirme os códigos de contato, leia a decisão — ou no painel (**Linhas** (`/linhas`) → **Comprar linhas**). As duas são a mesma verificação: o que você fizer por um caminho aparece no outro.
 
-Pela API, um workspace não verificado pode buscar números e tentar comprar; a compra então responde:
+Um workspace não verificado pode buscar números e tentar comprar; a compra então responde:
 
 | Estado da verificação | `POST /v1/phone-lines` |
 | --- | --- |
@@ -67,6 +74,8 @@ Pela API, um workspace não verificado pode buscar números e tentar comprar; a 
 | Em análise manual | **Prossegue** — você já pode comprar. |
 | Nunca iniciada, não concluída (código de contato ou documento ainda pendente) ou outro documento solicitado | **403 `VERIFICATION_REQUIRED`** |
 | Recusada | **403 `VERIFICATION_REJECTED`** |
+
+**Uma análise recusada desfaz o que deixou passar.** Comprar enquanto a verificação está em análise manual é permitido, mas depende da análise. Se ela for recusada, as linhas compradas durante a análise voltam: **3 dias depois da recusa** — o prazo que o aviso de recusa informa — cada uma que ainda é sua é devolvida à operadora (`phone_line.returned` com `reason: "verification_rejected"`), e toda cobrança que essas linhas pagaram — compra e renovações, inclusive a parte paga no cartão — é **estornada para a carteira**. Até lá elas continuam funcionando, e não são renovadas. As linhas compradas sob uma verificação anterior já aprovada não são afetadas.
 
 As mudanças de estado da verificação também são entregues como o [evento de webhook](/pt-BR/api/phone-lines/webhooks) `phone_line.verification_updated`.
 
@@ -96,19 +105,19 @@ As mudanças de estado da verificação também são entregues como o [evento de
 | `ACTIVE` | Paga até `currentPeriodEnd`. | ✅ | em `currentPeriodEnd` |
 | `PAYMENT_PENDING` | A cobrança da renovação falhou. `paymentPendingSince` informa quando. Nova tentativa a cada 6 horas. | ✅ | tentada de novo |
 | `SUSPENDED` | Ainda sem pagamento **2 dias** depois de `paymentPendingSince`. Continua sendo sua; o histórico de códigos continua disponível para leitura. `suspendedAt` informa quando. | — | tentada de novo |
-| `RETURNED` | Ainda sem pagamento **1 dia** depois de `suspendedAt`, ou cancelada enquanto estava em atraso. Cancelada na operadora; o número voltou para o estoque de números da operadora. `returnedAt` informa quando. **Definitivo.** | — | nunca |
+| `RETURNED` | Ainda sem pagamento **1 dia** depois de `suspendedAt`, cancelada enquanto estava em atraso, ou comprada durante uma análise da verificação que foi [recusada](#antes-da-primeira-compra-verificação-do-titular). Cancelada na operadora; o número voltou para o estoque de números da operadora. `returnedAt` informa quando. **Definitivo.** | — | nunca |
 | `CANCELED` | Você cancelou uma linha paga e o período pago terminou. `canceledAt` informa quando. **Definitivo.** | — | nunca |
 
 Prazos:
 
 - A **renovação** é tentada quando `currentPeriodEnd` é atingido. O faturamento roda **uma vez por hora**, então a cobrança — e cada transição abaixo — acontece em até cerca de uma hora depois do respectivo prazo.
-- **Uma renovação que falha** leva a linha para `PAYMENT_PENDING` e é tentada de novo **a cada 6 horas**. Créditos ou um cartão adicionados são aproveitados na próxima tentativa; o botão **Pagar tudo** do painel tenta de novo na hora.
+- **Uma renovação que falha** leva a linha para `PAYMENT_PENDING` e é tentada de novo **a cada 6 horas**. Créditos ou um cartão adicionados são aproveitados na próxima tentativa; o painel tenta de novo na hora — **Pagar tudo**, na lista de linhas, cobra todas as linhas em atraso, e **Pagar … agora** (ou **Pagar … e reativar**), na página de uma linha, cobra só aquela linha.
 - **2 dias** após a falha, a linha fica `SUSPENDED`; **1 dia** depois, fica `RETURNED`. Da primeira cobrança que falhou até perder o número: cerca de **3 dias**.
 - **Pagar com atraso mantém a data de aniversário.** Quando uma renovação finalmente dá certo — mesmo em `SUSPENDED` — a linha volta para `ACTIVE` e o novo período conta a partir da data original de renovação, não da data do pagamento.
 - Cada etapa envia um aviso e um evento de webhook: `phone_line.payment_failed` (uma vez por renovação, na primeira tentativa que falha), `phone_line.suspended` e `phone_line.returned`. Uma renovação bem-sucedida envia `phone_line.renewed`.
 
 <Warning>
-  **A devolução de um número é irreversível.** O número volta para o estoque de números da operadora e deixa de ser seu; nada desfaz uma devolução, e não há garantia de que você consiga esse número de novo. A conta do WhatsApp ativada nele continua vinculada a esse número: quem alugá-lo em seguida pode pedir um código de verificação para ele. Mantenha créditos ou um cartão salvo disponíveis.
+  **A devolução de um número é irreversível.** O número volta para o estoque de números da operadora e deixa de ser seu; nada desfaz uma devolução, e não há garantia de que esse número possa ser comprado de volta. A conta do WhatsApp ativada nele continua vinculada a esse número: quem alugá-lo em seguida pode pedir um código de verificação para ele. O histórico de códigos da linha — códigos e gravações das ligações — é apagado, como acontece quando uma linha cancelada chega a `CANCELED`. Mantenha créditos ou um cartão salvo disponíveis.
 </Warning>
 
 ### Cancelamento
@@ -136,13 +145,13 @@ Prazos:
   </Step>
 </Steps>
 
-Só pode haver um pedido aguardando por linha de cada vez (**409 `ACTIVATION_IN_PROGRESS`**); [cancele a espera](/pt-BR/api/phone-lines/activation-codes#cancelar-a-espera) para pedir de novo antes de a janela fechar. Não há limite de quantos códigos uma linha pode pedir ao longo da vida; cada pedido aberto incrementa o `activationCount` da linha. Linhas suspensas e encerradas não podem pedir códigos (**409 `LINE_NOT_ACTIVE`**). A **gravação** da ligação só pode ser ouvida no painel. Detalhes completos, status e casos de borda: [Códigos de ativação](/pt-BR/api/phone-lines/activation-codes).
+Só pode haver um pedido aguardando por linha de cada vez (**409 `ACTIVATION_IN_PROGRESS`**); [cancele a espera](/pt-BR/api/phone-lines/activation-codes#cancelar-a-espera) para pedir de novo antes de a janela fechar. Não há limite de quantos códigos uma linha pode pedir ao longo da vida; cada pedido aberto incrementa o `activationCount` da linha. Linhas suspensas e encerradas não podem pedir códigos (**409 `LINE_NOT_ACTIVE`**). A **gravação** da ligação pode ser baixada com [`GET /v1/phone-lines/activations/{activationId}/audio`](/pt-BR/api/phone-lines/activation-codes#baixar-a-gravação) — os webhooks de código trazem essa URL como `audioUrl` — ou ouvida no painel. Detalhes completos, status e casos de borda: [Códigos de ativação](/pt-BR/api/phone-lines/activation-codes).
 
 ## Idempotência
 
 `POST /v1/phone-lines` movimenta dinheiro, por isso **exige** o header `Idempotency-Key`. Uma nova tentativa com a mesma chave nunca cobra duas vezes pelo mesmo número dentro de **uma hora**: o item volta com `ok: false` e `REQUEST_ALREADY_PROCESSED`. As regras exatas — inclusive o que uma repetição informa e o que não informa — estão em [Comprar linhas telefônicas → Idempotência](/pt-BR/api/phone-lines/purchase#idempotência).
 
-Os outros endpoints não precisam de chave: leituras são seguras, `DELETE` em uma linha `ACTIVE` não tem efeito na segunda vez, e um segundo `POST …/activations` enquanto outro pedido está aguardando responde `409 ACTIVATION_IN_PROGRESS` em vez de abrir mais um.
+O envio da verificação (`POST /v1/phone-lines/verification`) também **exige** uma — veja [Verificação → Idempotência](/pt-BR/api/phone-lines/verification#idempotência). Os outros endpoints não precisam de chave: leituras são seguras, `DELETE` em uma linha `ACTIVE` não tem efeito na segunda vez, e um segundo `POST …/activations` enquanto outro pedido está aguardando responde `409 ACTIVATION_IN_PROGRESS` em vez de abrir mais um.
 
 ## Limites
 
@@ -150,6 +159,7 @@ Os outros endpoints não precisam de chave: leituras são seguras, `DELETE` em u
 - **Um pedido de código aguardando por linha.**
 - **Histórico de códigos:** `limit` de 1–100 por chamada (padrão 20).
 - **As requisições que chegam à nossa operadora — buscar, comprar, pedir um código, cancelar uma linha em atraso — consomem uma cota de requisições compartilhada por toda a plataforma.** Quando ela se esgota, elas respondem **503 `SUPPLIER_UNAVAILABLE`** ("Tente de novo em alguns minutos"), ou o `SUPPLIER_UNAVAILABLE` por número dentro de uma compra. Busque uma vez por DDD e reutilize o resultado, em vez de consultá-lo repetidamente.
+- **Verificação:** 10 envios por hora por workspace (o envio dos dados e o de documento, somados) → **429 `RATE_LIMITED`** com `Retry-After`; os códigos de contato têm os limites descritos em [Verificação → Limites](/pt-BR/api/phone-lines/verification#limites).
 - Não há outro limite de taxa específico para estes endpoints.
 
 ## Erros
@@ -163,7 +173,7 @@ Todo corpo de erro tem o mesmo envelope. A string `error` traz uma frase em ingl
 }
 ```
 
-Erros de validação gerados pelas próprias rotas podem incluir um objeto `details` (`unknownFields`, `invalidNumbers`, `maxLength`). Os erros de autenticação e de escopo compartilhados por toda a API são a exceção à regra bilíngue: um `401` traz só `error` (sem `code`), e os `403` de escopo e de papel trazem um `error` só em inglês. Outros erros comuns a toda a API também podem aparecer aqui — por exemplo `403 WORKSPACE_ARCHIVED` para um workspace arquivado, ou `404 NUMBER_NOT_FOUND` quando um header `x-whatsapp-number-id` não corresponde a nenhum número da sua conta.
+Erros de validação gerados pelas próprias rotas podem incluir um objeto `details` (`unknownFields`, `invalidNumbers`, `maxLength`). Os erros de autenticação e de escopo compartilhados por toda a API são a exceção à regra bilíngue: um `401` traz só `error` (sem `code`), e os `403` de escopo e de papel trazem um `error` só em inglês. Outros erros comuns a toda a API também podem aparecer aqui — por exemplo `403 WORKSPACE_ARCHIVED` para um workspace arquivado, ou `404 NUMBER_NOT_FOUND` quando um header `x-whatsapp-number-id` não corresponde a nenhum número da sua conta. Os endpoints de verificação têm códigos próprios, listados em [Verificação → Erros](/pt-BR/api/phone-lines/verification#erros).
 
 | Status | `code` | Onde | O que aconteceu | O que fazer |
 | --- | --- | --- | --- | --- |
@@ -179,11 +189,11 @@ Erros de validação gerados pelas próprias rotas podem incluir um objeto `deta
 | `400` | `UNKNOWN_FIELDS` | `POST /v1/phone-lines` | Campos além de `numbers`. `details.unknownFields` diz quais são. | Remova-os. A chave de idempotência vai no header, não no corpo. |
 | `400` | `INVALID_NUMBERS` | `POST /v1/phone-lines` | `numbers` não é um array de strings, ou tem itens que não têm o formato de um número buscado (`details.invalidNumbers`). | Use os valores de `number` retornados por `GET …/available`. |
 | `400` | `INVALID_SELECTION` | `POST /v1/phone-lines` | Zero números, mais de 10, ou o mesmo número duas vezes. | Envie de 1 a 10 números distintos. |
-| `403` | `VERIFICATION_REQUIRED` | `POST /v1/phone-lines` | O titular da conta não está verificado. | Faça a verificação no painel (`/linhas`). |
+| `403` | `VERIFICATION_REQUIRED` | `POST /v1/phone-lines` | O titular da conta não está verificado. | [Faça a verificação](/pt-BR/api/phone-lines/verification) pela API ou no painel. |
 | `403` | `VERIFICATION_REJECTED` | `POST /v1/phone-lines` | A verificação foi recusada. | Fale com o suporte. |
 | `400` | `INVALID_LIMIT` | `GET …/{id}/activations` | `limit` não é um inteiro de 1 a 100. | Corrija a query string. |
 | `404` | `LINE_NOT_FOUND` | `…/{id}`, `…/{id}/activations`, `…/cancel` | Essa linha não existe no seu workspace (a linha de outro workspace responde o mesmo). | Confira o id — é o `id` da linha, não o número de telefone. |
-| `404` | `ACTIVATION_NOT_FOUND` | `GET …/activations/{activationId}`, `…/cancel` | Esse pedido de código não existe no seu workspace (no cancelamento: nessa linha). | Confira o id. |
+| `404` | `ACTIVATION_NOT_FOUND` | `GET …/activations/{activationId}`, `…/audio`, `…/cancel` | Esse pedido de código não existe no seu workspace (no cancelamento: nessa linha). No `…/audio`, também um pedido sem gravação (`hasAudio: false`) ou de uma linha `RETURNED` / `CANCELED`. | Confira o id; para a gravação, confira `hasAudio`. |
 | `409` | `NOT_CANCELABLE` | `DELETE …/{id}` | A linha já está `RETURNED` ou `CANCELED`. | Nada a fazer. |
 | `409` | `LINE_NOT_ACTIVE` | `POST …/{id}/activations` | A linha está `SUSPENDED`, `RETURNED` ou `CANCELED`. | Pague primeiro a linha suspensa; uma linha encerrada não recebe códigos. |
 | `409` | `ACTIVATION_IN_PROGRESS` | `POST …/{id}/activations` | Um pedido nesta linha ainda está aguardando a ligação. | Consulte o pedido que está aguardando, cancele-o, ou tente de novo depois do `pollDeadline` dele. |
@@ -234,10 +244,8 @@ Um estorno após uma cobrança sempre vai para a **carteira**, inclusive qualque
 
 Estes itens não têm endpoint na API pública; use o painel (**Linhas**, `/linhas`):
 
-- Verificação do titular (envio de documento e código de contato).
-- Ouvir a gravação da ligação de um pedido de código.
 - Desfazer um cancelamento agendado.
 - Dar nome ou renomear uma linha (**Editar nome** na página da linha). A API só o lê: [`name`](/pt-BR/api/phone-lines/list#campos-do-objeto-linha) no objeto linha e nos eventos de webhook da linha.
-- **Pagar tudo** e **Escolher quais linhas manter** para linhas em atraso.
+- Pagar linhas em atraso na hora (**Pagar tudo**, ou **Pagar … agora** / **Pagar … e reativar** na página de uma linha) e **Escolher quais linhas manter**.
 - O extrato da carteira agrupado por produto.
 - Criar e gerenciar [webhooks das linhas](/pt-BR/api/phone-lines/webhooks) e ler o log de entregas deles.
