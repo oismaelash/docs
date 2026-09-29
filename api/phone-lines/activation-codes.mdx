@@ -1,7 +1,7 @@
 ---
 title: "POST /v1/phone-lines/{id}/activations — Activation Codes"
 sidebarTitle: "Activation codes"
-description: "Get the WhatsApp verification code of a phone line: open a 5-minute capture window, ask WhatsApp to call the line, then poll the request until the transcribed code arrives — or cancel the wait to ask again."
+description: "Get the WhatsApp verification code of a phone line: open a 5-minute capture window, ask WhatsApp to call the line, poll the request until the transcribed code arrives — or cancel the wait to ask again — and download the call recording."
 mode: "wide"
 ---
 
@@ -13,11 +13,12 @@ WhatsApp verifies a landline **by calling it** and speaking a 6-digit code. Thes
 | --- | --- | --- |
 | `POST` | `/v1/phone-lines/{id}/activations` | Open a new code request on the line (5-minute window). |
 | `GET` | `/v1/phone-lines/activations/{activationId}` | Poll one request: its `status` and, when ready, `code`. |
+| `GET` | `/v1/phone-lines/activations/{activationId}/audio` | Download the call recording of one request. |
 | `GET` | `/v1/phone-lines/{id}/activations` | The line's code history, newest first. |
 | `POST` | `/v1/phone-lines/{id}/activations/{activationId}/cancel` | Stop waiting for the call, to ask for a new code right away. |
 
 <Note>
-  Requires a **tenant-scoped** key. With an OAuth / MCP token, the user must be an **Owner or Admin** (`phone_lines:read`) — `403 PERMISSION_DENIED` otherwise. Every response that carries an activation is sent with `Cache-Control: no-store`: **the code is a credential** — whoever holds it can register a WhatsApp account on the line.
+  Requires a **tenant-scoped** key. With an OAuth / MCP token, the user must be an **Owner or Admin** (`phone_lines:read`) — `403 PERMISSION_DENIED` otherwise. Every response that carries an activation is sent with `Cache-Control: no-store` (the recording with `private, no-store`): **the code is a credential** — whoever holds it can register a WhatsApp account on the line, and the recording speaks it.
 </Note>
 
 ## How it works
@@ -109,9 +110,9 @@ Polling every few seconds is plenty: the status can only move after our next 15-
 | --- | --- | --- | :-: | --- | --- |
 | `WAITING` | `null` | `null` | `false` | The window is open and no call has been captured yet. | Keep polling. Make sure WhatsApp was asked to **call**. |
 | `CAPTURED` | `null` | `null` | `false`, then `true` | The call arrived. We are storing its recording (`hasAudio` turns `true` once it is stored) and reading the code — retries included. | Keep polling. |
-| `CAPTURED` | `null` | `transcription_failed` | `true` | Recorded, but all 3 transcription attempts failed. **Final.** | Listen to the recording in the dashboard. |
+| `CAPTURED` | `null` | `transcription_failed` | `true` | Recorded, but all 3 transcription attempts failed. **Final.** | [Download the recording](#download-the-recording) and listen to it. |
 | `TRANSCRIBED` | `"123456"` | `null` | `true` | The code was read. **Final.** | Type it into WhatsApp. |
-| `TRANSCRIBED` | `null` | `no_code_in_transcript` | `true` | The call was transcribed but no 6-digit code was found in it. **Final.** | Listen to the recording in the dashboard, or request a new code. |
+| `TRANSCRIBED` | `null` | `no_code_in_transcript` | `true` | The call was transcribed but no 6-digit code was found in it. **Final.** | [Listen to the recording](#download-the-recording), or request a new code. |
 | `TIMED_OUT` | `null` | `no_call_in_window` | `false` | No call arrived before `pollDeadline`. **Final.** | Request a new code, then ask WhatsApp to call again. |
 | `TIMED_OUT` | `null` | `canceled_by_customer` | `false` | The wait was [cancelled](#cancel-a-wait) — through the API or the dashboard's **Cancel wait**. **Final.** | Request a new code — allowed right away. |
 | `FAILED` | `null` | `audio_download_failed`, `audio_store_failed` | `false` | A recording appeared but could not be downloaded or stored. **Final.** | Request a new code. |
@@ -123,8 +124,35 @@ Polling every few seconds is plenty: the status can only move after our next 15-
 
 - `TIMED_OUT` is recorded at the first check after `pollDeadline`, so it can show up to about 15 seconds after the deadline. That check still reads the line one last time: a call that lands in the window's last seconds is captured, not lost — so a request can also move from `WAITING` to `CAPTURED` just after its `pollDeadline`. If a request still reads `WAITING` well after its `pollDeadline`, treat it as timed out: a new `POST` is already allowed, because the one-at-a-time rule only counts requests whose `pollDeadline` is still ahead.
 - `failureReason` is always one of the fixed values in the table (`no_call_in_window`, `canceled_by_customer`, `no_code_in_transcript`, `transcription_failed`, `audio_download_failed`, `audio_store_failed`, `poll_not_scheduled`) or `null`. You can branch on it; treat an unknown value as a failure, since new ones may be added.
-- **The code comes from speech-to-text.** WhatsApp speaks the code during the call; we transcribe the recording and keep the 6-digit sequence heard most often. If WhatsApp rejects the code, listen to the recording in the dashboard.
-- **The recording is dashboard-only.** `hasAudio: true` only tells you there is one to play in **Phone lines** → the line. There is no audio endpoint in the public API, and the raw transcription is never returned.
+- **The code comes from speech-to-text.** WhatsApp speaks the code during the call; we transcribe the recording and keep the 6-digit sequence heard most often. If WhatsApp rejects the code, [listen to the recording](#download-the-recording).
+- **The recording is served on its own.** `hasAudio: true` tells you there is one: [download it](#download-the-recording) from `GET /v1/phone-lines/activations/{activationId}/audio`, or play it in the dashboard (**Phone lines** → the line). The raw transcription is never returned.
+
+## Download the recording
+
+`GET https://pilotstatus.com.br/v1/phone-lines/activations/{activationId}/audio` returns the call recording of a request whose `hasAudio` is `true` — the stored file itself, not JSON.
+
+- **Same credentials as polling:** a **tenant-scoped** key, or an OAuth / MCP token of an **Owner or Admin** (`phone_lines:read`).
+- **Headers:** `Content-Type` is the recording's own format — usually `audio/wav` or `audio/mpeg`, since the carrier's format varies from call to call — with its `Content-Length`. `Content-Disposition: attachment; filename="activation-{activationId}.wav"` (`.mp3` for an MP3; no extension for any other format). `Cache-Control: private, no-store`: the recording speaks the activation code.
+- **404 `ACTIVATION_NOT_FOUND`** answers, all alike: a request of another workspace or an unknown id; a request **without a recording** (`hasAudio: false` — the wait timed out or was cancelled before any call, or the call could not be downloaded or stored); and any request of a line that is `RETURNED` or `CANCELED` — a line that leaves your workspace has its recordings deleted.
+- **You rarely need to build this URL.** The [`phone_line.audio_received`, `phone_line.code_received` and `phone_line.code_failed` webhooks](/api/phone-lines/webhooks#the-recording-url) carry it as `audioUrl` whenever the request has a recording. The URL holds no credential — send your key with it.
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -o activation-cmg5k3a7c0002ac8example4q.wav
+```
+
+```text Response headers (200)
+HTTP/2 200
+content-type: audio/wav
+content-length: 221228
+content-disposition: attachment; filename="activation-cmg5k3a7c0002ac8example4q.wav"
+cache-control: private, no-store
+```
+
+</CodeGroup>
 
 ## Cancel a wait
 
@@ -164,6 +192,8 @@ curl -X POST "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9
 ## Code history
 
 `GET https://pilotstatus.com.br/v1/phone-lines/{id}/activations` returns the line's requests, **newest first**, codes included: `{ "activations": [ … ] }`. It works on suspended lines too — they keep their history.
+
+A line that left your workspace — `RETURNED` or `CANCELED` — has its history **deleted**: its requests are still listed (`id`, `status`, timestamps, `failureReason`) and its `activationCount` is kept, but `code` is `null`, `hasAudio` turns `false` as the recordings are deleted, and downloading a recording answers `404`.
 
 <ParamField query="limit" default="20" type="integer">
   1 to 100. Anything else (0, 101, a decimal, text, empty) → **400 `INVALID_LIMIT`**.
@@ -215,7 +245,7 @@ curl "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activa
 </ResponseField>
 
 <ResponseField name="hasAudio" type="boolean">
-  Whether a recording of the call is stored and can be played in the dashboard.
+  Whether a recording of the call is stored — downloadable from [`GET /v1/phone-lines/activations/{activationId}/audio`](#download-the-recording) and playable in the dashboard.
 </ResponseField>
 
 ## Errors
@@ -228,7 +258,7 @@ curl "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activa
 | `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | all | OAuth / MCP token of a user who is no longer an active member. |
 | `403` | `PERMISSION_DENIED` | all | OAuth / MCP token of a user who is not Owner or Admin. |
 | `404` | `LINE_NOT_FOUND` | `POST`, history, cancel | No such line in your workspace. |
-| `404` | `ACTIVATION_NOT_FOUND` | poll, cancel | No such request in your workspace (for cancel: on that line). |
+| `404` | `ACTIVATION_NOT_FOUND` | poll, cancel, recording | No such request in your workspace (for cancel: on that line). For the recording, also a request with no recording (`hasAudio: false`) or of a `RETURNED` / `CANCELED` line. |
 | `409` | `LINE_NOT_ACTIVE` | `POST` | The line is `SUSPENDED`, `RETURNED` or `CANCELED`. Nothing was created. |
 | `409` | `ACTIVATION_IN_PROGRESS` | `POST` | A request on this line is still waiting for the call. Poll it, or cancel it to ask again now. |
 | `409` | `ACTIVATION_NOT_WAITING` | cancel | The call was already captured (its code is being read) or the request already ended. Nothing changed. |

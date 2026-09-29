@@ -30,13 +30,13 @@ A workspace can have more than one phone-line webhook; each receives the events 
 | Event | When it fires |
 | --- | --- |
 | `phone_line.purchased` | A line was bought (dashboard or `POST /v1/phone-lines`) — one event per number bought. |
-| `phone_line.audio_received` | The call of a code request was captured and its recording stored (`CAPTURED`) — before the code is read, which can take a few minutes. |
+| `phone_line.audio_received` | The call of a code request was captured and its recording stored (`CAPTURED`) — before the code is read, which can take a few minutes. Carries the recording's [`audioUrl`](#the-recording-url). |
 | `phone_line.code_received` | A code request finished: **once per request**, with the `code`, or with `code: null` and its `failureReason` when it ended without one. |
 | `phone_line.code_failed` | A code request ended without a code, for good — once, with the `reason`. Always paired with a `phone_line.code_received` whose `code` is `null`. |
 | `phone_line.renewed` | A renewal charge succeeded, including a late one that brings a `PAYMENT_PENDING` or `SUSPENDED` line back. |
 | `phone_line.payment_failed` | A renewal charge failed and the line went from `ACTIVE` to `PAYMENT_PENDING`. Once per renewal — the retries that follow do not fire it again. |
 | `phone_line.suspended` | The line was still unpaid 2 days after the failure and is now `SUSPENDED`. |
-| `phone_line.returned` | The line was returned to the carrier (`RETURNED`) — 1 day after suspension, at once when an unpaid line is cancelled, or when it is left out in the dashboard's **Choose which lines to keep**. |
+| `phone_line.returned` | The line was returned to the carrier (`RETURNED`) — 1 day after suspension, at once when an unpaid line is cancelled or left out in the dashboard's **Choose which lines to keep**, or 3 days after the rejection of the holder verification it was bought under. `reason` says which. |
 | `phone_line.canceled` | A line cancelled at period end reached `currentPeriodEnd` and is now `CANCELED`. |
 | `phone_line.verification_updated` | The account holder verification changed state: finished (approved automatically, or sent to manual review), or reviewed (approved, rejected, or another document requested). |
 
@@ -85,6 +85,25 @@ Every event about a line — all but `phone_line.verification_updated` — carri
   **Numbers here have no `+`.** `number` is E.164 digits without the plus sign (`551148637200`), exactly as in the `/v1/phone-lines` endpoints — unlike the number webhooks, whose phone fields carry `+`.
 </Note>
 
+## The recording URL
+
+The three events of a code request — `phone_line.audio_received`, `phone_line.code_received` and `phone_line.code_failed` — carry **`audioUrl`**: the absolute URL of [`GET /v1/phone-lines/activations/{activationId}/audio`](/api/phone-lines/activation-codes#download-the-recording), which serves the call recording.
+
+```text
+https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio
+```
+
+- **When the request has a recording, it is there.** `phone_line.audio_received` always has it — it is sent once the recording is stored. `phone_line.code_received` and `phone_line.code_failed` have it whenever the call was stored: with the code, and also when no code could be read (`no_code_in_transcript`, `transcription_failed`), which is when you most want to listen.
+- **`null` when there is none** — the key is always present. That is a request that ended before any call was stored: `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` or `audio_store_failed`.
+- **It holds no credential.** Fetch it with your **tenant-scoped** key (`x-api-key`), like any `/v1/phone-lines` endpoint; without a key it answers `401`, and another workspace's key gets `404`. Storing or logging the URL does not expose the recording.
+- **It stops answering when the line leaves your workspace.** A `RETURNED` or `CANCELED` line has its recordings deleted, and the URL then answers `404`.
+
+```bash
+curl "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -o activation.wav
+```
+
 ## Payloads
 
 `lineId` is the line's `id` in [`GET /v1/phone-lines/{id}`](/api/phone-lines/list#fetch-one-line).
@@ -118,12 +137,13 @@ Every event about a line — all but `phone_line.verification_updated` — carri
         "name": "Support SP",
         "activationId": "cmg5k3a7c0002ac8example4q",
         "code": "123456",
-        "failureReason": null
+        "failureReason": null,
+        "audioUrl": "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio"
       }
     }
     ```
 
-    `code` is `null` when the request ended without one; `failureReason` then says why, with the request's own [`failureReason`](/api/phone-lines/activation-codes#statuses): `no_code_in_transcript`, `transcription_failed` (all 3 attempts failed), `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` or `audio_store_failed`. When there is a recording, it can be played in the dashboard.
+    `code` is `null` when the request ended without one; `failureReason` then says why, with the request's own [`failureReason`](/api/phone-lines/activation-codes#statuses): `no_code_in_transcript`, `transcription_failed` (all 3 attempts failed), `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` or `audio_store_failed`. `audioUrl` is the recording, or `null` when the request has none — see [The recording URL](#the-recording-url).
 
     <Warning>
       This payload carries the activation code, which is a credential. Verify the signature before trusting it, and do not log the body.
@@ -141,12 +161,13 @@ Every event about a line — all but `phone_line.verification_updated` — carri
         "number": "551148637200",
         "name": "Support SP",
         "activationId": "cmg5k3a7c0002ac8example4q",
-        "capturedAt": "2026-10-01T14:11:42.000Z"
+        "capturedAt": "2026-10-01T14:11:42.000Z",
+        "audioUrl": "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio"
       }
     }
     ```
 
-    The call arrived and its recording is stored; the code is being read. Sent once per request. Neither the recording nor its transcription is ever sent. A call whose recording could not be downloaded or stored sends no `audio_received` — only `code_failed` and `code_received`.
+    The call arrived and its recording is stored; the code is being read. Sent once per request. `audioUrl` is always set here: [download the recording](/api/phone-lines/activation-codes#download-the-recording) with your key. The recording itself is never in the body, and its transcription is never sent. A call whose recording could not be downloaded or stored sends no `audio_received` — only `code_failed` and `code_received`.
   </Accordion>
 
   <Accordion title="phone_line.code_failed">
@@ -160,12 +181,13 @@ Every event about a line — all but `phone_line.verification_updated` — carri
         "number": "551148637200",
         "name": "Support SP",
         "activationId": "cmg5k3a7c0002ac8example4q",
-        "reason": "no_call_in_window"
+        "reason": "no_call_in_window",
+        "audioUrl": null
       }
     }
     ```
 
-    `reason` is the request's `failureReason` — see [Statuses](/api/phone-lines/activation-codes#statuses). The same value comes in the `failureReason` of the `phone_line.code_received` sent with it.
+    `reason` is the request's `failureReason` — see [Statuses](/api/phone-lines/activation-codes#statuses). The same value comes in the `failureReason` of the `phone_line.code_received` sent with it. `audioUrl` is `null` here because no call arrived; with `no_code_in_transcript` or `transcription_failed` it points to the recording.
   </Accordion>
 
   <Accordion title="phone_line.renewed">
@@ -225,10 +247,21 @@ Every event about a line — all but `phone_line.verification_updated` — carri
       "data": {
         "lineId": "cmg5k2l1n0001pl8example9x",
         "number": "551148637200",
-        "name": "Support SP"
+        "name": "Support SP",
+        "reason": "unpaid"
       }
     }
     ```
+
+    `reason` is why the line went back to the carrier — a stable snake_case code:
+
+    | `reason` | When |
+    | --- | --- |
+    | `unpaid` | Still unpaid 1 day after the suspension. |
+    | `canceled_by_customer` | You let an unpaid line go: [`DELETE /v1/phone-lines/{id}`](/api/phone-lines/cancel) on a `PAYMENT_PENDING` or `SUSPENDED` line, or **Choose which lines to keep** in the dashboard. |
+    | `verification_rejected` | The line was bought while the holder verification was under manual review, and that review was rejected. Sent 3 days after the rejection; every charge the line paid is refunded to the wallet. |
+
+    Treat a `reason` you do not know as a return all the same. The line's code history — codes and call recordings — is deleted when it is returned.
   </Accordion>
 
   <Accordion title="phone_line.canceled">
@@ -265,10 +298,10 @@ Every event about a line — all but `phone_line.verification_updated` — carri
     | --- | --- | --- |
     | `APPROVED` | Verified. | Yes |
     | `IN_REVIEW` | Finished, waiting for a manual check. | Yes |
-    | `NEEDS_DOCUMENT` | The reviewer asked for another document (in the dashboard). | No — `VERIFICATION_REQUIRED` |
-    | `REJECTED` | Rejected. | No — `VERIFICATION_REJECTED` |
+    | `NEEDS_DOCUMENT` | The reviewer asked for another document. | No — `VERIFICATION_REQUIRED` |
+    | `REJECTED` | Rejected. Lines bought while it was `IN_REVIEW` are returned 3 days later, with their charges refunded to the wallet. | No — `VERIFICATION_REJECTED` |
 
-    There is no public endpoint to read the verification; `verificationId` identifies it in support conversations.
+    Read the whole state — masked document, contact channels, the reviewer's note — with [`GET /v1/phone-lines/verification`](/api/phone-lines/verification#read-the-state). `verificationId` is its `verification.id`, and also identifies it in support conversations.
   </Accordion>
 </AccordionGroup>
 
