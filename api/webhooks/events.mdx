@@ -28,7 +28,7 @@ Webhooks deliver real-time events to your system's URL. This page documents ever
 
 Three things are the same on every vocabulary:
 
-- **Number lifecycle** — `number.created`, `number.connected`, `number.disconnected`, `number.removed` are subscribable on every number, whatever its provider. (`number.disconnected` only ever *fires* on native web numbers — see [`number.disconnected`](#number-disconnected).)
+- **Number lifecycle** — `number.created`, `number.connected`, `number.disconnected`, `number.removed`, `number.restored` are subscribable on every number, whatever its provider. (`number.disconnected` only ever *fires* on native web numbers — see [`number.disconnected`](#number-disconnected).)
 - **Normalized call events** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` on any calling-capable number.
 - **`events` is never optional.** A webhook stored with an empty `events` array delivers **nothing**, on every vocabulary, and says nothing about it — it is a silent `201`. Subscribe to the names you want, or to the `"*"` wildcard.
 
@@ -48,6 +48,10 @@ Every event arrives as JSON:
 ```
 
 **Schema v3 (camelCase).** All `data` fields are camelCase. Phone numbers are always **E.164 with `+`** (no device suffix, no `@s.whatsapp.net` / `@lid`). Timestamps are always **ISO 8601** in the single `createdAt` field (when the message happened, per the provider — not our ingestion time).
+
+<Note>
+  **New event names keep appearing — ignore the ones you do not know.** A `"*"` subscription receives a new event as soon as it exists (`number.restored` is one). Answer an event your code does not handle with a `2xx` and move on. Starting with the next SDK release, `parseCustomerWebhook` (Node, `@pilot-status/sdk`) and `parse_customer_webhook` (Python, `pilot-status`) no longer throw on an event name they do not know: they return `{ type: "unknown", event, data, raw }` (in Python, a dict with the same keys), so a new event never breaks your integration. A payload that is not an object with a string `event`, or a known event with invalid fields, still throws. The n8n trigger already passes any event through when **All Events** is selected.
+</Note>
 
 <Note>
 **Old messages are not replayed.** When a number connects, WhatsApp hands the provider the device's history. Those messages are imported into the chat, but they are **not** delivered to your webhook — otherwise every reconnect would re-deliver up to 30 days of conversation and nothing in the payload would let you tell it apart from traffic that just arrived.
@@ -84,6 +88,7 @@ Opt in per number with `settings.webhookHistoricalMessages` on [`PATCH /v1/numbe
 - `number.connected` — connected to WhatsApp (OPEN state)
 - `number.disconnected` — connection drop confirmed by the number-health transition, on **native web (unofficial)** numbers (one event per confirmed drop, not one per connectivity blip).
 - `number.removed` — number removed
+- `number.restored` — a deleted number was restored within its 30-day window; it comes back disconnected (see [`number.restored`](#number-restored))
 - `number.recovered` — number recovered from a degraded/blocked state (delivered only to `"*"` wildcard subscriptions)
 
 **Health events (`"*"` subscription only):** the health transition events — `number.health_blocked`, `number.health_degraded`, `number.health_shadowban` — and `number.recovered` are **not individually subscribable** and do not appear in the event picker. They are delivered **only** to webhooks subscribed with the `"*"` wildcard.
@@ -445,7 +450,7 @@ WhatsApp Status (stories) posted by a contact the connected phone can see.
 
 ## `number.*` payload
 
-Fields for `number.created` / `number.connected` / `number.disconnected` / `number.removed` / `number.recovered` (and the `number.health_blocked` / `number.health_degraded` / `number.health_shadowban` events):
+Fields for `number.created` / `number.connected` / `number.disconnected` / `number.removed` / `number.restored` / `number.recovered` (and the `number.health_blocked` / `number.health_degraded` / `number.health_shadowban` events):
 
 <Warning>
   **Breaking change — `data.numberId` is always the number ID.** On every `number.*` event, `data.numberId` is now the WhatsApp **number** ID. Previously `number.created`, `number.connected` and `number.removed` carried the internal **instance** ID, while the health events already carried the number ID: two opaque IDs in the same field, so cross-referencing the two families silently never matched. **If your consumer matched lifecycle events by instance ID, it will stop matching — key it on the number ID instead.** It is the same `id` `GET /v1/numbers` returns.
@@ -522,6 +527,27 @@ Emitted from the **number-health transition**, which owns the anti-flap window a
     "phone": "+5511999999999",
     "displayName": "Main store",
     "createdAt": "2026-02-24T15:10:00.000Z"
+  }
+}
+```
+
+### number.restored
+
+The pair of `number.removed`: a deleted number was brought back within its 30-day window.
+
+- Fires on every restore path: the dashboard, `POST /v1/numbers/{id}/restore`, and reconnecting the same phone on Meta (Embedded Signup or Cloud API credentials) while its deleted number is still restorable. That reconnect brings the old number back, so `number.restored` is followed by `number.created` / `number.connected`.
+- It restores the **record, not the connection**: the number comes back disconnected and has to be reconnected before it can send.
+- Same payload and scope as `number.removed`: the same `numberId` (the id `GET /v1/numbers` returns), delivered only to webhooks subscribed to that number, including `"*"` subscriptions. Subscribable by name on every provider.
+- If your integration stops accepting a number when it receives `number.removed`, accept it again on `number.restored`. Otherwise you keep rejecting its events after the restore.
+
+```json
+{
+  "event": "number.restored",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:20:00.000Z"
   }
 }
 ```
@@ -794,7 +820,7 @@ Plus the families that are **not** Meta's envelope:
 
 - **Flow responses** — `flow.response_received`, Meta numbers only, in the canonical `{ event, data }` shape. See [`flow.*` payload](#flow-payload).
 - **Normalized call events** — `call.ringing`, `call.connected`, `call.ended`, `call.missed`, and `call.permission_updated` (Meta only). These are flat Pilot Status events, not Meta's envelope — see [`call.*` payload](#call-payload).
-- **Number lifecycle** — `number.created`, `number.connected`, `number.removed`. `number.disconnected` is subscribable but **never fires on a Meta number**: a Meta quality/status transition emits a number-health event instead, and those reach `"*"` subscriptions only.
+- **Number lifecycle** — `number.created`, `number.connected`, `number.removed`, `number.restored`. `number.disconnected` is subscribable but **never fires on a Meta number**: a Meta quality/status transition emits a number-health event instead, and those reach `"*"` subscriptions only.
 
 <Note>
   **Nine of Meta's fields are never delivered**, not even to a `"*"` subscription: `account_alerts`, `automatic_events`, `history`, `messaging_handovers`, `partner_solutions`, `security`, `smb_app_state_sync`, `standby` and `tracking_events`. They are internal (bulk history backfill, coexistence state sync) or admin/security traffic, and they are not offered in the event picker either. Everything else Meta sends for a subscribed field is forwarded.

@@ -28,7 +28,7 @@ Webhooks entregam eventos em tempo real para a URL do seu sistema. Esta página 
 
 Três coisas são iguais em todos os vocabulários:
 
-- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.disconnected` e `number.removed` são assináveis em qualquer número, seja qual for o provedor. (O `number.disconnected` só *dispara* em número web nativo — veja [`number.disconnected`](#number-disconnected).)
+- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.disconnected`, `number.removed` e `number.restored` são assináveis em qualquer número, seja qual for o provedor. (O `number.disconnected` só *dispara* em número web nativo — veja [`number.disconnected`](#number-disconnected).)
 - **Eventos normalizados de chamada** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` em qualquer número com voz habilitada.
 - **`events` nunca é opcional.** Um webhook gravado com `events` vazio entrega **nada**, em qualquer vocabulário, e não avisa: é um `201` silencioso. Assine os nomes que você quer, ou o curinga `"*"`.
 
@@ -48,6 +48,10 @@ Todo evento chega como JSON:
 ```
 
 **Esquema v3 (camelCase).** Todos os campos de `data` são camelCase. Números de telefone são sempre **E.164 com `+`** (sem sufixo de dispositivo, sem `@s.whatsapp.net` / `@lid`). Timestamps são sempre **ISO 8601** no campo único `createdAt` (quando a mensagem aconteceu, segundo o provedor — não o horário em que a processamos).
+
+<Note>
+  **Nomes de evento novos continuam surgindo — ignore os que você não conhece.** Uma assinatura `"*"` recebe um evento novo assim que ele passa a existir (o `number.restored` é um deles). Responda com `2xx` a um evento que o seu código não trata e siga em frente. A partir da próxima versão dos SDKs, `parseCustomerWebhook` (Node, `@pilot-status/sdk`) e `parse_customer_webhook` (Python, `pilot-status`) deixam de lançar erro para um nome de evento que não conhecem: devolvem `{ type: "unknown", event, data, raw }` (em Python, um dict com as mesmas chaves), para que um evento novo nunca quebre a sua integração. Um payload que não é um objeto com `event` em texto, ou um evento conhecido com campos inválidos, continua lançando erro. O trigger do n8n já repassa qualquer evento quando **All Events** está selecionado.
+</Note>
 
 <Note>
 **Mensagem antiga não é replicada.** Quando um número conecta, o WhatsApp entrega ao provedor o histórico do aparelho. Essas mensagens são importadas para o chat, mas **não** são entregues no seu webhook — senão cada reconexão re-entregaria até 30 dias de conversa e nada no payload permitiria distinguir isso do tráfego que acabou de chegar.
@@ -85,6 +89,7 @@ Para receber mesmo assim, ligue `settings.webhookHistoricalMessages` por número
 - `number.connected` — conectado ao WhatsApp (estado OPEN)
 - `number.disconnected` — queda de conexão confirmada pela transição de saúde do número, em números **web nativos (não oficiais)** (um evento por queda confirmada, não um por oscilação de conectividade).
 - `number.removed` — número removido
+- `number.restored` — um número excluído foi restaurado dentro da janela de 30 dias; ele volta desconectado (veja [`number.restored`](#number-restored))
 - `number.recovered` — número recuperado de um estado degradado/bloqueado (entregue somente a assinaturas com o curinga `"*"`)
 
 **Eventos de saúde (somente assinatura `"*"`):** os eventos de transição de saúde — `number.health_blocked`, `number.health_degraded`, `number.health_shadowban` — e `number.recovered` **não são assináveis individualmente** e não aparecem no seletor de eventos. Eles são entregues **somente** a webhooks assinados com o curinga `"*"`.
@@ -445,7 +450,7 @@ enxerga.
 
 ## Payload de `number.*`
 
-Campos para `number.created` / `number.connected` / `number.disconnected` / `number.removed` / `number.recovered` (e os eventos `number.health_blocked` / `number.health_degraded` / `number.health_shadowban`):
+Campos para `number.created` / `number.connected` / `number.disconnected` / `number.removed` / `number.restored` / `number.recovered` (e os eventos `number.health_blocked` / `number.health_degraded` / `number.health_shadowban`):
 
 <Warning>
   **Mudança incompatível — `data.numberId` é sempre o ID do número.** Em todo evento `number.*`, `data.numberId` agora é o ID do **número** de WhatsApp. Antes, `number.created`, `number.connected` e `number.removed` carregavam o ID interno da **instância**, enquanto os eventos de saúde já carregavam o ID do número: dois IDs opacos no mesmo campo, de modo que cruzar as duas famílias nunca casava — em silêncio. **Se o seu consumidor casava os eventos de ciclo de vida pelo ID da instância, ele vai parar de casar — passe a usar o ID do número.** É o mesmo `id` que o `GET /v1/numbers` devolve.
@@ -522,6 +527,27 @@ Emitido a partir da **transição de saúde do número**, que é quem controla a
     "phone": "+5511999999999",
     "displayName": "Main store",
     "createdAt": "2026-02-24T15:10:00.000Z"
+  }
+}
+```
+
+### number.restored
+
+O par do `number.removed`: um número excluído foi trazido de volta dentro da janela de 30 dias.
+
+- Dispara em todo caminho de restauração: o painel, o `POST /v1/numbers/{id}/restore` e a reconexão do mesmo telefone na Meta (Embedded Signup ou credenciais da Cloud API) enquanto o número excluído ainda pode ser restaurado. Essa reconexão traz o número antigo de volta, então o `number.restored` é seguido de `number.created` / `number.connected`.
+- Restaura o **registro, não a conexão**: o número volta desconectado e precisa ser reconectado antes de poder enviar.
+- Mesmo payload e mesmo escopo do `number.removed`: o mesmo `numberId` (o id que o `GET /v1/numbers` devolve), entregue só aos webhooks inscritos naquele número, inclusive assinaturas `"*"`. Assinável pelo nome em qualquer provedor.
+- Se a sua integração deixa de aceitar um número ao receber `number.removed`, volte a aceitá-lo ao receber `number.restored`. Caso contrário, você continua recusando os eventos dele depois da restauração.
+
+```json
+{
+  "event": "number.restored",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:20:00.000Z"
   }
 }
 ```
@@ -794,7 +820,7 @@ Mais as famílias que **não** são o envelope da Meta:
 
 - **Respostas de Flow** — `flow.response_received`, só em números Meta, no formato canônico `{ event, data }`. Veja [Payload de `flow.*`](#payload-de-flow).
 - **Eventos normalizados de chamada** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` e `call.permission_updated` (só Meta). Esses são eventos planos do Pilot Status, não o envelope da Meta — veja [Payload de `call.*`](#payload-de-call).
-- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.removed`. O `number.disconnected` é assinável mas **nunca dispara em número Meta**: uma transição de qualidade/status da Meta emite um evento de saúde do número, e esses só chegam em assinaturas `"*"`.
+- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.removed`, `number.restored`. O `number.disconnected` é assinável mas **nunca dispara em número Meta**: uma transição de qualidade/status da Meta emite um evento de saúde do número, e esses só chegam em assinaturas `"*"`.
 
 <Note>
   **Nove campos da Meta nunca são entregues**, nem para uma assinatura `"*"`: `account_alerts`, `automatic_events`, `history`, `messaging_handovers`, `partner_solutions`, `security`, `smb_app_state_sync`, `standby` e `tracking_events`. São internos (backfill de histórico em massa, sincronia de estado da coexistência) ou tráfego administrativo/de segurança, e também não aparecem no seletor de eventos. Todo o resto que a Meta manda de um campo assinado é encaminhado.
