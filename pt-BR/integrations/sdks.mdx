@@ -39,6 +39,27 @@ import { parseCustomerWebhook } from "@pilot-status/sdk";
 const event = parseCustomerWebhook(payload);
 ```
 
+### Eventos de webhook que o SDK não conhece
+
+A plataforma acrescenta eventos, e um webhook assinado em `"*"` recebe um evento novo no dia em que ele sai — antes de você atualizar. A partir da **0.12.0**, `parseCustomerWebhook` não lança erro para um nome de evento que não conhece: devolve `{ type: "unknown", event, data, raw }` (`UnknownCustomerWebhookEvent`) — `event` e `data` como chegaram, `raw` o corpo inteiro, nada validado. Responda com `2xx` e ignore.
+
+```typescript
+import { isUnknownCustomerWebhookEvent, parseCustomerWebhook } from "@pilot-status/sdk";
+
+const event = parseCustomerWebhook(payload);
+if (isUnknownCustomerWebhookEvent(event)) return new Response("ok");
+
+switch (event.event) {
+  // estreitado por completo, como antes
+}
+```
+
+<Warning>
+  **Migração em TypeScript (uma linha).** O `event` do caso desconhecido é uma `string` comum, então estreitar só por `event.event` deixa de compilar: descarte o caso desconhecido antes com `isUnknownCustomerWebhookEvent`, como acima. Para manter o comportamento e o tipo de retorno antigos, passe `{ unknownEvents: "throw" }`: `parseCustomerWebhook(payload, { unknownEvents: "throw" })`.
+</Warning>
+
+Continua lançando erro para um corpo que não é um objeto com `event` em texto e para um evento **conhecido** com campos que quebram o contrato. `isCustomerWebhookEvent` continua estrito: `false` para um nome de evento desconhecido.
+
 ## Python
 
 Pacote: [`pilot-status`](https://pypi.org/project/pilot-status/)
@@ -62,6 +83,18 @@ accepted = client.messages.send({
 message = client.messages.get(accepted["id"])
 ```
 
+Parsing de webhook — a partir da **1.10.0**, um nome de evento que o SDK não conhece volta como um dict `{"type": "unknown", "event", "data", "raw"}` em vez de lançar erro; identifique-o com `is_unknown_customer_webhook_event` e responda com `2xx`:
+
+```python
+from pilot_status import is_unknown_customer_webhook_event, parse_customer_webhook
+
+event = parse_customer_webhook(payload)
+if is_unknown_customer_webhook_event(event):
+    return  # evento mais novo que o SDK: confirme, nunca falhe
+```
+
+`WebhookParseError` continua sendo lançado para um corpo que não é um objeto com `event` em texto e para um evento **conhecido** com campos inválidos. Passe `unknown_events="raise"` para manter o comportamento antigo; `is_customer_webhook_event` continua estrito. O `flow.response_received`, que o parser Python não modela, agora volta como desconhecido em vez de lançar erro.
+
 ## n8n (integração nativa)
 
 Node oficial da comunidade: `n8n-nodes-pilot-status`.
@@ -69,7 +102,7 @@ Node oficial da comunidade: `n8n-nodes-pilot-status`.
 Instale pela interface do n8n: **Settings → Community Nodes → Install → `n8n-nodes-pilot-status`**. A autenticação usa uma chave de API do Pilot Status.
 
 <Note>
-  Para eventos de entrada, adicione o node **Pilot Status Trigger** ao seu fluxo de trabalho, copie sua URL de webhook e cole como um novo webhook na página **Webhooks** no painel do Pilot Status. Cada evento assinado então inicia seu fluxo de trabalho.
+  Para eventos de entrada, adicione o node **Pilot Status Trigger** ao seu fluxo de trabalho, copie sua URL de webhook e cole como um novo webhook na página **Webhooks** no painel do Pilot Status. Cada evento assinado então inicia seu fluxo de trabalho. Com **All Events** selecionado, o Trigger repassa qualquer evento com o corpo intacto — inclusive eventos mais novos que a versão do seu node; com um evento específico selecionado, os demais recebem `200 Ignored event`.
 </Note>
 
 ## Boas práticas
