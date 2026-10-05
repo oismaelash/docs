@@ -39,6 +39,27 @@ import { parseCustomerWebhook } from "@pilot-status/sdk";
 const event = parseCustomerWebhook(payload);
 ```
 
+### Webhook events the SDK does not know
+
+The platform adds events, and a webhook subscribed to `"*"` receives a new one the day it ships — before you upgrade. Starting with **0.12.0**, `parseCustomerWebhook` does not throw on an event name it does not know: it returns `{ type: "unknown", event, data, raw }` (`UnknownCustomerWebhookEvent`) — `event` and `data` as received, `raw` the whole body, nothing validated. Acknowledge it with a `2xx` and ignore it.
+
+```typescript
+import { isUnknownCustomerWebhookEvent, parseCustomerWebhook } from "@pilot-status/sdk";
+
+const event = parseCustomerWebhook(payload);
+if (isUnknownCustomerWebhookEvent(event)) return new Response("ok");
+
+switch (event.event) {
+  // fully narrowed, as before
+}
+```
+
+<Warning>
+  **TypeScript migration (one line).** The unknown case's `event` is a plain `string`, so narrowing on `event.event` alone no longer compiles: rule the unknown case out first with `isUnknownCustomerWebhookEvent`, as above. To keep the old behaviour and the old return type, pass `{ unknownEvents: "throw" }`: `parseCustomerWebhook(payload, { unknownEvents: "throw" })`.
+</Warning>
+
+It still throws on a body that is not an object with a string `event`, and on a **known** event whose fields break its contract. `isCustomerWebhookEvent` stays strict: `false` for an unknown event name.
+
 ## Python
 
 Package: [`pilot-status`](https://pypi.org/project/pilot-status/)
@@ -62,6 +83,18 @@ accepted = client.messages.send({
 message = client.messages.get(accepted["id"])
 ```
 
+Webhook parsing — from **1.10.0**, an event name the SDK does not know comes back as a dict `{"type": "unknown", "event", "data", "raw"}` instead of raising; tell it apart with `is_unknown_customer_webhook_event` and answer it with a `2xx`:
+
+```python
+from pilot_status import is_unknown_customer_webhook_event, parse_customer_webhook
+
+event = parse_customer_webhook(payload)
+if is_unknown_customer_webhook_event(event):
+    return  # a newer event: acknowledge it, never fail on it
+```
+
+`WebhookParseError` is still raised for a body that is not an object with a string `event` and for a **known** event with invalid fields. Pass `unknown_events="raise"` to keep the old behaviour; `is_customer_webhook_event` stays strict. `flow.response_received`, which the Python parser does not model, now comes back as unknown instead of raising.
+
 ## n8n (native integration)
 
 Official community node: `n8n-nodes-pilot-status`.
@@ -69,7 +102,7 @@ Official community node: `n8n-nodes-pilot-status`.
 Install from the n8n UI: **Settings → Community Nodes → Install → `n8n-nodes-pilot-status`**. Authentication uses a Pilot Status API key.
 
 <Note>
-  For inbound events, add the **Pilot Status Trigger** node to your workflow, copy its webhook URL, and paste it as a new webhook on the **Webhooks** page in the Pilot Status dashboard. Every subscribed event then starts your workflow.
+  For inbound events, add the **Pilot Status Trigger** node to your workflow, copy its webhook URL, and paste it as a new webhook on the **Webhooks** page in the Pilot Status dashboard. Every subscribed event then starts your workflow. With **All Events** selected, the Trigger passes any event through with the body untouched — including events newer than your node version; with a specific event selected, anything else is answered `200 Ignored event`.
 </Note>
 
 ## Best practices
