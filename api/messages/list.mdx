@@ -116,7 +116,7 @@ curl "https://pilotstatus.com.br/v1/messages?status=FAILED&direction=out&startDa
 | Field | Description |
 | --- | --- |
 | `id` | Internal message id — use it with [`GET /v1/messages/{messageId}`](/api/messages/status) for single-message detail. |
-| `correlationId` | Correlation identifier from the send request (outbound only). |
+| `correlationId` | Correlation identifier from the send request. `null` on received rows, and on outbound rows that had no send request (see [Outbound rows with no send request](#outbound-rows-with-no-send-request)). |
 | `direction` | `IN` (received) or `OUT` (sent). |
 | `from` / `to` | Sender and recipient phone numbers. |
 | `content` | Message text. `null` when redacted by the number's PII retention mode. |
@@ -140,16 +140,32 @@ curl "https://pilotstatus.com.br/v1/messages?status=FAILED&direction=out&startDa
 | --- | --- |
 | `API` | `POST /v1/messages/send` — the public API |
 | `MCP` | The Pilot Status MCP server tool |
-| `CHATWOOT` | An agent reply coming back from a Chatwoot inbox |
+| `CHATWOOT` | An agent reply from a Chatwoot inbox. From an **API mirror** inbox, Pilot Status sends it and the row is a regular send. From a **native WhatsApp Cloud** inbox, Chatwoot sends it itself through the [Meta layer](/api/layer/meta) — see below |
 | `CHAT` | The chat on the Pilot Status dashboard |
 | `DASHBOARD` | A template preview sent from the dashboard |
 | `SYSTEM` | Platform-issued (onboarding welcome and other internal sends) |
 | `APP` | **Outbound, but not through us** — the business sent it from the WhatsApp Business app on the phone, or from another tool on the same WABA. On a Meta number these rows come from the `message_echoes` / `smb_message_echoes` webhooks |
+| `LAYER` | Sent through the [Pilot Status Meta layer](/api/layer/meta) by a client other than a native Chatwoot inbox — for example your own code calling the Graph API with your `ps_` key |
 | `null` | An inbound message — **or** an outbound one whose send source is not one of the above |
 
 <Warning>
   **`origin: null` does not mean "inbound".** Read `direction` for that. A `null` on an `OUT` row means the send carried a source we do not map to a public tag; treat it as "unclassified outbound", not as received traffic, or a billing report will silently under-count your own sends.
 </Warning>
+
+The set grows. Treat a value you do not recognise as "unclassified outbound", not as an error.
+
+### Outbound rows with no send request
+
+Three kinds of `OUT` row were not sent by Pilot Status, so there is no send request behind them: `APP`, `LAYER`, and `CHATWOOT` from a native WhatsApp Cloud inbox. On these rows:
+
+- `correlationId`, `template`, `serviceWindowOpenAtSend`, `errorCode` and `errorMessage` are `null`;
+- [`GET /v1/messages/{messageId}`](/api/messages/status) answers `404` — the list row is all there is;
+- `status` follows the statuses Meta reports: `SENT`, `DELIVERED`, `READ` or `FAILED`;
+- the message does **not** count toward your plan's message usage.
+
+A `CHATWOOT` row from an API mirror inbox is a regular send: it has a `correlationId` and full detail.
+
+`LAYER` rows, and `CHATWOOT` rows from a native inbox, are recorded only from the moment Pilot Status started recording layer sends for the number. Earlier sends are not backfilled. What is and is not recorded: [Meta layer → Sends are recorded in Logs](/api/layer/meta#sends-are-recorded-in-logs).
 
 ## Common errors
 
