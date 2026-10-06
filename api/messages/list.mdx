@@ -28,7 +28,7 @@ Lists the message logs — **sent and received** — of the WhatsApp number tied
 | `page` | integer | `1` | Page number (1-based). |
 | `pageSize` | integer | `20` | Rows per page (max `100`). |
 | `status` | string (CSV) | — | Filter by delivery status: `QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED`, `FAILED`, `CANCELED`. Accepts a comma-separated list (e.g. `status=FAILED,CANCELED`). Delivery statuses only exist for outbound messages, so this filter **implies outbound-only** results. |
-| `direction` | string | — | `in` (received) or `out` (sent). |
+| `direction` | string | — | `in` (received) or `out` (sent). `out` leaves out the outbound rows that had no send request — see the Warning in [Outbound rows with no send request](#outbound-rows-with-no-send-request). |
 | `startDate` | string | — | ISO 8601 lower bound on `createdAt` (e.g. `2026-02-01T00:00:00.000Z`). |
 | `endDate` | string | — | ISO 8601 upper bound on `createdAt`. Must not be before `startDate`. |
 | `search` | string | — | A phone number in **any** format (`+5511999999999`, `5511999999999`, `11 99999-9999`, …) or a template name. |
@@ -161,9 +161,46 @@ Three kinds of `OUT` row were not sent by Pilot Status, so there is no send requ
 - `correlationId`, `template`, `serviceWindowOpenAtSend`, `errorCode` and `errorMessage` are `null`;
 - [`GET /v1/messages/{messageId}`](/api/messages/status) answers `404` — the list row is all there is;
 - `status` follows the statuses Meta reports: `SENT`, `DELIVERED`, `READ` or `FAILED`;
-- the message does **not** count toward your plan's message usage.
+- the message does **not** count toward your plan's message usage;
+- on a number whose PII retention mode redacts the row, `to` and `content` are `null` and `redacted: true` is added, as on any other row.
 
 A `CHATWOOT` row from an API mirror inbox is a regular send: it has a `correlationId` and full detail.
+
+On `LAYER` rows and native-inbox `CHATWOOT` rows, `content` is what the Graph API request carried: the text body, a media caption, or the body text of an interactive message. Three types get a short generated text instead:
+
+- a template reads `Template: <name>` — the rendered body is not stored, and `template` stays `null`;
+- a location reads `Location: <latitude>, <longitude>`, followed by its name and address when the request had them;
+- contacts read `Contacts: <names>`.
+
+Audio and stickers have `content: null`.
+
+A native-inbox `CHATWOOT` row:
+
+```json
+{
+  "id": "cm_01J9...",
+  "correlationId": null,
+  "direction": "OUT",
+  "from": "+5511911111111",
+  "to": "5511988887777",
+  "content": "agent reply",
+  "template": null,
+  "status": "SENT",
+  "errorCode": null,
+  "errorMessage": null,
+  "origin": "CHATWOOT",
+  "serviceWindowOpenAtSend": null,
+  "createdAt": "2026-10-06T18:00:00.000Z",
+  "sentAt": "2026-10-06T18:00:00.000Z",
+  "deliveredAt": null,
+  "readAt": null,
+  "externalMessageId": "wamid.HBgNNTUxMTk4ODg4Nzc3NxUCABEYEjA="
+}
+```
+
+<Warning>
+  **The `status`, `direction=out`, `templateId` and `window` filters leave these rows out.** They return only messages that had a send request, so `APP`, `LAYER` and native-inbox `CHATWOOT` rows never match them, even though they are `OUT`. To get these rows, list without those filters (`startDate`, `endDate` and a phone-number `search` keep them) and read `direction` and `origin`.
+</Warning>
 
 `LAYER` rows, and `CHATWOOT` rows from a native inbox, are recorded only from the moment Pilot Status started recording layer sends for the number. Earlier sends are not backfilled. What is and is not recorded: [Meta layer → Sends are recorded in Logs](/api/layer/meta#sends-are-recorded-in-logs).
 

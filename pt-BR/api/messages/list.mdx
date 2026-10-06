@@ -28,7 +28,7 @@ Lista os logs de mensagens — **enviadas e recebidas** — do número de WhatsA
 | `page` | integer | `1` | Número da página (começa em 1). |
 | `pageSize` | integer | `20` | Linhas por página (máx. `100`). |
 | `status` | string (CSV) | — | Filtra por status de entrega: `QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED`, `FAILED`, `CANCELED`. Aceita lista separada por vírgula (ex.: `status=FAILED,CANCELED`). Status de entrega só existem para mensagens enviadas, então este filtro **implica somente saídas** (outbound). |
-| `direction` | string | — | `in` (recebidas) ou `out` (enviadas). |
+| `direction` | string | — | `in` (recebidas) ou `out` (enviadas). `out` deixa de fora as linhas de saída que não tiveram requisição de envio — veja o aviso em [Linhas de saída sem requisição de envio](#linhas-de-saída-sem-requisição-de-envio). |
 | `startDate` | string | — | Limite inferior em ISO 8601 sobre `createdAt` (ex.: `2026-02-01T00:00:00.000Z`). |
 | `endDate` | string | — | Limite superior em ISO 8601 sobre `createdAt`. Não pode ser anterior a `startDate`. |
 | `search` | string | — | Um número de telefone em **qualquer** formato (`+5511999999999`, `5511999999999`, `11 99999-9999`, …) ou o nome de um template. |
@@ -161,9 +161,46 @@ Três tipos de linha `OUT` não foram enviados pela Pilot Status, então não h�
 - `correlationId`, `template`, `serviceWindowOpenAtSend`, `errorCode` e `errorMessage` são `null`;
 - [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) responde `404` — a linha da lista é tudo o que existe;
 - o `status` segue os status que a Meta informa: `SENT`, `DELIVERED`, `READ` ou `FAILED`;
-- a mensagem **não** conta no consumo de mensagens do seu plano.
+- a mensagem **não** conta no consumo de mensagens do seu plano;
+- num número cujo modo de retenção de PII redige a linha, `to` e `content` vêm `null` e `redacted: true` é acrescentado, como em qualquer outra linha.
 
 Uma linha `CHATWOOT` vinda de uma inbox de espelho por API é um envio normal: tem `correlationId` e detalhe completo.
+
+Em linhas `LAYER` e linhas `CHATWOOT` de inbox nativa, o `content` é o que a requisição à Graph API trazia: o texto, a legenda da mídia ou o texto do corpo de uma mensagem interativa. Três tipos recebem um texto curto gerado no lugar:
+
+- um template aparece como `Template: <nome>` — o corpo renderizado não é guardado, e `template` continua `null`;
+- uma localização aparece como `Location: <latitude>, <longitude>`, seguida do nome e do endereço quando a requisição os trazia;
+- contatos aparecem como `Contacts: <nomes>`.
+
+Áudio e figurinha vêm com `content: null`.
+
+Uma linha `CHATWOOT` de inbox nativa:
+
+```json
+{
+  "id": "cm_01J9...",
+  "correlationId": null,
+  "direction": "OUT",
+  "from": "+5511911111111",
+  "to": "5511988887777",
+  "content": "resposta do atendente",
+  "template": null,
+  "status": "SENT",
+  "errorCode": null,
+  "errorMessage": null,
+  "origin": "CHATWOOT",
+  "serviceWindowOpenAtSend": null,
+  "createdAt": "2026-10-06T18:00:00.000Z",
+  "sentAt": "2026-10-06T18:00:00.000Z",
+  "deliveredAt": null,
+  "readAt": null,
+  "externalMessageId": "wamid.HBgNNTUxMTk4ODg4Nzc3NxUCABEYEjA="
+}
+```
+
+<Warning>
+  **Os filtros `status`, `direction=out`, `templateId` e `window` deixam essas linhas de fora.** Eles só devolvem mensagens que tiveram requisição de envio, então linhas `APP`, `LAYER` e `CHATWOOT` de inbox nativa nunca casam com eles, mesmo sendo `OUT`. Para obter essas linhas, liste sem esses filtros (`startDate`, `endDate` e uma `search` por telefone as mantêm) e leia `direction` e `origin`.
+</Warning>
 
 Linhas `LAYER`, e linhas `CHATWOOT` de inbox nativa, só são registradas a partir do momento em que a Pilot Status começou a registrar os envios pela camada para o número. Envios anteriores não são recuperados. O que é e o que não é registrado: [Camada Meta → Envios ficam registrados nos Logs](/pt-BR/api/layer/meta#envios-ficam-registrados-nos-logs).
 
