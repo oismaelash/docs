@@ -1,0 +1,127 @@
+---
+title: "POST /v1/numbers/{id}/pay — Pagar a cobrança do número extra"
+sidebarTitle: "Pagar número extra"
+description: "POST /v1/numbers/{id}/pay — Paga a cobrança pendente do número extra de um número e libera o envio por ele."
+mode: "wide"
+---
+
+# Pagar a cobrança do número extra de um número
+
+Um **número extra** é um número de WhatsApp acima da capacidade que o seu workspace já pagou. Ele é cobrado quando o número **conecta pela primeira vez** — veja [Números extras](/pt-BR/api/extra-numbers#cobrado-na-primeira-conexão). Quando essa cobrança é recusada (cartão recusado, sem saldo), o número continua conectado, mas **o envio por ele fica bloqueado** até o pagamento.
+
+`POST /v1/numbers/{id}/pay` cobra na hora — primeiro os créditos da carteira, o restante no cartão salvo — e libera o envio.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/wa_abc/pay" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+Resposta:
+
+```json
+{
+  "ok": true,
+  "status": "paid"
+}
+```
+
+<Note>
+  Exige uma chave **com escopo de tenant** — a mesma regra de `POST /v1/subscription/extra-numbers`. Com um token OAuth / MCP, só o **Proprietário** do workspace pode pagar (`billing:manage`) — caso contrário, `403 PERMISSION_DENIED`.
+</Note>
+
+<Warning>
+  **Esta chamada cobra.** Com créditos na carteira ou um cartão salvo, o valor proporcional de um número extra é cobrado na hora.
+</Warning>
+
+## Quando usar
+
+- Quando `GET /v1/numbers` ou `GET /v1/numbers/{id}` mostra `extraChargeUnpaidSince` preenchido em um número.
+- Quando `POST /v1/messages/send` responde `409 NUMBER_BLOCKED` com `reason: "extra_charge_unpaid"`.
+- Logo depois de corrigir o que recusou a cobrança — um cartão novo, por exemplo — sem querer esperar.
+
+Você não precisa chamar este endpoint. Em um plano pago, uma recarga da carteira ou um cartão recém-salvo retentam, automaticamente, a cobrança de todos os números bloqueados do workspace. No plano Free esta chamada não consegue pagar — veja [`PLAN_NUMBER_LIMIT_REACHED`](#erros) abaixo. No painel, o proprietário do workspace também pode usar **Pagar agora** na página **Números**.
+
+## Como saber que um número está bloqueado
+
+`GET /v1/numbers` e `GET /v1/numbers/{id}` trazem dois campos em cada número:
+
+| Campo | Tipo | Significado |
+| --- | --- | --- |
+| `extraChargeUnpaidSince` | string (ISO 8601) ou `null` | A cobrança foi recusada neste instante e o envio está bloqueado desde então. `null` = não está bloqueado. |
+| `extraChargeDisconnectAt` | string (ISO 8601) ou `null` | Quando o número será desconectado se continuar sem pagamento — 7 dias depois de `extraChargeUnpaidSince`. Sempre `null` em números da Meta Cloud API, que nunca são desconectados. |
+
+Esses campos **não** fazem parte de `health`. Um número bloqueado mantém o seu `state`, pode ter `health.sendable: true`, e `extra_charge_unpaid` nunca aparece em `health.code`. Veja [Listar e obter números](/pt-BR/api/numbers/list#cobrança-de-número-extra-sem-pagamento).
+
+## Parâmetros da requisição
+
+| Parâmetro | Tipo | Obrigatório | Descrição |
+| --- | --- | --- | --- |
+| `id` | string | Sim | O ID do número WhatsApp — o `id` devolvido por `GET /v1/numbers`. |
+
+Sem corpo.
+
+## Resposta
+
+### Sucesso (200)
+
+```json
+{
+  "ok": true,
+  "status": "paid"
+}
+```
+
+| `status` | Significado |
+| --- | --- |
+| `paid` | Um número extra foi comprado e o bloqueio foi removido. |
+| `not_required` | Não há nada a pagar por este número: ele nunca foi bloqueado, já foi pago, ou a sua capacidade passou a cobri-lo. Nada foi cobrado. Pode chamar quantas vezes quiser. |
+
+### Erros
+
+Decida pelo `code`, nunca pelo status HTTP: três das recusas são `402`.
+
+| Status | `code` | Significado | O que fazer |
+| --- | --- | --- | --- |
+| `402` | `PAYMENT_FAILED` | O cartão salvo foi cobrado e a cobrança não se concluiu. O `declineCode` vem quando o emissor do cartão recusou. | Corrija ou troque o cartão e chame de novo. |
+| `402` | `INSUFFICIENT_FUNDS` | A carteira não cobre a cobrança e não há cartão salvo utilizável. | Recarregue a carteira ou salve um cartão. Qualquer um dos dois retenta a cobrança automaticamente. |
+| `402` | `PLAN_NUMBER_LIMIT_REACHED` | O workspace está no plano Free, que nunca compra um número extra sozinho. Nada foi tentado e nada foi cobrado. | Compre o número extra por conta própria (`POST /v1/subscription/extra-numbers` com `confirm: true`, ou pelo painel) ou suba de plano. Depois chame de novo: a resposta é `not_required`. |
+| `502` | `PAYMENT_PROVIDER_ERROR` | Não foi possível confirmar a cobrança com o processador de pagamento. Nada foi recusado. | Nada: a cobrança é retentada automaticamente a cada 15 minutos. Confira seu extrato antes de pagar de novo. |
+| `409` | `PAYMENT_IN_PROGRESS` | Outro pagamento dos números deste workspace está em andamento. | Chame de novo em alguns segundos. |
+| `404` | `NUMBER_NOT_FOUND` | Este número não existe neste workspace. | Use o `id` de `GET /v1/numbers`. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | A chave tem escopo de número. | Use uma chave com escopo de tenant. |
+| `403` | `PERMISSION_DENIED` | Token OAuth / MCP de um usuário que não é o Proprietário do workspace. | Peça ao Proprietário do workspace para pagar. |
+| `401` | — | Chave de API inválida ou ausente. | |
+
+Corpo do erro: `{ "error": "<mensagem>", "code": "<CÓDIGO>", … }`.
+
+- Os corpos de `PAYMENT_FAILED` e `INSUFFICIENT_FUNDS` trazem também `proratedTotal` e `currency` — o valor que foi tentado. O `INSUFFICIENT_FUNDS` acrescenta `walletReason`. O `error` deles é uma mensagem legível, em português.
+- Os corpos de `PLAN_NUMBER_LIMIT_REACHED`, `502`, `409` e `404` trazem só `error` e `code`. O `error` deles é uma frase bilíngue, `English | Português`.
+
+```json
+{
+  "error": "Seu cartão não tem saldo suficiente.",
+  "code": "PAYMENT_FAILED",
+  "proratedTotal": 14.95,
+  "currency": "BRL",
+  "declineCode": "insufficient_funds"
+}
+```
+
+<Note>
+  **Depois de um `402`, o número continua bloqueado.** Depois de um `502`, nada muda: um número que já estava bloqueado continua bloqueado até uma retentativa passar, e uma falha do processador nunca bloqueia um número por si só.
+</Note>
+
+<Warning>
+  **`502 PAYMENT_PROVIDER_ERROR` não quer dizer "nada foi cobrado".** A requisição ao processador falhou _ou_ a resposta dele se perdeu, então a cobrança pode ter se concluído do lado dele. A retentativa automática repete o mesmo pedido de cobrança, o que permite ao processador reconhecer uma cobrança que já fez em vez de fazê-la de novo. Confira seu extrato antes de pagar de novo.
+</Warning>
+
+## O que acontece se continuar sem pagamento
+
+- **Um número conectado por QR Code** que fica **7 dias** sem pagamento é desconectado em `extraChargeDisconnectAt`: o aparelho é deslogado e o número deixa de contar na sua capacidade. Você recebe um lembrete 2 dias antes. Conectá-lo de novo é uma nova primeira conexão, cobrada como qualquer outra.
+- **Um número da Meta Cloud API** nunca é desconectado. Ele fica bloqueado para envio até o pagamento.
+
+## Notas
+
+- A chamada é idempotente: quando não há mais nada a pagar, ela responde `not_required` e não cobra nada.
+- As mensagens que estavam na fila antes do bloqueio não são enviadas: elas falham e aparecem com `NUMBER_BLOCKED` em [Códigos de Erro do Log](/pt-BR/api/messages/log-error-codes). Envie de novo depois de pagar.
+- O recebimento não é afetado. O bloqueio é só de envio.

@@ -106,7 +106,7 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
 
     - **`icon` follows `variant` when you omit it.** `facebook` → Facebook glyph, `whatsapp` → WhatsApp glyph, **any other variant → no glyph at all**. Pass `"none"` to drop it deliberately.
     - **`width` overrides `fullWidth`.** Send a width and `fullWidth` is ignored, whatever you set it to.
-    - **A bad value is rejected, not corrected.** Out-of-range or off-enum gets you `400 Validation error` with a `details` object — and **no link, no placeholder, no slot consumed**. `height: 1000` does not fall back to the default; it fails the whole call.
+    - **A bad value is rejected, not corrected.** Out-of-range or off-enum gets you `400 Validation error` with a `details` object — and **no link and no placeholder**. `height: 1000` does not fall back to the default; it fails the whole call.
 
     <Note>
       `branding.button` can **only** be set here, when you mint the link — never through a query param on the iframe URL. That is deliberate: a stranger who sees the iframe URL cannot restyle your button, and every styled page stays attributable to a tenant.
@@ -126,9 +126,11 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
     </Note>
 
     <Warning>
-      **Generating the link already consumes a plan slot.** The call creates a placeholder `WhatsAppNumber` right away. An abandoned link leaks the slot — there is no automatic cleanup routine. Generate the link only after the customer clicks connect, wire the delete-on-abandon cleanup shown in step 3, and remove any leftover placeholders yourself in the `/numbers` panel. This is where the slot is charged — not at complete.
+      **Generating the link takes no plan slot and charges nothing.** The call creates a placeholder `WhatsAppNumber` right away, but a placeholder is not a number: it does not count toward your capacity and it is not billed. The number starts counting — and, when it is past the capacity you have paid for, its extra number is charged — at its **activation**: when the signup completes and the number becomes active with us. That is a Meta number's first connection: see [Charged at the first connection](/api/extra-numbers#charged-at-the-first-connection). If that charge is refused, the number stays active but sending from it is blocked until it is paid.
 
-      With no slot available the call answers **`402`** and no link and no placeholder are created. Read the `code`, because only one of the two is about money: `PLAN_NUMBER_LIMIT_REACHED` means your plan's own allowance is full and you never bought an extra — free a slot in `/numbers` or move up a plan, since credits will not clear it; `INSUFFICIENT_FUNDS` means the number would be a paid extra you cannot fund — add credits or save a card. The body carries `plan`, `maxNumbers` and `currentNumberCount` so you can tell your customer which it is. See [capacity errors](/api/numbers/create#capacity-errors-and-what-fixes-them).
+      An abandoned placeholder stays in your number list as "awaiting connection" until it is removed automatically, 24 hours after it was created. To keep the list clean, generate the link only after the customer clicks connect, and wire the delete-on-abandon cleanup shown in step 3.
+
+      One refusal is left at this step: the call answers **`402`** and no link and no placeholder are created. Read the `code` together with your plan. **On the Free plan** a number past the plan's allowance always answers `PLAN_NUMBER_LIMIT_REACHED`, and credits will not clear it, because Free never buys an extra number by itself — free a slot in `/numbers`, buy an extra number yourself or move up a plan. **On a paid plan** the refusal only happens when the number would be an extra one the workspace cannot fund — the wallet balance does not cover the prorated price and there is no saved card: `PLAN_NUMBER_LIMIT_REACHED` when your plan's own allowance is full and you never bought an extra, `INSUFFICIENT_FUNDS` when it is one more paid extra. Add credits or save a card and both clear. The body carries `plan`, `maxNumbers` and `currentNumberCount` so you can tell your customer which it is. See [capacity errors](/api/numbers/create#capacity-errors-and-what-fixes-them).
     </Warning>
   </Step>
   <Step title="Embed the hosted button in an iframe">
@@ -225,11 +227,11 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
 
     Also handle `connect:expired` (generate a new link), `connect:error` (surface the message), and `resize` (adjust the iframe height, which starts small and grows once the button renders).
 
-    ### Cancel, retry, and the plan slot
+    ### Cancel, retry, and the placeholder
 
     `connect:error` arrives on a terminal failure **and** when the customer cancels or closes the Facebook popup — Facebook does not tell the two apart, so both reach you the same way, with the same `{ message }` payload. The button **stays on screen** either way, so the person can simply click again.
 
-    That matters for cost: the placeholder number created in step 1 is already holding a plan slot, and nothing frees it on its own. So run a **delete-on-abandon** cleanup whenever the session ends without a `connect:paired` — you closed the modal, the customer navigated away, or you gave up — and not on the first `connect:error`, which they can still retry past. The browser tells _your_ backend the session died (the browser has no `ps_` key), and your backend deletes the placeholder with `DELETE /v1/numbers/{id}`, returning the slot right away instead of leaving it parked.
+    That matters for your number list, not for cost: the placeholder created in step 1 holds no plan slot and is not billed, but it stays listed as "awaiting connection" until it is removed automatically, 24 hours after it was created. So run a **delete-on-abandon** cleanup whenever the session ends without a `connect:paired` — you closed the modal, the customer navigated away, or you gave up — and not on the first `connect:error`, which they can still retry past. The browser tells _your_ backend the session died (the browser has no `ps_` key), and your backend deletes the placeholder with `DELETE /v1/numbers/{id}`, removing it right away instead of leaving it for the automatic cleanup.
 
     **Where the id comes from:** it is the `numberId` you decoded from the token in step 1 and stored alongside your customer record — that is what your page sends to your own backend here. (If the flow got as far as `connect:paired`, the same id arrived in that payload.) Hand the browser that id when you hand it the `connectUrl`, and the cleanup needs no lookup at all.
 
@@ -262,13 +264,13 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
       method: "DELETE",
       headers: { "x-api-key": process.env.PILOT_TENANT_KEY },
     });
-    // 200 { ok: true } — slot returned. 404 — already gone, nothing to do.
+    // 200 { ok: true } — placeholder removed. 404 — already gone, nothing to do.
     ```
 
     See [Clean up an abandoned link](#clean-up-an-abandoned-link) below for the delete call in full.
 
     <Warning>
-      **Don't delete on the first `connect:error`.** The button is still on screen for a retry, and deleting does **not** revoke the link: the pairing token is verified statelessly — signature, kind, and expiry only, with no database lookup — so a customer who clicks again after your cleanup still completes the flow. What they get then is a **brand-new number**, created from scratch and consuming a **fresh plan slot** (the plan limit is re-checked at that moment). That is the real cost of deleting too early — not a broken link. Fire the cleanup once you are confident they are gone: they closed your modal, navigated away, or you gave up on the session.
+      **Don't delete on the first `connect:error`.** The button is still on screen for a retry, and deleting does **not** revoke the link: the pairing token is verified statelessly — signature, kind, and expiry only, with no database lookup — so a customer who clicks again after your cleanup still completes the flow. What they get then is a **brand-new number**, created from scratch: the capacity check runs again at that moment, and the number counts — and is charged, when it is an extra one — at its activation. That is the real cost of deleting too early — not a broken link. Fire the cleanup once you are confident they are gone: they closed your modal, navigated away, or you gave up on the session.
     </Warning>
   </Step>
   <Step title="Register a webhook for the connected number">
@@ -305,7 +307,7 @@ Keep the `ps_` key on your server. The browser never sees it — it only embeds 
 
 ## Clean up an abandoned link
 
-If a customer never finishes, the placeholder number keeps holding its plan slot. Remove it with `DELETE /v1/numbers/{id}`, using your tenant key. The id is the `numberId` you decoded from the token when you generated the link (step 1), or the one delivered on `connect:paired` — a number id or an instance id both work. This is the call behind the delete-on-abandon pattern in step 3.
+If a customer never finishes, the placeholder stays in your number list as "awaiting connection". It holds no plan slot and is not billed, and it is removed automatically 24 hours after it was created. To remove it sooner, call `DELETE /v1/numbers/{id}`, using your tenant key. The id is the `numberId` you decoded from the token when you generated the link (step 1), or the one delivered on `connect:paired` — a number id or an instance id both work. This is the call behind the delete-on-abandon pattern in step 3.
 
 ```bash cURL
 curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wn_9f3c21ab" \
@@ -321,7 +323,7 @@ Success is **200**:
 An id that does not exist returns `404` with `"Number not found"`. You can also delete orphaned placeholders from the dashboard at `/numbers`.
 
 <Note>
-  Deleting the placeholder frees the slot, but it does **not** invalidate the link: the token is verified on signature, kind, and expiry alone. Until it expires, a customer who retries will still complete — and, with the placeholder gone, a **new** number is created and a new slot consumed. So delete once you are confident nobody is coming back, or be ready for a second, unexpected number.
+  Deleting the placeholder does **not** invalidate the link: the token is verified on signature, kind, and expiry alone. Until it expires, a customer who retries will still complete — and, with the placeholder gone, a **new** number is created, which counts and is charged like any other at its activation. So delete once you are confident nobody is coming back, or be ready for a second, unexpected number.
 </Note>
 
 ## Prefer your own markup?

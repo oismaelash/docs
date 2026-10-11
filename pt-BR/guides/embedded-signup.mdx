@@ -103,7 +103,7 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
 
     - **O `icon` segue a `variant` quando você omite.** `facebook` → glifo do Facebook, `whatsapp` → glifo do WhatsApp, **qualquer outra variante → nenhum glifo**. Mande `"none"` pra tirar de propósito.
     - **O `width` substitui o `fullWidth`.** Se você mandar largura, o `fullWidth` é ignorado, seja o que for que você pôs nele.
-    - **Valor inválido é recusado, não corrigido.** Fora da faixa ou fora do enum devolve `400 Validation error` com um `details` — e **nenhum link, nenhum placeholder, nenhum slot consumido**. `height: 1000` não cai no padrão; derruba a chamada inteira.
+    - **Valor inválido é recusado, não corrigido.** Fora da faixa ou fora do enum devolve `400 Validation error` com um `details` — e **nenhum link e nenhum placeholder**. `height: 1000` não cai no padrão; derruba a chamada inteira.
 
     <Note>
       O `branding.button` **só** pode ser definido aqui, ao gerar o link — nunca por parâmetro de query na URL do iframe. É por segurança: quem vê a URL do iframe não consegue repintar o seu botão, e toda página estilizada fica atribuível a um tenant.
@@ -112,9 +112,11 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
     O **id do número placeholder não vem no corpo da resposta** — ele só existe na claim `numberId` do JWT. Decodifique o payload em base64url (é leitura de metadado; não é preciso verificar a assinatura) para lê-lo agora e já cadastrar o webhook (passo 4) antes de o cliente concluir. Você também recebe esse `numberId` no evento `connect:paired`, no passo 3. Esses dois são os caminhos suportados — **guarde o id assim que decodificar**, junto do seu cadastro de cliente, porque é ele que você vai usar depois para apagar um placeholder abandonado.
 
     <Warning>
-      **Gerar o link já consome um slot do plano.** A chamada cria um `WhatsAppNumber` placeholder na hora. Um link abandonado **vaza o slot** — não existe rotina de limpeza automática. Gere o link só depois que o cliente clicar em conectar, e devolva o slot quando a sessão terminar sem um `connect:paired` (passo 3) — o `DELETE` está em [Limpe placeholders órfãos](#limpe-placeholders-órfãos).
+      **Gerar o link não consome slot do plano e não cobra nada.** A chamada cria um `WhatsAppNumber` placeholder na hora, mas um placeholder não é um número: ele não conta na sua capacidade e não é cobrado. O número passa a contar — e, quando está acima da capacidade que você já pagou, o número extra é cobrado — na **ativação**: quando o signup é concluído e o número fica ativo conosco. Essa é a primeira conexão de um número Meta: veja [Cobrado na primeira conexão](/pt-BR/api/extra-numbers#cobrado-na-primeira-conexão). Se essa cobrança é recusada, o número continua ativo, mas o envio por ele fica bloqueado até o pagamento.
 
-      É aqui, e não no complete, que o slot é cobrado. Sem slot disponível a chamada responde **`402`** e nenhum link e nenhum placeholder são criados. Leia o `code`, porque só um dos dois é sobre dinheiro: `PLAN_NUMBER_LIMIT_REACHED` significa que a cota do próprio plano está cheia e nenhum extra foi comprado — libere um slot em `/numbers` ou suba de plano, já que crédito não resolve; `INSUFFICIENT_FUNDS` significa que o número seria um extra pago que não dá para custear — adicione créditos ou salve um cartão. O corpo traz `plan`, `maxNumbers` e `currentNumberCount` para você saber dizer ao seu cliente qual é o caso. Veja [erros de capacidade](/pt-BR/api/numbers/create#erros-de-capacidade-e-como-resolver).
+      Um placeholder abandonado fica na sua lista de números como "Aguardando conexão" até ser removido automaticamente, 24 horas depois de criado. Para manter a lista limpa, gere o link só depois que o cliente clicar em conectar, e apague o placeholder quando a sessão terminar sem um `connect:paired` (passo 3) — o `DELETE` está em [Limpe placeholders órfãos](#limpe-placeholders-órfãos).
+
+      Uma recusa continua existindo neste passo: a chamada responde **`402`** e nenhum link e nenhum placeholder são criados. Leia o `code` junto com o seu plano. **No plano Free**, um número acima da cota do plano sempre responde `PLAN_NUMBER_LIMIT_REACHED`, e crédito não resolve, porque o Free nunca compra um número extra sozinho — libere um slot em `/numbers`, compre um número extra por conta própria ou suba de plano. **Em um plano pago**, a recusa só acontece quando o número seria um extra que o workspace não consegue custear — o saldo da carteira não cobre o valor proporcional e não há cartão salvo: `PLAN_NUMBER_LIMIT_REACHED` quando a cota do próprio plano está cheia e nenhum extra foi comprado, `INSUFFICIENT_FUNDS` quando é mais um extra pago. Adicione créditos ou salve um cartão e as duas somem. O corpo traz `plan`, `maxNumbers` e `currentNumberCount` para você saber dizer ao seu cliente qual é o caso. Veja [erros de capacidade](/pt-BR/api/numbers/create#erros-de-capacidade-e-como-resolver).
     </Warning>
 
     <Note>
@@ -234,9 +236,9 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
 
     O `connect:error` chega numa falha terminal **e** quando a pessoa **cancela ou fecha o popup do Facebook** — o Facebook não distingue as duas coisas, então ambas chegam pelo mesmo evento, com o mesmo payload `{ message }`. Nos dois casos o botão **continua na tela**, e a pessoa pode simplesmente clicar de novo.
 
-    Isso importa por causa do custo: o número placeholder criado no passo 1 já está segurando um slot do plano. O link expira em 30 minutos, mas o placeholder **não** some junto — ele fica lá segurando o slot até alguém apagar. Em vez de deixar isso acontecer, rode uma limpeza **delete-on-abandon** sempre que a sessão terminar **sem** um `connect:paired` — você fechou o modal, a pessoa saiu da página, ou você desistiu da sessão — e **não** no primeiro `connect:error`, que ela ainda pode tentar de novo. O browser avisa o **seu** backend (ele não tem chave `ps_`), e o seu backend apaga o placeholder com `DELETE /v1/numbers/{id}`, devolvendo o slot na hora. A chamada está em [Limpe placeholders órfãos](#limpe-placeholders-órfãos); o id é o `numberId` que você leu da claim do JWT no passo 1.
+    Isso importa por causa da sua lista de números, não do custo: o placeholder criado no passo 1 não segura slot do plano e não é cobrado. Mas o link expira em 30 minutos e o placeholder **não** some junto — ele continua listado como "Aguardando conexão" até ser removido automaticamente, 24 horas depois de criado. Em vez de esperar por isso, rode uma limpeza **delete-on-abandon** sempre que a sessão terminar **sem** um `connect:paired` — você fechou o modal, a pessoa saiu da página, ou você desistiu da sessão — e **não** no primeiro `connect:error`, que ela ainda pode tentar de novo. O browser avisa o **seu** backend (ele não tem chave `ps_`), e o seu backend apaga o placeholder com `DELETE /v1/numbers/{id}`, removendo-o na hora. A chamada está em [Limpe placeholders órfãos](#limpe-placeholders-órfãos); o id é o `numberId` que você leu da claim do JWT no passo 1.
 
-    ```javascript Backend — devolve o slot ao abandonar
+    ```javascript Backend — apaga o placeholder ao abandonar
     // POST /api/onboarding/abandon  { numberId }
     // BASE e TENANT_KEY são as mesmas constantes do "Backend de exemplo", abaixo.
     app.post("/api/onboarding/abandon", async (req, res) => {
@@ -245,13 +247,13 @@ Só o seu backend toca na API da Pilot Status. O browser embeda o iframe e escut
         method: "DELETE",
         headers: { "x-api-key": TENANT_KEY },
       });
-      // 200 { ok: true } — slot devolvido. 404 = já não existe: nada a fazer.
+      // 200 { ok: true } — placeholder removido. 404 = já não existe: nada a fazer.
       res.status(r.ok ? 200 : r.status).json(await r.json().catch(() => ({})));
     });
     ```
 
     <Warning>
-      **Não delete no primeiro `connect:error`.** O botão continua ali para uma nova tentativa — e apagar o placeholder **não invalida o link**: o token é verificado só pela assinatura e pela validade, sem consultar o banco. Se a pessoa clicar de novo depois do seu `DELETE`, o fluxo conclui assim mesmo e a Pilot Status cria um número **novo**, consumindo um slot novo (o limite do plano é reavaliado nessa hora). Ou seja, deletar cedo demais não te protege: te dá um segundo número inesperado. Dispare a limpeza só quando a pessoa realmente foi embora: fechou o seu modal, saiu da página, ou você desistiu da sessão.
+      **Não delete no primeiro `connect:error`.** O botão continua ali para uma nova tentativa — e apagar o placeholder **não invalida o link**: o token é verificado só pela assinatura e pela validade, sem consultar o banco. Se a pessoa clicar de novo depois do seu `DELETE`, o fluxo conclui assim mesmo e a Pilot Status cria um número **novo**: a checagem de capacidade roda de novo nessa hora, e o número conta — e é cobrado, quando é um extra — na ativação. Ou seja, deletar cedo demais não te protege: te dá um segundo número inesperado. Dispare a limpeza só quando a pessoa realmente foi embora: fechou o seu modal, saiu da página, ou você desistiu da sessão.
     </Warning>
   </Step>
   <Step title="Cadastre o webhook">
@@ -343,11 +345,12 @@ app.post("/api/onboarding/start", async (req, res) => {
   });
   const data = await r.json();
   if (!r.ok) {
-    // Ex.: nenhum slot livre no plano — o placeholder não pôde ser criado.
+    // Ex.: 402 — o número seria um extra que o workspace não consegue custear; o placeholder não foi criado.
     return res.status(r.status).json({ error: data?.error || data?.message || `Erro ${r.status}` });
   }
 
-  // ATENÇÃO: esta chamada já consumiu um slot do plano (criou o número placeholder).
+  // ATENÇÃO: esta chamada já criou o número placeholder. Ele não consome slot nem é cobrado;
+  // o número só conta (e o extra só é cobrado) na ativação, quando o signup é concluído.
   const token = new URL(data.remotePairingUrl).pathname.split("/").pop();
 
   // O browser recebe SÓ o link de conexão. A chave ps_ nunca sai daqui.
@@ -367,7 +370,7 @@ app.listen(process.env.PORT || 8788);
 
 ## Limpe placeholders órfãos
 
-Cada link gerado cria um número placeholder que ocupa um slot. Se o cliente abandonar o fluxo, o placeholder fica órfão e o slot fica preso. Remova-o pelo painel `/numbers` ou pela API:
+Cada link gerado cria um número placeholder. Ele não ocupa slot do plano e não é cobrado, mas, se o cliente abandonar o fluxo, fica órfão na sua lista de números como "Aguardando conexão" até ser removido automaticamente, 24 horas depois de criado. Para removê-lo antes, use o painel `/numbers` ou a API:
 
 ```bash cURL
 curl -X DELETE "https://pilotstatus.com.br/v1/numbers/<numberId>" \
@@ -377,7 +380,7 @@ curl -X DELETE "https://pilotstatus.com.br/v1/numbers/<numberId>" \
 Responde `200 { "ok": true }` (ou `404 "Number not found"` se o id não existir). Aceita o id do número **ou** o id da instância. Use o `numberId` que você guardou no passo 1 (a claim `numberId` do JWT, ou o mesmo id que chega no `connect:paired`) para liberar o slot de um placeholder abandonado — de preferência automatizando quando a sessão do passo 3 acabar sem `connect:paired`. Esperar o link expirar não resolve: o placeholder continua ocupando o slot depois dos 30 minutos.
 
 <Warning>
-  Apagar o placeholder **não revoga o link**. O token é validado só pela assinatura e pela validade — não há consulta ao banco —, então, enquanto ele valer, uma nova tentativa do cliente ainda conclui e cria um número **novo**, consumindo outro slot. Delete só quando tiver certeza de que ninguém vai tentar de novo.
+  Apagar o placeholder **não revoga o link**. O token é validado só pela assinatura e pela validade — não há consulta ao banco —, então, enquanto ele valer, uma nova tentativa do cliente ainda conclui e cria um número **novo**, que conta e é cobrado como qualquer outro na ativação. Delete só quando tiver certeza de que ninguém vai tentar de novo.
 </Warning>
 
 ## Outros caminhos

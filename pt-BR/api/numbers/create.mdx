@@ -112,8 +112,8 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/meta" \
 Erros:
 
 - `400` — erro de validação (campos do corpo ausentes ou inválidos).
-- `402 PLAN_NUMBER_LIMIT_REACHED` — a cota de números do seu plano está cheia e você nunca comprou um número extra. Adicionar créditos **não** resolve: libere um slot ou suba de plano.
-- `402 INSUFFICIENT_FUNDS` — o número seria um **extra pago** e não há saldo na carteira nem cartão salvo.
+- `402 PLAN_NUMBER_LIMIT_REACHED` — a cota de números do seu plano está cheia. **No plano Free**, adicionar créditos **não** resolve: libere um slot, compre um número extra por conta própria ou suba de plano. **Em um plano pago**, só é respondido quando você nunca comprou um número extra e o próximo não pode ser custeado.
+- `402 INSUFFICIENT_FUNDS` — só nos planos pagos: o número seria um **extra pago** e não há saldo na carteira nem cartão salvo.
 - `403 NUMBERS_GRANT_NOT_ALLOWED` — grants OAuth por número não podem provisionar números.
 - `409` — "Number already exists" (o número já existe).
 
@@ -123,8 +123,9 @@ As duas rotas de provisionamento desta página (`POST /v1/numbers` e `POST /v1/n
 
 | `error` | O que significa | O que resolve |
 | --- | --- | --- |
-| `PLAN_NUMBER_LIMIT_REACHED` | O teto é a cota do próprio plano, e nenhum número extra foi comprado ou concedido. | Libere um slot (`DELETE /v1/numbers/{id}`) ou suba de plano. **Dinheiro não resolve este.** |
-| `INSUFFICIENT_FUNDS` | O próximo número é um **extra pago** — um plano que cobra por número, ou uma conta que já comprou extras — e não dá para custeá-lo. | Adicione créditos ou salve um cartão, e tente de novo. |
+| `PLAN_NUMBER_LIMIT_REACHED` no **plano Free** | A cota do próprio plano está cheia. O Free nunca compra um número extra sozinho, então essa é a resposta com ou sem créditos ou cartão salvo. | Libere um slot (`DELETE /v1/numbers/{id}`), compre um número extra por conta própria ([isso converte a conta para o On Demand e pede confirmação](/pt-BR/api/extra-numbers#plano-free)) ou suba de plano. **Só dinheiro não resolve este.** |
+| `PLAN_NUMBER_LIMIT_REACHED` em um **plano pago** | O teto é a cota do próprio plano, nenhum número extra foi comprado ou concedido, e o próximo não pode ser custeado. | Libere um slot ou suba de plano — ou adicione créditos ou salve um cartão: havendo saldo ou cartão o número é criado, e o extra é cobrado na [primeira conexão](/pt-BR/api/extra-numbers#cobrado-na-primeira-conexão). |
+| `INSUFFICIENT_FUNDS` (só nos planos pagos) | O próximo número é um **extra pago** — um plano que cobra por número, ou uma conta que já comprou extras — e não dá para custeá-lo. | Adicione créditos ou salve um cartão, e tente de novo. |
 
 O corpo traz os números por trás da recusa, para você não ter de adivinhar:
 
@@ -177,6 +178,7 @@ curl "https://pilotstatus.com.br/v1/numbers/wa_abc/connect" \
 
 - A resposta inclui `qrcodeBase64` e `pairingCode` novos.
 - Se o número já estiver conectado (`OPEN`), o endpoint retorna **409** — não há nada para parear.
+- **Plano Free:** quando a cota do plano já está cheia e este número nunca conectou, o endpoint retorna `402` com `{ "error": "PLAN_NUMBER_LIMIT_REACHED", "code": "PLAN_NUMBER_LIMIT_REACHED", "message": "…", "plan": "FREE", "maxNumbers": 1, "currentNumberCount": 1 }`, e nenhum QR code é gerado. O `message` é uma frase bilíngue, `English | Português`. Reparear um número que já tinha conectado nunca é recusado. Veja [Plano Free](/pt-BR/api/extra-numbers#plano-free).
 - Não se aplica a números **Meta** (eles não usam pareamento por QR).
 - Reflete o mesmo estado de conexão que a página de Números no painel.
 
@@ -216,7 +218,8 @@ Traz o número de volta dentro da janela de 30 dias, com o mesmo id, API keys, w
 
 * **`404`** com `code: RESTORE_WINDOW_EXPIRED` depois dos 30 dias.
 * **`409 NUMBER_ALREADY_ACTIVE`** quando o mesmo telefone foi reconectado nesse meio-tempo — use o número ativo.
-* **Restaurar paga como criar.** Se a sua capacidade paga já está cheia, trazer o número de volta compra um número extra, com prorata do resto do ciclo, exatamente como faria o `POST /v1/numbers`. Quando isso não pode ser pago, a resposta é **`422 INSUFFICIENT_FUNDS`** (ou `PLAN_NUMBER_LIMIT_REACHED`) com `proratedTotal` e `walletBalance`, nada é cobrado e o número continua excluído. Repetir o mesmo restore nunca cobra duas vezes.
+* **Restaurar um número que já tinha conectado pode cobrar.** Esse número volta a entrar na sua contagem de números. Se isso leva o workspace acima da capacidade que ele já pagou, um número extra é cobrado no restore, com prorata do resto do ciclo. Quando isso não pode ser pago, a resposta é **`422 INSUFFICIENT_FUNDS`** (ou `PLAN_NUMBER_LIMIT_REACHED`) com `proratedTotal` e `walletBalance`, nada é cobrado e o número continua excluído. Repetir o mesmo restore nunca cobra duas vezes.
+* **Um número que nunca conectou não custa nada para restaurar.** Ele ainda não conta, e é cobrado na [primeira conexão](/pt-BR/api/extra-numbers#cobrado-na-primeira-conexão), como qualquer outro.
 
 ## DELETE /v1/numbers/{id}/purge — Excluir de forma permanente
 

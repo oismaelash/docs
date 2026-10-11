@@ -19,6 +19,73 @@ A cobrança roda sobre uma **carteira pré-paga**: primeiro os créditos, depois
   Chaves de escopo de número recebem **403** — use a chave de escopo do tenant (painel **Profile → API**).
 </Note>
 
+## Cobrado na primeira conexão
+
+Um **número extra** é um número de WhatsApp acima da capacidade que o seu workspace já pagou: a cota do plano, mais os números extras que você comprou, mais os que foram concedidos a você. Ele é cobrado quando o número **conecta pela primeira vez** — em todo plano, e por qualquer caminho de conexão: o painel, a API, o servidor MCP, um link de pareamento remoto ou o Embedded Signup da Meta.
+
+- **Criar um número não cobra nada.** Gerar um link de pareamento também não.
+- **Um número que nunca conectou não conta** na sua capacidade nem na sua cobrança mensal. Você paga só pelos números que foram de fato pareados.
+- **Em um plano pago, a cobrança é automática.** É a mesma compra de `POST /v1/subscription/extra-numbers` para um número: proporcional aos dias que faltam no ciclo, primeiro os créditos da carteira, o restante no cartão salvo. O plano Free nunca compra sozinho — veja [Plano Free](#plano-free).
+- **Comprar antes continua funcionando.** Um número que conecta dentro da capacidade que você já pagou não é cobrado de novo.
+- **Em um número não oficial**, a primeira conexão é a primeira vez em que o QR Code ou o código de pareamento é concluído. **Em um número oficial (Meta Cloud API)**, é quando o número é ativado — por exemplo, quando o Embedded Signup é concluído.
+
+<Note>
+  **Uma recusa continua existindo na criação.** Em um plano pago, quando o próximo número seria um número extra e o workspace não tem saldo na carteira para cobri-lo nem cartão salvo, criar o número — ou o link de pareamento dele — continua respondendo **`402`** com `INSUFFICIENT_FUNDS` ou `PLAN_NUMBER_LIMIT_REACHED`. No plano Free, um número acima da cota do plano é recusado com `402 PLAN_NUMBER_LIMIT_REACHED`, qualquer que seja o saldo. O corpo não mudou: veja [erros de capacidade](/pt-BR/api/numbers/create#erros-de-capacidade-e-como-resolver).
+</Note>
+
+### Plano Free
+
+**O plano Free nunca compra um número extra sozinho.** Comprar um número extra no Free converte a conta para o On Demand e transforma em pago o número que você já tinha. Isso só acontece pela compra explícita, que pede confirmação: o diálogo de compra do painel, ou `POST /v1/subscription/extra-numbers` com `confirm: true`. Um workspace no Free nunca é convertido nem cobrado por conectar um número.
+
+- **Criar um número acima da cota do plano é recusado** com `402 PLAN_NUMBER_LIMIT_REACHED`, mesmo quando o workspace tem saldo na carteira ou cartão salvo. Nos planos pagos, havendo saldo ou cartão a criação passa, e o extra é cobrado na primeira conexão.
+- **Parear um número que nunca conectou também é recusado** quando a cota do plano já está cheia. `GET /v1/numbers/{id}/connect`, o passo de conexão de um link de pareamento remoto e `POST /v1/numbers/remote-pairing` para um telefone que já existe respondem `402 PLAN_NUMBER_LIMIT_REACHED`. Reparear um número que já tinha conectado nunca é recusado.
+- **Se um segundo número conecta mesmo assim** — dois pareamentos iniciados ao mesmo tempo — nada é cobrado e o plano não muda. O número continua conectado com o envio bloqueado (`409 NUMBER_BLOCKED`, `reason: "extra_charge_unpaid"`), e `POST /v1/numbers/{id}/pay` responde `402 PLAN_NUMBER_LIMIT_REACHED` para ele. Uma recarga ou um cartão salvo não removem esse bloqueio.
+
+Para usar o segundo número, compre o número extra por conta própria ou suba de plano. Um número que estava bloqueado é então liberado em até 15 minutos — ou na hora, se você chamar `POST /v1/numbers/{id}/pay`, que responde `not_required`.
+
+### Quando a cobrança é recusada
+
+Se o cartão é recusado ou não há saldo, o número **continua conectado**, mas **o envio por ele fica bloqueado** até o pagamento:
+
+- `POST /v1/messages/send` responde **`409 NUMBER_BLOCKED`** com `reason: "extra_charge_unpaid"`.
+- Uma mensagem que já estava na fila falha, e aparece com `NUMBER_BLOCKED` nos [logs](/pt-BR/api/messages/log-error-codes).
+- `GET /v1/numbers` e `GET /v1/numbers/{id}` mostram [`extraChargeUnpaidSince`](/pt-BR/api/numbers/list#cobrança-de-número-extra-sem-pagamento) no número.
+
+```json
+{
+  "error": "This number's extra-number charge is unpaid. Pay it to resume sending from this number. | A cobrança do número extra deste número está pendente. Pague para voltar a enviar por ele.",
+  "code": "NUMBER_BLOCKED",
+  "reason": "extra_charge_unpaid",
+  "observedAt": "2026-10-10T12:00:00.000Z"
+}
+```
+
+Só esse número fica bloqueado. Os seus outros números continuam enviando, e o número bloqueado continua recebendo.
+
+<Note>
+  **Uma cobrança que não pôde ser concluída não é uma recusa.** Quando o processador de pagamento está fora do ar, nada é bloqueado: o número continua enviando, e a cobrança é retentada automaticamente a cada 15 minutos.
+</Note>
+
+### O que remove o bloqueio
+
+| O que você faz | O que acontece |
+| --- | --- |
+| Recarrega a carteira | A cobrança é retentada automaticamente. |
+| Salva um cartão | A cobrança é retentada automaticamente. |
+| Clica em **Pagar agora** na página **Números** do painel | A cobrança é retentada na hora. Só o proprietário do workspace. |
+| Chama [`POST /v1/numbers/{id}/pay`](/pt-BR/api/numbers/pay) | A cobrança é retentada na hora. |
+
+Se a renovação do próprio plano está em atraso, a recarga ou o cartão salvo pagam primeiro a renovação.
+
+No plano Free nenhuma das quatro vale: veja [Plano Free](#plano-free).
+
+O bloqueio também sai sozinho, em até 15 minutos, quando a sua capacidade passa a cobrir o número — por exemplo, depois que você compra um número extra com `POST /v1/subscription/extra-numbers`.
+
+### Depois de 7 dias sem pagamento
+
+- **Um número conectado por QR Code** que fica **7 dias** sem pagamento é desconectado: o aparelho é deslogado e o número deixa de contar na sua capacidade. Um lembrete é enviado 2 dias antes, e o `extraChargeDisconnectAt` do número diz quando. Conectá-lo de novo é uma nova primeira conexão, cobrada de novo.
+- **Um número da Meta Cloud API nunca é desconectado.** Ele fica bloqueado para envio até o pagamento.
+
 ## GET /v1/subscription/extra-numbers — Prévia (dry-run)
 
 ```bash
@@ -134,7 +201,7 @@ Ao comprar números extras, essa **capacidade é sua durante todo o ciclo de 30 
 
 No **Pay As You Go** não existe capacidade para comprar de volta nem para agendar redução — você paga pelos números que tem conectados:
 
-- **O número é cobrado quando passa a ser utilizável**, prorata pelos dias restantes do ciclo. Para número não-oficial isso é a primeira conexão; para número oficial (Meta), é quando o Embedded Signup é concluído.
+- **O número é cobrado quando conecta pela primeira vez**, prorata pelos dias restantes do ciclo — a mesma regra de todos os planos, [descrita acima](#cobrado-na-primeira-conexão). Para número não-oficial isso é a primeira conexão; para número oficial (Meta), é quando o Embedded Signup é concluído.
 - **O slot que você pagou vale pelo ciclo.** Deletar um número e conectar outro no lugar **não** cobra de novo.
 - **O ciclo seguinte cobra só o que continuar conectado.** Nada se acumula do ciclo anterior, então não há o que agendar para baixo — veja o `409 NOT_APPLICABLE_FOR_PLAN` no endpoint abaixo.
 - **Um pareamento que você nunca concluiu não é um número e não é cobrado.** A linha "Aguardando conexão", que aparece enquanto o seu usuário final está no diálogo do Facebook, fica de fora da cobrança e da sua capacidade, e é removida automaticamente 24h depois de criada.
