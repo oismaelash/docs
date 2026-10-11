@@ -42,7 +42,7 @@
     "/v1/numbers": {
       "get": {
         "summary": "Listar números",
-        "description": "Lista todos os números WhatsApp do tenant (PILOT_STATUS e Meta Cloud API), com estado de conexão e prefixos das API keys. Autentique com x-api-key-id (ou x-api-key: ps_…).",
+        "description": "Lista todos os números WhatsApp do tenant (PILOT_STATUS e Meta Cloud API), com estado de conexão e prefixos das API keys. Autentique com x-api-key-id (ou x-api-key: ps_…). Cada item traz também `extraChargeUnpaidSince` e `extraChargeDisconnectAt` (ISO 8601 ou `null`): preenchidos enquanto a cobrança do número extra do número está sem pagamento e o envio por ele está bloqueado — quite com `POST /v1/numbers/{id}/pay`. Ficam no nível de cima do item, não fazem parte de `health` e não mudam o `state`.",
         "tags": [
           "Numbers"
         ],
@@ -69,7 +69,9 @@
                     "state": "OPEN",
                     "isFullyConnected": true,
                     "createdAt": "2026-06-01T11:59:00.000Z",
-                    "updatedAt": "2026-06-01T12:00:00.000Z"
+                    "updatedAt": "2026-06-01T12:00:00.000Z",
+                    "extraChargeUnpaidSince": null,
+                    "extraChargeDisconnectAt": null
                   }
                 ]
               }
@@ -599,6 +601,96 @@
               }
             }
           },
+          "402": {
+            "description": "Nenhum link foi criado (e, no `META`, nenhum placeholder). Decida pelo `code`. No plano Grátis, um número acima da cota do plano sempre responde `PLAN_NUMBER_LIMIT_REACHED`, com ou sem saldo na carteira ou cartão salvo — o plano Grátis nunca compra um número extra sozinho —, e o mesmo vale para um link de um telefone que já existe no workspace mas nunca conectou (esse corpo traz só `plan`, `maxNumbers` e `currentNumberCount`). Em um plano pago, a recusa só acontece quando o número seria um extra que não pode ser custeado (o saldo da carteira não cobre o `proratedTotal` e não há cartão salvo): `PLAN_NUMBER_LIMIT_REACHED` quando a cota do próprio plano está cheia e nenhum extra foi comprado, `INSUFFICIENT_FUNDS` quando é mais um extra pago.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "PLAN_NUMBER_LIMIT_REACHED",
+                        "INSUFFICIENT_FUNDS"
+                      ]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "PLAN_NUMBER_LIMIT_REACHED",
+                        "INSUFFICIENT_FUNDS"
+                      ]
+                    },
+                    "plan": {
+                      "type": "string"
+                    },
+                    "maxNumbers": {
+                      "type": "integer"
+                    },
+                    "currentNumberCount": {
+                      "type": "integer"
+                    },
+                    "extras": {
+                      "type": "integer",
+                      "description": "Quantos números extras novos a requisição exigiria."
+                    },
+                    "proratedTotal": {
+                      "type": "number",
+                      "description": "O valor proporcional desses números extras pelo resto do ciclo."
+                    },
+                    "walletBalance": {
+                      "type": "number"
+                    },
+                    "currency": {
+                      "type": "string",
+                      "example": "BRL"
+                    }
+                  }
+                },
+                "examples": {
+                  "freePlanNewNumber": {
+                    "summary": "Plano Grátis — número novo (saldo não resolve)",
+                    "value": {
+                      "error": "PLAN_NUMBER_LIMIT_REACHED",
+                      "code": "PLAN_NUMBER_LIMIT_REACHED",
+                      "proratedTotal": 14.95,
+                      "currency": "BRL",
+                      "walletBalance": 50,
+                      "extras": 1,
+                      "plan": "FREE",
+                      "maxNumbers": 1,
+                      "currentNumberCount": 1
+                    }
+                  },
+                  "freePlanExistingPhone": {
+                    "summary": "Plano Grátis — telefone já existe e nunca conectou",
+                    "value": {
+                      "error": "PLAN_NUMBER_LIMIT_REACHED",
+                      "code": "PLAN_NUMBER_LIMIT_REACHED",
+                      "plan": "FREE",
+                      "maxNumbers": 1,
+                      "currentNumberCount": 1
+                    }
+                  },
+                  "insufficientFunds": {
+                    "summary": "Plano pago — INSUFFICIENT_FUNDS",
+                    "value": {
+                      "error": "INSUFFICIENT_FUNDS",
+                      "code": "INSUFFICIENT_FUNDS",
+                      "proratedTotal": 14.95,
+                      "currency": "BRL",
+                      "walletBalance": 0,
+                      "extras": 1,
+                      "plan": "ON_DEMAND",
+                      "maxNumbers": 3,
+                      "currentNumberCount": 3
+                    }
+                  }
+                }
+              }
+            }
+          },
           "429": {
             "description": "Limite de taxa excedido",
             "content": {
@@ -626,7 +718,7 @@
     "/v1/numbers/{id}": {
       "get": {
         "summary": "Obter número (detalhes Meta)",
-        "description": "Retorna o número + todas as informações da Meta quando for um número da API oficial: bloco `meta` aninhado (phone / profile / waba, camelCase) com qualidade, tier de mensagens, status de verificação, perfil de negócio e dados da WABA, além de `health`. Servido do cache por padrão; passe `?refresh=1` para buscar ao vivo no Graph da Meta e persistir. Número não-Meta retorna `meta: null`. (A mesma rota aceita DELETE para remover; use GET /api/v1/numbers/:id/status para um poll leve só de estado.) `historyImport` informa o que aconteceu com o histórico do aparelho na conexão atual: `discarded` (`firstAt`, `lastAt`, `events`) quando o histórico chegou com `settings.historyImportEnabled` em `false` e foi descartado, e `syncRefused` (`at`, `reason: \"SYNC_LIMIT_REACHED\"`) quando a Meta recusou enviá-lo de novo. Os dois são definitivos: a Meta entrega o histórico de um número uma única vez. Os dois vêm `null` quando nada aconteceu.",
+        "description": "Retorna o número + todas as informações da Meta quando for um número da API oficial: bloco `meta` aninhado (phone / profile / waba, camelCase) com qualidade, tier de mensagens, status de verificação, perfil de negócio e dados da WABA, além de `health`. Servido do cache por padrão; passe `?refresh=1` para buscar ao vivo no Graph da Meta e persistir. Número não-Meta retorna `meta: null`. (A mesma rota aceita DELETE para remover; use GET /api/v1/numbers/:id/status para um poll leve só de estado.) `historyImport` informa o que aconteceu com o histórico do aparelho na conexão atual: `discarded` (`firstAt`, `lastAt`, `events`) quando o histórico chegou com `settings.historyImportEnabled` em `false` e foi descartado, e `syncRefused` (`at`, `reason: \"SYNC_LIMIT_REACHED\"`) quando a Meta recusou enviá-lo de novo. Os dois são definitivos: a Meta entrega o histórico de um número uma única vez. Os dois vêm `null` quando nada aconteceu. `extraChargeUnpaidSince` e `extraChargeDisconnectAt` (ISO 8601 ou `null`) informam uma cobrança de número extra sem pagamento: enquanto o primeiro está preenchido, o envio pelo número fica bloqueado (`409 NUMBER_BLOCKED`, `reason: \"extra_charge_unpaid\"`) até o pagamento (`POST /v1/numbers/{id}/pay`); o segundo é quando um número conectado por QR Code será desconectado se continuar sem pagamento, e é sempre `null` em número Meta. Os dois ficam no nível de cima, fora de `health` — `health.sendable` e `health.code` nunca os refletem.",
         "tags": [
           "Numbers"
         ],
@@ -690,6 +782,8 @@
                     "metaStatus": "CONNECTED",
                     "sendable": true
                   },
+                  "extraChargeUnpaidSince": null,
+                  "extraChargeDisconnectAt": null,
                   "meta": {
                     "fetchedAt": "2026-06-30T08:55:00.000Z",
                     "phone": {
@@ -961,6 +1055,8 @@
                     "reason": null,
                     "sendable": true
                   },
+                  "extraChargeUnpaidSince": null,
+                  "extraChargeDisconnectAt": null,
                   "meta": null
                 }
               }
@@ -1138,7 +1234,7 @@
     "/v1/numbers/{id}/restore": {
       "post": {
         "summary": "Restaurar número",
-        "description": "Desfaz o `DELETE /v1/numbers/{id}` dentro da janela de 30 dias (o `restorableUntil` que a exclusão devolveu). Restaura o REGISTRO do número — id, API keys, webhooks, histórico — mas NÃO a conexão: o aparelho foi desconectado na exclusão, então reconecte depois (`GET /v1/numbers/{id}/connect`, ou reprovisionando na Meta). `404` com `code: RESTORE_WINDOW_EXPIRED` depois dos 30 dias; `409 NUMBER_ALREADY_ACTIVE` quando o mesmo telefone foi reconectado nesse meio-tempo — use o número ativo. Restaurar paga como criar: com a capacidade paga cheia, compra um número extra (prorata), e quando isso não pode ser pago responde `422 INSUFFICIENT_FUNDS` (ou `PLAN_NUMBER_LIMIT_REACHED`) com `proratedTotal` e `walletBalance`, sem cobrar nada e com o número ainda excluído.",
+        "description": "Desfaz o `DELETE /v1/numbers/{id}` dentro da janela de 30 dias (o `restorableUntil` que a exclusão devolveu). Restaura o REGISTRO do número — id, API keys, webhooks, histórico — mas NÃO a conexão: o aparelho foi desconectado na exclusão, então reconecte depois (`GET /v1/numbers/{id}/connect`, ou reprovisionando na Meta). `404` com `code: RESTORE_WINDOW_EXPIRED` depois dos 30 dias; `409 NUMBER_ALREADY_ACTIVE` quando o mesmo telefone foi reconectado nesse meio-tempo — use o número ativo. Restaurar um número que já tinha conectado o coloca de volta na contagem de números: quando isso leva o workspace acima da capacidade que ele já pagou, um número extra é cobrado no restore (prorata), e quando isso não pode ser pago responde `422 INSUFFICIENT_FUNDS` (ou `PLAN_NUMBER_LIMIT_REACHED`) com `proratedTotal` e `walletBalance`, sem cobrar nada e com o número ainda excluído. Um número que nunca conectou não custa nada para restaurar: ele é cobrado na primeira conexão, como qualquer outro.",
         "tags": [
           "Numbers"
         ],
@@ -1526,6 +1622,291 @@
         }
       }
     },
+    "/v1/numbers/{id}/pay": {
+      "post": {
+        "summary": "Pagar cobrança do número extra",
+        "description": "Paga, na hora, a cobrança pendente do número extra de UM número e libera o envio por ele. Um número extra — um número acima da capacidade que o workspace já pagou — é cobrado quando o número conecta pela PRIMEIRA vez, e não quando é criado. Quando essa cobrança é recusada (cartão recusado, sem saldo), o número continua conectado, mas o envio por ele fica bloqueado: `POST /v1/messages/send` responde `409 NUMBER_BLOCKED` com `reason: \"extra_charge_unpaid\"`, e o `extraChargeUnpaidSince` vem preenchido no número em `GET /v1/numbers` e `GET /v1/numbers/{id}`. Esta chamada compra esse número extra — primeiro os créditos da carteira, o restante no cartão salvo — e responde `status: \"paid\"`. Quando não há nada a pagar pelo número, responde `status: \"not_required\"` e não cobra nada, então pode ser repetida sem risco. Sem corpo. Uma recarga da carteira ou um cartão recém-salvo retentam a cobrança sozinhos, sem esta chamada. Efeito colateral real: ela cobra. No plano Grátis esta chamada nunca cobra: responde `402 PLAN_NUMBER_LIMIT_REACHED` até o número extra ser comprado de forma explícita ou o plano ser trocado.\n\n**Exige uma chave com escopo de tenant.** Com um token OAuth / MCP, só o Proprietário do workspace pode chamá-la (`billing:manage`).",
+        "tags": [
+          "Numbers"
+        ],
+        "operationId": "post_numbers_id_pay",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "ID do número WhatsApp — o `id` devolvido por `GET /v1/numbers`.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "num_01HZX..."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Não há mais nada a pagar por este número. `paid`: um número extra foi comprado e o bloqueio de envio foi removido. `not_required`: não havia nada a pagar por este número (nunca foi bloqueado, já foi pago, ou a sua capacidade passou a cobri-lo) e nada foi cobrado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "paid",
+                        "not_required"
+                      ]
+                    }
+                  }
+                },
+                "examples": {
+                  "paid": {
+                    "summary": "paid",
+                    "value": {
+                      "ok": true,
+                      "status": "paid"
+                    }
+                  },
+                  "notRequired": {
+                    "summary": "not_required",
+                    "value": {
+                      "ok": true,
+                      "status": "not_required"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "A cobrança foi recusada e o número continua bloqueado para envio. Decida pelo `code`, não pelo status. `INSUFFICIENT_FUNDS`: a carteira não cobre o `proratedTotal` e não há cartão salvo utilizável; nada é cobrado e os créditos já descontados são devolvidos. `PAYMENT_FAILED`: a cobrança foi tentada e não se concluiu; o `declineCode` só vem quando o emissor do cartão recusou. O `error` é uma mensagem legível, em português. `PLAN_NUMBER_LIMIT_REACHED`: o workspace está no plano Grátis, que nunca compra um número extra sozinho — nada foi tentado; compre o número extra de forma explícita (`POST /v1/subscription/extra-numbers` com `confirm: true`, ou pelo painel) ou suba de plano, e chame de novo: a resposta será `not_required`. Esse corpo traz só `error` (uma frase bilíngue `English | Português`) e `code`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "INSUFFICIENT_FUNDS",
+                        "PAYMENT_FAILED",
+                        "PLAN_NUMBER_LIMIT_REACHED"
+                      ]
+                    },
+                    "proratedTotal": {
+                      "type": "number",
+                      "description": "O valor proporcional que foi tentado."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "example": "BRL"
+                    },
+                    "walletReason": {
+                      "type": "string",
+                      "enum": [
+                        "NO_CARD"
+                      ],
+                      "description": "Só em INSUFFICIENT_FUNDS."
+                    },
+                    "declineCode": {
+                      "type": "string",
+                      "description": "Só em PAYMENT_FAILED, e só quando o emissor do cartão recusou: o próprio código de recusa da bandeira, literal.",
+                      "example": "insufficient_funds"
+                    }
+                  }
+                },
+                "examples": {
+                  "insufficientFunds": {
+                    "summary": "INSUFFICIENT_FUNDS",
+                    "value": {
+                      "error": "Saldo insuficiente na carteira e cartão indisponível para cobrar o número extra. Adicione créditos ou um cartão.",
+                      "code": "INSUFFICIENT_FUNDS",
+                      "proratedTotal": 14.95,
+                      "currency": "BRL",
+                      "walletReason": "NO_CARD"
+                    }
+                  },
+                  "paymentFailed": {
+                    "summary": "PAYMENT_FAILED",
+                    "value": {
+                      "error": "Seu cartão não tem saldo suficiente.",
+                      "code": "PAYMENT_FAILED",
+                      "proratedTotal": 14.95,
+                      "currency": "BRL",
+                      "declineCode": "insufficient_funds"
+                    }
+                  },
+                  "freePlan": {
+                    "summary": "PLAN_NUMBER_LIMIT_REACHED (plano Grátis)",
+                    "value": {
+                      "error": "The Free plan includes one number. Buy an extra number or upgrade the plan to use this one. | O plano Grátis inclui um número. Compre um número extra ou faça upgrade do plano para usar este.",
+                      "code": "PLAN_NUMBER_LIMIT_REACHED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A credencial não pode pagar. `NUMBER_SCOPE_NOT_ALLOWED`: uma chave com escopo de número foi usada neste endpoint exclusivo de tenant. `PERMISSION_DENIED`: um token OAuth / MCP de um usuário que não é o Proprietário do workspace (`billing:manage`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "numberScopedKey": {
+                    "summary": "NUMBER_SCOPE_NOT_ALLOWED",
+                    "value": {
+                      "error": "This endpoint requires a tenant-scoped API key",
+                      "code": "NUMBER_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "permissionDenied": {
+                    "summary": "PERMISSION_DENIED",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (billing:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Este número não existe neste workspace. O `error` é uma frase bilíngue `English | Português`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "NUMBER_NOT_FOUND"
+                      ]
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Number not found. | Número não encontrado.",
+                  "code": "NUMBER_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Outro pagamento dos números deste workspace está em andamento, então esta chamada não fez nada. Chame de novo em alguns segundos — a resposta pode ser `not_required` se aquele pagamento já cobriu este número. O `error` é uma frase bilíngue `English | Português`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "PAYMENT_IN_PROGRESS"
+                      ]
+                    }
+                  }
+                },
+                "example": {
+                  "error": "A payment for this workspace's numbers is already being processed. Try again in a few seconds. | Um pagamento dos números deste workspace já está em andamento. Tente de novo em alguns segundos.",
+                  "code": "PAYMENT_IN_PROGRESS"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Limite de taxa excedido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Não foi possível confirmar a cobrança com o processador de pagamento (falha de rede, um 5xx, uma resposta perdida). Nada foi recusado: a cobrança fica pendente e é retentada automaticamente a cada 15 minutos. Um número que já estava bloqueado continua bloqueado até uma retentativa passar; uma falha do processador nunca bloqueia um número por si só. A cobrança pode ter sido concluída no processador com a resposta perdida — confira seu extrato antes de pagar de novo. O corpo traz só `error` (uma frase bilíngue `English | Português`) e `code`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "PAYMENT_PROVIDER_ERROR"
+                      ]
+                    }
+                  }
+                },
+                "example": {
+                  "error": "We could not confirm the charge with the payment processor. It is retried automatically; check your statement before paying again. | Não conseguimos confirmar a cobrança com o processador de pagamento. Ela é retentada automaticamente; confira seu extrato antes de pagar de novo.",
+                  "code": "PAYMENT_PROVIDER_ERROR"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/numbers/{id}/status": {
       "get": {
         "summary": "Status de conexão do número",
@@ -1669,7 +2050,7 @@
     "/v1/numbers/{id}/connect": {
       "get": {
         "summary": "Reconectar número (QR / pairing)",
-        "description": "Gera um novo QR code + pairing code para reconectar um número PILOT_STATUS desconectado. Retorna 409 se já estiver OPEN. Não se aplica a números Meta.",
+        "description": "Gera um novo QR code + pairing code para reconectar um número PILOT_STATUS desconectado. Retorna 409 se já estiver OPEN. Não se aplica a números Meta. No plano Grátis, retorna 402 PLAN_NUMBER_LIMIT_REACHED quando a cota do plano já está cheia e este número nunca conectou.",
         "tags": [
           "Numbers"
         ],
@@ -1736,6 +2117,54 @@
                 },
                 "example": {
                   "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Só no plano Grátis: a cota de números do plano já está cheia e este número nunca conectou, então o pareamento é recusado e nenhum QR code é gerado. O plano Grátis nunca compra um número extra sozinho — compre um número extra de forma explícita (`POST /v1/subscription/extra-numbers` com `confirm: true`, ou pelo painel) ou suba de plano. Reparear um número que já tinha conectado nunca é recusado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "PLAN_NUMBER_LIMIT_REACHED"
+                      ]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "PLAN_NUMBER_LIMIT_REACHED"
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "Frase bilíngue, `English | Português`."
+                    },
+                    "plan": {
+                      "type": "string",
+                      "enum": [
+                        "FREE"
+                      ]
+                    },
+                    "maxNumbers": {
+                      "type": "integer"
+                    },
+                    "currentNumberCount": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "PLAN_NUMBER_LIMIT_REACHED",
+                  "code": "PLAN_NUMBER_LIMIT_REACHED",
+                  "message": "This workspace's Free plan has no room for another number. Buy an extra number or upgrade the plan to connect this one. | O plano Grátis deste workspace não comporta mais um número. Compre um número extra ou faça upgrade do plano para conectar este.",
+                  "plan": "FREE",
+                  "maxNumbers": 1,
+                  "currentNumberCount": 1
                 }
               }
             }
@@ -10593,7 +11022,7 @@
     "/v1/remote-pairing/{token}/connect": {
       "post": {
         "summary": "Conectar via token (QR / pairing)",
-        "description": "Gera o QR code + pairing code para o número associado ao token e marca a instância como CONNECTING. Endpoint público por token (página /connect/<token>); não exige API key. 409 se já OPEN. Efeito real: inicia a conexão.",
+        "description": "Gera o QR code + pairing code para o número associado ao token e marca a instância como CONNECTING. Endpoint público por token (página /connect/<token>); não exige API key. 409 se já OPEN. Efeito real: inicia a conexão. 402 PLAN_NUMBER_LIMIT_REACHED quando o workspace que emitiu o link está no plano Grátis, a cota dele já está cheia e este número nunca conectou.",
         "tags": [
           "Remote Pairing"
         ],
@@ -10660,6 +11089,54 @@
                 },
                 "example": {
                   "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Só no plano Grátis: o workspace que emitiu o link está no plano Grátis, a cota de números dele já está cheia e este número nunca conectou, então o pareamento é recusado e nenhum QR code é gerado. Quem está com o link não tem como resolver: o workspace precisa comprar um número extra de forma explícita ou subir de plano. Reparear um número que já tinha conectado nunca é recusado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "PLAN_NUMBER_LIMIT_REACHED"
+                      ]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "PLAN_NUMBER_LIMIT_REACHED"
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "Frase bilíngue, `English | Português`."
+                    },
+                    "plan": {
+                      "type": "string",
+                      "enum": [
+                        "FREE"
+                      ]
+                    },
+                    "maxNumbers": {
+                      "type": "integer"
+                    },
+                    "currentNumberCount": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "PLAN_NUMBER_LIMIT_REACHED",
+                  "code": "PLAN_NUMBER_LIMIT_REACHED",
+                  "message": "This workspace's Free plan has no room for another number. Buy an extra number or upgrade the plan to connect this one. | O plano Grátis deste workspace não comporta mais um número. Compre um número extra ou faça upgrade do plano para conectar este.",
+                  "plan": "FREE",
+                  "maxNumbers": 1,
+                  "currentNumberCount": 1
                 }
               }
             }

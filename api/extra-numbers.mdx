@@ -19,6 +19,73 @@ Billing runs off a **prepaid wallet**: credits first, saved card for whatever th
   Number-scoped keys get **403** — use the tenant-scoped key (dashboard **Profile → API**).
 </Note>
 
+## Charged at the first connection
+
+An **extra number** is a WhatsApp number past the capacity your workspace has paid for: the plan's allowance, plus the extra numbers you bought, plus any that were granted to you. It is charged when the number **first connects** — on every plan, and whichever way it was connected: the dashboard, the API, the MCP server, a remote pairing link or Meta Embedded Signup.
+
+- **Creating a number charges nothing.** Neither does generating a pairing link.
+- **A number that never connected does not count** toward your capacity or your monthly bill. You pay only for the numbers that were actually paired.
+- **On a paid plan the charge is automatic.** It is the same purchase as `POST /v1/subscription/extra-numbers` for one number: prorated for the days left in the cycle, wallet credits first, the remainder on the saved card. The Free plan never buys by itself — see [Free plan](#free-plan).
+- **Buying ahead still works.** A number that connects within the capacity you already paid for is not charged again.
+- **For an unofficial number** the first connection is the first time its QR code or pairing code is completed. **For an official (Meta Cloud API) number** it is when the number is activated — for example, when the Embedded Signup finishes.
+
+<Note>
+  **One refusal is left at creation.** On a paid plan, when the next number would be an extra number and the workspace has neither the wallet balance to cover it nor a saved card, creating the number — or its pairing link — still answers **`402`** with `INSUFFICIENT_FUNDS` or `PLAN_NUMBER_LIMIT_REACHED`. On the Free plan a number past the plan's allowance is refused with `402 PLAN_NUMBER_LIMIT_REACHED` whatever the balance. The body is unchanged: see [capacity errors](/api/numbers/create#capacity-errors-and-what-fixes-them).
+</Note>
+
+### Free plan
+
+**The Free plan never buys an extra number by itself.** Buying an extra number on Free converts the account to On Demand and turns the number you already had into a paid one. That only happens through the explicit purchase, which asks for confirmation: the buy dialog in the dashboard, or `POST /v1/subscription/extra-numbers` with `confirm: true`. A Free workspace is never converted or charged by connecting a number.
+
+- **Creating a number past the plan's allowance is refused** with `402 PLAN_NUMBER_LIMIT_REACHED`, even when the workspace has wallet balance or a saved card. On the paid plans, funds let the creation through and the extra is charged at the first connection.
+- **Pairing a number that never connected is refused too** when the plan's allowance is already full. `GET /v1/numbers/{id}/connect`, the connect step of a remote pairing link, and `POST /v1/numbers/remote-pairing` for a phone that already exists answer `402 PLAN_NUMBER_LIMIT_REACHED`. Re-pairing a number that had already connected is never refused.
+- **If a second number connects anyway** — two pairings started side by side — nothing is charged and the plan does not change. The number stays connected with sending blocked (`409 NUMBER_BLOCKED`, `reason: "extra_charge_unpaid"`), and `POST /v1/numbers/{id}/pay` answers `402 PLAN_NUMBER_LIMIT_REACHED` for it. A top-up or a saved card does not lift this block.
+
+To use the second number, buy the extra number yourself or move up a plan. A number that was blocked is then released within 15 minutes — or at once if you call `POST /v1/numbers/{id}/pay`, which answers `not_required`.
+
+### When the charge is refused
+
+If the card is declined or there are no funds, the number **stays connected**, but **sending from it is blocked** until the charge is paid:
+
+- `POST /v1/messages/send` answers **`409 NUMBER_BLOCKED`** with `reason: "extra_charge_unpaid"`.
+- A message that was already queued fails, and shows `NUMBER_BLOCKED` in the [logs](/api/messages/log-error-codes).
+- `GET /v1/numbers` and `GET /v1/numbers/{id}` show [`extraChargeUnpaidSince`](/api/numbers/list#unpaid-extra-number-charge) on the number.
+
+```json
+{
+  "error": "This number's extra-number charge is unpaid. Pay it to resume sending from this number. | A cobrança do número extra deste número está pendente. Pague para voltar a enviar por ele.",
+  "code": "NUMBER_BLOCKED",
+  "reason": "extra_charge_unpaid",
+  "observedAt": "2026-10-10T12:00:00.000Z"
+}
+```
+
+Only that number is blocked. Your other numbers keep sending, and the blocked number keeps receiving.
+
+<Note>
+  **A charge that could not be concluded is not a refusal.** When the payment processor cannot be reached, nothing is blocked: the number keeps sending, and the charge is retried automatically every 15 minutes.
+</Note>
+
+### What lifts the block
+
+| What you do | What happens |
+| --- | --- |
+| Top the wallet up | The charge is retried automatically. |
+| Save a card | The charge is retried automatically. |
+| Click **Pay now** on the dashboard's **Numbers** page | The charge is retried on the spot. Workspace owner only. |
+| Call [`POST /v1/numbers/{id}/pay`](/api/numbers/pay) | The charge is retried on the spot. |
+
+If your plan's own renewal is overdue, a top-up or a saved card pays the renewal first.
+
+On the Free plan none of the four applies: see [Free plan](#free-plan).
+
+The block also lifts by itself, within 15 minutes, when your capacity comes to cover the number — for example, after you buy an extra number with `POST /v1/subscription/extra-numbers`.
+
+### After 7 days unpaid
+
+- **A number connected by QR code** that stays unpaid for **7 days** is disconnected: its device is logged out and the number stops counting toward your capacity. A reminder is sent 2 days before, and `extraChargeDisconnectAt` on the number tells you when. Connecting it again is a new first connection, charged again.
+- **A Meta Cloud API number is never disconnected.** It stays blocked for sending until it is paid.
+
 ## GET /v1/subscription/extra-numbers — Preview (dry-run)
 
 ```bash
@@ -138,7 +205,7 @@ When you buy extra numbers, that **capacity is yours for the full 30-day cycle**
 
 On **Pay As You Go** there is no capacity to buy back or schedule away — you pay for the numbers you have connected:
 
-- **A number is charged when it becomes usable**, prorated for the days left in the cycle. For an unofficial number that is the first connection; for an official (Meta) number it is when the Embedded Signup finishes.
+- **A number is charged when it first connects**, prorated for the days left in the cycle — the same rule as on every plan, [described above](#charged-at-the-first-connection). For an unofficial number that is the first connection; for an official (Meta) number it is when the Embedded Signup finishes.
 - **The slot you paid for lasts the cycle.** Deleting a number and connecting another one in its place does **not** charge again.
 - **The next cycle bills only what is still connected.** Nothing accumulates from the previous cycle, so there is nothing to schedule down — see the `409 NOT_APPLICABLE_FOR_PLAN` on the endpoint below.
 - **A pairing you never finished is not a number and is not billed.** The "awaiting connection" row that appears while your end user is inside the Facebook dialog is excluded from billing and from your capacity, and it is removed automatically 24h after it was created.

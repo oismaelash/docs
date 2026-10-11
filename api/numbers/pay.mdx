@@ -1,0 +1,127 @@
+---
+title: "POST /v1/numbers/{id}/pay — Pay a number's extra-number charge"
+sidebarTitle: "Pay extra-number charge"
+description: "POST /v1/numbers/{id}/pay — Pay the pending extra-number charge of one number and resume sending from it."
+mode: "wide"
+---
+
+# Pay a number's extra-number charge
+
+An **extra number** is a WhatsApp number past the capacity your workspace has paid for. It is charged when the number **first connects** — see [Extra numbers](/api/extra-numbers#charged-at-the-first-connection). When that charge is refused (card declined, no balance), the number stays connected but **sending from it is blocked** until the charge is paid.
+
+`POST /v1/numbers/{id}/pay` charges it now — wallet credits first, the remainder on the saved card — and lifts the block.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/wa_abc/pay" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "status": "paid"
+}
+```
+
+<Note>
+  Requires a **tenant-scoped** key — the same rule as `POST /v1/subscription/extra-numbers`. With an OAuth / MCP token, only the workspace **Owner** may pay (`billing:manage`) — `403 PERMISSION_DENIED` otherwise.
+</Note>
+
+<Warning>
+  **This call charges.** With credits in the wallet or a saved card, the prorated price of one extra number is taken on the spot.
+</Warning>
+
+## When to use it
+
+- When `GET /v1/numbers` or `GET /v1/numbers/{id}` shows `extraChargeUnpaidSince` set on a number.
+- When `POST /v1/messages/send` answers `409 NUMBER_BLOCKED` with `reason: "extra_charge_unpaid"`.
+- Right after you fixed what refused the charge — a new card, for example — and do not want to wait.
+
+You do not have to call it. On a paid plan, a wallet top-up or a newly saved card retries the charge of every blocked number of the workspace automatically. On the Free plan this call cannot pay — see [`PLAN_NUMBER_LIMIT_REACHED`](#errors) below. In the dashboard, the workspace owner can also use **Pay now** on the **Numbers** page.
+
+## How to know a number is blocked
+
+`GET /v1/numbers` and `GET /v1/numbers/{id}` carry two fields on every number:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `extraChargeUnpaidSince` | string (ISO 8601) or `null` | The charge was refused at this instant and sending is blocked since then. `null` = not blocked. |
+| `extraChargeDisconnectAt` | string (ISO 8601) or `null` | When the number is disconnected if it is still unpaid — 7 days after `extraChargeUnpaidSince`. Always `null` for Meta Cloud API numbers, which are never disconnected. |
+
+These fields are **not** part of `health`. A blocked number keeps its `state`, can have `health.sendable: true`, and never shows `extra_charge_unpaid` in `health.code`. See [List & get numbers](/api/numbers/list#unpaid-extra-number-charge).
+
+## Request parameters
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | Yes | The WhatsApp number ID — the `id` returned by `GET /v1/numbers`. |
+
+No request body.
+
+## Response
+
+### Success (200)
+
+```json
+{
+  "ok": true,
+  "status": "paid"
+}
+```
+
+| `status` | Meaning |
+| --- | --- |
+| `paid` | One extra number was bought and the block was lifted. |
+| `not_required` | Nothing is owed for this number: it was never blocked, it was already paid, or your capacity now covers it. Nothing was charged. Safe to call repeatedly. |
+
+### Errors
+
+Branch on `code`, never on the HTTP status: three of the refusals are `402`.
+
+| Status | `code` | Meaning | What to do |
+| --- | --- | --- | --- |
+| `402` | `PAYMENT_FAILED` | The saved card was charged and the charge did not complete. `declineCode` is present when the card issuer declined. | Fix or replace the card, then call again. |
+| `402` | `INSUFFICIENT_FUNDS` | The wallet does not cover the charge and there is no usable saved card. | Top the wallet up or save a card. Either one retries the charge automatically. |
+| `402` | `PLAN_NUMBER_LIMIT_REACHED` | The workspace is on the Free plan, which never buys an extra number by itself. Nothing was attempted and nothing was charged. | Buy the extra number yourself (`POST /v1/subscription/extra-numbers` with `confirm: true`, or the dashboard) or move up a plan. Then call again: it answers `not_required`. |
+| `502` | `PAYMENT_PROVIDER_ERROR` | The charge could not be confirmed with the payment processor. Nothing was refused. | Nothing: the charge is retried automatically every 15 minutes. Check your statement before paying again. |
+| `409` | `PAYMENT_IN_PROGRESS` | Another payment for this workspace's numbers is running. | Call again in a few seconds. |
+| `404` | `NUMBER_NOT_FOUND` | No such number in this workspace. | Use the `id` from `GET /v1/numbers`. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | The key is number-scoped. | Use a tenant-scoped key. |
+| `403` | `PERMISSION_DENIED` | OAuth / MCP token of a user who is not the workspace Owner. | Ask the workspace Owner to pay. |
+| `401` | — | Invalid or missing API key. | |
+
+Error body: `{ "error": "<message>", "code": "<CODE>", … }`.
+
+- The `PAYMENT_FAILED` and `INSUFFICIENT_FUNDS` bodies also carry `proratedTotal` and `currency` — the amount that was attempted. `INSUFFICIENT_FUNDS` adds `walletReason`. Their `error` is a human-readable message in Portuguese.
+- The `PLAN_NUMBER_LIMIT_REACHED`, `502`, `409` and `404` bodies carry only `error` and `code`. Their `error` is a bilingual sentence, `English | Português`.
+
+```json
+{
+  "error": "Seu cartão não tem saldo suficiente.",
+  "code": "PAYMENT_FAILED",
+  "proratedTotal": 14.95,
+  "currency": "BRL",
+  "declineCode": "insufficient_funds"
+}
+```
+
+<Note>
+  **After a `402` the number stays blocked.** After a `502` nothing changes: a number that was already blocked stays blocked until a retry goes through, and a processor failure never blocks a number by itself.
+</Note>
+
+<Warning>
+  **`502 PAYMENT_PROVIDER_ERROR` does not mean "nothing was charged".** The request to the processor failed _or_ its response was lost, so the charge may have completed on the processor's side. The automatic retry repeats the same charge request, which lets the processor recognise a charge it already took instead of taking it again. Check your statement before paying again.
+</Warning>
+
+## What happens if it stays unpaid
+
+- **A number connected by QR code** that stays unpaid for **7 days** is disconnected at `extraChargeDisconnectAt`: its device is logged out and it stops counting toward your capacity. You get a reminder 2 days before. Connecting it again is a new first connection, charged like any other.
+- **A Meta Cloud API number** is never disconnected. It stays blocked for sending until it is paid.
+
+## Notes
+
+- The call is idempotent: once nothing is owed, it answers `not_required` and charges nothing.
+- Messages queued before the block are not sent: they fail and show `NUMBER_BLOCKED` in [Log error codes](/api/messages/log-error-codes). Send them again after paying.
+- Receiving is not affected. The block is on sending only.

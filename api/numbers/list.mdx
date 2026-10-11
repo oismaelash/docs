@@ -22,6 +22,7 @@ Lists all WhatsApp instances for the API key's **tenant** as a JSON array.
 - The list does **not** force a mass refresh of connection state — use `GET /v1/numbers/{id}/status` per number when you need a live check.
 - Each item's `apiKeys` entries include only `name`, `keyPrefix`, and `keyLast4` (no API key `id`).
 - Meta (Cloud API) items also carry a `coexistence` block — see [Coexistence](#coexistence-—-and-why-platformtype-does-not-answer-it) below.
+- Every item carries `extraChargeUnpaidSince` and `extraChargeDisconnectAt` — see [Unpaid extra-number charge](#unpaid-extra-number-charge) below.
 
 ```bash
 curl "https://pilotstatus.com.br/v1/numbers" \
@@ -69,6 +70,8 @@ Response (Meta number):
     "reason": null,
     "sendable": true
   },
+  "extraChargeUnpaidSince": null,
+  "extraChargeDisconnectAt": null,
   "meta": {
     "fetchedAt": "2026-06-30T09:18:33.000Z",
     "phone": {
@@ -123,6 +126,8 @@ Both are final. Meta hands a number's history over **once**, and deleting and re
 ## The `health` block
 
 `health` is the single place that answers *can this number send right now, and if not, why*. It is derived from Meta's signals by one shared evaluator, so the list, the detail and the dashboard never disagree.
+
+One block on sending lives **outside** `health`: an unpaid extra-number charge. It is reported by `extraChargeUnpaidSince`, at the top level of the number — see [Unpaid extra-number charge](#unpaid-extra-number-charge).
 
 <ResponseField name="health.sendable" type="boolean">
   **Our verdict, not Meta's.** `state` / `isFullyConnected` on a Meta number are derived from it (`sendable → "OPEN"`, otherwise `"DISCONNECTED"`).
@@ -187,6 +192,35 @@ Both are final. Meta hands a number's history over **once**, and deleting and re
 
   ⚠️ They arrive in the canonical `{ event, data }` shape, **not** in Meta's native envelope. If you subscribe to health and conversation on the same webhook, your endpoint receives two body shapes on one URL. See [number health in the event reference](/api/webhooks/events#number-health-—-subscribable-since-2026-09-15).
 </Note>
+
+## Unpaid extra-number charge
+
+An extra number — a number past the capacity your workspace has paid for — is charged when it **first connects** ([Extra numbers](/api/extra-numbers#charged-at-the-first-connection)). If that charge is refused, the number stays connected but sending from it is blocked until it is paid. Two top-level fields report it, on **every** item of `GET /v1/numbers` (unofficial and Meta) and on `GET /v1/numbers/{id}`:
+
+<ResponseField name="extraChargeUnpaidSince" type="string | null">
+  ISO 8601 instant at which the charge was first refused. Sending from the number is blocked since then: `POST /v1/messages/send` answers `409 NUMBER_BLOCKED` with `reason: "extra_charge_unpaid"`. `null` when the number is not blocked.
+</ResponseField>
+
+<ResponseField name="extraChargeDisconnectAt" type="string | null">
+  ISO 8601 instant at which the number is disconnected if it is still unpaid — 7 days after `extraChargeUnpaidSince`. `null` when the number is not blocked, and **always `null` on a Meta Cloud API number**: it is never disconnected, it stays blocked for sending until paid.
+</ResponseField>
+
+```json
+{
+  "id": "wa_abc",
+  "provider": "PILOT_STATUS",
+  "state": "OPEN",
+  "isFullyConnected": true,
+  "extraChargeUnpaidSince": "2026-10-10T12:00:00.000Z",
+  "extraChargeDisconnectAt": "2026-10-17T12:00:00.000Z"
+}
+```
+
+<Warning>
+  **These fields are not part of `health`.** The block is about billing, not about the connection: `state`, `isFullyConnected` and `health.sendable` keep describing the connection alone, and `health.code` never shows `extra_charge_unpaid`. A number can read `state: "OPEN"` and `health.sendable: true` and still refuse every send. Check `extraChargeUnpaidSince` too.
+</Warning>
+
+To lift the block, call [`POST /v1/numbers/{id}/pay`](/api/numbers/pay), top the wallet up or save a card. Once paid, both fields go back to `null`.
 
 ## Refreshing from the Meta Graph
 
