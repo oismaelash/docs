@@ -26,10 +26,11 @@ Webhooks deliver real-time events to your system's URL. This page documents ever
   Read `value.statuses[]` from the native envelope instead, or poll [`GET /v1/messages?status=FAILED`](/api/messages/list) — the message row reaches `FAILED` on both connection types, including for a failure Meta itself reported. Unofficial numbers are unaffected.
 </Warning>
 
-Three things are the same on every vocabulary:
+Four things are the same on every vocabulary:
 
 - **Number lifecycle** — `number.created`, `number.connected`, `number.disconnected`, `number.removed`, `number.restored` are subscribable on every number, whatever its provider. (`number.disconnected` only ever *fires* on native web numbers — see [`number.disconnected`](#number-disconnected).)
 - **Normalized call events** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` on any calling-capable number.
+- **Meta Lead Ads** — `lead.received`, in the canonical `{ event, data }` envelope, on any number with a linked Facebook Page. It is **opt-in**: list it by name, because `"*"` does not include it. See [`lead.*` payload](#lead-payload).
 - **`events` is never optional.** A webhook stored with an empty `events` array delivers **nothing**, on every vocabulary, and says nothing about it — it is a silent `201`. Subscribe to the names you want, or to the `"*"` wildcard.
 
 <Note>
@@ -50,7 +51,7 @@ Every event arrives as JSON:
 **Schema v3 (camelCase).** All `data` fields are camelCase. Phone numbers are always **E.164 with `+`** (no device suffix, no `@s.whatsapp.net` / `@lid`). Timestamps are always **ISO 8601** in the single `createdAt` field (when the message happened, per the provider — not our ingestion time).
 
 <Note>
-  **New event names keep appearing — ignore the ones you do not know.** A `"*"` subscription receives a new event as soon as it exists (`number.restored` is one). Answer an event your code does not handle with a `2xx` and move on. Starting with `@pilot-status/sdk` 0.12.0 (Node) and `pilot-status` 1.10.0 (Python), `parseCustomerWebhook` and `parse_customer_webhook` no longer throw on an event name they do not know: they return `{ type: "unknown", event, data, raw }` (in Python, a dict with the same keys), so a new event never breaks your integration. A payload that is not an object with a string `event`, or a known event with invalid fields, still throws. The n8n trigger already passes any event through when **All Events** is selected. See [SDKs & n8n](/integrations/sdks#webhook-events-the-sdk-does-not-know).
+  **New event names keep appearing — ignore the ones you do not know.** A `"*"` subscription receives a new event as soon as it exists (`number.restored` is one) — with one exception: the opt-in `lead.received`, which `"*"` never delivers. Answer an event your code does not handle with a `2xx` and move on. Starting with `@pilot-status/sdk` 0.12.0 (Node) and `pilot-status` 1.10.0 (Python), `parseCustomerWebhook` and `parse_customer_webhook` no longer throw on an event name they do not know: they return `{ type: "unknown", event, data, raw }` (in Python, a dict with the same keys), so a new event never breaks your integration. A payload that is not an object with a string `event`, or a known event with invalid fields, still throws. The n8n trigger already passes any event through when **All Events** is selected. See [SDKs & n8n](/integrations/sdks#webhook-events-the-sdk-does-not-know).
 </Note>
 
 <Note>
@@ -107,6 +108,10 @@ The normalized call events — `call.ringing`, `call.connected`, `call.ended`, `
 **WhatsApp Flows** (Meta Cloud API numbers only, see [Flows](/concepts/flows)):
 
 - `flow.response_received` — a customer submitted a Flow, carrying the answers. See [`flow.*` payload](#flow-payload).
+
+**Meta Lead Ads** (any number with a linked Facebook Page, see [Leads](/api/leads)):
+
+- `lead.received` — someone submitted a Meta Lead Ads Instant Form, carrying the lead. **Opt-in: a `"*"` subscription does not receive it.** See [`lead.*` payload](#lead-payload).
 
 ## Identifiers and correlation
 
@@ -297,6 +302,12 @@ The plan-limit variant has no `data.event`, `internalMessageId` or `whatsappNumb
 ```
 
 All three shapes also get the top-level `idempotencyKey` described in [Deduplicate retries](/api/webhooks/configure#deduplicate-retries-idempotency-key).
+
+<Warning>
+  **`MESSAGE_RECOVERY_FAILED` on an official number reaches no webhook.** Besides the reconciler (shape 3), the send worker also fails messages with this code: when the send job of an official (Meta Cloud API) number reaches the worker without its Meta identity while the number still has live Meta credentials, the worker refuses to send it through any other path and fails the message on that attempt, with no retry. Nothing reached Meta, so no `statuses[]` arrives, and — as on every official number — no `message.failed` is dispatched either. A reconciler `MESSAGE_RECOVERY_FAILED` on an official number is just as silent.
+
+  The failure is visible only through [`GET /v1/messages`](/api/messages/list) and [`GET /v1/messages/{messageId}`](/api/messages/status) — `status: "FAILED"`, `errorCode: "MESSAGE_RECOVERY_FAILED"` and the reason, in Portuguese, in `errorMessage` — and on the Logs screen. Poll `GET /v1/messages?status=FAILED` to catch it. Your number has no problem: send the message again.
+</Warning>
 
 ### message.received
 
@@ -738,6 +749,78 @@ See the [full calling flow](/api/calls/overview).
   **That redacted copy is what a SUCCESSFUL delivery stores.** A delivery that failed keeps the **real** payload, so an operator can inspect and replay what was actually sent; a sweep replaces the payload of those rows — whole, with a marker object, not field by field — once they are more than 24 hours old. Inside that window `GET /v1/webhooks/{id}/logs` can return the submission in full on a number whose configuration says it keeps nothing.
 
   **On such a number attachments are never re-hosted at all**, so `flowMedia` is `null` on the delivery too — there is no stored copy to point at, and the reference stays where it was. **Nor is a single exchange captured**: `submitted` is `null` on the delivery as well, and not as a redacted row — no row at all. That is the number's configuration doing what it says, not a failure.
+</Warning>
+
+## `lead.*` payload
+
+`lead.received` fires when someone submits a **Meta Lead Ads Instant Form** (Facebook or Instagram) on a Facebook Page that is linked to one of your numbers in the dashboard — the same leads [`GET /v1/leads`](/api/leads) reads back. It uses the canonical `{ event, data }` envelope on **every** provider, Meta Cloud API numbers included: the lead arrives through the Facebook Page, not through the WhatsApp connection, so the number's webhook vocabulary does not apply to it.
+
+<Warning>
+  **`lead.received` is opt-in: a `"*"` subscription does NOT receive it.** It is delivered only to a webhook whose `events` list names it — for example `["*", "lead.received"]` to keep everything else as well. Through the API, put `"lead.received"` in `events` on [`POST /v1/webhooks`](/api/webhooks/configure) or `PATCH /v1/webhooks/{id}` (a `PATCH` replaces the whole list, so send the events you already had too). In the dashboard, tick **Lead received (Meta Ads)** on the webhook form: selecting all events does not tick it. Like every event, it goes only to webhooks subscribed to the lead's number.
+</Warning>
+
+```json
+{
+  "event": "lead.received",
+  "data": {
+    "leadId": "cmg1lead0001",
+    "leadgenId": "1234567890123456",
+    "whatsappNumberId": "cmm0abc123",
+    "pageId": "1029384756",
+    "pageName": "Salão Exemplo",
+    "formId": "5647382910",
+    "formName": "Agendamento",
+    "adId": "120210000000000001",
+    "adsetId": "120210000000000002",
+    "campaignId": "120210000000000003",
+    "adName": null,
+    "adsetName": null,
+    "campaignName": null,
+    "platform": "ig",
+    "isOrganic": false,
+    "createdAt": "2026-10-05T12:00:00.000Z",
+    "fullName": "Maria Silva",
+    "email": "maria@example.com",
+    "phone": "5511987654321",
+    "fields": [
+      { "key": "full_name", "label": "full_name", "values": ["Maria Silva"] },
+      { "key": "Qual serviço?", "label": "Qual serviço?", "values": ["Corte"] }
+    ],
+    "consentGiven": null,
+    "conversationId": null
+  }
+}
+```
+
+| Field | Notes |
+| --- | --- |
+| `leadId` | The Pilot Status id of the lead — the one [`GET /v1/leads/{id}`](/api/leads) takes. |
+| `leadgenId` | Meta's `leadgen_id`. One per lead: dedupe on it. |
+| `whatsappNumberId` | The number the Page is linked to — the id `GET /v1/numbers` returns. As on `flow.response_received`, the field is `whatsappNumberId`, not `numberId`. |
+| `pageId` · `pageName` | The Facebook Page the form was submitted on. |
+| `formId` · `formName` | The Instant Form. `formName` is `null` when it could not be read. |
+| `adId` · `adsetId` · `campaignId` | The ad the lead came from, as Meta sent it; `null` when Meta sent none (an organic lead). |
+| `adName` · `adsetName` · `campaignName` | Filled only when Pilot Status had already resolved the ad's names. The event never waits for them, so on the first lead of a new ad they are usually `null`; `GET /v1/leads` returns them once resolved. |
+| `platform` | `fb` or `ig`, or `null`. |
+| `isOrganic` | `true`, `false` or `null`. |
+| `createdAt` | When the person submitted the form (Meta's `created_time`), not when Pilot Status received it. |
+| `fullName` · `email` | As the person filled them in; `null` when the form did not ask. |
+| `phone` | International digits without `+` (for example `5511987654321`) when the answer could be read as a phone number; otherwise exactly what the person typed. `null` when the form did not ask. |
+| `fields` | Every answer of the form, as `{ key, label, values }`. `key` is Meta's field name verbatim — for a custom question, its text. |
+| `consentGiven` | `true`, `false` or `null` — `null` means unknown, never a refusal. See [Leads](/api/leads). |
+| `conversationId` | The conversation with this phone on the number, when one already exists; otherwise `null`. |
+
+<Note>
+  **When it fires, and when it does not.**
+
+  - Only for a lead received **live**, through Meta's leadgen webhook. Leads imported afterwards (backfill) do not fire it. If a backfill stored a lead first and Meta's live delivery of it arrives later, the event fires then, once.
+  - Once per lead: a Meta redelivery of a lead already stored is silent.
+  - Not for a lead that was erased, or whose Page was unlinked while the lead was being stored.
+  - Delivered through the same retrying queue as every other event. It carries **no `Idempotency-Key`** header or `idempotencyKey` field (there is no message id in the payload): dedupe on `data.leadgenId`.
+</Note>
+
+<Warning>
+  **On a `RELAY_ONLY` number your endpoint still receives the real lead.** Only the copy kept in the webhook log is redacted: `fullName`, `email` and `phone` are blanked and every `fields[].values` entry is emptied, while `key` and `label` stay. The lead itself is stored without personal data, so `GET /v1/leads` returns it redacted — the webhook delivery is the only place those answers ever reach you.
 </Warning>
 
 ## Meta Cloud API events (native envelope)
