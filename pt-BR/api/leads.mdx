@@ -1,0 +1,264 @@
+---
+title: "GET /v1/leads — leads do Meta Lead Ads"
+description: "Leia os leads que seus Formulários Instantâneos do Facebook e do Instagram captaram, com formulário, anúncio e resposta de consentimento."
+mode: "wide"
+---
+
+Quando alguém envia um **Formulário Instantâneo do Meta Lead Ads** (Facebook ou Instagram) numa
+Página do Facebook vinculada a um dos seus números de WhatsApp no painel da Pilot Status, a Pilot
+Status guarda o lead sob esse número. Estes dois endpoints leem esses leads de volta: um lista,
+outro devolve um único lead.
+
+## Endpoints
+
+`GET https://pilotstatus.com.br/v1/leads`
+
+`GET https://pilotstatus.com.br/v1/leads/{id}`
+
+<Note>
+  Os dois atuam sobre **um número**: use uma API key **escopada a número** (`ps_*`) no header
+  `x-api-key`, ou uma chave da conta que indique o número no header
+  [`x-whatsapp-number-id`](/pt-BR/api/authentication). Uma chave da conta sem esse header recebe
+  `403 TENANT_SCOPE_NOT_ALLOWED`.
+</Note>
+
+Um lead pertence ao número ao qual a Página dele está vinculada, exatamente como uma conversa.
+Você só vê os leads do número sobre o qual a requisição atua — nunca os dos seus outros números.
+
+**Tokens OAuth / MCP** também precisam da permissão `chat:read` no workspace: lead é dado de
+contato de uma pessoa, então o papel **ANALYST** é recusado com `403 PERMISSION_DENIED`. Uma
+chave `ps_` clássica não é afetada por papéis.
+
+Os mesmos dados estão disponíveis para agentes de IA pelas ferramentas `leads_list` e `leads_get`
+do [servidor MCP](/pt-BR/integrations/mcp-server).
+
+## Dois ids: `id` e `leadgenId`
+
+| Campo | O que é |
+| --- | --- |
+| `id` | O id do lead na **Pilot Status**. É este que `GET /v1/leads/{id}` recebe. |
+| `leadgenId` | O id do lead na **Meta** (único globalmente). Use-o para casar o lead com as ferramentas ou exportações da própria Meta. `GET /v1/leads/{id}` **não** o aceita. |
+
+## `consentGiven` tem três estados
+
+<Warning>
+  **`null` significa desconhecido — nunca leia como recusa, nem como consentimento.**
+</Warning>
+
+| `consentGiven` | Significado |
+| --- | --- |
+| `true` | A pessoa marcou a caixa de consentimento configurada para aquele formulário. |
+| `false` | O formulário tem essa caixa configurada e a pessoa a deixou desmarcada. |
+| `null` | **Desconhecido**: nenhuma caixa de consentimento estava configurada para o formulário quando o lead foi guardado, ou a resposta não veio. |
+
+O valor é decidido **quando o lead é guardado**, a partir da caixa configurada para o formulário
+naquele momento. Configurar a caixa depois não altera leads já guardados.
+
+## `GET /v1/leads`
+
+Mais recentes primeiro por `createdAt` (empate desfeito pelo `id`, decrescente). Leads apagados
+nunca são listados nem contados.
+
+### Parâmetros de consulta
+
+<ParamField query="formId" type="string">
+  Restringe a um único id de Formulário Instantâneo.
+</ParamField>
+
+<ParamField query="adId" type="string">
+  Restringe a um único id de anúncio.
+</ParamField>
+
+<ParamField query="pageId" type="string">
+  Restringe a um único id de Página do Facebook.
+</ParamField>
+
+<ParamField query="startDate" type="string">
+  Data e hora ISO 8601. Leads com `createdAt` **a partir** deste instante (inclusive).
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Data e hora ISO 8601. Leads com `createdAt` **até** este instante (inclusive).
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Número da página (≥ 1). Um valor ausente, não numérico ou menor é lido como `1`.
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Resultados por página (1–100). Um valor maior é limitado a `100`.
+</ParamField>
+
+Os filtros de data valem sobre o `createdAt` — quando a pessoa enviou o formulário na Meta — e
+não sobre quando a Pilot Status guardou o lead. Um lead importado depois (`source: "backfill"`)
+mantém a data em que a pessoa o enviou.
+
+### Paginação
+
+A resposta traz `total` (todos os leads que atendem ao filtro), `page`, `pageSize` e
+`totalPages`. Informe contagens pelo `total`, não pelo tamanho de `leads`.
+
+A paginação para em **10.000 linhas**: quando `page × pageSize` passa disso, a requisição falha
+com `400 INVALID_PAGINATION`. Estreite o período com `startDate`/`endDate` em vez de paginar
+mais fundo.
+
+### Exemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/leads?formId=987654321098765&startDate=2026-10-01T00:00:00Z" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+```json Resposta (200)
+{
+  "leads": [
+    {
+      "id": "cmg4x2k9a0001ab12cd34ef56",
+      "leadgenId": "1234567890123456",
+      "whatsappNumberId": "num_01HZX...",
+      "pageId": "102345678901234",
+      "pageName": "MM Design",
+      "formId": "987654321098765",
+      "formName": "Orçamento — Outubro",
+      "adId": "120249828053880703",
+      "adName": "Ads 01 - Vídeo dos 70%",
+      "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+      "campaignName": "[CD-01] [LEADS] - MM Design - Sale 70%",
+      "platform": "ig",
+      "isOrganic": false,
+      "createdAt": "2026-10-18T14:32:10.000Z",
+      "fullName": "Maria Souza",
+      "email": "maria@example.com",
+      "phone": "+55 11 91234-5678",
+      "fields": [
+        { "key": "full_name", "label": "full_name", "values": ["Maria Souza"] },
+        { "key": "qual_ambiente", "label": "Qual ambiente você quer reformar?", "values": ["Cozinha"] }
+      ],
+      "consentGiven": null,
+      "conversationId": null,
+      "autoSendStatus": "none",
+      "autoSendReason": null,
+      "source": "webhook",
+      "redacted": false
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1
+}
+```
+
+</CodeGroup>
+
+## `GET /v1/leads/{id}`
+
+Devolve um lead do número pelo `id` da Pilot Status, no formato `{ "lead": { … } }`, com os
+mesmos campos, as mesmas regras de privacidade e o mesmo `notice` da listagem.
+
+<ParamField path="id" type="string" required>
+  O id do lead na Pilot Status — o campo `id` devolvido por `GET /v1/leads`, não o `leadgenId`
+  da Meta.
+</ParamField>
+
+Um lead de outro número, de outra conta, ou que foi apagado responde `404 LEAD_NOT_FOUND` — a
+mesma resposta de um id que nunca existiu.
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/leads/cmg4x2k9a0001ab12cd34ef56" \
+  -H "x-api-key: ps_sua_chave_aqui"
+```
+
+```json Resposta (200)
+{
+  "lead": {
+    "id": "cmg4x2k9a0001ab12cd34ef56",
+    "leadgenId": "1234567890123456",
+    "whatsappNumberId": "num_01HZX...",
+    "pageId": "102345678901234",
+    "pageName": "MM Design",
+    "formId": "987654321098765",
+    "formName": "Orçamento — Outubro",
+    "adId": "120249828053880703",
+    "adName": "Ads 01 - Vídeo dos 70%",
+    "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+    "campaignName": "[CD-01] [LEADS] - MM Design - Sale 70%",
+    "platform": "ig",
+    "isOrganic": false,
+    "createdAt": "2026-10-18T14:32:10.000Z",
+    "fullName": "Maria Souza",
+    "email": "maria@example.com",
+    "phone": "+55 11 91234-5678",
+    "fields": [
+      { "key": "full_name", "label": "full_name", "values": ["Maria Souza"] },
+      { "key": "qual_ambiente", "label": "Qual ambiente você quer reformar?", "values": ["Cozinha"] }
+    ],
+    "consentGiven": true,
+    "conversationId": "conv_01HZX...",
+    "autoSendStatus": "sent",
+    "autoSendReason": null,
+    "source": "webhook",
+    "redacted": false
+  }
+}
+```
+
+</CodeGroup>
+
+## O objeto lead
+
+| Campo | Significado |
+| --- | --- |
+| `id` | Id do lead na Pilot Status. |
+| `leadgenId` | Id do lead na Meta. |
+| `whatsappNumberId` | O número ao qual o lead pertence (aquele ao qual a Página está vinculada). |
+| `pageId` · `pageName` | A Página do Facebook dona do formulário. `pageName` pode ser `null`. |
+| `formId` · `formName` | O Formulário Instantâneo. `formName` é `null` quando o nome do formulário não é conhecido. |
+| `adId` | O anúncio que trouxe o lead, ou `null` (lead orgânico). |
+| `adName` · `adsetName` · `campaignName` | Os nomes do anúncio no Gerenciador de Anúncios, resolvidos pela Meta. Podem ser `null` (lead orgânico, conta de anúncios não compartilhada com a Pilot Status, ou ainda não resolvidos) — nesse caso, identifique o anúncio pelo `adId`; nunca adivinhe o nome de uma campanha. |
+| `platform` | `fb` (Facebook), `ig` (Instagram) ou `null`. |
+| `isOrganic` | `true` quando o lead não veio de um anúncio. Pode ser `null`. |
+| `createdAt` | ISO 8601 (UTC) de quando a pessoa enviou o formulário na Meta — não de quando a Pilot Status o guardou. |
+| `fullName` · `email` | Como a pessoa preencheu. `null` quando ocultado ou não perguntado. |
+| `phone` | O telefone **como a pessoa digitou**, sem normalização. `null` quando ocultado ou não perguntado. |
+| `fields` | Todas as respostas do formulário, como `{ key, label, values }`. `label` é o texto da pergunta quando ele era conhecido no momento em que o lead foi guardado; senão, a própria `key`. Vazio quando ocultado. |
+| `consentGiven` | `true`, `false` ou `null` — veja [`consentGiven` tem três estados](#consentgiven-tem-três-estados). |
+| `conversationId` | A conversa de WhatsApp com essa pessoa, quando existe. |
+| `autoSendStatus` | A mensagem automática de WhatsApp configurada para o formulário: `none`, `pending`, `sent`, `skipped` ou `failed`. |
+| `autoSendReason` | Por que ficou `skipped` ou `failed` (por exemplo `no_consent`, `invalid_phone`, `recent_conversation`), ou `null`. |
+| `source` | `webhook` (recebido ao vivo) ou `backfill` (importado do formulário depois). |
+| `redacted` | `true` quando os dados pessoais foram retidos — veja abaixo. |
+
+## Efeito do modo de privacidade (PII)
+
+Um lead ocultado continua existindo e continua contando: mantém os ids, a atribuição (página,
+formulário, anúncio e os nomes resolvidos do anúncio — rótulos do próprio anunciante, não dados
+pessoais) e os campos de status. Só `fullName`, `email` e `phone` voltam `null` e `fields` volta
+vazio, com `redacted: true`. Essa divisão mantém a contagem e a atribuição de leads funcionando
+num número RELAY_ONLY em vez de não devolver nada.
+
+| Modo de PII | Efeito |
+| --- | --- |
+| `STORE_INDEFINITE` (padrão) | Tudo é devolvido. |
+| `STORE_X_DAYS` | Leads com `createdAt` anterior à janela de retenção voltam ocultados. Um lead importado depois é julgado pelo `createdAt` original, então um lead antigo já nasce ocultado. |
+| `RELAY_ONLY` | Todos os leads voltam ocultados, e a resposta traz `notice: "PII_RELAY_ONLY"`. |
+
+Um lead guardado já ocultado (porque o número estava em RELAY_ONLY quando ele chegou) continua
+ocultado mesmo depois que o número muda de modo — os dados pessoais nunca foram guardados.
+
+## Erros
+
+| Status | Código | Causa |
+| --- | --- | --- |
+| `400` | `INVALID_DATE_RANGE` | Data malformada, ou `startDate` depois de `endDate`. (Só na listagem.) |
+| `400` | `INVALID_PAGINATION` | `page × pageSize` acima de 10.000. Estreite o período em vez disso. (Só na listagem.) |
+| `400` | `NUMBER_NOT_FOUND` | A chave não está vinculada a um número de WhatsApp. |
+| `401` | — | `x-api-key` ausente ou inválida. |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Credencial da conta usada sem `x-whatsapp-number-id`. |
+| `403` | `PERMISSION_DENIED` | Token OAuth/MCP cujo papel no workspace não tem `chat:read` (ANALYST). |
+| `404` | `LEAD_NOT_FOUND` | `GET /v1/leads/{id}`: nenhum lead com esse id neste número (ou ele foi apagado). |
+| `404` | `NUMBER_NOT_FOUND` | `x-whatsapp-number-id` não indica um número desta conta. |
