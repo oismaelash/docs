@@ -165,7 +165,7 @@ Em **`message.reply`**: **`quotedMessageId`** = o **`messageId`** do **`message.
 | `newsletterName` | condicional | nome do canal (somente `message.newsletter`) |
 | `newsletterId` | condicional | JID do canal (somente `message.newsletter`) |
 | `error` | condicional | mensagem de erro — somente `message.failed`, e não em todas as formas (veja `message.failed` abaixo) |
-| `errorCode` | condicional | somente `message.failed`, em dois caminhos de falha (`SEND_FAILED`, `PLAN_LIMIT_REACHED`); não é o `errorCode` da API |
+| `errorCode` | condicional | somente `message.failed`: o mesmo código público que [`GET /v1/messages`](/pt-BR/api/messages/log-error-codes) devolve para a mensagem (por exemplo `WEB_SHADOWBAN`, `PLAN_LIMIT_REACHED`, `SEND_FAILED`) |
 
 ⚠️ O `message.failed` é a exceção: duas das três formas de corpo dele não seguem esta tabela — veja `message.failed` abaixo.
 
@@ -239,9 +239,9 @@ Em **`message.reply`**: **`quotedMessageId`** = o **`messageId`** do **`message.
 
 ### message.failed
 
-O `message.failed` é enviado só para números não oficiais (web) — um número oficial reporta a falha no `statuses[]` nativo da Meta. O corpo dele **não é uniforme**: depende de onde a falha foi detectada, e fica como está de propósito, porque quem já assina faz o parsing dele. Chegam três formas. Nenhum dos códigos delas é o `errorCode` da API: para classificar uma falha, leia o `errorCode` de [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) — [Códigos de erro do webhook vs da API](/pt-BR/api/messages/log-error-codes#códigos-de-erro-do-webhook-vs-da-api) liga um ao outro.
+O `message.failed` é enviado só para números não oficiais (web) — um número oficial reporta a falha no `statuses[]` nativo da Meta. O corpo dele **não é uniforme**: depende de onde a falha foi detectada, e fica como está de propósito, porque quem já assina faz o parsing dele. Chegam três formas. **Desde 21/10/2026 todas trazem `errorCode`, e ele é o `errorCode` da API**: o mesmo valor que [`GET /v1/messages`](/pt-BR/api/messages/list), [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) e a tela de Logs mostram para aquela mensagem, do [catálogo de códigos de erro](/pt-BR/api/messages/log-error-codes). Use-o para decidir, em vez de interpretar o texto do motivo em português. O lugar dele depende da forma: `data.errorCode` nas formas 1 e 2, `errorCode` no nível de cima na forma 3. [Códigos de erro do webhook vs da API](/pt-BR/api/messages/log-error-codes#códigos-de-erro-do-webhook-vs-da-api) lista o código que cada caminho de falha envia.
 
-**1. Forma de status — `error` e `errorCode`.** Enviada quando o provedor reporta a mensagem como falha (`errorCode: "SEND_FAILED"`) e quando o limite de mensagens do plano barra um envio (`errorCode: "PLAN_LIMIT_REACHED"`). Segue os campos comuns acima; o `messageId` é o id do provedor.
+**1. Forma de status — `error` e `errorCode`.** Enviada quando o provedor reporta a mensagem como falha e quando o limite de mensagens do plano barra um envio (`errorCode: "PLAN_LIMIT_REACHED"`). Numa falha do provedor, o `errorCode` é derivado do erro do provedor exatamente como a API deriva: `WEB_SHADOWBAN` (erro 463 do WhatsApp), `WEB_PROVIDER_REJECTED` (outro número de erro do WhatsApp) e, nos demais casos, em geral `SEND_FAILED`. Até 21/10/2026 este caminho mandava sempre `SEND_FAILED`: se você compara com o literal `SEND_FAILED`, inclua os códigos mais específicos. A falha de uma mensagem sem registro na Pilot Status (enviada pelo celular, ou já expurgada) continua mandando `SEND_FAILED`. Segue os campos comuns acima; o `messageId` é o id do provedor.
 
 ```json
 {
@@ -268,7 +268,7 @@ O `message.failed` é enviado só para números não oficiais (web) — um núme
 
 A variante do limite do plano não tem `data.event`, `internalMessageId` nem `whatsappNumberId`, e o `messageId` dela é o id interno, porque nada chegou ao provedor.
 
-**2. Forma do worker — `errorMessage`, sem código.** Enviada pelo worker de envio nas falhas dele: destino fora do WhatsApp, shadowban, conexão ausente, desconectada ou removida, card de pedido que falhou depois de o texto sair, a última tentativa com falha, ou um erro inesperado. O `data` traz `messageId`, `internalMessageId`, `correlationId`, `environment`, `destinationNumber`, `content`, `status`, `failedAt` e o motivo em `errorMessage` — **sem `error`, `errorCode`, `id`, `from`, `to`, `type`, `fromMe` nem `createdAt`**. Aqui o `messageId` é o id interno, o mesmo valor de `internalMessageId`. As duas falhas de conexão (nenhuma conexão conectada, nenhuma atribuída) não trazem `internalMessageId` nem `correlationId`; o caminho de erro inesperado acrescenta `sourceNumber`.
+**2. Forma do worker — `errorMessage` e `data.errorCode`.** Enviada pelo worker de envio nas falhas dele: destino fora do WhatsApp, shadowban, conexão ausente, desconectada ou removida, card de pedido que falhou depois de o texto sair, a última tentativa com falha, ou um erro inesperado. O `data` traz `messageId`, `internalMessageId`, `correlationId`, `environment`, `destinationNumber`, `content`, `status`, `failedAt` o motivo em `errorMessage` e, desde 21/10/2026, o `errorCode` — o código da API para a mensagem (por exemplo `WHATSAPP_NOT_EXIST`, `WEB_SHADOWBAN`, `WHATSAPP_INSTANCE_NOT_CONNECTED`, `PAYMENT_ORDER_PARTIAL_SEND`). **Não há `error`, `id`, `from`, `to`, `type`, `fromMe` nem `createdAt`**. Aqui o `messageId` é o id interno, o mesmo valor de `internalMessageId`. As duas falhas de conexão (nenhuma conexão conectada, nenhuma atribuída) não trazem `internalMessageId` nem `correlationId`; o caminho de erro inesperado acrescenta `sourceNumber`.
 
 ```json
 {
@@ -282,12 +282,13 @@ A variante do limite do plano não tem `data.event`, `internalMessageId` nem `wh
     "content": "sent text",
     "status": "FAILED",
     "failedAt": "2026-02-24T15:00:05.000Z",
-    "errorMessage": "O WhatsApp bloqueou o envio por esta conexão (shadowban). Envie pelo app do WhatsApp e reduza o volume/velocidade."
+    "errorMessage": "O WhatsApp bloqueou o envio por esta conexão (shadowban). Envie pelo app do WhatsApp e reduza o volume/velocidade.",
+    "errorCode": "WEB_SHADOWBAN"
   }
 }
 ```
 
-**3. Forma plana — `code` no nível de cima.** O reconciliador de mensagens, que falha uma mensagem cujo prazo de entrega venceu, e a checagem desse prazo que o worker faz antes de uma retentativa mandam um corpo **sem `event` e sem `data`**: os campos ficam no nível de cima. Nenhum cabeçalho nomeia o evento, então reconheça esta forma por `status: "FAILED"` com `internalMessageId` no nível de cima. O reconciliador manda `code`: `NUMBER_BLOCKED` quando o número estava bloqueado, `MESSAGE_RECOVERY_FAILED` quando falhou uma mensagem que não conseguiu recolocar íntegra na fila de envio, `DELIVER_UNTIL_EXPIRED` nos outros casos. A checagem da retentativa não manda `code` e acrescenta `messageId` (o id interno).
+**3. Forma plana — `code` e `errorCode` no nível de cima.** O reconciliador de mensagens, que falha uma mensagem cujo prazo de entrega venceu, e a checagem desse prazo que o worker faz antes de uma retentativa mandam um corpo **sem `event` e sem `data`**: os campos ficam no nível de cima. Nenhum cabeçalho nomeia o evento, então reconheça esta forma por `status: "FAILED"` com `internalMessageId` no nível de cima. O reconciliador manda `code`: `NUMBER_BLOCKED` quando o número estava bloqueado, `MESSAGE_RECOVERY_FAILED` quando falhou uma mensagem que não conseguiu recolocar íntegra na fila de envio, `DELIVER_UNTIL_EXPIRED` nos outros casos. Desde 21/10/2026 ele também manda `errorCode` no nível de cima, **ao lado** do `code`: o `code` é o veredito de três valores do próprio reconciliador e continua para as integrações que já decidem por ele; o `errorCode` é o código mais fino da API para a mesma mensagem (`EXPIRED_WHILE_NUMBER_BLOCKED`, `EXPIRED_WHILE_INSTANCE_NOT_OPEN`, `NEVER_ATTEMPTED_MAX_AGE_EXCEEDED`, `EXPIRED_AFTER_ATTEMPTS`, `EXPIRED_DEFERRED_TOO_LONG`, `MESSAGE_RECOVERY_FAILED`). A checagem da retentativa não manda `code`, acrescenta `messageId` (o id interno) e manda `errorCode` (`EXPIRED_AFTER_ATTEMPTS` ou `EXPIRED_DEFERRED_TOO_LONG`). A checagem de entrega de mensagens enviadas também usa esta forma quando falha uma mensagem com `MESSAGE_RECOVERY_FAILED` (veja o aviso abaixo).
 
 ```json
 {
@@ -296,6 +297,7 @@ A variante do limite do plano não tem `data.event`, `internalMessageId` nem `wh
   "destinationNumber": "+5511999999999",
   "status": "FAILED",
   "code": "NUMBER_BLOCKED",
+  "errorCode": "EXPIRED_WHILE_NUMBER_BLOCKED",
   "error": "Mensagem expirou enquanto o envio do número estava bloqueado pelo WhatsApp.",
   "timestamp": "2026-02-24T15:00:05.000Z"
 }
@@ -305,6 +307,8 @@ As três formas também recebem o `idempotencyKey` de primeiro nível descrito e
 
 <Warning>
   **`MESSAGE_RECOVERY_FAILED` num número oficial não chega a nenhum webhook.** Além do reconciliador (forma 3), o worker de envio também falha mensagens com esse código: quando o job de envio de um número oficial (Meta Cloud API) chega ao worker sem a sua identidade Meta enquanto o número ainda tem credenciais Meta ativas, o worker se recusa a enviá-lo por qualquer outro caminho e falha a mensagem naquela tentativa, sem nova tentativa. Nada chegou à Meta, então nenhum `statuses[]` chega, e — como em todo número oficial — nenhum `message.failed` é despachado. Um `MESSAGE_RECOVERY_FAILED` do reconciliador num número oficial é igualmente silencioso.
+
+  **Desde 21/10/2026 a checagem de entrega de mensagens enviadas também falha com ele.** Quando uma mensagem está `SENT` mas a entrega nunca é confirmada, a Pilot Status a reenvia. Agora ela só reenvia texto livre num número não oficial, que consegue reconstruir íntegro. Uma mensagem de número oficial, ou um template, é falhada com `MESSAGE_RECOVERY_FAILED` em vez de ser reenviada incompleta. Num número não oficial (um template) isso manda `message.failed` na forma plana, com `code` e `errorCode` ambos `MESSAGE_RECOVERY_FAILED`; num número oficial não chega a nenhum webhook.
 
   A falha só aparece no [`GET /v1/messages`](/pt-BR/api/messages/list) e no [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) — `status: "FAILED"`, `errorCode: "MESSAGE_RECOVERY_FAILED"` e o motivo, em português, em `errorMessage` — e na tela de Logs. Consulte `GET /v1/messages?status=FAILED` para pegá-la. Seu número não tem nenhum problema: envie a mensagem novamente.
 </Warning>

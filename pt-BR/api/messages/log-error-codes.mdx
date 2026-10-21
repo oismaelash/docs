@@ -46,6 +46,7 @@ Duas mudanças funcionam ao contrário. Elas mudam o que é **gravado**, então 
 | `EXPIRED_AFTER_ATTEMPTS` | deliverUntil passou após pelo menos uma tentativa real de envio. A janela de entrega expirou com o destino inacessível. |
 | `EXPIRED_WHILE_NUMBER_BLOCKED` | O prazo de entrega (`deliverUntil`) passou sem nenhuma tentativa de envio enquanto o envio do número estava bloqueado pelo WhatsApp (saúde bloqueada ou shadowban), então o reconciliador a falhou em vez de estender o prazo. Não reenvie para um número bloqueado — isso piora o bloqueio. |
 | `EXPIRED_WHILE_INSTANCE_NOT_OPEN` | O prazo de entrega (`deliverUntil`) passou sem nenhuma tentativa de envio enquanto o número estava desconectado, então o reconciliador a falhou em vez de estender o prazo. Reenviar depois que o número reconectar costuma ser o certo. |
+| `EXPIRED_DEFERRED_TOO_LONG` | Todas as execuções da mensagem foram só adiadas (espaçamento de envios MARKETING, o teto de vazão do número ou o aquecimento depois de uma reconexão) até 24 horas depois do prazo de entrega (`deliverUntil`), então ela foi falhada sem nenhuma tentativa de envio. Não é `EXPIRED_AFTER_ATTEMPTS`: nada foi tentado. |
 | `NEVER_ATTEMPTED_MAX_AGE_EXCEEDED` | Mensagem ficou QUEUED por 7 dias sem nenhuma tentativa de envio (instância offline o tempo todo); expirou definitivamente pelo reconciliador. |
 | `MESSAGE_RECOVERY_FAILED` | Esta mensagem não foi enviada por uma falha interna nossa ao colocá-la na fila. Seu número não tem nenhum problema e não precisa ser reconectado; envie a mensagem novamente. A Pilot Status falha a mensagem em vez de enviar uma cópia incompleta dela (por exemplo, as variáveis cruas do template ou uma mensagem sem o seu template). |
 | `MESSAGE_EXPIRED` | Legado: expiração por deliverUntil ou padrão interno de mensagem expirada não coberto pelos códigos acima. |
@@ -223,28 +224,29 @@ O `SEND_FAILED` fica de propósito onde não há veredito para nomear: o texto d
 
 ## Códigos de erro do webhook vs da API
 
-Num número oficial não existe evento canônico `message.*`: a falha chega no envelope nativo da Meta como `statuses[].errors[].code`, que a coluna **Código Meta** acima mapeia. Num número não oficial (web) o `message.failed` é despachado, mas o código dele **não** é o `errorCode` desta página. Ele é anterior, usa valores próprios, e a maioria dos caminhos de falha não manda código nenhum. O payload fica como está de propósito: quem já assina ramifica por ele.
+Num número oficial não existe evento canônico `message.*`: a falha chega no envelope nativo da Meta como `statuses[].errors[].code`, que a coluna **Código Meta** acima mapeia. Num número não oficial (web) o `message.failed` é despachado e, **desde 21/10/2026, todas as formas dele trazem `errorCode` com o mesmo valor que esta página, [`GET /v1/messages`](/pt-BR/api/messages/list), [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) e a tela de Logs dão para aquela mensagem**. O webhook o calcula a partir dos mesmos dois campos gravados que a API lê, então os dois não podem divergir. O lugar do campo depende da [forma do corpo](/pt-BR/api/webhooks/events): `data.errorCode` nas formas de status e do worker, `errorCode` no nível de cima na forma plana.
 
-**Para reconciliar, use o valor da API.** Consulte [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) com o `id` ou o `correlationId` da mensagem. O `errorCode` dele é o que bate com esta página, com `GET /v1/messages` e com a tela de Logs.
+Dois valores ficam ao lado dele e **não** são o código desta página: o `code` do reconciliador no nível de cima (`NUMBER_BLOCKED`, `DELIVER_UNTIL_EXPIRED`, `MESSAGE_RECOVERY_FAILED`), mantido para as integrações que já decidem por ele, e o texto do motivo em português em `error` ou `errorMessage`.
 
-| Quando a mensagem falhou | Código no corpo do `message.failed` | `errorCode` da API para a mesma mensagem |
+| Quando a mensagem falhou | Forma do corpo | `errorCode` (webhook e API) |
 | --- | --- | --- |
-| O limite de mensagens do plano foi atingido | `data.errorCode: "PLAN_LIMIT_REACHED"` | `PLAN_LIMIT_REACHED` |
-| O provedor reportou a mensagem como falha | `data.errorCode: "SEND_FAILED"` | Derivado do erro do provedor: `WEB_SHADOWBAN` (erro 463), `WEB_PROVIDER_REJECTED` (outro número de erro do WhatsApp), senão em geral `SEND_FAILED` |
-| O mesmo, para uma mensagem sem registro na Pilot Status (enviada pelo celular, ou já expurgada) | `data.errorCode: "SEND_FAILED"` | Nenhum — não há mensagem para consultar |
-| Prazo vencido com o número bloqueado (reconciliador) | `code: "NUMBER_BLOCKED"` no nível de cima | `EXPIRED_WHILE_NUMBER_BLOCKED` |
-| Prazo vencido com o número desconectado (reconciliador) | `code: "DELIVER_UNTIL_EXPIRED"` no nível de cima | `EXPIRED_WHILE_INSTANCE_NOT_OPEN` |
-| 7 dias na fila sem nenhuma tentativa (reconciliador) | `code: "DELIVER_UNTIL_EXPIRED"` no nível de cima | `NEVER_ATTEMPTED_MAX_AGE_EXCEEDED` |
-| Prazo vencido depois de pelo menos uma tentativa (reconciliador) | `code: "DELIVER_UNTIL_EXPIRED"` no nível de cima | `EXPIRED_AFTER_ATTEMPTS` |
-| A mensagem não pôde ser recolocada íntegra na fila de envio (reconciliador) | `code: "MESSAGE_RECOVERY_FAILED"` no nível de cima | `MESSAGE_RECOVERY_FAILED` |
-| O job de envio de um número oficial chegou ao worker de envio sem a sua identidade Meta enquanto o número tem credenciais Meta ativas (worker de envio) | Nenhum — **não há webhook nenhum**: é um número oficial, então nenhum `message.failed` é despachado, e nada chegou à Meta, então nenhum `statuses[]` chega | `MESSAGE_RECOVERY_FAILED` |
-| O prazo já tinha vencido quando o envio foi retentado | Nenhum | `EXPIRED_AFTER_ATTEMPTS` |
-| O destino não está no WhatsApp | Nenhum | `WHATSAPP_NOT_EXIST` |
-| O WhatsApp recusou os envios da conexão (shadowban, erro 463) | Nenhum | `WEB_SHADOWBAN` |
-| O card de pedido falhou depois de o texto sair | Nenhum | `PAYMENT_ORDER_PARTIAL_SEND` |
-| Nenhuma conexão WhatsApp conectada (banco e verificação ao vivo) | Nenhum | `WHATSAPP_INSTANCE_NOT_CONNECTED` |
-| Nenhuma conexão WhatsApp atribuída à mensagem | Nenhum | `WHATSAPP_INSTANCE_NOT_CONFIGURED` |
-| A conexão não existe mais no provedor | Nenhum | `NUMBER_NOT_FOUND_REMOVED` |
-| A última tentativa falhou, ou outro erro inesperado | Nenhum | Derivado do erro gravado: recusas nossas mantêm o código (por exemplo `BUTTON_NOT_SENDABLE`, `FEATURE_NOT_SUPPORTED`, `MEDIA_REHOST_FAILED`, `FLOW_REQUIRES_META_NUMBER`), um provedor que não pôde ser alcançado em nenhuma tentativa é `PROVIDER_UNREACHABLE`, as recusas do WhatsApp são `WEB_SHADOWBAN` ou `WEB_PROVIDER_REJECTED`, e o texto cru do provedor em geral é `SEND_FAILED` |
+| O limite de mensagens do plano foi atingido | Status (`data.errorCode`) | `PLAN_LIMIT_REACHED` |
+| O provedor reportou a mensagem como falha | Status (`data.errorCode`) | Derivado do erro do provedor: `WEB_SHADOWBAN` (erro 463), `WEB_PROVIDER_REJECTED` (outro número de erro do WhatsApp) e, nos demais casos, em geral `SEND_FAILED` |
+| O mesmo, para uma mensagem sem registro na Pilot Status (enviada pelo celular, ou já expurgada) | Status (`data.errorCode`) | `SEND_FAILED` — não há mensagem para consultar |
+| Prazo vencido com o número bloqueado (reconciliador) | Plana, com `code: "NUMBER_BLOCKED"` | `EXPIRED_WHILE_NUMBER_BLOCKED` |
+| Prazo vencido com o número desconectado (reconciliador) | Plana, com `code: "DELIVER_UNTIL_EXPIRED"` | `EXPIRED_WHILE_INSTANCE_NOT_OPEN` |
+| 7 dias na fila sem nenhuma tentativa (reconciliador) | Plana, com `code: "DELIVER_UNTIL_EXPIRED"` | `NEVER_ATTEMPTED_MAX_AGE_EXCEEDED` |
+| Prazo vencido depois de pelo menos uma tentativa (reconciliador) | Plana, com `code: "DELIVER_UNTIL_EXPIRED"` | `EXPIRED_AFTER_ATTEMPTS`, ou `EXPIRED_DEFERRED_TOO_LONG` quando todas as execuções foram só adiadas |
+| A mensagem não pôde ser recolocada íntegra na fila de envio (reconciliador) | Plana, com `code: "MESSAGE_RECOVERY_FAILED"` | `MESSAGE_RECOVERY_FAILED` |
+| Uma mensagem `SENT` cuja entrega nunca foi confirmada não pôde ser reenviada íntegra: um template num número não oficial (checagem de entrega de mensagens enviadas, desde 21/10/2026) | Plana, com `code: "MESSAGE_RECOVERY_FAILED"` | `MESSAGE_RECOVERY_FAILED` |
+| O mesmo num número oficial, ou o job de envio de um número oficial chegou ao worker de envio sem a sua identidade Meta enquanto o número tem credenciais Meta ativas | Nenhuma — **não há webhook nenhum**: é um número oficial, então nenhum `message.failed` é despachado, e nada chegou à Meta, então nenhum `statuses[]` chega | `MESSAGE_RECOVERY_FAILED` |
+| O prazo já tinha vencido quando o envio foi retentado | Plana, sem `code` | `EXPIRED_AFTER_ATTEMPTS`, ou `EXPIRED_DEFERRED_TOO_LONG` quando todas as execuções foram só adiadas |
+| O destino não está no WhatsApp | Worker (`data.errorCode`) | `WHATSAPP_NOT_EXIST` |
+| O WhatsApp recusou os envios da conexão (shadowban, erro 463) | Worker (`data.errorCode`) | `WEB_SHADOWBAN` |
+| O card de pedido falhou depois de o texto sair | Worker (`data.errorCode`) | `PAYMENT_ORDER_PARTIAL_SEND` |
+| Nenhuma conexão WhatsApp conectada (banco e verificação ao vivo) | Worker (`data.errorCode`) | `WHATSAPP_INSTANCE_NOT_CONNECTED` |
+| Nenhuma conexão WhatsApp atribuída à mensagem | Worker (`data.errorCode`) | `WHATSAPP_INSTANCE_NOT_CONFIGURED` |
+| A conexão não existe mais no provedor | Worker (`data.errorCode`) | `NUMBER_NOT_FOUND_REMOVED` |
+| A última tentativa falhou, ou outro erro inesperado | Worker (`data.errorCode`) | Derivado do erro gravado: recusas nossas mantêm o código (por exemplo `BUTTON_NOT_SENDABLE`, `FEATURE_NOT_SUPPORTED`, `MEDIA_REHOST_FAILED`, `FLOW_REQUIRES_META_NUMBER`), um provedor que não pôde ser alcançado em nenhuma tentativa é `PROVIDER_UNREACHABLE`, as recusas do WhatsApp são `WEB_SHADOWBAN` ou `WEB_PROVIDER_REJECTED`, e o texto bruto do provedor em geral é `SEND_FAILED` |
 
-Numa mensagem que falhou antes do lançamento, as quatro últimas linhas ainda podem mostrar o valor antigo — em geral `SEND_FAILED`, às vezes `DELIVERY_TIMEOUT`. As linhas sem código trazem o motivo como texto em `data.errorMessage`. As linhas com `code` no nível de cima, e a do prazo vencido na retentativa, mandam um corpo plano em vez de `{ event, data }`: `internalMessageId`, `correlationId`, `destinationNumber`, `status`, `error` e `timestamp` ficam no nível de cima.
+Um `message.failed` enviado antes de 21/10/2026 não tem `errorCode` nas formas do worker e plana, e tem `SEND_FAILED` na forma de status. Para esses, consulte [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) com o `id` ou o `correlationId` da mensagem. Numa mensagem que falhou antes do lançamento dos códigos gravados pelo worker, as quatro últimas linhas ainda podem mostrar o valor antigo — em geral `SEND_FAILED`, às vezes `DELIVERY_TIMEOUT`. A forma plana manda `internalMessageId`, `correlationId`, `destinationNumber`, `status`, `code` (quando houver), `errorCode`, `error` e `timestamp` no nível de cima, em vez de `{ event, data }`.

@@ -1,0 +1,212 @@
+---
+title: "Lead Ads Pages API — Facebook Pages and Instant Forms"
+sidebarTitle: "Lead Ads Pages"
+description: "Link Facebook Pages for Meta Lead Ads capture, move or unlink them, resync their leads and configure each Instant Form's consent and automatic WhatsApp message over /v1/lead-pages."
+mode: "wide"
+---
+
+A lead submitted on a **Meta Lead Ads Instant Form** is stored by Pilot Status only when the
+form's Facebook Page is **linked** to one of your WhatsApp numbers. These endpoints do over the
+API — and through the [MCP server](/integrations/mcp-server) — what the dashboard does with those
+links: list and link Pages, move a Page to another number, unlink it, pull its leads again, and
+configure each form. The leads themselves are read with [`GET /v1/leads`](/api/leads).
+
+## Endpoints
+
+| Method | Path | What it does |
+| --- | --- | --- |
+| `GET` | `/v1/lead-pages` | Linked Pages and the Pages you can still link |
+| `POST` | `/v1/lead-pages` | Link a Page to a number |
+| `PATCH` | `/v1/lead-pages/{pageLinkId}` | Move the link to another number |
+| `DELETE` | `/v1/lead-pages/{pageLinkId}` | Unlink the Page — **erases its leads** |
+| `POST` | `/v1/lead-pages/{pageLinkId}/resync` | Pull the last 90 days of leads again |
+| `GET` | `/v1/lead-pages/{pageLinkId}/forms` | The Page's Instant Forms and their configuration |
+| `PUT` | `/v1/lead-pages/{pageLinkId}/forms/{formId}` | Configure one form |
+
+`pageLinkId` is the id of the **link** (`linked[].pageLinkId`), not the Facebook Page id.
+
+## Before you link: sharing and ownership
+
+There is no Meta login step. On Meta's side, the advertiser:
+
+1. shares the Page with the Pilot Status business portfolio — the `partnerBusinessId` that
+   `GET /v1/lead-pages` returns — in Meta Business Manager;
+2. gives the Pilot Status system user the Page tasks it needs. `candidates[].missingTasks` lists
+   what is still missing: `MODERATE`, `MANAGE_LEADS`, or `PAGE_ACCESS` when the Page was not
+   assigned to the system user at all. An empty list means ready; `null` means Meta could not be
+   asked.
+
+A Page can be linked only when **its owner business also owns the WABA of one of your official
+(Meta Cloud API) numbers** — that is how Pilot Status knows the Page is yours. With no official
+number, `candidates` is empty and `eligibilityBlocker` is `NO_OFFICIAL_NUMBER`. The leads can then
+go to any number of the workspace, official or not.
+
+## Credentials and permissions
+
+- **OAuth/MCP tokens need `integrations:manage`** (workspace ADMIN or OWNER) on every endpoint,
+  reads included — ANALYST and AGENT are refused with `403 PERMISSION_DENIED`. A classic `ps_` key
+  has no role and passes by its scope.
+- **Scope:** a number-scoped key, or an account-wide credential with the
+  [`x-whatsapp-number-id`](/api/authentication) header, sees and changes only the links of that
+  number. An account-wide credential without the header sees the whole workspace and names the
+  number in the body. A link on a number outside the credential's scope answers
+  `403 NUMBER_NOT_IN_GRANT`.
+
+## `GET /v1/lead-pages`
+
+```json
+{
+  "linked": [
+    {
+      "pageLinkId": "cmgpl0001ab12cd34ef56",
+      "pageId": "102345678901234",
+      "pageName": "MM Design",
+      "whatsappNumberId": "num_01HZX...",
+      "subscribedAt": "2026-10-06T10:15:00.000Z",
+      "subscriptionError": null,
+      "linkedAt": "2026-10-06T10:14:58.000Z",
+      "leadsCount": 42
+    }
+  ],
+  "candidates": [
+    { "pageId": "109876543210987", "pageName": "MM Design Outlet", "missingTasks": ["MANAGE_LEADS"] }
+  ],
+  "configured": true,
+  "partnerBusinessId": "123456789012345",
+  "candidatesLookup": "ok",
+  "eligibilityBlocker": null
+}
+```
+
+**`subscribedAt: null` means Meta is not sending that Page's leads**, whatever else the link
+says. `subscriptionError` gives the reason: `META_PERMISSION_MISSING`, `PAGE_ACCESS_MISSING`,
+`META_NOT_FOUND`, `META_UNAVAILABLE`, `META_NOT_CONFIRMED`, `META_ERROR`, or — when the Page stopped being
+eligible — `PAGE_NOT_SHARED`, `PAGE_BUSINESS_MISMATCH`, `NO_OFFICIAL_NUMBER`. Fix it on Meta's side
+and resync the link (below).
+
+## `POST /v1/lead-pages`
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/lead-pages \
+  -H "x-api-key: ps_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "pageId": "109876543210987", "whatsappNumberId": "num_01HZX..." }'
+```
+
+- `pageId` is the numeric Facebook Page id. `whatsappNumberId` may be left out only when the
+  credential is bound to one number. Any other field is refused with `400 UNKNOWN_FIELDS`.
+- Ownership and the Page tasks are checked **before** anything is written: `409 PAGE_NOT_ELIGIBLE`
+  (with `reason` when known; without one when another workspace already linked the Page),
+  `409 PAGE_MISSING_PERMISSION` (with `missingTasks`), `409 PAGE_ALREADY_LINKED` (with the existing
+  `pageLinkId`).
+- On success (`201 { "link": { … } }`) Pilot Status subscribes to the Page's leads and starts
+  pulling its last 90 days of leads in the background. If Meta refuses the subscription, the link
+  is still created and `subscriptionError` says why.
+
+## `PATCH /v1/lead-pages/{pageLinkId}`
+
+Moves the link to another number of the workspace. The body is `{ "whatsappNumberId": "…" }`.
+Only **new** leads follow; leads already captured stay on the number they arrived on.
+
+When the new number sends a different kind of message — an official number sends templates, an
+unofficial one free text — or sits on another WABA, **every automatic message of the link's forms
+is switched off**, and the answer says `"autoSendDisabled": true`. Review the forms before turning
+it back on.
+
+## `DELETE /v1/lead-pages/{pageLinkId}`
+
+<Warning>
+  **Unlinking erases every lead captured through the link, and deletes the link's form
+  configurations.** It cannot be undone. The answer, `200 { "unlinked": true, "pageLinkId": "…",
+  "deletedLeads": 42 }`, says how many leads were erased. You can link the Page again later, but
+  the erased leads do not come back — not even through a resync.
+</Warning>
+
+Pilot Status also unsubscribes from the Page's leads on Meta. If Meta fails, the unlink goes
+through anyway and no further lead from that Page is stored.
+
+## `POST /v1/lead-pages/{pageLinkId}/resync`
+
+Pulls the Page's last **90 days** of leads again — already-stored leads are not duplicated — and,
+when the link is not subscribed, retries the subscription. It takes no body and answers `202`:
+
+```json
+{ "started": true, "pageLinkId": "cmgpl0001ab12cd34ef56", "subscribedAt": "2026-10-21T10:02:44.000Z", "subscriptionError": null }
+```
+
+`subscribedAt` and `subscriptionError` appear only when this call retried the subscription. The
+pull itself runs in the background and can take minutes.
+
+- **One resync per link every 10 minutes.** Inside that window the answer is
+  `429 RESYNC_COOLDOWN` with `retryAfterSeconds`. If the wait cannot be checked, the answer is
+  `503 RESYNC_UNAVAILABLE`, never an unbounded resync.
+- Ownership is checked again. A Page that is no longer eligible is flagged on the link
+  (`subscriptionError`) and answers `409 PAGE_NOT_ELIGIBLE` with `reason`.
+
+## `GET /v1/lead-pages/{pageLinkId}/forms`
+
+The Page's Instant Forms, read live from Meta, each with its `questions`, its `consentCheckboxes`
+and the configuration stored in Pilot Status (`config`, or `null` when never configured). The
+answer also carries `numberIsOfficial` and, for an official number, the **approved** templates the
+link's number can send automatically (`templates`, each `{ id, name, variables }`; empty on an
+unofficial number).
+
+- `consentAvailable: false` — the form's checkboxes could not be read. The list is unknown, not
+  empty.
+- `formsTruncated: true` — the Page has more forms than Pilot Status read.
+
+## `PUT /v1/lead-pages/{pageLinkId}/forms/{formId}`
+
+Creates or replaces one form's configuration. Send the whole object:
+
+```json
+{
+  "consentDisclaimerKey": "whatsapp_optin",
+  "autoSendEnabled": true,
+  "templateId": null,
+  "freeText": "Olá {{nome}}, recebemos seu pedido de orçamento!",
+  "variableMap": { "nome": { "source": "field", "key": "full_name" } },
+  "formName": "Orçamento — Outubro"
+}
+```
+
+<Warning>
+  **With `autoSendEnabled: true`, Pilot Status messages every new lead of the form on WhatsApp
+  automatically, without a human.** A configuration this endpoint accepts will be acted on.
+</Warning>
+
+| Field | Meaning |
+| --- | --- |
+| `consentDisclaimerKey` | `key` of the form's consent checkbox that means "you may message me on WhatsApp". Required for automatic messages (`400 CONSENT_REQUIRED`). |
+| `autoSendEnabled` | Message every new lead automatically. |
+| `templateId` | **Official numbers:** an approved template of the number (`templates[].id`). Required for automatic messages (`TEMPLATE_REQUIRED`); one that is not approved or not the number's is `TEMPLATE_NOT_ELIGIBLE`. Must be `null` on an unofficial number (`TEMPLATE_NOT_ALLOWED`). |
+| `freeText` | **Unofficial numbers:** the message, up to 4,096 characters, with `{{name}}` placeholders. Required for automatic messages (`FREE_TEXT_REQUIRED`). Must be `null` on an official number (`FREE_TEXT_NOT_ALLOWED`). A placeholder with spaces, like `{{ first name }}`, is refused as `VALIDATION_FAILED` with `INVALID_PLACEHOLDER`. |
+| `variableMap` | The value of each template variable or placeholder: a form answer `{ "source": "field", "key": "<question key>" }` or a fixed value `{ "source": "static", "value": "…" }`. A variable left out is `400 VARIABLES_UNMAPPED` with `missingVariables`. Defaults to `{}`. |
+| `formName` | Optional display label. |
+
+The message rules apply only when `autoSendEnabled` is `true`, so you can save the consent
+checkbox and a draft first. The answer is `200 { "config": { … } }`.
+
+## Errors
+
+| Status | Code | Cause |
+| --- | --- | --- |
+| `400` | `INVALID_BODY` | The body is not a JSON object. |
+| `400` | `UNKNOWN_FIELDS` | The body has a field the endpoint does not accept; `unknownFields` lists them. |
+| `400` | `VALIDATION_FAILED` | Malformed `pageId`, `formId` or body; `details` says which field. |
+| `400` | `CONSENT_REQUIRED`, `TEMPLATE_REQUIRED`, `TEMPLATE_NOT_ELIGIBLE`, `TEMPLATE_NOT_ALLOWED`, `FREE_TEXT_REQUIRED`, `FREE_TEXT_NOT_ALLOWED`, `VARIABLES_UNMAPPED` | Form configuration rules (see above). |
+| `400` | `NUMBER_REQUIRED` | Per-number OAuth grant without `x-whatsapp-number-id`. |
+| `401` | — | Missing or invalid `x-api-key`. |
+| `403` | `NUMBER_NOT_IN_GRANT` | The link's number, or the target number, is outside the credential's scope. |
+| `403` | `PERMISSION_DENIED` | OAuth/MCP token whose role lacks `integrations:manage`. |
+| `404` | `NOT_FOUND` | No active link with that `pageLinkId` in this workspace. |
+| `404` | `NUMBER_NOT_FOUND` | `whatsappNumberId` is not a number of this workspace. |
+| `409` | `PAGE_ALREADY_LINKED` | The Page is already linked in this workspace; `pageLinkId` is the existing link. |
+| `409` | `PAGE_NOT_ELIGIBLE` | The Page is not this workspace's (`reason`), or another workspace linked it. |
+| `409` | `PAGE_MISSING_PERMISSION` | The Pilot Status system user lacks Page tasks; `missingTasks` lists them. |
+| `429` | `RESYNC_COOLDOWN` | A resync of this link ran less than 10 minutes ago; wait `retryAfterSeconds`. |
+| `502` | `LEADS_LOOKUP_UNAVAILABLE` | Meta could not be reached. Retry. |
+| `503` | `LEADS_NOT_CONFIGURED` | Lead capture is not configured on this installation. |
+| `503` | `RESYNC_UNAVAILABLE` | The resync wait could not be checked. Retry in a moment. |
+
+The refusals of these endpoints carry `{ "error": "<English> | <Português>", "code": "…" }`.

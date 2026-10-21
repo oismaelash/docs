@@ -1,0 +1,213 @@
+---
+title: "API de Páginas do Lead Ads — Páginas do Facebook e Formulários Instantâneos"
+sidebarTitle: "Páginas do Lead Ads"
+description: "Vincule Páginas do Facebook para a captura do Meta Lead Ads, mova ou desvincule, ressincronize os leads e configure o consentimento e a mensagem automática de WhatsApp de cada Formulário Instantâneo em /v1/lead-pages."
+mode: "wide"
+---
+
+Um lead enviado num **Formulário Instantâneo do Meta Lead Ads** só é guardado pela Pilot Status
+quando a Página do Facebook do formulário está **vinculada** a um dos seus números de WhatsApp.
+Estes endpoints fazem pela API — e pelo [servidor MCP](/pt-BR/integrations/mcp-server) — o que o
+painel faz com esses vínculos: listar e vincular Páginas, mover uma Página para outro número,
+desvinculá-la, buscar os leads de novo e configurar cada formulário. Os leads em si são lidos com
+[`GET /v1/leads`](/pt-BR/api/leads).
+
+## Endpoints
+
+| Método | Caminho | O que faz |
+| --- | --- | --- |
+| `GET` | `/v1/lead-pages` | Páginas vinculadas e as que você ainda pode vincular |
+| `POST` | `/v1/lead-pages` | Vincula uma Página a um número |
+| `PATCH` | `/v1/lead-pages/{pageLinkId}` | Move o vínculo para outro número |
+| `DELETE` | `/v1/lead-pages/{pageLinkId}` | Desvincula a Página — **apaga os leads dela** |
+| `POST` | `/v1/lead-pages/{pageLinkId}/resync` | Busca de novo os leads dos últimos 90 dias |
+| `GET` | `/v1/lead-pages/{pageLinkId}/forms` | Os Formulários Instantâneos da Página e a configuração deles |
+| `PUT` | `/v1/lead-pages/{pageLinkId}/forms/{formId}` | Configura um formulário |
+
+`pageLinkId` é o id do **vínculo** (`linked[].pageLinkId`), não o id da Página do Facebook.
+
+## Antes de vincular: compartilhamento e posse
+
+Não há etapa de login na Meta. Do lado da Meta, o anunciante:
+
+1. compartilha a Página com o portfólio empresarial da Pilot Status — o `partnerBusinessId` que
+   `GET /v1/lead-pages` devolve — no Meta Business Manager;
+2. dá ao usuário do sistema da Pilot Status as tarefas da Página de que ele precisa.
+   `candidates[].missingTasks` lista o que ainda falta: `MODERATE`, `MANAGE_LEADS`, ou
+   `PAGE_ACCESS` quando a Página nem foi atribuída ao usuário do sistema. Lista vazia significa
+   pronta; `null` significa que não foi possível consultar a Meta.
+
+Uma Página só pode ser vinculada quando **a empresa dona dela também é dona da WABA de um dos seus
+números oficiais (Meta Cloud API)** — é assim que a Pilot Status sabe que a Página é sua. Sem
+nenhum número oficial, `candidates` vem vazio e `eligibilityBlocker` é `NO_OFFICIAL_NUMBER`. Os
+leads, depois, podem ir para qualquer número do workspace, oficial ou não.
+
+## Credenciais e permissões
+
+- **Tokens OAuth/MCP precisam de `integrations:manage`** (ADMIN ou OWNER do workspace) em todos os
+  endpoints, leituras incluídas — ANALYST e AGENT são recusados com `403 PERMISSION_DENIED`. Uma
+  chave `ps_` clássica não tem papel e passa pelo escopo.
+- **Escopo:** uma chave com escopo de número, ou uma credencial da conta inteira com o header
+  [`x-whatsapp-number-id`](/pt-BR/api/authentication), vê e altera só os vínculos daquele número.
+  Uma credencial da conta inteira sem o header vê o workspace todo e indica o número no corpo. Um
+  vínculo num número fora do escopo da credencial responde `403 NUMBER_NOT_IN_GRANT`.
+
+## `GET /v1/lead-pages`
+
+```json
+{
+  "linked": [
+    {
+      "pageLinkId": "cmgpl0001ab12cd34ef56",
+      "pageId": "102345678901234",
+      "pageName": "MM Design",
+      "whatsappNumberId": "num_01HZX...",
+      "subscribedAt": "2026-10-06T10:15:00.000Z",
+      "subscriptionError": null,
+      "linkedAt": "2026-10-06T10:14:58.000Z",
+      "leadsCount": 42
+    }
+  ],
+  "candidates": [
+    { "pageId": "109876543210987", "pageName": "MM Design Outlet", "missingTasks": ["MANAGE_LEADS"] }
+  ],
+  "configured": true,
+  "partnerBusinessId": "123456789012345",
+  "candidatesLookup": "ok",
+  "eligibilityBlocker": null
+}
+```
+
+**`subscribedAt: null` significa que a Meta não está enviando os leads daquela Página**, diga o
+que disser o resto do vínculo. `subscriptionError` traz o motivo: `META_PERMISSION_MISSING`,
+`PAGE_ACCESS_MISSING`, `META_NOT_FOUND`, `META_UNAVAILABLE`, `META_NOT_CONFIRMED`, `META_ERROR`, ou
+— quando a Página deixou de ser elegível — `PAGE_NOT_SHARED`, `PAGE_BUSINESS_MISMATCH`,
+`NO_OFFICIAL_NUMBER`. Corrija do lado da Meta e ressincronize o vínculo (abaixo).
+
+## `POST /v1/lead-pages`
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/lead-pages \
+  -H "x-api-key: ps_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "pageId": "109876543210987", "whatsappNumberId": "num_01HZX..." }'
+```
+
+- `pageId` é o id numérico da Página do Facebook. `whatsappNumberId` só pode ficar de fora quando
+  a credencial está vinculada a um número. Qualquer outro campo é recusado com
+  `400 UNKNOWN_FIELDS`.
+- A posse e as tarefas da Página são conferidas **antes** de gravar qualquer coisa:
+  `409 PAGE_NOT_ELIGIBLE` (com `reason` quando conhecido; sem ele quando outro workspace já
+  vinculou a Página), `409 PAGE_MISSING_PERMISSION` (com `missingTasks`), `409 PAGE_ALREADY_LINKED`
+  (com o `pageLinkId` existente).
+- Com sucesso (`201 { "link": { … } }`), a Pilot Status se inscreve nos leads da Página e começa a
+  buscar os leads dos últimos 90 dias em segundo plano. Se a Meta recusar a inscrição, o vínculo é
+  criado mesmo assim e `subscriptionError` diz o motivo.
+
+## `PATCH /v1/lead-pages/{pageLinkId}`
+
+Move o vínculo para outro número do workspace. O corpo é `{ "whatsappNumberId": "…" }`. Só os
+leads **novos** acompanham; os já captados ficam no número em que chegaram.
+
+Quando o número novo envia outro tipo de mensagem — número oficial envia templates, não oficial
+envia texto livre — ou fica em outra WABA, **toda mensagem automática dos formulários do vínculo é
+desligada**, e a resposta traz `"autoSendDisabled": true`. Revise os formulários antes de religar.
+
+## `DELETE /v1/lead-pages/{pageLinkId}`
+
+<Warning>
+  **Desvincular apaga todo lead captado pelo vínculo e exclui as configurações de formulário dele.**
+  Não dá para desfazer. A resposta, `200 { "unlinked": true, "pageLinkId": "…", "deletedLeads": 42 }`,
+  diz quantos leads foram apagados. Você pode vincular a Página de novo depois, mas os leads
+  apagados não voltam — nem por ressincronização.
+</Warning>
+
+A Pilot Status também cancela a inscrição nos leads da Página na Meta. Se a Meta falhar, o
+desvínculo acontece mesmo assim e nenhum lead novo daquela Página é guardado.
+
+## `POST /v1/lead-pages/{pageLinkId}/resync`
+
+Busca de novo os leads dos últimos **90 dias** da Página — leads já guardados não se duplicam — e,
+quando o vínculo não está inscrito, tenta a inscrição de novo. Não recebe corpo e responde `202`:
+
+```json
+{ "started": true, "pageLinkId": "cmgpl0001ab12cd34ef56", "subscribedAt": "2026-10-21T10:02:44.000Z", "subscriptionError": null }
+```
+
+`subscribedAt` e `subscriptionError` só aparecem quando esta chamada tentou a inscrição de novo. A
+busca em si roda em segundo plano e pode levar minutos.
+
+- **Uma ressincronização por vínculo a cada 10 minutos.** Dentro dessa janela a resposta é
+  `429 RESYNC_COOLDOWN` com `retryAfterSeconds`. Se não for possível conferir a espera, a resposta
+  é `503 RESYNC_UNAVAILABLE`, nunca uma ressincronização sem limite.
+- A posse é conferida de novo. Uma Página que deixou de ser elegível é marcada no vínculo
+  (`subscriptionError`) e responde `409 PAGE_NOT_ELIGIBLE` com `reason`.
+
+## `GET /v1/lead-pages/{pageLinkId}/forms`
+
+Os Formulários Instantâneos da Página, lidos ao vivo da Meta, cada um com as `questions`, as
+`consentCheckboxes` e a configuração guardada na Pilot Status (`config`, ou `null` quando nunca
+configurado). A resposta também traz `numberIsOfficial` e, para um número oficial, os templates
+**aprovados** que o número do vínculo pode enviar automaticamente (`templates`, cada um
+`{ id, name, variables }`; vazio num número não oficial).
+
+- `consentAvailable: false` — as caixas do formulário não puderam ser lidas. A lista é
+  desconhecida, não vazia.
+- `formsTruncated: true` — a Página tem mais formulários do que a Pilot Status leu.
+
+## `PUT /v1/lead-pages/{pageLinkId}/forms/{formId}`
+
+Cria ou substitui a configuração de um formulário. Envie o objeto inteiro:
+
+```json
+{
+  "consentDisclaimerKey": "whatsapp_optin",
+  "autoSendEnabled": true,
+  "templateId": null,
+  "freeText": "Olá {{nome}}, recebemos seu pedido de orçamento!",
+  "variableMap": { "nome": { "source": "field", "key": "full_name" } },
+  "formName": "Orçamento — Outubro"
+}
+```
+
+<Warning>
+  **Com `autoSendEnabled: true`, a Pilot Status manda mensagem no WhatsApp para todo lead novo do
+  formulário automaticamente, sem um humano.** Uma configuração aceita por este endpoint vai ser
+  executada.
+</Warning>
+
+| Campo | Significado |
+| --- | --- |
+| `consentDisclaimerKey` | `key` da caixa de consentimento do formulário que significa "pode me mandar mensagem no WhatsApp". Obrigatória para as mensagens automáticas (`400 CONSENT_REQUIRED`). |
+| `autoSendEnabled` | Mandar mensagem automaticamente a todo lead novo. |
+| `templateId` | **Números oficiais:** um template aprovado do número (`templates[].id`). Obrigatório para as mensagens automáticas (`TEMPLATE_REQUIRED`); um que não esteja aprovado ou não seja do número é `TEMPLATE_NOT_ELIGIBLE`. Deve ser `null` num número não oficial (`TEMPLATE_NOT_ALLOWED`). |
+| `freeText` | **Números não oficiais:** a mensagem, com até 4.096 caracteres e variáveis `{{nome}}`. Obrigatório para as mensagens automáticas (`FREE_TEXT_REQUIRED`). Deve ser `null` num número oficial (`FREE_TEXT_NOT_ALLOWED`). Uma variável com espaços, como `{{ primeiro nome }}`, é recusada como `VALIDATION_FAILED` com `INVALID_PLACEHOLDER`. |
+| `variableMap` | O valor de cada variável do template ou do texto: uma resposta do formulário `{ "source": "field", "key": "<chave da pergunta>" }` ou um valor fixo `{ "source": "static", "value": "…" }`. Uma variável que ficou de fora é `400 VARIABLES_UNMAPPED` com `missingVariables`. Padrão `{}`. |
+| `formName` | Rótulo opcional. |
+
+As regras da mensagem só valem quando `autoSendEnabled` é `true`, então você pode salvar a caixa de
+consentimento e um rascunho antes. A resposta é `200 { "config": { … } }`.
+
+## Erros
+
+| Status | Código | Causa |
+| --- | --- | --- |
+| `400` | `INVALID_BODY` | O corpo não é um objeto JSON. |
+| `400` | `UNKNOWN_FIELDS` | O corpo tem um campo que o endpoint não aceita; `unknownFields` lista quais. |
+| `400` | `VALIDATION_FAILED` | `pageId`, `formId` ou corpo malformado; `details` diz qual campo. |
+| `400` | `CONSENT_REQUIRED`, `TEMPLATE_REQUIRED`, `TEMPLATE_NOT_ELIGIBLE`, `TEMPLATE_NOT_ALLOWED`, `FREE_TEXT_REQUIRED`, `FREE_TEXT_NOT_ALLOWED`, `VARIABLES_UNMAPPED` | Regras da configuração do formulário (veja acima). |
+| `400` | `NUMBER_REQUIRED` | Concessão OAuth por número sem `x-whatsapp-number-id`. |
+| `401` | — | `x-api-key` ausente ou inválida. |
+| `403` | `NUMBER_NOT_IN_GRANT` | O número do vínculo, ou o de destino, está fora do escopo da credencial. |
+| `403` | `PERMISSION_DENIED` | Token OAuth/MCP cujo papel não tem `integrations:manage`. |
+| `404` | `NOT_FOUND` | Nenhum vínculo ativo com esse `pageLinkId` neste workspace. |
+| `404` | `NUMBER_NOT_FOUND` | `whatsappNumberId` não é um número deste workspace. |
+| `409` | `PAGE_ALREADY_LINKED` | A Página já está vinculada neste workspace; `pageLinkId` é o vínculo existente. |
+| `409` | `PAGE_NOT_ELIGIBLE` | A Página não é deste workspace (`reason`), ou outro workspace a vinculou. |
+| `409` | `PAGE_MISSING_PERMISSION` | Faltam tarefas da Página ao usuário do sistema da Pilot Status; `missingTasks` lista quais. |
+| `429` | `RESYNC_COOLDOWN` | Uma ressincronização deste vínculo rodou há menos de 10 minutos; aguarde `retryAfterSeconds`. |
+| `502` | `LEADS_LOOKUP_UNAVAILABLE` | Não foi possível consultar a Meta. Tente de novo. |
+| `503` | `LEADS_NOT_CONFIGURED` | A captura de leads não está configurada nesta instalação. |
+| `503` | `RESYNC_UNAVAILABLE` | Não foi possível conferir a espera da ressincronização. Tente de novo em instantes. |
+
+As recusas destes endpoints trazem `{ "error": "<English> | <Português>", "code": "…" }`.
