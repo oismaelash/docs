@@ -1,0 +1,192 @@
+---
+title: "API de anúncios — contas de anúncios da Meta e resumo por anúncio"
+sidebarTitle: "Anúncios"
+description: "Conecte as contas de anúncios da Meta que dão nome aos seus anúncios Click-to-WhatsApp e leia conversas, mensagens e leads do Lead Ads por anúncio em /v1/ads."
+mode: "wide"
+---
+
+Duas coisas que até agora só existiam no painel também estão na API pública e no
+[servidor MCP](/pt-BR/integrations/mcp-server):
+
+- **Contas de anúncios** — conecte as contas de anúncios da Meta cujos anúncios trazem pessoas
+  aos seus números, para a Pilot Status resolver o **nome** de cada anúncio, do conjunto de
+  anúncios e da campanha.
+- **Resumo de anúncios** — o tráfego Click-to-WhatsApp agrupado por anúncio: conversas,
+  mensagens, os nomes resolvidos e quantos [leads do Lead Ads](/pt-BR/api/leads) cada anúncio gerou.
+
+As Páginas do Facebook e os Formulários Instantâneos do Meta Lead Ads têm página própria:
+[Páginas e formulários do Lead Ads](/pt-BR/api/lead-pages).
+
+## Endpoints
+
+| Método | Caminho | O que faz |
+| --- | --- | --- |
+| `GET` | `/v1/ads/accounts` | Contas de anúncios vinculadas e as que você ainda pode vincular |
+| `POST` | `/v1/ads/accounts` | Vincula uma conta de anúncios |
+| `DELETE` | `/v1/ads/accounts/{adAccountId}` | Desvincula uma conta de anúncios |
+| `GET` | `/v1/ads/summary` | Conversas, mensagens e leads por anúncio |
+
+## Sem login na Meta: compartilhamento de parceiro
+
+Nenhum endpoint aqui pede token da Meta, e nenhum vai pedir. O acesso vem do **compartilhamento
+de parceiro**: o anunciante adiciona o portfólio empresarial da Pilot Status — o
+`partnerBusinessId` devolvido por `GET /v1/ads/accounts` — como **parceiro** da conta de anúncios
+no Meta Business Manager. É o único passo manual, e ele acontece do lado da Meta. A partir daí, a
+Pilot Status lê com o próprio usuário do sistema.
+
+## Credenciais e permissões
+
+| Endpoint | Credencial | Permissão (OAuth/MCP) | Escopo |
+| --- | --- | --- | --- |
+| `/v1/ads/accounts` (todos os verbos) | Só da conta inteira — chave com escopo de número recebe `403 NUMBER_SCOPE_NOT_ALLOWED` | `integrations:manage` (ADMIN, OWNER), leituras incluídas | O workspace |
+| `/v1/ads/summary` | Qualquer uma | `analytics:read` (todos os papéis, ANALYST incluído) | O número vinculado, ou o workspace todo |
+
+Uma chave `ps_` clássica não tem papel e passa na checagem de permissão pelo escopo. No resumo,
+uma chave com escopo de número — ou uma credencial da conta inteira com o header
+[`x-whatsapp-number-id`](/pt-BR/api/authentication) — reporta só aquele número; uma credencial da
+conta inteira sem o header reporta o workspace todo.
+
+## `GET /v1/ads/accounts`
+
+```bash
+curl https://pilotstatus.com.br/v1/ads/accounts \
+  -H "x-api-key: ps_..."
+```
+
+```json
+{
+  "linked": [
+    {
+      "adAccountId": "act_1234567890",
+      "adAccountName": "MM Design",
+      "linkedAt": "2026-10-05T14:02:11.000Z",
+      "sharingActive": true
+    }
+  ],
+  "candidates": [
+    { "adAccountId": "act_9876543210", "adAccountName": "MM Design — Black Friday", "accountStatus": 1 }
+  ],
+  "partnerBusinessId": "123456789012345",
+  "sharingLookup": "ok"
+}
+```
+
+- **`sharingActive`** — `true` enquanto a concessão de parceiro continua valendo, `false` quando o
+  anunciante a revogou na Meta e `null` quando não foi possível consultar a Meta agora. Nunca leia
+  `null` como revogada.
+- **`candidates`** — contas compartilhadas com a Pilot Status que comprovadamente são do seu
+  workspace, porque um anúncio delas já chegou a um dos seus números, e ainda não vinculadas. Um
+  workspace novo começa com a lista vazia; vincule a sua conta pelo id.
+- **`sharingLookup`** — `ok`, `unavailable` (a Meta não respondeu; `linked` volta mesmo assim) ou
+  `not_configured`.
+
+## `POST /v1/ads/accounts`
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/ads/accounts \
+  -H "x-api-key: ps_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "adAccountId": "act_1234567890" }'
+```
+
+O corpo recebe `adAccountId` (`act_` seguido de dígitos) e nada mais: qualquer outro campo — um
+token, por exemplo — é recusado com `400 UNKNOWN_FIELDS`. A resposta é `201 { "link": { … } }`.
+
+Duas checagens rodam antes de gravar qualquer coisa:
+
+1. **A conta precisa ser sua.** Se nenhum anúncio dela chegou às suas conversas ainda, a resposta
+   é `409 AD_ACCOUNT_NOT_PROVEN` — fale com o suporte para vinculá-la.
+2. **A concessão de parceiro precisa ter chegado à Meta.** Senão, `409 AD_ACCOUNT_NOT_SHARED`.
+
+Vincular de novo uma conta que você desvinculou reativa o mesmo vínculo.
+
+## `DELETE /v1/ads/accounts/{adAccountId}`
+
+Desconecta a conta: os anúncios dela deixam de receber nomes novos. O vínculo fica guardado como
+histórico, então os nomes já resolvidos continuam. Responde
+`200 { "unlinked": true, "adAccountId": "act_…" }`, ou `404 NOT_FOUND` quando a conta nunca foi
+vinculada, já foi desvinculada ou é de outro workspace.
+
+## `GET /v1/ads/summary`
+
+<ParamField query="whatsappNumberId" type="string">
+  Restringe a um número dentro do escopo da credencial. Um número fora dele responde
+  `403 NUMBER_NOT_IN_GRANT`.
+</ParamField>
+
+<ParamField query="startDate" type="string">
+  Início do intervalo (ISO 8601), sobre o horário da mensagem — e a data de criação do lead na
+  Meta para `leadCount`. Deve ser anterior ou igual a `endDate`.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Fim do intervalo (ISO 8601), inclusive.
+</ParamField>
+
+```bash
+curl "https://pilotstatus.com.br/v1/ads/summary?startDate=2026-10-01T00:00:00Z" \
+  -H "x-api-key: ps_..."
+```
+
+```json
+{
+  "ads": [
+    {
+      "sourceId": "120249828053880703",
+      "sourceType": "ad",
+      "conversations": 37,
+      "messages": 214,
+      "firstAt": "2026-10-02T11:04:19.000Z",
+      "lastAt": "2026-10-20T22:41:07.000Z",
+      "lastSourceUrl": "https://fb.me/2bXyZ",
+      "lastHeadline": "Reforma com 70% de desconto",
+      "adName": "Ads 01 - Vídeo dos 70%",
+      "adsetId": "120249828053880001",
+      "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+      "campaignId": "120249828053870000",
+      "campaignName": "[CD-01] [LEADS] - MM Design - Sale 70%",
+      "namesResolvedAt": "2026-10-20T23:00:02.000Z",
+      "leadCount": 12
+    }
+  ],
+  "total": 1,
+  "limit": 200,
+  "truncated": false
+}
+```
+
+- **`conversations` e `messages` são contagens separadas:** conversas distintas, e mensagens.
+- **`leadCount`** — leads do Lead Ads que o mesmo anúncio gerou, no mesmo escopo de números e
+  intervalo de datas. Um anúncio que gerou leads mas nunca uma conversa não tem linha aqui:
+  consulte-o em [`GET /v1/leads`](/pt-BR/api/leads).
+- **Nomes:** `namesResolvedAt` preenchido com todos os nomes `null` significa que a Pilot Status
+  perguntou à Meta e não recebeu nada — em geral falta a concessão de parceiro. `null` significa
+  que ainda não perguntou.
+- **Privacidade:** `lastHeadline` e `lastSourceUrl` (o texto do anúncio) vêm `null` para um anúncio
+  visto só em número RELAY\_ONLY. As contagens não mudam. O resumo nunca traz conteúdo de conversa.
+- **Limite:** no máximo 200 anúncios, os mais movimentados primeiro. `truncated: true` avisa que a
+  lista foi cortada — restrinja com `startDate`/`endDate`.
+
+[`GET /v1/referrals/summary`](/pt-BR/api/referrals) é a visão por número, com `chat:read`, do mesmo
+tráfego.
+
+## Erros
+
+| Status | Código | Causa |
+| --- | --- | --- |
+| `400` | `INVALID_BODY` | O corpo não é um objeto JSON. |
+| `400` | `UNKNOWN_FIELDS` | O corpo tem um campo que o endpoint não aceita; `unknownFields` lista quais. |
+| `400` | `VALIDATION_FAILED` | `adAccountId` não é `act_<dígitos>`; `details` diz qual campo. |
+| `400` | `INVALID_DATE_RANGE` | Resumo: data malformada, ou `startDate` depois de `endDate`. |
+| `400` | `NUMBER_REQUIRED` | Resumo: concessão OAuth por número sem `x-whatsapp-number-id`. |
+| `401` | — | `x-api-key` ausente ou inválida. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Contas de anúncios: foi usada uma chave com escopo de número. |
+| `403` | `NUMBER_NOT_IN_GRANT` | Resumo: `whatsappNumberId` está fora do escopo da credencial. |
+| `403` | `PERMISSION_DENIED` | Token OAuth/MCP cujo papel não tem `integrations:manage` (contas) ou `analytics:read` (resumo). |
+| `404` | `NOT_FOUND` | Desvincular: nenhum vínculo ativo deste workspace para essa conta. |
+| `409` | `AD_ACCOUNT_NOT_PROVEN` | Nenhum anúncio desta conta chegou às conversas deste workspace. |
+| `409` | `AD_ACCOUNT_NOT_SHARED` | A conta ainda não compartilhou acesso com a Pilot Status. |
+| `502` | `ADS_LOOKUP_UNAVAILABLE` | A Meta não conseguiu confirmar o compartilhamento agora. Tente de novo. |
+| `503` | `ADS_NOT_CONFIGURED` | A integração de anúncios não está configurada nesta instalação. |
+
+As recusas destes endpoints trazem `{ "error": "<English> | <Português>", "code": "…" }`; as recusas de autenticação e de permissão (`401`, `403 NUMBER_SCOPE_NOT_ALLOWED`, `403 PERMISSION_DENIED`) mantêm o corpo que têm em todo endpoint `/v1`.

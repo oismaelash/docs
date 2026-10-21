@@ -1,0 +1,190 @@
+---
+title: "Ads API — Meta ad accounts and the per-ad summary"
+sidebarTitle: "Ads"
+description: "Connect the Meta ad accounts that name your Click-to-WhatsApp ads, and read conversations, messages and Lead Ads leads per ad over /v1/ads."
+mode: "wide"
+---
+
+Two things you could only do in the dashboard until now are also in the public API and the
+[MCP server](/integrations/mcp-server):
+
+- **Ad accounts** — connect the Meta ad accounts whose ads bring people to your numbers, so Pilot
+  Status can resolve each ad's **name**, its ad set and its campaign.
+- **Ads summary** — Click-to-WhatsApp traffic grouped by ad: conversations, messages, the resolved
+  names and how many [Lead Ads leads](/api/leads) each ad produced.
+
+The Facebook Pages and Instant Forms of Meta Lead Ads have their own page:
+[Lead Ads Pages and forms](/api/lead-pages).
+
+## Endpoints
+
+| Method | Path | What it does |
+| --- | --- | --- |
+| `GET` | `/v1/ads/accounts` | Linked ad accounts and the ones you can still link |
+| `POST` | `/v1/ads/accounts` | Link an ad account |
+| `DELETE` | `/v1/ads/accounts/{adAccountId}` | Unlink an ad account |
+| `GET` | `/v1/ads/summary` | Conversations, messages and leads per ad |
+
+## No Meta login: partner sharing
+
+No endpoint here asks for a Meta token, and none ever will. Access comes from **partner
+sharing**: the advertiser adds the Pilot Status business portfolio — the `partnerBusinessId`
+returned by `GET /v1/ads/accounts` — as a **partner** of the ad account in Meta Business Manager.
+That is the only manual step, and it happens on Meta's side. Pilot Status then reads with its own
+system user.
+
+## Credentials and permissions
+
+| Endpoint | Credential | Permission (OAuth/MCP) | Scope |
+| --- | --- | --- | --- |
+| `/v1/ads/accounts` (all verbs) | Account-wide only — a number-scoped key gets `403 NUMBER_SCOPE_NOT_ALLOWED` | `integrations:manage` (ADMIN, OWNER), reads included | The workspace |
+| `/v1/ads/summary` | Any | `analytics:read` (every role, ANALYST included) | The bound number, or the whole workspace |
+
+A classic `ps_` key has no role and passes the permission check by its scope. On the summary, a
+number-scoped key — or an account-wide credential with the
+[`x-whatsapp-number-id`](/api/authentication) header — reports that number only; an account-wide
+credential without the header reports the whole workspace.
+
+## `GET /v1/ads/accounts`
+
+```bash
+curl https://pilotstatus.com.br/v1/ads/accounts \
+  -H "x-api-key: ps_..."
+```
+
+```json
+{
+  "linked": [
+    {
+      "adAccountId": "act_1234567890",
+      "adAccountName": "MM Design",
+      "linkedAt": "2026-10-05T14:02:11.000Z",
+      "sharingActive": true
+    }
+  ],
+  "candidates": [
+    { "adAccountId": "act_9876543210", "adAccountName": "MM Design — Black Friday", "accountStatus": 1 }
+  ],
+  "partnerBusinessId": "123456789012345",
+  "sharingLookup": "ok"
+}
+```
+
+- **`sharingActive`** — `true` while the partner grant is in place, `false` when the advertiser
+  revoked it on Meta, and `null` when Meta could not be asked right now. Never read `null` as
+  revoked.
+- **`candidates`** — accounts shared with Pilot Status that provably belong to your workspace,
+  because an ad from them already reached one of your numbers, and are not linked yet. A new
+  workspace starts with an empty list; link your account by its id.
+- **`sharingLookup`** — `ok`, `unavailable` (Meta did not answer; `linked` still comes back) or
+  `not_configured`.
+
+## `POST /v1/ads/accounts`
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/ads/accounts \
+  -H "x-api-key: ps_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "adAccountId": "act_1234567890" }'
+```
+
+The body takes `adAccountId` (`act_` followed by digits) and nothing else: any other field —
+a token, for example — is refused with `400 UNKNOWN_FIELDS`. The answer is `201 { "link": { … } }`.
+
+Two checks run before anything is written:
+
+1. **The account must be yours.** If no ad from it reached your conversations yet, the answer is
+   `409 AD_ACCOUNT_NOT_PROVEN` — contact support to link it.
+2. **The partner grant must have reached Meta.** Otherwise `409 AD_ACCOUNT_NOT_SHARED`.
+
+Linking an account you unlinked before revives the same link.
+
+## `DELETE /v1/ads/accounts/{adAccountId}`
+
+Disconnects the account: its ads stop getting new names. The link is kept as history, so names
+already resolved stay. Answers `200 { "unlinked": true, "adAccountId": "act_…" }`, or
+`404 NOT_FOUND` when the account was never linked, was already unlinked, or belongs to another
+workspace.
+
+## `GET /v1/ads/summary`
+
+<ParamField query="whatsappNumberId" type="string">
+  Restrict to one number inside the credential's scope. A number outside it answers
+  `403 NUMBER_NOT_IN_GRANT`.
+</ParamField>
+
+<ParamField query="startDate" type="string">
+  Start of the range (ISO 8601), over the message time — and the lead's Meta creation time for
+  `leadCount`. Must be before or equal to `endDate`.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  End of the range (ISO 8601), inclusive.
+</ParamField>
+
+```bash
+curl "https://pilotstatus.com.br/v1/ads/summary?startDate=2026-10-01T00:00:00Z" \
+  -H "x-api-key: ps_..."
+```
+
+```json
+{
+  "ads": [
+    {
+      "sourceId": "120249828053880703",
+      "sourceType": "ad",
+      "conversations": 37,
+      "messages": 214,
+      "firstAt": "2026-10-02T11:04:19.000Z",
+      "lastAt": "2026-10-20T22:41:07.000Z",
+      "lastSourceUrl": "https://fb.me/2bXyZ",
+      "lastHeadline": "Reforma com 70% de desconto",
+      "adName": "Ads 01 - Vídeo dos 70%",
+      "adsetId": "120249828053880001",
+      "adsetName": "[IG] [LL1% IG + VÍDEOS] - 35 a 50",
+      "campaignId": "120249828053870000",
+      "campaignName": "[CD-01] [LEADS] - MM Design - Sale 70%",
+      "namesResolvedAt": "2026-10-20T23:00:02.000Z",
+      "leadCount": 12
+    }
+  ],
+  "total": 1,
+  "limit": 200,
+  "truncated": false
+}
+```
+
+- **`conversations` and `messages` are separate counts:** distinct conversations, and messages.
+- **`leadCount`** — Lead Ads leads the same ad produced, under the same number scope and date
+  range. An ad that produced leads but never a conversation has no row here: read it from
+  [`GET /v1/leads`](/api/leads).
+- **Names:** `namesResolvedAt` set with every name `null` means Pilot Status asked Meta and got
+  nothing — usually the partner grant is missing. `null` means it has not asked yet.
+- **Privacy:** `lastHeadline` and `lastSourceUrl` (the ad copy) are `null` for an ad seen only on a
+  RELAY\_ONLY number. The counts do not change. The report never carries conversation content.
+- **Cap:** at most 200 ads, busiest first. `truncated: true` says the list was cut — narrow it with
+  `startDate`/`endDate`.
+
+[`GET /v1/referrals/summary`](/api/referrals) is the per-number, `chat:read` view of the same
+traffic.
+
+## Errors
+
+| Status | Code | Cause |
+| --- | --- | --- |
+| `400` | `INVALID_BODY` | The body is not a JSON object. |
+| `400` | `UNKNOWN_FIELDS` | The body has a field the endpoint does not accept; `unknownFields` lists them. |
+| `400` | `VALIDATION_FAILED` | `adAccountId` is not `act_<digits>`; `details` says which field. |
+| `400` | `INVALID_DATE_RANGE` | Summary: malformed date, or `startDate` after `endDate`. |
+| `400` | `NUMBER_REQUIRED` | Summary: per-number OAuth grant without `x-whatsapp-number-id`. |
+| `401` | — | Missing or invalid `x-api-key`. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Ad accounts: a number-scoped key was used. |
+| `403` | `NUMBER_NOT_IN_GRANT` | Summary: `whatsappNumberId` is outside the credential's scope. |
+| `403` | `PERMISSION_DENIED` | OAuth/MCP token whose role lacks `integrations:manage` (accounts) or `analytics:read` (summary). |
+| `404` | `NOT_FOUND` | Unlink: no active link of this workspace for that account. |
+| `409` | `AD_ACCOUNT_NOT_PROVEN` | No ad from this account reached this workspace's conversations. |
+| `409` | `AD_ACCOUNT_NOT_SHARED` | The account has not shared access with Pilot Status yet. |
+| `502` | `ADS_LOOKUP_UNAVAILABLE` | Meta could not confirm the sharing right now. Retry. |
+| `503` | `ADS_NOT_CONFIGURED` | The ads integration is not configured on this installation. |
+
+The refusals of these endpoints carry `{ "error": "<English> | <Português>", "code": "…" }`; the authentication and permission refusals (`401`, `403 NUMBER_SCOPE_NOT_ALLOWED`, `403 PERMISSION_DENIED`) keep the body they have on every `/v1` endpoint.
