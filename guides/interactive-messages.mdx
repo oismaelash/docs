@@ -1,0 +1,201 @@
+---
+title: "Chatbots With Buttons and Lists — No Template Needed"
+sidebarTitle: "Buttons & Lists (Chatbots)"
+description: "Reply to customers with interactive buttons and single-select lists through POST /v1/messages/send. They are service (free-form) messages: no template, no Meta approval — on official numbers they only need the 24-hour window your bot already has."
+mode: "wide"
+---
+
+**Yes — you can send buttons and lists through the API without a template.** Interactive buttons and single-select lists are **free-form (service) messages** on the same endpoint you already use:
+
+```text
+POST https://pilotstatus.com.br/v1/messages/send
+```
+
+No template to create, no Meta review. On **Meta Cloud API (official)** numbers there is one condition: the **24-hour service window** must be open — which it always is when your bot is answering a message the customer just sent. On **unofficial** numbers there is no window.
+
+This is the shape of a typical bot: the customer writes, you answer with a menu, the customer picks an option, you answer the next step.
+
+## Pick the right interactive type
+
+| You need | Use | Limit |
+| --- | --- | --- |
+| 2–3 quick choices ("Yes / No", "Pay / Talk to us") | `buttons` with `type: "reply"` | **3** buttons, label up to 20 chars |
+| A menu of options (invoices, areas, products) | `list` | **10** rows total, row title up to 24 chars |
+| Options with a picture each | `carousel` | 2–10 cards — see [Carousel](/api/messages/send-interactive#carousel) |
+| A form (several fields, validation, screens) | `flow` | see [Dynamic Flows](/guides/send-flow-dynamic) |
+
+All of them need `text` — the message body above the buttons or the list button. They are mutually exclusive: one interactive type per message. (`buttons` can also ride on a template send; `list`, `carousel` and `flow` cannot.)
+
+## Send a list
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "text": "You have 3 open invoices. Which one do you want to pay?",
+    "footer": "Values updated today",
+    "list": {
+      "buttonText": "See invoices",
+      "sections": [
+        {
+          "title": "Open invoices",
+          "rows": [
+            { "id": "inv-2041", "title": "Invoice 2041", "description": "$1,250.00 · due Oct 30" },
+            { "id": "inv-2057", "title": "Invoice 2057", "description": "$480.00 · due Nov 05" },
+            { "id": "inv-2063", "title": "Invoice 2063", "description": "$92.10 · due Nov 12" }
+          ]
+        }
+      ]
+    }
+  }'
+```
+
+The response is the usual `202` with `id` and `correlationId`. Keep the `id`: it is how you tie the customer's choice back to this menu (see [Match the choice](#match-the-choice-to-the-menu) below).
+
+| Field | Rule |
+| --- | --- |
+| `text` | **Required** — the message body, up to **1024** chars |
+| `footer` | Optional, up to **60** chars |
+| `list.buttonText` | Label of the button that opens the menu, **1–20** chars |
+| `list.sections` | **1–10** sections; **10 rows total** across all of them |
+| `sections[].title` | Optional |
+| `rows[].title` | **1–24** chars — **keep it unique inside the list** |
+| `rows[].description` | Optional, up to **72** chars |
+| `rows[].id` | Optional, up to **200** chars — **always set it** (your ERP key, for example) |
+
+`header` and `buttons` are **not** allowed together with `list`.
+
+<Tip>
+  **More than 10 options?** Send the first 9 and use the 10th row as "More options" (`id: "page-2"`). When the customer picks it, send the next list. Ten is Meta's cap and it is enforced on every number type.
+</Tip>
+
+## Send reply buttons
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "text": "Invoice 2041 — $1,250.00, due Oct 30. How do you want to pay?",
+    "header": { "type": "text", "content": "Invoice 2041" },
+    "footer": "Payment link valid for 24 h",
+    "buttons": [
+      { "type": "reply", "displayText": "Bank slip", "id": "pay-slip:inv-2041" },
+      { "type": "reply", "displayText": "Card", "id": "pay-card:inv-2041" },
+      { "type": "reply", "displayText": "Talk to us", "id": "human" }
+    ]
+  }'
+```
+
+Up to **3** buttons. Besides `reply`, buttons can be `url`, `call` or `copy` — the full shapes are in [Send interactive](/api/messages/send-interactive).
+
+<Warning>
+  On **Meta (official)** numbers, do **not** mix a `url` button with `reply` buttons in a free-form send — one ordering is rejected, the other is accepted and **never delivered**. Send the link in its own message. Details in [Send interactive](/api/messages/send-interactive#where-buttons-are-allowed).
+</Warning>
+
+## Receive the customer's choice
+
+The choice arrives on your webhook like any other inbound message. **What the payload looks like depends on how the number is connected** — the same rule as every other inbound event ([Which events your number sends](/api/webhooks/events#which-events-your-number-sends)).
+
+<Tabs>
+  <Tab title="Meta Cloud API (official)">
+    You receive **Meta's native envelope** (webhook field `messages`), with `type: "interactive"`. The **`id` you set on the row or button comes back**, and `context.id` is the `wamid` of the message that carried the menu.
+
+    ```json
+    {
+      "object": "whatsapp_business_account",
+      "entry": [{
+        "id": "987654321098765",
+        "changes": [{
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "5511888888888", "phone_number_id": "123456789012345" },
+            "contacts": [{ "profile": { "name": "Ana" }, "wa_id": "5511999999999" }],
+            "messages": [{
+              "context": { "from": "5511888888888", "id": "wamid.MENU..." },
+              "from": "5511999999999",
+              "id": "wamid.CHOICE...",
+              "timestamp": "1792756800",
+              "type": "interactive",
+              "interactive": {
+                "type": "list_reply",
+                "list_reply": { "id": "inv-2041", "title": "Invoice 2041", "description": "$1,250.00 · due Oct 30" }
+              }
+            }]
+          }
+        }]
+      }]
+    }
+    ```
+
+    A reply button arrives the same way with `"type": "button_reply"` and `"button_reply": { "id": "pay-slip:inv-2041", "title": "Bank slip" }`.
+
+    **Branch on `interactive.list_reply.id` / `interactive.button_reply.id`** — that is your ERP key, untouched.
+  </Tab>
+  <Tab title="Unofficial (Pilot Status web)">
+    You receive the canonical **`message.reply`** event (the choice quotes your menu). `content` is the **row title** or the **button label**; `quotedMessageId` is the `messageId` of your menu's `message.sent`.
+
+    ```json
+    {
+      "event": "message.reply",
+      "data": {
+        "from": "+5511999999999",
+        "to": "+5511888888888",
+        "messageId": "3EB0C1...",
+        "fromMe": false,
+        "content": "Invoice 2041",
+        "contentReplied": "You have 3 open invoices. Which one do you want to pay?",
+        "quotedMessageId": "3EB0A9...",
+        "correlationId": "corr_123",
+        "createdAt": "2026-10-23T12:00:00.000Z"
+      }
+    }
+    ```
+
+    **The row `id` is not a guaranteed field here** — match on `content` (the title) plus `quotedMessageId`. That is why row titles must be unique inside a list.
+
+    Subscribe to **both** `message.reply` and `message.received` (or `"*"`): `message.reply` does not also fire `message.received`.
+  </Tab>
+</Tabs>
+
+### Match the choice to the menu
+
+Your bot usually has several menus open with different customers. To know which menu a choice belongs to, keep a small record per sent menu:
+
+1. `POST /v1/messages/send` returns `id` → store `{ id, customer, options }`.
+2. Learn the WhatsApp id of that menu: on unofficial numbers, `message.sent` carries both `id` and `messageId`; on official numbers, every `statuses[]` item carries your `id` in [`biz_opaque_callback_data`](/api/webhooks/events#matching-a-status-to-your-send-—-biz_opaque_callback_data) next to the `wamid` (`statuses[].id`).
+3. The choice quotes that `messageId` — `quotedMessageId` (unofficial) or `context.id` (official) — so you find the record and the option.
+
+If your options are self-describing (`"id": "inv-2041"`) and you only serve official numbers, step 2 is optional: the row `id` alone already tells you what was chosen.
+
+## The 24-hour window and cost (official numbers)
+
+- Free-form messages — buttons, lists, carousels, plain text — only deliver on a Meta number while the **24-hour service window** is open, that is, within 24 h of the customer's last message. A bot that answers inbound messages is always inside it.
+- To start a conversation yourself (a payment reminder, for example), use an approved **template** first. When the customer replies, the window opens and the bot can continue with lists and buttons.
+- Outside the window the send fails with `META_OUTSIDE_24H_WINDOW`. You can check the window before sending with [`GET /v1/service-window`](/playground/messages/service-window).
+- **Service messages are no longer always free.** Since **2026-10-01**, Meta gives **1,000 free service messages per month per number** and charges the country's Utility rate after that. Meta bills it, not Pilot Status. See [Pricing](/api/pricing).
+
+Unofficial numbers have no window and no Meta charge.
+
+## Common mistakes
+
+| You did | What happens | Do this instead |
+| --- | --- | --- |
+| `list` + `buttons` in one request | `400` — mutually exclusive | One interactive type per message |
+| `list` + `header` | `400` | Put the title in `text` |
+| `list` + `templateId` | `400` | A list goes with `text`, not with a template |
+| 11+ rows | `400` — 10 rows is the total, not per section | Paginate with a "More options" row |
+| Two rows with the same title | On unofficial numbers you cannot tell them apart | Unique titles, and always set `id` |
+| Webhook subscribed only to `message.received` | Choices on unofficial numbers never reach you | Subscribe to `message.reply` too, or `"*"` |
+| Parsing `{ event, data }` on an official number | Every field reads `undefined` | Parse Meta's native envelope — see the tab above |
+
+## Next steps
+
+- [Send interactive](/api/messages/send-interactive) — every button type, carousels, `header` / `footer` rules.
+- [Send a message](/api/messages/send#lists) — full parameter reference for `list`.
+- [Receive messages](/guides/receive-messages) — setting up the webhook.
+- [Webhook events](/api/webhooks/events) — canonical and native payloads.
