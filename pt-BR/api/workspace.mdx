@@ -1,11 +1,11 @@
 ---
 title: "API de Workspace — membros, papéis e convites"
 sidebarTitle: "Workspace"
-description: "Leia o workspace, liste membros, convide, reenvie, mude papel e remova — em /v1/workspace. Inclui por que escrita exige OAuth e nunca chave de API clássica."
+description: "Leia o workspace, liste membros, convide, reenvie, mude papel, escolha quais números um membro vê e remova — em /v1/workspace. Inclui por que escrita exige OAuth e nunca chave de API clássica."
 mode: "wide"
 ---
 
-Seis endpoints em `/v1/workspace` espelham o que o painel faz com membros e convites. Os membros são ilimitados em todos os planos.
+Sete endpoints em `/v1/workspace` espelham o que o painel faz com membros e convites. Os membros são ilimitados em todos os planos.
 
 ## Qual credencial funciona onde
 
@@ -18,6 +18,7 @@ Esta é a parte para ler antes de qualquer coisa.
 | `POST /v1/workspace/members` | ❌ | ✅ |
 | `POST /v1/workspace/members/{id}/resend` | ❌ | ✅ |
 | `PATCH /v1/workspace/members/{id}` | ❌ | ✅ |
+| `PATCH /v1/workspace/members/{id}/numbers` | ❌ | ✅ |
 | `DELETE /v1/workspace/members/{id}` | ❌ | ✅ |
 
 <Warning>
@@ -87,6 +88,64 @@ curl -X POST https://api.pilotstatus.com.br/v1/workspace/members \
 `sendEmail: false` é a escotilha para entregar o convite do seu jeito. **A resposta é o único lugar onde o link aparece** — se perder, chame `resend`, que emite um novo e mata o anterior.
 
 Convidar um endereço que já tem convite pendente não é erro: rotaciona o token na mesma linha e devolve `200` em vez de `201`.
+
+## Mudar papel do membro
+
+```bash
+curl -X PATCH https://api.pilotstatus.com.br/v1/workspace/members/mb_... \
+  -H "Authorization: Bearer <token-oauth>" \
+  -H "Content-Type: application/json" \
+  -d '{"role":"ANALYST"}'
+```
+
+Mudar o papel é **só do Proprietário** e sempre exige `role`. Promover a `ADMIN` limpa o escopo por número, porque Administrador vê o workspace inteiro. Para mudar **só os números** que um Atendente ou Analista vê, sem mexer no papel, use o `PATCH /v1/workspace/members/{id}/numbers` abaixo — o Administrador também pode chamá-lo.
+
+## Mudar quais números o membro vê
+
+```bash
+curl -X PATCH https://api.pilotstatus.com.br/v1/workspace/members/mb_.../numbers \
+  -H "Authorization: Bearer <token-oauth>" \
+  -H "Content-Type: application/json" \
+  -d '{"allowedNumberIds":["wa_...","wa_..."]}'
+```
+
+Define quais números de WhatsApp do workspace um `AGENT` ou `ANALYST` vê e opera. O papel não muda. Funciona também em convites pendentes.
+
+| Campo | Significado |
+|---|---|
+| `allowedNumberIds` | **Obrigatório.** Lista de ids de números. **Substitui a lista inteira** — envie todos os ids que o membro deve manter |
+
+<Warning>
+**`[]` significa TODOS os números, não nenhum** — inclusive os números conectados depois. Um membro restrito a números específicos **não** ganha números novos sozinho: ao conectar um número, adicione-o aqui para cada membro restrito que precisar dele.
+</Warning>
+
+- **Quem pode chamar:** um token OAuth/MCP cujo usuário é `ADMIN` ou `OWNER` do workspace. Chave clássica `ps_` recebe `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`; `AGENT` ou `ANALYST` recebe `403 PERMISSION_DENIED`.
+- **O corte é imediato:** os refresh tokens OAuth do membro são revogados, então um escopo menor vale na próxima chamada dele, em vez de sobreviver num token consentido com o alcance maior. Os conectores MCP dele podem precisar entrar de novo.
+- **Proprietário e Administrador sempre veem todos os números**, por isso a chamada os recusa com `409 SCOPE_NOT_APPLICABLE`.
+
+A resposta é o membro atualizado, no mesmo formato da listagem:
+
+```json
+{
+  "member": {
+    "id": "mb_...",
+    "role": "AGENT",
+    "status": "ACTIVE",
+    "allowedNumberIds": ["wa_...", "wa_..."],
+    ...
+  }
+}
+```
+
+| Status | `code` | O que aconteceu |
+|---|---|---|
+| `400` | `INVALID_SCOPE` | `allowedNumberIds` ausente ou não é uma lista de strings |
+| `400` | `UNKNOWN_FIELDS` | O corpo tem qualquer outra chave (`role` inclusive); `details.unknownFields` diz quais |
+| `403` | `MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS` | Chamada com chave clássica `ps_` |
+| `403` | `PERMISSION_DENIED` | Quem chamou é `AGENT` ou `ANALYST` |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | O usuário por trás do token não é mais membro ativo do workspace |
+| `404` | `NOT_FOUND` | Esse id de membership não está neste workspace |
+| `409` | `SCOPE_NOT_APPLICABLE` | O alvo é `OWNER` ou `ADMIN` |
 
 ## Erros que vale tratar
 
