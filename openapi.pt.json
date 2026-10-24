@@ -3491,11 +3491,24 @@
     "/v1/messages/send": {
       "post": {
         "summary": "Enviar mensagem",
-        "description": "Enfileira o envio de uma mensagem pelo número vinculado à API key. Use exatamente um de templateId (envio por template, com variables) ou text (texto livre); e exatamente um destino: destinationNumber (E.164), groupId (…@g.us) ou newsletterId (…@newsletter). Requer key escopada a número (403 para key de tenant). Efeito real: entrega de verdade e pode custar. NOT_SUPPORTED_FOR_META para groupId/newsletterId em números Meta.\n\n**Requer uma chave com escopo de número.**",
+        "description": "Enfileira o envio de uma mensagem pelo número vinculado à API key. Use exatamente um de templateId (envio por template, com variables) ou text (texto livre); e exatamente um destino: destinationNumber (E.164), groupId (…@g.us) ou newsletterId (…@newsletter). Requer key escopada a número (403 para key de tenant). Efeito real: entrega de verdade e pode custar. NOT_SUPPORTED_FOR_META para groupId/newsletterId em números Meta. O header opcional `Idempotency-Key` torna as novas tentativas seguras (24 h; a reprodução traz `Idempotent-Replayed: true`).\n\n**Requer uma chave com escopo de número.**",
         "tags": [
           "Messages"
         ],
         "operationId": "post_messages_send",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "**Opcional.** Torna a nova tentativa segura. Durante 24 horas, no escopo do seu workspace + o número de WhatsApp da chave + o valor da chave: a mesma chave com o mesmo corpo devolve a resposta guardada da primeira chamada aceita (2xx) e não envia nada de novo (header de resposta `Idempotent-Replayed: true`); a mesma chave com corpo diferente é 409 `IDEMPOTENCY_KEY_REUSED`; a mesma chave enquanto a primeira chamada ainda está em andamento é 409 `IDEMPOTENCY_KEY_IN_USE`. Só respostas 2xx são guardadas — um erro libera a chave, então você pode corrigir o corpo e tentar de novo com a mesma chave. Até 255 caracteres, sem caracteres de controle (senão 400 `IDEMPOTENCY_KEY_INVALID`). Se o armazenamento de idempotência estiver indisponível, uma requisição com chave recebe 503 `IDEMPOTENCY_UNAVAILABLE` (é seguro tentar de novo com a mesma chave). Ausente, o comportamento não muda. Derive a chave de algo estável do seu lado (ex.: id do pedido + destinatário) ou de um UUID guardado antes da primeira tentativa.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            },
+            "example": "order-48213-+5511999999999"
+          }
+        ],
         "requestBody": {
           "required": false,
           "content": {
@@ -3955,6 +3968,17 @@
         },
         "responses": {
           "202": {
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "`true` quando esta resposta reproduz uma requisição anterior aceita com a mesma `Idempotency-Key`; nada foi enviado de novo.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            },
             "description": "Enviar template",
             "content": {
               "application/json": {
@@ -3970,7 +3994,7 @@
             }
           },
           "400": {
-            "description": "Payload ou parâmetros inválidos",
+            "description": "Payload ou parâmetros inválidos (inclui `IDEMPOTENCY_KEY_INVALID`: `Idempotency-Key` com mais de 255 caracteres ou com caractere de controle)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4054,6 +4078,40 @@
               }
             }
           },
+          "409": {
+            "description": "Conflito de idempotência: uma requisição com a mesma `Idempotency-Key` e o mesmo corpo ainda está em andamento (`IDEMPOTENCY_KEY_IN_USE`) — tente de novo com a mesma chave daqui a pouco; ou a chave já foi usada com um corpo diferente nas últimas 24 horas (`IDEMPOTENCY_KEY_REUSED`) — use uma chave nova",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "inUse": {
+                    "summary": "Chave ainda em uso",
+                    "value": {
+                      "error": "A request with this Idempotency-Key is still being processed. Retry in a few seconds with the same key. | Uma requisição com esta Idempotency-Key ainda está em processamento. Tente de novo em alguns segundos com a mesma chave.",
+                      "code": "IDEMPOTENCY_KEY_IN_USE"
+                    }
+                  },
+                  "reused": {
+                    "summary": "Chave reutilizada com outro corpo",
+                    "value": {
+                      "error": "This Idempotency-Key was already used with a different body in the last 24 hours. Use a new key for a new request. | Esta Idempotency-Key já foi usada com outro corpo nas últimas 24 horas. Use uma chave nova para uma nova requisição.",
+                      "code": "IDEMPOTENCY_KEY_REUSED"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "422": {
             "description": "Cobrança do tenant suspensa",
             "content": {
@@ -4093,6 +4151,28 @@
                 },
                 "example": {
                   "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Uma `Idempotency-Key` foi enviada e o armazenamento de idempotência está indisponível — nada foi enviado; é seguro tentar de novo com a mesma chave",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "The idempotency check is temporarily unavailable; nothing was sent. Retry with the same Idempotency-Key. | A verificação de idempotência está indisponível no momento; nada foi enviado. Tente de novo com a mesma Idempotency-Key.",
+                  "code": "IDEMPOTENCY_UNAVAILABLE"
                 }
               }
             }

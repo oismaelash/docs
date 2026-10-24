@@ -31,6 +31,23 @@ const accepted = await client.messages.send({
 const message = await client.messages.get(accepted.id);
 ```
 
+### Envio seguro para nova tentativa (`idempotencyKey`)
+
+`messages.send()` aceita um segundo argumento opcional, `{ idempotencyKey }`, enviado no header [`Idempotency-Key`](/pt-BR/api/messages/send#idempotência) — nunca no corpo. Tentar de novo com a **mesma chave e a mesma entrada** dentro de 24 horas devolve a primeira resposta aceita em vez de enviar de novo; a mesma chave com uma entrada diferente falha com `409 IDEMPOTENCY_KEY_REUSED`, e, enquanto a primeira chamada ainda está em andamento, com `409 IDEMPOTENCY_KEY_IN_USE`. O SDK nunca repete este POST por conta própria.
+
+```typescript
+const accepted = await client.messages.send(
+  {
+    templateId: "pedido-confirmado",
+    destinationNumber: "+5511999999999",
+    variables: { order_id: "48213" },
+  },
+  { idempotencyKey: "pedido-48213-+5511999999999" },
+);
+```
+
+Derive a chave dos seus próprios dados (id do pedido \+ destinatário) ou gere um UUID e guarde-o antes da primeira tentativa — uma chave criada de novo a cada tentativa não protege nada.
+
 Parsing de webhook:
 
 ```typescript
@@ -98,6 +115,19 @@ accepted = client.messages.send({
 message = client.messages.get(accepted["id"])
 ```
 
+Para um envio seguro para nova tentativa, passe `idempotency_key` — enviado no header [`Idempotency-Key`](/pt-BR/api/messages/send#idempotência), com a mesma semântica do SDK de Node:
+
+```python
+accepted = client.messages.send(
+    {
+        "templateId": "pedido-confirmado",
+        "destinationNumber": "+5511999999999",
+        "variables": {"order_id": "48213"},
+    },
+    idempotency_key="pedido-48213-+5511999999999",
+)
+```
+
 Parsing de webhook — a partir da **1.10.0**, um nome de evento que o SDK não conhece volta como um dict `{"type": "unknown", "event", "data", "raw"}` em vez de lançar erro; identifique-o com `is_unknown_customer_webhook_event` e responda com `2xx`:
 
 ```python
@@ -129,6 +159,8 @@ Instale pela interface do n8n: **Settings → Community Nodes → Install → `n
 
 A partir da **2.8.0**, o node ganha os recursos **Referral** (Get Many, Summary), **Ads Summary** (Get), **Ad Account** (Get Many, Link, Unlink), **Lead Page** (Get Many, Link, Update, Unlink, Resync) e **Lead Form** (Get Many, Update). **Lead Page → Unlink** é destrutivo: apaga todo lead captado pela Página e as configurações de formulário dela.
 
+Em **Message → Send**, o campo opcional **Idempotency Key** é enviado no header [`Idempotency-Key`](/pt-BR/api/messages/send#idempotência). Use uma expressão que continue a **mesma** quando o n8n repetir o item (por exemplo, um id dos seus dados de entrada, como `{{ $json.orderId }}-{{ $json.phone }}`): uma execução repetida então devolve a primeira resposta em vez de enviar a mensagem duas vezes.
+
 <Note>
   Para eventos de entrada, adicione o node **Pilot Status Trigger** ao seu fluxo de trabalho, copie sua URL de webhook e cole como um novo webhook na página **Webhooks** no painel do Pilot Status. Cada evento assinado então inicia seu fluxo de trabalho. Com **All Events** selecionado, o Trigger repassa qualquer evento com o corpo intacto — inclusive eventos mais novos que a versão do seu node; com um evento específico selecionado, os demais recebem `200 Ignored event`.
 </Note>
@@ -137,6 +169,7 @@ A partir da **2.8.0**, o node ganha os recursos **Referral** (Get Many, Summary)
 
 - Mantenha a chave de API apenas no backend — nunca em código de navegador.
 - Para respostas `429`/`5xx`, tente novamente com backoff exponencial (os SDKs ajudam, mas a política de retentativa fica a cargo do seu sistema).
+- Ao repetir um envio, reutilize a mesma `Idempotency-Key` para que uma mensagem já aceita não seja enviada duas vezes.
 
 ## Relacionados
 

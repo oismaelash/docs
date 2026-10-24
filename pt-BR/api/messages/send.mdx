@@ -30,6 +30,10 @@ Este é o **único** endpoint de envio. Ele suporta três modos de nível superi
 - `Content-Type: application/json`
 - `x-api-key: ps_...` (ou `x-api-key-id: <api_key_id>`) — uma chave **com escopo de número**
 
+<ParamField header="Idempotency-Key" type="string">
+  **Opcional.** Torna a nova tentativa segura: durante **24 horas**, uma segunda requisição com a mesma chave e o mesmo corpo devolve a primeira resposta aceita em vez de enviar a mensagem de novo. Qualquer string de até **255 caracteres** sem caracteres de controle; longa demais ou com caractere de controle → **400 `IDEMPOTENCY_KEY_INVALID`**. Ausente, o endpoint se comporta exatamente como antes. Veja [Idempotência](#idempotência).
+</ParamField>
+
 ## Destino (exatamente um)
 
 <ParamField body="destinationNumber" type="string">
@@ -312,6 +316,18 @@ curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
   }'
 ```
 
+```bash Nova tentativa segura (Idempotency-Key)
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Idempotency-Key: pedido-48213-+5511999999999" \
+  -d '{
+    "templateId": "pedido-confirmado",
+    "destinationNumber": "+5511999999999",
+    "variables": { "order_id": "48213" }
+  }'
+```
+
 </CodeGroup>
 
 No exemplo **Template \+ mídia \+ botões**, o `buttons` não substitui os botões do template num número Meta (oficial): ali os botões do template aprovado são fixos, e um botão de URL dinâmica ou o código de um botão de copiar código é preenchido por `variables` (veja [Botões](#botões)).
@@ -340,21 +356,53 @@ No exemplo **Template \+ mídia \+ botões**, o `buttons` não substitui os bot�
   Sempre `QUEUED` na aceitação.
 </ResponseField>
 
+Uma resposta reproduzida de uma requisição anterior com a mesma `Idempotency-Key` traz o header de resposta **`Idempotent-Replayed: true`**, com o mesmo status e o mesmo corpo da original — o `id` é o da mensagem que já estava na fila. Veja [Idempotência](#idempotência).
+
 ## Correlação com webhooks
 
 - O campo **`id`** na resposta é o mesmo campo **`id`** em `message.sent`, `message.delivered`, `message.read` e `message.failed`. Em **`message.reply`**, use **`quotedMessageId`** (o `messageId` do WhatsApp da sua mensagem original) e **`correlationId`** para vincular a resposta ao seu envio.
 - O **`messageId`** do WhatsApp (wamid) **não** está no corpo do `202`; ele aparece pela primeira vez no webhook **`message.sent`** (e se repete nos eventos de status daquela mensagem).
 - Persista **`id`** quando receber o `202` e use [`GET /v1/messages/{id}`](/pt-BR/api/messages/status) com o mesmo valor.
 
+## Idempotência
+
+Um cliente que recebe timeout ou perde a conexão nesta requisição não tem como saber se a mensagem entrou na fila. Enviá-la de novo sem proteção pode entregá-la **duas vezes**. O header opcional `Idempotency-Key` fecha essa brecha. O que ele garante, exatamente:
+
+- **É opcional.** Sem o header, nada muda: cada requisição é um envio novo.
+- **Janela de 24 horas, por número.** A chave é restrita a _(seu workspace, o número de WhatsApp da chave de API, o valor da chave)_. A mesma chave em outro número, ou vinda de outro workspace, nunca colide com a sua.
+- **Mesma chave, mesmo corpo → a primeira resposta, nada é enviado de novo.** Dentro da janela, a requisição devolve a resposta guardada da primeira chamada aceita (`2xx`) — mesmo status, mesmo corpo, mesmo `id` de mensagem — e nada entra na fila nem é enviado. A resposta reproduzida traz o header **`Idempotent-Replayed: true`**.
+- **Mesma chave, corpo diferente → `409 IDEMPOTENCY_KEY_REUSED`.** Uma chave identifica uma única mensagem — esteja a primeira chamada ainda em andamento ou já concluída. Para enviar uma mensagem diferente, use uma chave nova.
+- **Mesma chave enquanto a primeira chamada ainda está em andamento → `409 IDEMPOTENCY_KEY_IN_USE`.** Espere um instante e tente de novo com a mesma chave: quando a primeira chamada terminar, você recebe a resposta dela.
+- **Só `2xx` é guardado.** Se a primeira chamada falhar (`400`, `404`, `422 BILLING_SUSPENDED`, `429`, `5xx`…), a chave é liberada: corrija o corpo e tente de novo com a **mesma** chave.
+- **Armazenamento indisponível → `503 IDEMPOTENCY_UNAVAILABLE`.** Se você enviou uma chave e a plataforma não consegue verificá-la, a requisição é recusada em vez de arriscar uma duplicata — nada foi enviado. É seguro tentar de novo com a mesma chave.
+
+### Como escolher a chave
+
+Derive a chave de algo estável do seu lado que identifique a mensagem, para que uma nova execução do mesmo job gere a mesma chave — por exemplo, o id do pedido mais o destinatário (`pedido-48213-+5511999999999`). Ou gere um UUID e **guarde-o antes da primeira tentativa**, reutilizando-o em todas as novas tentativas. Uma chave gerada de novo a cada tentativa não protege nada.
+
+<Steps>
+  <Step title="Envie com uma chave">
+    Envie a requisição com uma `Idempotency-Key` derivada dos seus dados.
+  </Step>
+  <Step title="Em timeout, 5xx ou erro de rede">
+    Reenvie o **mesmo corpo com a mesma chave**. Se a primeira chamada foi aceita, você recebe a resposta dela (`Idempotent-Replayed: true`) e a mensagem não é enviada duas vezes; se não foi, a mensagem é enviada agora.
+  </Step>
+  <Step title="Em 409 IDEMPOTENCY_KEY_IN_USE ou 503 IDEMPOTENCY_UNAVAILABLE">
+    Espere e tente de novo com a mesma chave, com backoff.
+  </Step>
+</Steps>
+
 ## Erros comuns
 
 | Status | Significado |
 | --- | --- |
-| `400` | Payload inválido (ex.: telefone fora do E.164, campos obrigatórios ausentes, `MISSING_TEMPLATE_VARIABLES` / `INVALID_TEMPLATE_VARIABLE_VALUE` nomeando a chave, ou texto livre não suportado pelo provedor: `code: FREE_FORM_NOT_SUPPORTED`), ou, num número oficial, template não aprovado na Meta: `code: META_TEMPLATE_NOT_APPROVED` |
+| `400` | Payload inválido (ex.: telefone fora do E.164, campos obrigatórios ausentes, `MISSING_TEMPLATE_VARIABLES` / `INVALID_TEMPLATE_VARIABLE_VALUE` nomeando a chave, ou texto livre não suportado pelo provedor: `code: FREE_FORM_NOT_SUPPORTED`), ou, num número oficial, template não aprovado na Meta: `code: META_TEMPLATE_NOT_APPROVED`, ou uma `Idempotency-Key` com mais de 255 caracteres ou com caractere de controle: `code: IDEMPOTENCY_KEY_INVALID` (`details.maxLength`: `255`) |
 | `401` | Header de chave de API ausente/inválido (`x-api-key` / `x-api-key-id`) |
 | `403` | Uma chave com escopo de tenant usada em um endpoint com escopo de número |
 | `404` | Template não encontrado ou sem uma versão aprovada |
+| `409` | Uma requisição com a mesma `Idempotency-Key` e o mesmo corpo ainda está em andamento (`code: IDEMPOTENCY_KEY_IN_USE`) — tente de novo com a mesma chave daqui a pouco. Ou a `Idempotency-Key` já foi usada com um corpo diferente nas últimas 24 horas (`code: IDEMPOTENCY_KEY_REUSED`) — use uma chave nova |
 | `422` | Cobrança do tenant suspensa (`code: BILLING_SUSPENDED`) — inadimplência, ou saldo WALLET / de extras não pago; regularize seus créditos ou cartão para retomar os envios |
 | `429` | Limite de taxa |
+| `503` | Uma `Idempotency-Key` foi enviada e o armazenamento de idempotência está indisponível (`code: IDEMPOTENCY_UNAVAILABLE`) — nada foi enviado; tente de novo com a mesma chave |
 
 Falhas de entrega assíncronas (ex.: `META_OUTSIDE_24H_WINDOW`, `META_TEMPLATE_PAUSED`, `WHATSAPP_NOT_EXIST`) aparecem como `errorCode` em [`GET /v1/messages/{id}`](/pt-BR/api/messages/status) e [`GET /v1/messages`](/pt-BR/api/messages/list), nos Logs, e via webhook `message.failed` em números não oficiais — veja [Códigos de erro de log](/pt-BR/api/messages/log-error-codes).

@@ -3491,11 +3491,24 @@
     "/v1/messages/send": {
       "post": {
         "summary": "Send message",
-        "description": "Enqueues sending a message from the number linked to the API key. Use exactly one of templateId (template send, with variables) or text (free-form); and exactly one destination: destinationNumber (E.164), groupId (…@g.us) or newsletterId (…@newsletter). Requires a number-scoped key (403 for a tenant key). Real side effect: actually delivers and may cost. NOT_SUPPORTED_FOR_META for groupId/newsletterId on Meta numbers.\n\n**Requires a number-scoped key.**",
+        "description": "Enqueues sending a message from the number linked to the API key. Use exactly one of templateId (template send, with variables) or text (free-form); and exactly one destination: destinationNumber (E.164), groupId (…@g.us) or newsletterId (…@newsletter). Requires a number-scoped key (403 for a tenant key). Real side effect: actually delivers and may cost. NOT_SUPPORTED_FOR_META for groupId/newsletterId on Meta numbers. Optional `Idempotency-Key` header makes retries safe (24 h; replay carries `Idempotent-Replayed: true`).\n\n**Requires a number-scoped key.**",
         "tags": [
           "Messages"
         ],
         "operationId": "post_messages_send",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "**Optional.** Makes a retry safe. Within 24 hours, scoped to your workspace + the key's WhatsApp number + the key value: the same key with the same body returns the stored response of the first accepted (2xx) call and sends nothing again (response header `Idempotent-Replayed: true`); the same key with a different body is 409 `IDEMPOTENCY_KEY_REUSED`; the same key while the first call is still in progress is 409 `IDEMPOTENCY_KEY_IN_USE`. Only 2xx responses are remembered — an error frees the key, so you can fix the body and retry with the same key. Up to 255 characters, no control characters (else 400 `IDEMPOTENCY_KEY_INVALID`). If the idempotency store is unavailable, a request that carries a key gets 503 `IDEMPOTENCY_UNAVAILABLE` (safe to retry with the same key). Absent, behaviour is unchanged. Derive it from something stable on your side (e.g. order id + recipient) or a UUID stored before the first attempt.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            },
+            "example": "order-48213-+5511999999999"
+          }
+        ],
         "requestBody": {
           "required": false,
           "content": {
@@ -3955,6 +3968,17 @@
         },
         "responses": {
           "202": {
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "`true` when this response is a replay of an earlier accepted request with the same `Idempotency-Key`; nothing was sent again.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            },
             "description": "Send template",
             "content": {
               "application/json": {
@@ -3970,7 +3994,7 @@
             }
           },
           "400": {
-            "description": "Invalid payload or parameters",
+            "description": "Invalid payload or parameters (includes `IDEMPOTENCY_KEY_INVALID`: `Idempotency-Key` over 255 characters or with a control character)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4054,6 +4078,40 @@
               }
             }
           },
+          "409": {
+            "description": "Idempotency conflict: a request with the same `Idempotency-Key` and the same body is still in progress (`IDEMPOTENCY_KEY_IN_USE`) — retry with the same key in a moment; or the key was already used with a different body in the last 24 hours (`IDEMPOTENCY_KEY_REUSED`) — use a new key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "inUse": {
+                    "summary": "Key still in use",
+                    "value": {
+                      "error": "A request with this Idempotency-Key is still being processed. Retry in a few seconds with the same key. | Uma requisição com esta Idempotency-Key ainda está em processamento. Tente de novo em alguns segundos com a mesma chave.",
+                      "code": "IDEMPOTENCY_KEY_IN_USE"
+                    }
+                  },
+                  "reused": {
+                    "summary": "Key reused with a different body",
+                    "value": {
+                      "error": "This Idempotency-Key was already used with a different body in the last 24 hours. Use a new key for a new request. | Esta Idempotency-Key já foi usada com outro corpo nas últimas 24 horas. Use uma chave nova para uma nova requisição.",
+                      "code": "IDEMPOTENCY_KEY_REUSED"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "422": {
             "description": "Tenant billing suspended",
             "content": {
@@ -4093,6 +4151,28 @@
                 },
                 "example": {
                   "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "An `Idempotency-Key` was sent and the idempotency store is unavailable — nothing was sent; safe to retry with the same key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "The idempotency check is temporarily unavailable; nothing was sent. Retry with the same Idempotency-Key. | A verificação de idempotência está indisponível no momento; nada foi enviado. Tente de novo com a mesma Idempotency-Key.",
+                  "code": "IDEMPOTENCY_UNAVAILABLE"
                 }
               }
             }
