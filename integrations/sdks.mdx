@@ -31,6 +31,23 @@ const accepted = await client.messages.send({
 const message = await client.messages.get(accepted.id);
 ```
 
+### Retry-safe sends (`idempotencyKey`)
+
+`messages.send()` takes an optional second argument, `{ idempotencyKey }`, sent as the [`Idempotency-Key`](/api/messages/send#idempotency) header — never in the body. Retrying with the **same key and the same input** within 24 hours returns the first accepted response instead of sending again; the same key with a different input fails with `409 IDEMPOTENCY_KEY_REUSED`, and while the first call is still running with `409 IDEMPOTENCY_KEY_IN_USE`. The SDK never retries this POST on its own.
+
+```typescript
+const accepted = await client.messages.send(
+  {
+    templateId: "order-confirmed",
+    destinationNumber: "+5511999999999",
+    variables: { order_id: "48213" },
+  },
+  { idempotencyKey: "order-48213-+5511999999999" },
+);
+```
+
+Derive the key from your own data (order id \+ recipient) or generate a UUID and store it before the first attempt — a key created anew on each attempt protects nothing.
+
 Webhook parsing:
 
 ```typescript
@@ -98,6 +115,19 @@ accepted = client.messages.send({
 message = client.messages.get(accepted["id"])
 ```
 
+For a retry-safe send, pass `idempotency_key` — sent as the [`Idempotency-Key`](/api/messages/send#idempotency) header, with the same semantics as in the Node SDK:
+
+```python
+accepted = client.messages.send(
+    {
+        "templateId": "order-confirmed",
+        "destinationNumber": "+5511999999999",
+        "variables": {"order_id": "48213"},
+    },
+    idempotency_key="order-48213-+5511999999999",
+)
+```
+
 Webhook parsing — from **1.10.0**, an event name the SDK does not know comes back as a dict `{"type": "unknown", "event", "data", "raw"}` instead of raising; tell it apart with `is_unknown_customer_webhook_event` and answer it with a `2xx`:
 
 ```python
@@ -129,6 +159,8 @@ Install from the n8n UI: **Settings → Community Nodes → Install → `n8n-nod
 
 From **2.8.0** the node adds the resources **Referral** (Get Many, Summary), **Ads Summary** (Get), **Ad Account** (Get Many, Link, Unlink), **Lead Page** (Get Many, Link, Update, Unlink, Resync) and **Lead Form** (Get Many, Update). **Lead Page → Unlink** is destructive: it erases every lead captured through the Page and its form configurations.
 
+In **Message → Send**, the optional **Idempotency Key** field is sent as the [`Idempotency-Key`](/api/messages/send#idempotency) header. Use an expression that stays the **same** when n8n retries the item (for example an id from your input data, such as `{{ $json.orderId }}-{{ $json.phone }}`): a retried execution then returns the first response instead of sending the message twice.
+
 <Note>
   For inbound events, add the **Pilot Status Trigger** node to your workflow, copy its webhook URL, and paste it as a new webhook on the **Webhooks** page in the Pilot Status dashboard. Every subscribed event then starts your workflow. With **All Events** selected, the Trigger passes any event through with the body untouched — including events newer than your node version; with a specific event selected, anything else is answered `200 Ignored event`.
 </Note>
@@ -137,6 +169,7 @@ From **2.8.0** the node adds the resources **Referral** (Get Many, Summary), **A
 
 - Keep the API key on the backend only — never in browser code.
 - For `429`/`5xx` responses, retry with exponential backoff (the SDKs help, but the retry policy is up to your system).
+- When retrying a send, reuse the same `Idempotency-Key` so a message that was already accepted is not sent twice.
 
 ## Related
 
