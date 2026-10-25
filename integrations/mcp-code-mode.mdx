@@ -1,0 +1,217 @@
+---
+title: "MCP Code Mode"
+sidebarTitle: "MCP Code Mode"
+description: "The /code endpoint of the hosted Pilot Status MCP server: 2 tools instead of 114, a TypeScript script that calls the API in a sandbox with no network, limits per run and the run report."
+mode: "wide"
+---
+
+**Code Mode** is a second endpoint of the [hosted MCP server](/integrations/mcp-server). Instead of the 114 tools, the agent gets **two**: `describe`, which returns the TypeScript declarations of the API, and `execute`, which runs a script the agent wrote. Inside the script, each call is `await ps.<tool>(args)` — the same tools, the same arguments and the same permissions as on `/mcp`.
+
+```text
+https://mcp.pilotstatus.com.br/code
+```
+
+The `/mcp` endpoint does not change. Pick one per connection.
+
+## When to use it
+
+Use `/code` when:
+
+- the task chains several calls — list, filter, then read or act on each item;
+- you loop over many items (numbers, webhooks, messages, contacts);
+- you want a report computed from many reads, returned as one result;
+- your agent's context is tight and the 114 tool definitions cost too much.
+
+Stay on `/mcp` when the task is one or two calls, or when you want to approve every call one by one in your client.
+
+A chain that takes dozens of round trips through the model on `/mcp` is a single `execute` on `/code`: the intermediate results stay inside the script, and only what it prints comes back to the model.
+
+### What it costs in context
+
+Measured with `count_tokens` on Claude Sonnet:
+
+| What the agent loads | Tokens |
+| --- | --- |
+| Tool list of `/mcp` (114 tools) | 77,666 |
+| Tool list of `/code` (`describe` + `execute`) | 962 |
+| `describe()` with no argument (the theme list) | 776 |
+| `describe({ theme })`, median theme | 2,049 |
+| `describe({ theme: "flows" })`, the largest theme | 11,680 |
+
+The agent only pays for the themes it actually reads.
+
+## Connect
+
+Authentication is the same as on `/mcp`: an **OAuth 2.1** token (`Authorization: Bearer`, handled by the claude.ai custom connector, with whole-tenant or per-number grants) or a `ps_*` **API key** in the `x-api-key` header. Each call the script makes goes to the public `/v1` API with that credential, so the key's scope, roles, per-number grants, rate limits and billing apply exactly as they do on `/mcp`.
+
+In claude.ai, add a second custom connector with the URL `https://mcp.pilotstatus.com.br/code`. Clients configured by file:
+
+```json
+{
+  "mcpServers": {
+    "pilot-status-code": {
+      "type": "http",
+      "url": "https://mcp.pilotstatus.com.br/code",
+      "headers": { "x-api-key": "ps_your_key_here" }
+    }
+  }
+}
+```
+
+<Note>
+Code Mode exists only on the hosted server. The npm package `@pilot-status/mcp-server` (self-hosted) serves the 114 tools only.
+</Note>
+
+## `describe`
+
+Returns what the script can call. It takes at most one argument:
+
+| Call | Returns |
+| --- | --- |
+| `describe()` | The list of themes: `name`, `summary` and the number of `methods` of each |
+| `describe({ theme: "webhooks" })` | The TypeScript declarations (`declare const ps: { … }`) of every method of that theme, with the description of each tool and each argument |
+| `describe({ search: "idempotency" })` | The declarations of the tools whose name or description contains the word, at most 15. When more match, a comment at the end says so: refine the word or pick a theme |
+
+Themes: `messages`, `conversations`, `referrals`, `leads`, `ads`, `groups`, `numbers`, `templates`, `flows`, `branding`, `analytics`, `api-keys`, `subscription`, `media`, `billing`, `webhooks`, `calls`, `chatwoot`, `pricing`, `workspace`, `phone-lines`.
+
+Every method also accepts `whatsappNumberId`, the target number for number-scoped tools. It is required with an OAuth or tenant-scoped credential (it is sent as the `x-whatsapp-number-id` header) and ignored when the API key is already scoped to one number.
+
+Errors: passing both `theme` and `search` returns `INVALID_ARGUMENTS`; an unknown theme returns `UNKNOWN_THEME` with the list of valid `themes`.
+
+## `execute`
+
+Takes one argument, `code`: the body of a TypeScript script.
+
+- Top-level `await` works. Call the API with `await ps.<tool>(args)`; the result is the API's JSON response.
+- Print with `console.log` (also `info`, `warn`, `error`, `debug`). Objects are printed as JSON.
+- A `return` value is appended to the output as `=> <value>`.
+- Types are only stripped, not checked: a type error does not stop the script, a syntax error does.
+- There is **no network** and nothing from the host: no `fetch`, no `import`, no `require`, no `process`, no `setTimeout`/`setInterval`. The only way out of the script is `ps`.
+
+### Example: list, then read each
+
+Reads the recent deliveries of every webhook on the number and prints only the summary.
+
+```ts
+type Webhook = { id: string; name: string; url: string; active: boolean };
+type Delivery = { status: "SUCCESS" | "FAILED"; statusCode: number | null };
+
+const webhooks = (await ps.webhooks_list()) as Webhook[];
+const report = [];
+for (const w of webhooks) {
+  const { logs } = (await ps.webhook_events({ id: w.id, limit: 50 })) as { logs: Delivery[] };
+  const failed = logs.filter((l) => l.status === "FAILED").length;
+  report.push({ name: w.name, active: w.active, failed, of: logs.length });
+}
+console.log(report);
+return webhooks.length;
+```
+
+### Example: handle an API refusal
+
+When the API refuses a call, `ps.<tool>` **throws** inside the script. The error has `name === "ApiError"`, the HTTP `status` and the API's `code`. Catch it to keep going.
+
+```ts
+try {
+  await ps.numbers_list();
+} catch (e: any) {
+  if (e.name === "ApiError") {
+    console.log("refused:", e.status, e.code); // e.g. a number-scoped key: refused: 403 NUMBER_SCOPE_NOT_ALLOWED
+  } else {
+    throw e;
+  }
+}
+```
+
+An uncaught error stops the script. Other errors a call can throw: `InvalidArguments` (the arguments do not match the declaration; `code` is `INVALID_ARGUMENTS`), `CallLimitExceeded` and `SendLimitExceeded` (see [Limits](#limits-per-run)).
+
+### Example: send safely with `idempotencyKey`
+
+Pass an `idempotencyKey` to **every** `ps.messages_send`. Derive it from what makes the send unique — here the order id and the recipient — so that running the same script again does not send the same message twice.
+
+```ts
+const orders = [
+  { id: "A-1001", phone: "5511999990001", name: "Ana" },
+  { id: "A-1002", phone: "5511999990002", name: "Bruno" },
+];
+
+for (const o of orders) {
+  const sent = (await ps.messages_send({
+    destinationNumber: o.phone,
+    text: `Hi ${o.name}, your order ${o.id} has shipped.`,
+    idempotencyKey: `order-shipped-${o.id}-${o.phone}`,
+  })) as { id: string; status: string };
+  console.log(o.id, sent.id, sent.status);
+}
+```
+
+Within 24 hours, the same key with the same arguments returns the first accepted response and sends nothing. The same key with different arguments is `409 IDEMPOTENCY_KEY_REUSED`. [Idempotency](/api/messages/send#idempotency)
+
+## Limits per run
+
+| Limit | Value | When it is exceeded |
+| --- | --- | --- |
+| Wall clock | 30 s, API calls included | The script is stopped: `TIMEOUT` |
+| Memory | 64 MB | The script is stopped: `OOM` |
+| `ps` calls | 50, sends included | The 51st call throws `CallLimitExceeded`: `CALL_LIMIT` |
+| `messages_send` calls | 10, inside the 50 | The 11th throws `SendLimitExceeded`: `SEND_LIMIT` |
+| Output | 100 KB | The output is cut and ends with `[output truncated: N KB omitted]`; `outputTruncatedBytes` says how much |
+| Script | 64 KB | Refused before running: `CODE_TOO_LARGE` |
+| Scripts at the same time | 2 per workspace | The 3rd is refused: `CODE_RUN_CONCURRENCY`, with `retryAfterSeconds` |
+
+- Every call counts, refused ones included. A `messages_send` with invalid arguments still counts as a send.
+- Only `messages_send` counts as a send. `call_initiate` and `call_permission_request` count only in the 50 calls.
+- There is no hourly limit on runs: the rate limits of the `/v1` API apply to each call, as they do on `/mcp`.
+
+## Failure and the report
+
+**A failure stops the script, and nothing is undone.** What was sent stays sent. Every `execute` that ran returns a report:
+
+```json
+{
+  "runId": "cmr_3f9a…",
+  "status": "ERROR",
+  "error": { "name": "ApiError", "message": "…", "status": 409, "code": "IDEMPOTENCY_KEY_REUSED", "tool": "messages_send" },
+  "calls": [
+    { "i": 1, "tool": "messages_send", "ok": true, "ms": 312, "ref": "msg_…" },
+    { "i": 2, "tool": "messages_send", "ok": false, "ms": 95, "status": 409, "code": "IDEMPOTENCY_KEY_REUSED" }
+  ],
+  "output": "…what the script printed…",
+  "outputTruncatedBytes": 0
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `runId` | Id of the run (`cmr_…`). Quote it when you contact support |
+| `status` | `OK`, `ERROR`, `TIMEOUT`, `OOM`, `CALL_LIMIT` or `SEND_LIMIT`. Anything but `OK` comes back with `isError: true` |
+| `error` | Present when the script stopped on an error: `name`, `message` and, when known, `code`, `status` and `tool` |
+| `calls` | Every call made, in order: `i`, `tool`, `ok`, `ms`, the HTTP `status` and API `code` of a refusal, and `ref` — the `id` (or `messageId`) the API returned, such as the id of the message created |
+| `output` | What the script printed, plus `=> <value>` when it returned something |
+| `outputTruncatedBytes` | How many bytes of output were cut (`0` when nothing was) |
+| `warning` | Present only when the run finished but could not be recorded; the report itself is still exact |
+
+`calls` is how the agent knows what already happened before deciding what to do next. **To run a script again safely, it must pass `idempotencyKey` to every `ps.messages_send`** — without it, a re-run sends again.
+
+### Refused before running
+
+When the script cannot start, `execute` returns `isError: true` with an `error`, a `code` and no report:
+
+| `code` | When |
+| --- | --- |
+| `CODE_TOO_LARGE` | The script is over 64 KB |
+| `CODE_SYNTAX_ERROR` | The script does not parse; the message gives the line and column |
+| `CODE_RUN_CONCURRENCY` | The workspace already has 2 scripts running (`status: 429`, `retryAfterSeconds`) |
+| `CODE_RUN_UNAVAILABLE` | Code Mode is temporarily unavailable; retry in a few seconds |
+
+With no credential at all, `/code` answers `401` and starts the OAuth flow, as `/mcp` does. A credential the API rejects refuses the run with the API's `status` and `code`.
+
+## What is recorded
+
+Each run — the script, the arguments of every call and the output — is kept for **30 days** for support and security, then deleted. Arguments and output can contain contact data (phone numbers, message text). Runs are not available in the dashboard or the API: the report returned by `execute` is your copy.
+
+## Related
+
+- [MCP Server](/integrations/mcp-server)
+- [Idempotency in `POST /v1/messages/send`](/api/messages/send#idempotency)
+- [AI Agents guide](/guides/ai-agents)
