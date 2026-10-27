@@ -1,0 +1,391 @@
+---
+title: "Phone lines in your app via the API | Pilot Status"
+sidebarTitle: "Phone lines via the API"
+description: "Offer phone lines inside your own product: your backend searches numbers by area code, buys with an Idempotency-Key, opens the WhatsApp activation-code window, downloads the call recording and registers the line webhook through the API — all with a single tenant ps_ key."
+mode: "wide"
+---
+
+# Phone lines in your app via the API
+
+Offer phone lines — Brazilian landline numbers for activating WhatsApp Business accounts — without sending your customer out of your product. Your page shows the numbers, the buy button and the activation code; **your backend** talks to `/v1/phone-lines` with your tenant key.
+
+There is no hosted page and no iframe here: everything goes through your backend, because the activation code is a credential and the `ps_` key must never reach the browser.
+
+<Note>
+  Prefer a running start? Download the MIT-licensed demo — a Node + TypeScript (Express) backend that holds the key and a React + Vite frontend, wired to exactly this flow: [**phone-lines-demo.zip**](https://pilotstatus.com.br/downloads/phone-lines-demo.zip). Unzip, put your `ps_` key in `PILOT_TENANT_KEY` (and, for the webhook, a public URL in `PUBLIC_BASE_URL`), `npm run dev` (or `docker compose up`) — frontend on `:5175`, backend on `:8789`.
+</Note>
+
+<Info>
+  **This page is the step-by-step**: follow the five steps in order and you have a working integration. The reference — every field, state and error code — is the [**Phone Lines API**](/api/phone-lines/overview). This page links there instead of restating it, so you always read one copy.
+</Info>
+
+## One credential
+
+You need exactly one thing: a **tenant-scoped** `ps_` API key. Copy it from **`/profile`**, under the **API** tab.
+
+A line belongs to the workspace, not to a WhatsApp number, so a number-scoped key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`** on every `/v1/phone-lines` endpoint. You do not need any WhatsApp number connected to buy a line.
+
+Keep the `ps_` key **on your server** — the browser never calls the Pilot Status API, it only calls your backend.
+
+## Architecture
+
+```text
+Browser (your page)
+   │ 1. GET  /api/verification            → may we buy?      (canPurchase)
+   │ 2. GET  /api/available?ddd=11        → numbers in the area code
+   │ 3. POST /api/purchase { numbers }    → one result per number
+   │ 4. POST /api/lines/:id/activations   → then poll GET /api/activations/:id
+   │    GET  /api/activations/:id/audio   → the recording goes through your backend
+   ▼
+Your backend ── x-api-key: ps_ ──►  https://pilotstatus.com.br/v1/phone-lines…
+   ▲
+   │ 5. POST /webhooks/phone-lines   (x-pilot-status-signature)
+   └──────────────────────────────── Pilot Status
+```
+
+Only your backend touches the Pilot Status API. The `/api/...` routes above are the demo's — the names are yours to pick; what matters is that each one is a call from your server to `/v1/phone-lines`.
+
+## The five steps
+
+<Steps>
+  <Step title="Check that the workspace can buy">
+    Renting a line requires a verified account holder (CNPJ or CPF, the document, and contact confirmation), done once, before the first purchase. Before you show a buy button, read the state:
+
+    ```bash cURL
+    curl "https://pilotstatus.com.br/v1/phone-lines/verification" \
+      -H "x-api-key: ps_your_tenant_key"
+    ```
+
+    ```json
+    { "status": "NONE", "canPurchase": false, "verification": null }
+    ```
+
+    Decide on **`canPurchase`**: it is `true` for `APPROVED` and `IN_REVIEW` — under manual review you can already buy. With `false`, the purchase answers **403 `VERIFICATION_REQUIRED`** (or `VERIFICATION_REJECTED` when it was rejected), so show your customer the way forward instead of the button:
+
+    - **In the dashboard** — **Phone lines** (`/linhas`) → **Buy a line**, which walks through the verification. This is what the demo does: it only reads the state and points to the dashboard.
+    - **From code** — if you want to run the verification inside your product, it is in the API too: submit the details and the document, confirm the contact codes and read the decision in [Account holder verification](/api/phone-lines/verification).
+
+    Both are the same verification: what you do through one shows up in the other. State changes also arrive as the `phone_line.verification_updated` webhook (step 5).
+
+    <Warning>
+      **Buying under `IN_REVIEW` depends on the review.** If it is rejected, the lines bought during the review are returned to the carrier 3 days later, with their charges refunded to the wallet — see [identity verification](/api/phone-lines/overview#before-the-first-purchase-identity-verification).
+    </Warning>
+  </Step>
+  <Step title="Search numbers by area code">
+    ```bash cURL
+    curl "https://pilotstatus.com.br/v1/phone-lines/available?ddd=11" \
+      -H "x-api-key: ps_your_tenant_key"
+    ```
+
+    ```json
+    {
+      "ddd": "11",
+      "totalAvailable": 2,
+      "numbers": [
+        { "number": "551148637200", "display": "(11) 4863-7200" },
+        { "number": "551148637201", "display": "(11) 4863-7201" }
+      ]
+    }
+    ```
+
+    Show your customer the `display` and keep the `number` — it is exactly the value the purchase takes. A missing or malformed `ddd` answers **400 `INVALID_AREA_CODE`**, without calling the carrier.
+
+    - **Search once and reuse it.** Every search reaches our carrier and spends a request quota shared by the whole platform; when it runs out, the answer is **503 `SUPPLIER_UNAVAILABLE`**. Do not poll this endpoint.
+    - **Searching is not reserving.** A listed number can be bought by someone else before your purchase reaches it; it then comes back as `NUMBER_UNAVAILABLE` in the purchase result.
+
+    Reference: [Search numbers](/api/phone-lines/available).
+  </Step>
+  <Step title="Buy with an Idempotency-Key">
+    `POST /v1/phone-lines` buys **1 to 10** numbers and **moves money**, so it requires the `Idempotency-Key` header. Generate the key **on your backend**, one per purchase, and store it with the order before sending — it is what you resend when the answer does not arrive.
+
+    ```bash cURL
+    curl -X POST "https://pilotstatus.com.br/v1/phone-lines" \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -H "Idempotency-Key: 6f1c2a0e-7b1d-4c2e-9a5f-3d8e1b2c4a70" \
+      -d '{ "numbers": ["551148637200", "551148637201"] }'
+    ```
+
+    ```json Response (200)
+    {
+      "results": [
+        { "number": "551148637200", "ok": true, "lineId": "cmg5k2l1n0001pl8example9x" },
+        {
+          "number": "551148637201",
+          "ok": false,
+          "code": "PAYMENT_FAILED",
+          "error": "The payment did not go through. Add balance or check your card. | O pagamento não foi concluído. Adicione saldo ou confira seu cartão."
+        }
+      ]
+    }
+    ```
+
+    **The numbers are independent.** Each one is charged and acquired on its own, and one that fails does not undo the others. The request answers `200` when it was processed — **a `200` does not mean you bought anything**: read `results[i].ok` for each number and keep the `lineId` of those that succeeded. The full table of per-number `code`s is in [Buy lines](/api/phone-lines/purchase).
+
+    **Payment.** Each number costs the full monthly price, taken **from the prepaid wallet first** and, for whatever is left, from the **saved card**. There is no checkout link in this call: with no credits and no card, the item fails with `PAYMENT_FAILED` and nothing is charged. Before buying, top up the wallet — in the dashboard (card or PIX) or with [`POST /v1/billing/checkout`](/api/extra-numbers) (`wallet_topup`, card only) — or save a card (`add_card`). Price and billing cycle: [Pricing and payment](/api/phone-lines/overview#pricing-and-payment).
+
+    **The retry pattern:**
+
+    1. **On a timeout, a `5xx` or a network error**, resend the **same body with the same key**. A number the first attempt already handled comes back as `REQUEST_ALREADY_PROCESSED` and is not charged again; the ones it never reached are processed now.
+    2. **Reconcile** with `GET /v1/phone-lines`, matching by `number`. `REQUEST_ALREADY_PROCESSED` does not say whether that number was bought or failed — the list does: a bought number is in it.
+    3. **Retry the failures with a new key.** After a `PAYMENT_FAILED` or `SUPPLIER_UNAVAILABLE`, fix the cause and send those numbers with a **new** key — with the same one they come back as `REQUEST_ALREADY_PROCESSED` for an hour.
+
+    <Warning>
+      **A `500` or a timeout does not prove that nothing happened.** Numbers are processed one after the other, and a failure midway can come after earlier numbers were already charged. Never generate a new key to "retry" an answer that did not arrive — that can buy and charge the same order again. A `PAYMENT_PROVIDER_ERROR` asks for something else: the card **may** have been charged, so check the card statement before trying again. The exact rules are in [Idempotency](/api/phone-lines/purchase#idempotency).
+    </Warning>
+
+    The full code of this step — persisted key, retry and reconciliation — is in the [Example backend](#example-backend) below.
+  </Step>
+  <Step title="Get the WhatsApp activation code">
+    WhatsApp verifies a landline by **calling it** and speaking a 6-digit code. The order matters:
+
+    1. **Open the request first.** `POST /v1/phone-lines/{id}/activations` (no body), with the `lineId` from the purchase. A call that arrives before the request exists is not captured.
+    2. **Only then ask WhatsApp to call.** In WhatsApp Business, choose to receive the code **by phone call** (**Call me**). The line is a landline and does not receive SMS — waiting for an SMS only burns the window.
+
+    ```bash cURL
+    curl -X POST "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activations" \
+      -H "x-api-key: ps_your_tenant_key"
+    ```
+
+    ```json Response (201)
+    {
+      "activation": {
+        "id": "cmg5k3a7c0002ac8example4q",
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "status": "WAITING",
+        "requestedAt": "2026-10-01T14:10:00.000Z",
+        "pollDeadline": "2026-10-01T14:15:00.000Z",
+        "code": null,
+        "capturedAt": null,
+        "transcribedAt": null,
+        "failureReason": null,
+        "hasAudio": false
+      }
+    }
+    ```
+
+    The window is **5 minutes** (`pollDeadline`). Show your customer a countdown and the instruction "tap **Call me** now".
+
+    **Poll the request** every few seconds with `GET /v1/phone-lines/activations/{activationId}` — the status only changes after our next check of the line, every 15 seconds. Keep going while `status` is `WAITING`, or `CAPTURED` with `failureReason: null`: `CAPTURED` is also the in-between state while the code is read, which can take a few minutes. Stop at a final state and check `code` — `TRANSCRIBED` does not guarantee a code. Every state: [Statuses](/api/phone-lines/activation-codes#statuses).
+
+    **The recording goes through your backend.** When `hasAudio` is `true`, your customer can listen to the call — useful when the code could not be read. `GET /v1/phone-lines/activations/{activationId}/audio` requires your key, so your backend fetches the file and streams it to the browser (in the demo, `GET /api/activations/:id/audio`). Pass `Cache-Control: private, no-store` along too: the recording speaks the code. See [Download the recording](/api/phone-lines/activation-codes#download-the-recording).
+
+    **Cancel the wait.** There is **one waiting request per line**. If your customer wants to start over before the window closes, call `POST /v1/phone-lines/{id}/activations/{activationId}/cancel` and open a new request right away.
+
+    | Answer | What it means | What your screen does |
+    | --- | --- | --- |
+    | **409 `ACTIVATION_IN_PROGRESS`** | A request is already waiting for the call on this line. | Resume polling the existing request, or cancel it and ask again. |
+    | **409 `ACTIVATION_NOT_WAITING`** | On cancel: the call was already captured (the code is being read) or the request already ended. Nothing changed. | Keep polling the request. |
+    | **409 `LINE_NOT_ACTIVE`** | The line is `SUSPENDED`, `RETURNED` or `CANCELED`. | A suspended line must be paid first; a finished line gets no codes. |
+    | **503 `SUPPLIER_UNAVAILABLE`** | The carrier did not answer. | Try again in a few minutes — a new request is accepted right away. |
+
+    <Warning>
+      **The activation code is a credential.** Whoever holds it can register a WhatsApp account on the line. Show it only to your authenticated customer, do not log it and do not cache it — API responses already carry `Cache-Control: no-store`.
+    </Warning>
+
+    Full reference: [Activation codes](/api/phone-lines/activation-codes).
+  </Step>
+  <Step title="Register the line webhook through the API">
+    For your system to learn right away that a code arrived, a renewal failed or a line was suspended, register a **line webhook**. It is a registry separate from the number webhooks: the numbers' `POST /v1/webhooks` does **not** receive `phone_line.*` events. The line registry is `POST /v1/phone-lines/webhooks`:
+
+    ```bash cURL
+    curl -X POST "https://pilotstatus.com.br/v1/phone-lines/webhooks" \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -d '{
+        "name": "My app",
+        "url": "https://your-app.com/webhooks/phone-lines",
+        "events": ["*"]
+      }'
+    ```
+
+    ```json Response (201)
+    {
+      "webhook": {
+        "id": "cmh1w8b2k0001wh8example3d",
+        "name": "My app",
+        "url": "https://your-app.com/webhooks/phone-lines",
+        "events": ["*"],
+        "active": true,
+        "secret": "plwh_3f9a1c7e5b2d8f4a6c0e9b1d7f3a5c8e2b4d6f8a0c1e3b5d",
+        "createdAt": "2026-10-27T14:03:11.000Z"
+      }
+    }
+    ```
+
+    Inside this registry, `"*"` means **every phone-line event**. The URL must be `https` and public: `localhost`, a private IP or a name that resolves to one is refused with **400 `WEBHOOK_URL_REFUSED`** — during development, use a tunnel with a public URL in `PUBLIC_BASE_URL`.
+
+    <Warning>
+      **The `plwh_` secret appears once, in this response.** Store it on your server right away: no read returns it later, and there is no rotation. To change it, create a new webhook, move your receiver to its secret and delete the old one. Creating is **not** idempotent: two `POST`s create two webhooks with two secrets — list the existing ones with `GET /v1/phone-lines/webhooks` before creating another.
+    </Warning>
+
+    **Verify the signature and deduplicate.** Every delivery carries `x-pilot-status-signature`: the HMAC-SHA256 of the **raw body**, hex-encoded, keyed with the whole secret (including `plwh_`). Compute it over the bytes exactly as received, before parsing the JSON, and compare in constant time:
+
+    ```javascript Backend — webhook receiver (Express)
+    import crypto from "node:crypto";
+
+    const WEBHOOK_SECRET = process.env.PILOT_PHONE_LINES_WEBHOOK_SECRET; // the plwh_ stored at creation
+    const seen = new Set(); // in production: a table with a unique index on the id
+
+    // express.raw: the signature covers the bytes received, not re-serialized JSON.
+    app.post("/webhooks/phone-lines", express.raw({ type: "application/json" }), (req, res) => {
+      const expected = crypto.createHmac("sha256", WEBHOOK_SECRET).update(req.body).digest("hex");
+      const received = String(req.get("x-pilot-status-signature") ?? "");
+      const valid =
+        received.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received));
+      if (!valid) return res.status(401).end();
+
+      const event = JSON.parse(req.body.toString("utf8"));
+      res.status(200).end(); // answer 2xx within 10 seconds; process afterwards
+      if (seen.has(event.id)) return; // a retry of the same delivery
+      seen.add(event.id);
+
+      if (event.event === "phone_line.code_received") {
+        // event.data = { lineId, number, name, activationId, code, failureReason, audioUrl }
+        // code is null when the request ended without one. Do not log this body.
+      }
+    });
+    ```
+
+    - **Deduplicate on `id`.** It is the same on every retry of a delivery (and also comes in the `Idempotency-Key` header). Delivery is **at least once**, order is not guaranteed, and the signature has no timestamp.
+    - **Answer `2xx` within 10 seconds.** Anything else counts as a failure; there are **6 attempts** over about 15 minutes, and a `3xx` redirect is not followed.
+    - **Events are notifications, not the source of truth.** A `phone_line.code_received` saves you the polling of step 4, but if your endpoint was down for longer than the retries, read the current state with `GET /v1/phone-lines` or `GET /v1/phone-lines/activations/{activationId}`.
+
+    Editing (name, URL, events), pausing with `active: false`, deleting and reading the delivery log are in the API too — `PATCH` and `DELETE /v1/phone-lines/webhooks/{id}` and `GET …/{id}/deliveries`. Every event, payload and endpoint: [Phone line webhooks](/api/phone-lines/webhooks).
+  </Step>
+</Steps>
+
+## Example backend
+
+The step that needs the most care is the purchase: it is the only one that moves money. Your backend generates and stores the `Idempotency-Key` **before** sending, repeats with the same key when the answer does not arrive, and reconciles against the list of lines.
+
+```javascript Backend — Node.js / Express
+import crypto from "node:crypto";
+import express from "express";
+
+const app = express();
+app.use("/api", express.json());
+
+const BASE = (process.env.PILOT_API_BASE || "https://pilotstatus.com.br").replace(/\/$/, "");
+const TENANT_KEY = process.env.PILOT_TENANT_KEY; // tenant-scoped ps_... — server ONLY
+
+// In production, store it in your database with the customer's order. Here, in memory.
+const purchases = new Map(); // purchaseId -> { idempotencyKey, numbers }
+
+async function buy(numbers, idempotencyKey) {
+  return fetch(`${BASE}/v1/phone-lines`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": TENANT_KEY,
+      "Idempotency-Key": idempotencyKey,
+    },
+    body: JSON.stringify({ numbers }),
+    signal: AbortSignal.timeout(60_000), // generous: numbers are processed one after the other
+  });
+}
+
+// Which of the requested numbers are already your lines — the answer to "bought or not?".
+async function ownedLines() {
+  const r = await fetch(`${BASE}/v1/phone-lines`, { headers: { "x-api-key": TENANT_KEY } });
+  const { lines } = await r.json();
+  return new Map(lines.map((l) => [l.number, l.id]));
+}
+
+// A repeat answers REQUEST_ALREADY_PROCESSED without saying whether the first attempt bought.
+// The list of lines does: replace those items with what the list shows.
+async function settle(results) {
+  if (!results.some((i) => i.code === "REQUEST_ALREADY_PROCESSED")) return results;
+  const owned = await ownedLines();
+  return results.map((i) =>
+    i.code === "REQUEST_ALREADY_PROCESSED" && owned.has(i.number)
+      ? { number: i.number, ok: true, lineId: owned.get(i.number) }
+      : i,
+  );
+}
+
+// POST /api/purchase { purchaseId, numbers }
+app.post("/api/purchase", async (req, res) => {
+  const { purchaseId = crypto.randomUUID(), numbers } = req.body || {};
+
+  // The key is born ONCE per purchase and is stored: a repeated click reuses the same one.
+  let purchase = purchases.get(purchaseId);
+  if (!purchase) {
+    purchase = { idempotencyKey: crypto.randomUUID(), numbers };
+    purchases.set(purchaseId, purchase);
+  }
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await buy(purchase.numbers, purchase.idempotencyKey);
+      const data = await r.json();
+      if (r.status < 500) {
+        // 200: one result per number. 4xx: nothing was tried — fix it and resend with the same key.
+        if (!r.ok) return res.status(r.status).json(data);
+        return res.json({ purchaseId, results: await settle(data.results) });
+      }
+      // 5xx: some numbers may have been charged. Repeat with the SAME key.
+    } catch {
+      // Timeout or network error: the same case. Repeat with the SAME key.
+    }
+  }
+
+  // Still no answer: tell the customer what is already theirs, without risking a second charge.
+  // They can try again later with the same purchaseId — the same key.
+  const owned = await ownedLines();
+  res.status(502).json({
+    purchaseId,
+    owned: purchase.numbers.filter((n) => owned.has(n)).map((n) => ({ number: n, lineId: owned.get(n) })),
+  });
+});
+
+app.listen(process.env.PORT || 8789);
+```
+
+For the numbers that came back with `PAYMENT_FAILED` or `SUPPLIER_UNAVAILABLE`, your customer fixes the cause and makes a **new** purchase — a new `purchaseId`, and therefore a new key.
+
+<Warning>
+  The `ps_` key is a server secret. **Never** put it in a variable exposed to the browser (`VITE_...`, `NEXT_PUBLIC_...`) or return it in JSON the frontend can read. The same goes for the webhook's `plwh_` secret.
+</Warning>
+
+## Cancel a line
+
+`DELETE /v1/phone-lines/{id}` answers with the line **as it is afterwards**, and the result depends on its `status`:
+
+```bash cURL
+curl -X DELETE "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x" \
+  -H "x-api-key: ps_your_tenant_key"
+```
+
+| `status` before | What happens | Response |
+| --- | --- | --- |
+| `ACTIVE` | **Cancellation scheduled, no refund.** The line keeps working — codes included — until `currentPeriodEnd`, is not renewed and becomes `CANCELED` that day. Calling again is safe. | `200`, `status: "ACTIVE"`, `cancelAtPeriodEnd: true` |
+| `PAYMENT_PENDING`, `SUSPENDED` | **Returned at once.** There is no paid period left; the number goes back to the carrier. | `200`, `status: "RETURNED"` |
+| `RETURNED`, `CANCELED` | Refused — the line is already finished. | `409 NOT_CANCELABLE` |
+
+Tell your customer which of the two cases happened: from the response's `status` and `cancelAtPeriodEnd`, not from the `200`.
+
+<Warning>
+  **A returned number stops being yours, and the history is erased.** Nothing undoes a return, there is no guarantee of buying the same number back, and the WhatsApp account activated on it stays tied to it. When the line reaches `RETURNED` or `CANCELED`, its codes and call recordings are deleted. Undoing a scheduled cancellation is dashboard-only. See [Cancel a line](/api/phone-lines/cancel).
+</Warning>
+
+## Other paths
+
+The API is the path for putting lines inside your own product. Depending on your case, there are alternatives:
+
+- **In the dashboard.** To buy and activate a few lines without writing code — and to verify the account holder — follow [Phone lines](/guides/phone-lines). Dashboard-only: naming a line, undoing a scheduled cancellation and paying overdue lines on the spot.
+- **Playground.** Try each endpoint with your key before writing the backend: [Playground → Phone Lines](/playground/phone-lines/search-available-numbers). Buying and cancelling there are real.
+- **AI builders.** If you use Lovable, Replit, Bolt, v0 or Cursor, there are ready-made prompts that generate this same flow in [Phone lines for AI builders](/guides/phone-lines-api-ai-builders).
+- **AI agents (MCP).** The [MCP server](/integrations/mcp-server) has the account holder verification tools (`phone_lines_verification_*`) and the recording tool (`phone_lines_activation_audio`), under the same tenant-scoped credential rules.
+
+## Next steps
+
+- Full reference: [Phone Lines API — Overview](/api/phone-lines/overview)
+- Verify the holder from code: [Account holder verification](/api/phone-lines/verification)
+- Purchase and idempotency in detail: [Buy lines](/api/phone-lines/purchase)
+- Code request states: [Activation codes](/api/phone-lines/activation-codes)
+- Webhook events, payloads and endpoints: [Phone line webhooks](/api/phone-lines/webhooks)
+- Price and renewal: [Phone line pricing](/phone-lines-pricing)
+- Key scopes and headers: [API authentication](/api/authentication)
+- Prompts for AI builders: [Phone lines for AI builders](/guides/phone-lines-api-ai-builders)
