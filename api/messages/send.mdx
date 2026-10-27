@@ -70,6 +70,17 @@ This is the **only** send endpoint. It supports three **mutually exclusive** top
   `image`, `video`, `document`, `audio`, `voice`, or `sticker`. Set it explicitly when the URL extension is not obvious (e.g. PDFs whose URL does not end in `.pdf`). `voice` is delivered as a WhatsApp **voice note (PTT)** on every number; `audio` is delivered as an **audio file** on official (Meta Cloud API) numbers and as a voice note on unofficial (Pilot Status web) numbers — to send a voice note, use `voice` (see [Audio and voice notes](/guides/media-messages#audio-and-voice-notes)). Before sending, audio is converted to AAC in MP4 (`audio/mp4`) on official numbers and to Ogg/Opus on unofficial numbers. For `audio` and `voice`, a presence indicator is shown to the contact just before delivery: unofficial (Pilot Status web) numbers show "recording audio" (gravando); Meta Cloud API numbers show "typing" (digitando) — the Cloud API has no recording variant, and it only appears when the conversation has a recent inbound message to attach to. Typing is shown before every conversational send on Meta and Evolution numbers — on Meta numbers unless `markRead` is `false` (see [Read receipt and typing](#read-receipt-and-typing)); you can also trigger it independently via [Typing Indicator](/api/messages/typing). `sticker` sends a WhatsApp **sticker** — direct media send only, never with `templateId`, never with a `caption`, and the file must be **`image/webp`** at **exactly 512×512 pixels** (static up to **100 KB**, animated up to **500 KB**).
 </ParamField>
 
+<ParamField body="mediaFilename" type="string">
+  File name the recipient sees for a **document** — 1–240 characters; `/` and `\` are replaced with `_`. Accepted on:
+
+  - a **direct document send** (`media` \+ `mediaType: "document"`, no `templateId`, no `text`). When omitted, the name falls back to the last segment of the URL.
+  - a **template send whose approved template has a `DOCUMENT` header** — with `media` (the document that replaces the template's example) or without it (it renames the document stored on the template). If you also send `mediaType`, it must be `document`.
+
+  Without `mediaFilename`, a template's document arrives with no proper title on official (Meta Cloud API) numbers — WhatsApp shows the generic "Document" — and with a name inferred from the URL on unofficial numbers. Works on Meta Cloud API, Evolution v2 and Evolution GO.
+
+  A free-form `text` send with it returns `400` ("mediaFilename is only supported for direct media sends and templates with a document header"), as does any `mediaType` other than `document`. On a template whose header is `IMAGE`, `VIDEO`, `TEXT` or absent it returns `422` `MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`, with `details.templateName` and `details.headerType` — the name would have nowhere to go, so it is refused rather than dropped.
+</ParamField>
+
 ### Direct media send
 
 Send media on its own by providing `media` \+ `mediaType` **without** `templateId` and **without** `text`. In this mode `buttons`, `header`, `footer`, and `variables` are **not allowed**; an optional `caption` is supported for `image`, `video`, and `document` but **not** for `audio`, `voice`, or `sticker`.
@@ -316,6 +327,20 @@ curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
   }'
 ```
 
+```bash Template with document header + file name
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "invoice-issued",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John" },
+    "media": "https://cdn.example.com/files/8f3a1c.pdf",
+    "mediaType": "document",
+    "mediaFilename": "Invoice 123.pdf"
+  }'
+```
+
 ```bash Retry-safe (Idempotency-Key)
 curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
   -H "Content-Type: application/json" \
@@ -331,6 +356,8 @@ curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
 </CodeGroup>
 
 In the **Template \+ media \+ buttons** example, `buttons` does not replace the template's buttons on a Meta (official) number: there the approved template's buttons are fixed, and a dynamic URL button or a copy-code button's code is filled through `variables` (see [Buttons](#buttons)).
+
+In the **Template with document header \+ file name** example, the approved template `invoice-issued` has a `DOCUMENT` header: `media` replaces its example document and `mediaFilename` is the name the recipient sees. Leave `media` out to send the document stored on the template under the new name.
 
 ## Response (202)
 
@@ -396,12 +423,12 @@ Derive the key from something stable on your side that identifies the message, s
 
 | Status | Meaning |
 | --- | --- |
-| `400` | Invalid payload (e.g., phone not in E.164, missing required fields, `MISSING_TEMPLATE_VARIABLES` / `INVALID_TEMPLATE_VARIABLE_VALUE` naming the key, or free-form not supported by the provider: `code: FREE_FORM_NOT_SUPPORTED`), or on an official number a template not approved on Meta: `code: META_TEMPLATE_NOT_APPROVED`, or an `Idempotency-Key` over 255 characters or with a control character: `code: IDEMPOTENCY_KEY_INVALID` (`details.maxLength`: `255`) |
+| `400` | Invalid payload (e.g., phone not in E.164, missing required fields, `MISSING_TEMPLATE_VARIABLES` / `INVALID_TEMPLATE_VARIABLE_VALUE` naming the key, or free-form not supported by the provider: `code: FREE_FORM_NOT_SUPPORTED`), or on an official number a template not approved on Meta: `code: META_TEMPLATE_NOT_APPROVED`, or an `Idempotency-Key` over 255 characters or with a control character: `code: IDEMPOTENCY_KEY_INVALID` (`details.maxLength`: `255`), or `mediaFilename` on a free-form `text` send or with a `mediaType` other than `document` |
 | `401` | Missing/invalid API key header (`x-api-key` / `x-api-key-id`) |
 | `403` | A tenant-scoped key used on a number-scoped endpoint |
 | `404` | Template not found or without an approved version |
 | `409` | A request with the same `Idempotency-Key` and the same body is still in progress (`code: IDEMPOTENCY_KEY_IN_USE`) — retry with the same key in a moment. Or the `Idempotency-Key` was already used with a different body in the last 24 hours (`code: IDEMPOTENCY_KEY_REUSED`) — use a new key |
-| `422` | Tenant billing is suspended (`code: BILLING_SUSPENDED`) — dunning, or an unpaid WALLET / extras balance; regularize your credits or card to resume sending |
+| `422` | Tenant billing is suspended (`code: BILLING_SUSPENDED`) — dunning, or an unpaid WALLET / extras balance; regularize your credits or card to resume sending. Or `mediaFilename` on a template whose approved header is not `DOCUMENT` (`code: MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`, `details.templateName`, `details.headerType`) |
 | `429` | Rate limit |
 | `503` | An `Idempotency-Key` was sent and the idempotency store is unavailable (`code: IDEMPOTENCY_UNAVAILABLE`) — nothing was sent; retry with the same key |
 
