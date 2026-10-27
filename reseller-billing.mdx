@@ -40,6 +40,25 @@ See [Pay As You Go works differently](/api/extra-numbers#pay-as-you-go-works-dif
 - **Monthly renewal refused:** there is a **2-day grace period**, with a new attempt every 12 hours. After that, sending through the API is suspended (`422 BILLING_SUSPENDED`) until the payment goes through.
 - **15 days suspended**, on a plan billed from the wallet: the subscription is cancelled and the workspace goes back to the **Free** plan. The Owner is notified by email and WhatsApp. Numbers are not disconnected, but whatever goes over the Free limits is blocked.
 
+### Restoring a deleted number (up to 30 days)
+
+Deleting a number with `DELETE /v1/numbers/{id}` logs the device out right away, but the number stays **30 days in the trash**. Within that window it can be restored with [`POST /v1/numbers/{id}/restore`](/api/numbers/create) (or in the dashboard), with the same id, API keys, webhooks and history. On Pay As You Go:
+
+| When you restore | Charge |
+| --- | --- |
+| **In the same cycle**, with its slot still free | **Nothing.** The paid slot is good until the renewal. |
+| **In the same cycle**, but the slot was already used by another number | One extra number, **prorated** to the rest of the cycle. |
+| **After the renewal** | One extra number, **prorated** to the rest of the cycle. The deleted number was not charged at the renewal and comes back over capacity. |
+| A number that **never connected** | **Nothing.** It is charged at its first connection, like any other. |
+
+- **The number comes back disconnected.** Connect it again (`GET /v1/numbers/{id}/connect`, or the Meta flow for an official number). That reconnection does not charge again.
+- **If the charge does not go through**, the response is `422`, nothing is charged and the number stays deleted. Retrying the same restore never charges twice.
+- **While the number is in the trash, the same phone cannot be created again** (`409 NUMBER_SOFT_DELETED`): restore it or purge it.
+- **After 30 days the deletion is final** (`404 RESTORE_WINDOW_EXPIRED`). Purging before that is final too and, on a Meta number, deregisters it at Meta.
+- The `number.restored` webhook tells you when a number comes back.
+
+In practice: if your customer paid late, you deleted their number before the renewal and they paid afterwards, restoring costs the prorated rest of the cycle, and you keep their history and settings.
+
 ### What your system must record
 
 - **Which customer owns each number**, and the **date of its first connection**. The [`number.connected`](/concepts/webhooks) webhook is the trigger: that is when we start billing you, so that is when you start billing your customer. `number.disconnected` tells you when the number dropped.
