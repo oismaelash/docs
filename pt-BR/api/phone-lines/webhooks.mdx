@@ -499,7 +499,55 @@ curl "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8exam
 
 ## Verificar a assinatura
 
-Todo webhook de linha tem um segredo, então **toda entrega é assinada**. `x-pilot-status-signature` é o **HMAC-SHA256 do corpo bruto da requisição**, codificado em hexadecimal, usando o segredo do webhook como chave (a string inteira, incluindo o prefixo `plwh_`). Calcule-o sobre os bytes exatamente como foram recebidos — antes de qualquer parse do JSON — e compare em tempo constante:
+Todo webhook de linha tem um segredo, então **toda entrega é assinada**. `x-pilot-status-signature` é o **HMAC-SHA256 do corpo bruto da requisição**, codificado em hexadecimal, usando o segredo do webhook como chave (a string inteira, incluindo o prefixo `plwh_`). Calcule-o sobre os bytes exatamente como foram recebidos — antes de qualquer parse do JSON — e compare em tempo constante.
+
+**Com o SDK Python** (`pilot-status` 1.16.0 ou superior), `verify_webhook_signature(raw_body, signature_header, secret)` faz isso por você — a mesma função dos webhooks de número, chamada com o segredo `plwh_...` inteiro. Passe o corpo exatamente como chegou — `request.get_data()` no Flask, `await request.body()` no FastAPI —, nunca o JSON já interpretado e re-serializado. A comparação é em tempo constante, e a função devolve `False` — nunca lança exceção — para cabeçalho ausente ou malformado, segredo vazio ou corpo adulterado:
+
+```bash
+pip install "pilot-status>=1.16.0"
+```
+
+<CodeGroup>
+
+```python Flask
+import os
+
+from flask import Flask, abort, request
+from pilot_status import WEBHOOK_SIGNATURE_HEADER, verify_webhook_signature
+
+app = Flask(__name__)
+SECRET = os.environ["PILOT_STATUS_WEBHOOK_SECRET"]  # the full plwh_... string
+
+@app.post("/hooks/pilot-status")
+def pilot_status_hook():
+    raw = request.get_data()  # the raw bytes that were signed, not json.dumps(request.json)
+    if not verify_webhook_signature(raw, request.headers.get(WEBHOOK_SIGNATURE_HEADER), SECRET):
+        abort(401)
+    # ... parse json.loads(raw) and process it
+    return "", 200
+```
+
+```python FastAPI
+import os
+
+from fastapi import FastAPI, HTTPException, Request
+from pilot_status import WEBHOOK_SIGNATURE_HEADER, verify_webhook_signature
+
+app = FastAPI()
+SECRET = os.environ["PILOT_STATUS_WEBHOOK_SECRET"]  # the full plwh_... string
+
+@app.post("/hooks/pilot-status")
+async def pilot_status_hook(request: Request):
+    raw = await request.body()  # the raw bytes that were signed
+    if not verify_webhook_signature(raw, request.headers.get(WEBHOOK_SIGNATURE_HEADER), SECRET):
+        raise HTTPException(status_code=401)
+    # ... parse json.loads(raw) and process it
+    return {}
+```
+
+</CodeGroup>
+
+**Sem o SDK**, calcule você mesmo:
 
 <CodeGroup>
 

@@ -92,6 +92,27 @@ const pages = await client.leadPages.list();          // GET /v1/lead-pages
 
 **`seatLimit` is now `number | null`** in `WorkspaceDetail` and `WorkspaceMemberList`: workspace members are unlimited on every plan, and the API always returns `null`. If your TypeScript does arithmetic with `seatLimit`, handle `null`. `seatsUsed` is informational only.
 
+### Phone-line webhooks (0.18.0)
+
+From **0.18.0**, `client.phoneLines.webhooks` manages the [phone-line webhooks](/api/phone-lines/webhooks) — a registry separate from the number webhooks (`client.webhooks`) that receives only `phone_line.*` events. It needs an account-wide (tenant-scoped) key of an **Owner or Admin** (`phone_lines:webhooks`). Each method returns the response body as is:
+
+```typescript
+const { webhook } = await client.phoneLines.webhooks.create({
+  url: "https://hooks.example.com/lines",                         // https and public
+  events: ["phone_line.code_received", "phone_line.code_failed"], // or ["*"]
+  name: "Activation codes",                                       // optional
+});
+// webhook.secret ("plwh_...") is returned only here — store it now
+
+const { webhooks, events } = await client.phoneLines.webhooks.list();   // never the secret
+await client.phoneLines.webhooks.update(webhook.id, { active: false }); // pause
+const { deliveries } = await client.phoneLines.webhooks.listDeliveries(webhook.id, { limit: 20 });
+const { delivery } = await client.phoneLines.webhooks.getDelivery(webhook.id, deliveries[0].id);
+await client.phoneLines.webhooks.delete(webhook.id);                    // { ok: true }
+```
+
+The methods are `list()`, `get(id)`, `create()`, `update(id, input)`, `delete(id)`, `listDeliveries(id, { limit })` (1–200, default 50, newest first, without the payload) and `getDelivery(id, deliveryId)`. `create()` is not idempotent: two calls create two webhooks with two secrets, and the SDK never retries it. `delivery.payload` is the exact JSON string that was signed, so you can check it with `verifyWebhookSignature` and the `plwh_` secret. A `phone_line.code_received` payload contains the activation code: treat it as a credential.
+
 ## Python
 
 Package: [`pilot-status`](https://pypi.org/project/pilot-status/)
@@ -151,6 +172,29 @@ leads = client.with_number("num_01HZY...").leads.list()
 
 Before 1.14.0, an account-wide key could not reach the number-scoped endpoints (referrals, leads, history) from Python.
 
+From **1.16.0**, `client.phone_lines.webhooks` manages the [phone-line webhooks](/api/phone-lines/webhooks), with the same rules as in the Node SDK: `list()`, `get(webhook_id)`, `create(url=..., events=[...], name=None)`, `update(webhook_id, name=..., url=..., events=..., active=...)` (only the arguments you pass are sent), `delete(webhook_id)`, `list_deliveries(webhook_id, limit=None)` and `get_delivery(webhook_id, delivery_id)`. The responses are the API bodies as dicts with camelCase keys.
+
+```python
+created = client.phone_lines.webhooks.create(
+    url="https://hooks.example.com/lines",
+    events=["phone_line.code_received"],
+)
+secret = created["webhook"]["secret"]  # "plwh_..." — returned only here
+
+client.phone_lines.webhooks.update(created["webhook"]["id"], active=False)
+```
+
+Also from **1.16.0**, `verify_webhook_signature(raw_body, signature_header, secret)` checks the `x-pilot-status-signature` header — the Python counterpart of `verifyWebhookSignature`. It is the same HMAC-SHA256 (hex, over the raw body) for the [number webhooks](/api/webhooks/configure#verify-the-signature) and the [phone-line webhooks](/api/phone-lines/webhooks#verify-the-signature) (`plwh_` secret). It compares in constant time and returns `False` — it never raises — for a missing or malformed header, an empty secret or a tampered body. Pass the body **exactly as received** (`bytes`, or a `str` encoded as UTF-8), never re-serialized JSON:
+
+```python
+from pilot_status import WEBHOOK_SIGNATURE_HEADER, verify_webhook_signature
+
+raw = request.get_data()      # Flask; FastAPI: raw = await request.body()
+if not verify_webhook_signature(raw, request.headers.get(WEBHOOK_SIGNATURE_HEADER), secret):
+    abort(401)
+event = parse_customer_webhook(json.loads(raw))
+```
+
 ## n8n (native integration)
 
 Official community node: `n8n-nodes-pilot-status`.
@@ -158,6 +202,8 @@ Official community node: `n8n-nodes-pilot-status`.
 Install from the n8n UI: **Settings → Community Nodes → Install → `n8n-nodes-pilot-status`**. Authentication uses a Pilot Status API key.
 
 From **2.8.0** the node adds the resources **Referral** (Get Many, Summary), **Ads Summary** (Get), **Ad Account** (Get Many, Link, Unlink), **Lead Page** (Get Many, Link, Update, Unlink, Resync) and **Lead Form** (Get Many, Update). **Lead Page → Unlink** is destructive: it erases every lead captured through the Page and its form configurations.
+
+From **2.10.0** the resource **Phone Line Webhook** (Create, Delete, Get, Get Many, Update, Get Deliveries, Get Delivery) manages the [phone-line webhooks](/api/phone-lines/webhooks) with an account-wide key of an Owner or Admin. **Create** returns the `plwh_` signing secret only once — store it in the same execution.
 
 In **Message → Send**, the optional **Idempotency Key** field is sent as the [`Idempotency-Key`](/api/messages/send#idempotency) header. Use an expression that stays the **same** when n8n retries the item (for example an id from your input data, such as `{{ $json.orderId }}-{{ $json.phone }}`): a retried execution then returns the first response instead of sending the message twice.
 
