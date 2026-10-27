@@ -1,29 +1,221 @@
 ---
 title: "Phone Line Webhook Events — Reference"
 sidebarTitle: "Line webhooks"
-description: "Events of the Phone Lines product — purchase, activation call and code, renewal, payment failure, suspension, return, cancellation and verification — with payloads, headers, signature verification and retry behaviour."
+description: "The webhooks of the Phone Lines product — registered in the dashboard or through the API (/v1/phone-lines/webhooks) — and their events: purchase, activation call and code, renewal, payment failure, suspension, return, cancellation and verification — with payloads, headers, signature verification and retry behaviour."
 mode: "wide"
 ---
 
 # Phone line webhooks
+
+<Tip>
+  Try them with your key in the Playground: [`GET /v1/phone-lines/webhooks`](/playground/phone-lines/list-line-webhooks), [`POST /v1/phone-lines/webhooks`](/playground/phone-lines/create-line-webhook), [`GET …/{id}`](/playground/phone-lines/get-line-webhook), [`PATCH …/{id}`](/playground/phone-lines/update-line-webhook), [`DELETE …/{id}`](/playground/phone-lines/delete-line-webhook), [`GET …/{id}/deliveries`](/playground/phone-lines/list-line-webhook-deliveries), [`GET …/deliveries/{deliveryId}`](/playground/phone-lines/get-line-webhook-delivery).
+</Tip>
 
 Phone lines send their events to **phone-line webhooks**: a registry of their own, separate from the [number webhooks](/api/webhooks/configure). The two never mix:
 
 - A number webhook — even one subscribed to `"*"` — **never** receives a `phone_line.*` event.
 - A phone-line webhook receives **only** `phone_line.*` events, never message or number events.
 
-## Configure (dashboard only)
+## Configure
 
-There is no public API for phone-line webhooks. Manage them in the dashboard under **Phone lines → Line webhooks** (`/linhas/webhooks`), as an **Owner or Admin**:
+Manage phone-line webhooks **in the dashboard** or **through the API** — it is the same registry: what you create through one shows up in the other. In the dashboard, under **Phone lines → Line webhooks** (`/linhas/webhooks`), as an **Owner or Admin**; in the API, with a **tenant-scoped** key on [`/v1/phone-lines/webhooks`](#through-the-api). The rules are the same on both:
 
 - **Name** — optional, up to 100 characters, to tell your webhooks apart in the list. Left blank, the webhook is named after the URL's host (`hooks.example.com`), as number webhooks are. This webhook name is not sent in the deliveries (the `name` in a delivery is the line's).
 - **Destination URL** — must be `https`, and must reach a public address. A URL that points to an internal or private network address — `localhost`, a loopback or private IP, a host name without a dot, or a name that resolves to one of those — is refused when you save it (`WEBHOOK_URL_REFUSED`), since it would never be called.
 - **Events** — pick one or more of the events below, or **all** (`"*"`). Inside this registry `"*"` means every phone-line event. At least one is required.
-- **Signing secret** — shown **once**, when the webhook is created (it starts with `plwh_`). Store it right away: nothing shows it again, and there is no rotation. To change it, create a new webhook, move your receiver to its secret, and delete the old one.
+- **Signing secret** — shown **once**, when the webhook is created (it starts with `plwh_`): in the dashboard, right after creating it; in the API, in the `POST` response. Store it right away: nothing shows it again, and there is no rotation. To change it, create a new webhook, move your receiver to its secret, and delete the old one.
 - **Pause / resume, edit (name, URL and events), and delete.** Editing never changes the signing secret. A new URL is checked the same way as on creation; saving without changing the URL does not check it again, so a webhook can always be paused.
 - **Delivery log** — per webhook: event, status (pending, delivered, failed), attempts, the HTTP status your endpoint answered and the last error.
 
 A workspace can have more than one phone-line webhook; each receives the events it subscribed to.
+
+### Through the API
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/v1/phone-lines/webhooks` | List the phone-line webhooks (oldest first) and the event catalogue. |
+| `POST` | `/v1/phone-lines/webhooks` | Create a webhook. Returns the signing secret, **this one time only**. |
+| `GET` | `/v1/phone-lines/webhooks/{id}` | Get a webhook. |
+| `PATCH` | `/v1/phone-lines/webhooks/{id}` | Edit name, URL and events, or pause and resume (`active`). |
+| `DELETE` | `/v1/phone-lines/webhooks/{id}` | Delete a webhook. |
+| `GET` | `/v1/phone-lines/webhooks/{id}/deliveries` | The webhook's latest deliveries, without their body. |
+| `GET` | `/v1/phone-lines/webhooks/{id}/deliveries/{deliveryId}` | One delivery in full, with the body that was sent. |
+
+<Note>
+  Requires a **tenant-scoped** key — a number-scoped key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**, as on every `/v1/phone-lines` endpoint. With an OAuth / MCP token, the user must be an **Owner or Admin** (`phone_lines:webhooks`) — `403 PERMISSION_DENIED` otherwise. All of them can be tried in the **Playground → [Phone Lines](/playground/phone-lines/list-line-webhooks)**.
+</Note>
+
+#### Create a webhook
+
+`POST https://pilotstatus.com.br/v1/phone-lines/webhooks` with `{ name?, url, events }`. Answers **`201`** with `{ "webhook": { … } }`, sent with `Cache-Control: no-store`.
+
+<ParamField body="url" type="string" required>
+  The public `https` URL that receives the deliveries.
+</ParamField>
+
+<ParamField body="events" type="string[]" required>
+  One or more names from the [events table](#events), or `["*"]` for every phone-line event. Duplicates are ignored.
+</ParamField>
+
+<ParamField body="name" type="string">
+  Up to 100 characters. Absent or blank, it becomes the URL's host.
+</ParamField>
+
+Any other body field is refused with **400 `UNKNOWN_FIELDS`**, which names the fields.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines/webhooks" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -d '{
+    "name": "My app",
+    "url": "https://hooks.example.com/pilot/phone-lines",
+    "events": ["phone_line.code_received", "phone_line.payment_failed"]
+  }'
+```
+
+```json Response (201)
+{
+  "webhook": {
+    "id": "cmh1w8b2k0001wh8example3d",
+    "name": "My app",
+    "url": "https://hooks.example.com/pilot/phone-lines",
+    "events": ["phone_line.code_received", "phone_line.payment_failed"],
+    "active": true,
+    "secret": "plwh_3f9a1c7e5b2d8f4a6c0e9b1d7f3a5c8e2b4d6f8a0c1e3b5d",
+    "createdAt": "2026-10-27T13:58:02.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+<Warning>
+  **The `secret` comes only in this response.** No read — `GET`, `PATCH`, the list — returns it, and there is no rotation. Store it on your server before doing anything else; if you lose it, create a new webhook and delete the old one. Creating is **not** idempotent: repeating the `POST` (after a timeout, for example) creates a second webhook with another secret — check the list before creating again.
+</Warning>
+
+#### List and get
+
+`GET https://pilotstatus.com.br/v1/phone-lines/webhooks` answers `{ "webhooks": [ … ], "events": [ … ] }`: the workspace's webhooks, oldest first, and the catalogue of events a phone-line webhook can subscribe to. `GET …/webhooks/{id}` answers `{ "webhook": { … } }`. A webhook of another workspace answers **404 `WEBHOOK_NOT_FOUND`**, like an id that does not exist.
+
+```json Response (200) — GET /v1/phone-lines/webhooks
+{
+  "webhooks": [
+    {
+      "id": "cmh1w8b2k0001wh8example3d",
+      "name": "My app",
+      "url": "https://hooks.example.com/pilot/phone-lines",
+      "events": ["phone_line.code_received", "phone_line.payment_failed"],
+      "active": true,
+      "lastDeliveryAt": "2026-10-27T14:11:51.000Z",
+      "lastStatusCode": 200,
+      "createdAt": "2026-10-27T13:58:02.000Z"
+    }
+  ],
+  "events": [
+    "phone_line.purchased",
+    "phone_line.audio_received",
+    "phone_line.code_received",
+    "phone_line.code_failed",
+    "phone_line.renewed",
+    "phone_line.payment_failed",
+    "phone_line.suspended",
+    "phone_line.returned",
+    "phone_line.canceled",
+    "phone_line.verification_updated"
+  ]
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `id` | The webhook id, for the `/v1/phone-lines/webhooks/{id}` paths. |
+| `name` | Never empty: the name given, or the URL's host. |
+| `url` | The destination URL. |
+| `events` | The subscribed events, or `["*"]`. |
+| `active` | `false` when paused: a paused webhook receives no deliveries. |
+| `lastDeliveryAt` | ISO 8601 of the last **successful** delivery, or `null`. A failed attempt does not change it. |
+| `lastStatusCode` | The last HTTP status your endpoint answered, successful or not, or `null`. |
+| `createdAt` | ISO 8601 — when the webhook was created. |
+
+#### Edit, pause and delete
+
+`PATCH https://pilotstatus.com.br/v1/phone-lines/webhooks/{id}` takes `name`, `url`, `events` and `active`, all optional; whatever is not sent stays as it is. It answers `{ "webhook": { … } }` without the secret, which never changes. Only a URL that **changes** is checked again — pausing or changing the events always works, even when the stored URL would be refused today. A `name` sent blank goes back to the URL's host.
+
+```bash
+# Pause
+curl -X PATCH "https://pilotstatus.com.br/v1/phone-lines/webhooks/cmh1w8b2k0001wh8example3d" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -d '{ "active": false }'
+```
+
+`DELETE https://pilotstatus.com.br/v1/phone-lines/webhooks/{id}` answers `{ "ok": true }`. The webhook's pending deliveries are discarded.
+
+#### Delivery log
+
+`GET https://pilotstatus.com.br/v1/phone-lines/webhooks/{id}/deliveries` answers `{ "deliveries": [ … ] }`, newest first, **without the body** of each delivery.
+
+<ParamField query="limit" default="50" type="integer">
+  From 1 to 200. Any other value → **400 `INVALID_LIMIT`**.
+</ParamField>
+
+```json Response (200)
+{
+  "deliveries": [
+    {
+      "id": "cmh1w9c4m0002dl8example5f",
+      "event": "phone_line.code_received",
+      "status": "DELIVERED",
+      "attempts": 1,
+      "responseStatus": 200,
+      "lastError": null,
+      "createdAt": "2026-10-27T14:11:51.000Z",
+      "deliveredAt": "2026-10-27T14:11:52.000Z"
+    }
+  ]
+}
+```
+
+`status` is `PENDING`, `DELIVERED` or `FAILED`; `responseStatus` is the HTTP status your endpoint answered, and `lastError` the last error when no accepted answer came back.
+
+`GET https://pilotstatus.com.br/v1/phone-lines/webhooks/{id}/deliveries/{deliveryId}` answers `{ "delivery": { … } }` with the same fields plus three from the **last attempt**: `durationMs`, `responseBody` (your endpoint's answer, up to 1,000 characters) and `payload` — the exact body that was sent and signed, as a JSON **string**. Compute the HMAC over that string with your secret and you get the `x-pilot-status-signature` the delivery carried. Sent with `Cache-Control: no-store`.
+
+<Warning>
+  The `payload` of a `phone_line.code_received` carries the activation code, which is a credential. The list never carries it; reading one delivery does. Do not log that response.
+</Warning>
+
+
+#### Errors
+
+Errors follow the [phone-lines envelope](/api/phone-lines/overview#errors): a bilingual `error` and a `code`. The authentication and scope errors (`401`, `403 NUMBER_SCOPE_NOT_ALLOWED`, `TENANT_REQUIRED`, `WORKSPACE_ARCHIVED`, `PERMISSION_DENIED`, `WORKSPACE_MEMBERSHIP_REQUIRED`) are the same as on every `/v1/phone-lines` endpoint.
+
+| Status | `code` | Where | What happened |
+| --- | --- | --- | --- |
+| `400` | `INVALID_BODY` | `POST`, `PATCH` | The body is not a JSON object. |
+| `400` | `UNKNOWN_FIELDS` | `POST`, `PATCH` | Fields other than `name`, `url`, `events` (and `active`, on `PATCH`). `details.unknownFields` says which. |
+| `400` | `INVALID_FIELD_TYPE` | `POST`, `PATCH` | A field has the wrong type — for example `"active": "false"` or `null`. `details.field` and `details.expected` say which and what was expected. |
+| `400` | `INVALID_WEBHOOK` | `POST`, `PATCH` | `url` missing, invalid or not `https`, or `events` empty or with an unknown event. |
+| `400` | `INVALID_WEBHOOK_NAME` | `POST`, `PATCH` | `name` longer than 100 characters. |
+| `400` | `WEBHOOK_URL_REFUSED` | `POST`, `PATCH` | The URL points to an internal or private network address. |
+| `400` | `INVALID_LIMIT` | `GET …/deliveries` | `limit` is not an integer from 1 to 200. |
+| `404` | `WEBHOOK_NOT_FOUND` | `…/{id}`, `…/deliveries` | No webhook with that id in your workspace. |
+| `404` | `WEBHOOK_DELIVERY_NOT_FOUND` | `…/deliveries/{deliveryId}` | No delivery with that id on that webhook. |
+| `500` | `INTERNAL_ERROR` | all | Unexpected failure. |
+
+<Accordion title="Exact error messages">
+  | `code` | `error` |
+  | --- | --- |
+  | `INVALID_WEBHOOK` | `Invalid webhook: use an https URL and known events. \| Webhook inválido: use uma URL https e eventos conhecidos.` |
+  | `INVALID_WEBHOOK_NAME` | `Invalid webhook name: use at most 100 characters. \| Nome do webhook inválido: use no máximo 100 caracteres.` |
+  | `WEBHOOK_URL_REFUSED` | `Webhook URL refused: it points to an internal or private network address, which we never call. Use a public address. \| URL do webhook recusada: ela aponta para um endereço interno ou de rede privada, que nunca chamamos. Use um endereço público.` |
+  | `WEBHOOK_NOT_FOUND` | `Webhook not found. \| Webhook não encontrado.` |
+  | `WEBHOOK_DELIVERY_NOT_FOUND` | `Webhook delivery not found. \| Entrega do webhook não encontrada.` |
+
+  `INVALID_BODY`, `UNKNOWN_FIELDS`, `INVALID_FIELD_TYPE` and `INVALID_LIMIT` build their message from the request — it names the field at fault — and follow the same `English | Portuguese` pattern.
+</Accordion>
 
 ## Events
 
