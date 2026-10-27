@@ -300,13 +300,13 @@ O envio dos dados **exige** um `Idempotency-Key`, porque tem efeitos que uma nov
 - **Mesma chave, mesma requisição, a primeira já terminou** → **`200`** (não `201`) com o estado **atual** do workspace e o header `Idempotent-Replayed: true`. Nada é enviado nem lido de novo.
 - **Mesma chave enquanto a primeira ainda está rodando** → **409 `IDEMPOTENCY_KEY_IN_USE`**. Aguarde e envie de novo para receber o resultado.
 - **Mesma chave, requisição diferente** (qualquer campo, inclusive o arquivo) → **409 `IDEMPOTENCY_KEY_REUSED`**. Use uma chave nova para dados novos.
-- **Uma requisição recusada como um todo** (qualquer resposta `4xx` ou `5xx`) não guarda nada: a mesma chave pode ser enviada de novo, e roda.
+- **Uma requisição recusada como um todo** (qualquer resposta `4xx` ou `5xx`) libera a chave: a mesma chave pode ser enviada de novo, e roda. Liberar a chave não desfaz o que já aconteceu: um `503 SUPPLIER_UNAVAILABLE` ao enviar um código de contato chega **depois** de a verificação ter sido criada. Essa nova verificação já substituiu uma anterior que estivesse em `PENDING_CONTACT`, e o código de um canal enviado antes da falha pode já ter saído. Leia o estado com `GET /v1/phone-lines/verification` antes de enviar de novo.
 
 A mesma chave enviada por dois workspaces nunca colide. Os outros endpoints de verificação não usam chave: repetir uma confirmação é seguro (veja [acima](#confirmar-um-código)), um novo código é limitado pelo intervalo de 60 segundos, e um documento substitui o anterior.
 
 ## Limites
 
-- **10 envios por hora por workspace**, somando o envio dos dados e o de documento → **429 `RATE_LIMITED`**, com o header `Retry-After` (em segundos) e `retryAfterSeconds` no corpo. Uma requisição recusada pela validação antes de rodar — campo, tipo ou arquivo errado — não conta.
+- **10 envios por hora por workspace**, somando o envio dos dados e o de documento → **429 `RATE_LIMITED`**, com o header `Retry-After` (em segundos) e `retryAfterSeconds` no corpo. O que é recusado antes de o envio começar não conta: campo, tipo ou arquivo errado, um problema ou uma repetição do `Idempotency-Key` e, no endpoint de documento, `404 VERIFICATION_NOT_FOUND`. Tudo o que vem depois conta, **mesmo quando é recusado**: no envio dos dados, um CPF/CNPJ inválido (dígitos verificadores errados), `REGISTRY_NOT_FOUND`, `REGISTRY_INACTIVE`, `VERIFICATION_WRONG_STATE` e `VERIFICATION_REJECTED`; no de documento, `VERIFICATION_WRONG_STATE`.
 - Códigos de contato: valem **10 minutos**, aceitam **5 tentativas erradas** cada, **um por canal a cada 60 segundos**.
 - O arquivo: PDF, JPEG, PNG ou WEBP, com no máximo **10 MB**.
 
@@ -347,4 +347,4 @@ O envelope é o mesmo de todo [erro das linhas telefônicas](/pt-BR/api/phone-li
 | `429` | `CONTACT_CODE_TOO_MANY_ATTEMPTS` | confirmação | 5 tentativas erradas: peça um novo código. |
 | `503` | `SUPPLIER_UNAVAILABLE` | envio dos dados, novo código | Não foi possível colocar um código na fila de envio. Tente de novo em alguns minutos. |
 
-Além dos erros de todo endpoint das linhas telefônicas: `401`, `403 NUMBER_SCOPE_NOT_ALLOWED`, `403 PERMISSION_DENIED`, `403 WORKSPACE_MEMBERSHIP_REQUIRED` e `500 INTERNAL_ERROR`.
+Além dos erros de todo endpoint das linhas telefônicas: `401`, `403 NUMBER_SCOPE_NOT_ALLOWED`, `403 PERMISSION_DENIED`, `403 WORKSPACE_MEMBERSHIP_REQUIRED`, `403 TENANT_REQUIRED`, `403 WORKSPACE_ARCHIVED` e `500 INTERNAL_ERROR`.
