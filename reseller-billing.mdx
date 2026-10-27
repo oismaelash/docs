@@ -1,0 +1,83 @@
+---
+title: "Reselling: how billing works and what your system must track"
+sidebarTitle: "Billing for resellers"
+description: "For anyone reselling WhatsApp connections and phone lines: when Pilot Status charges each number and each line, what happens when a payment fails, and what your system must record to bill your own customers without paying for the ones who already left."
+mode: "wide"
+---
+
+If you resell WhatsApp connections or phone lines to your own customers, Pilot Status bills **you**, and you bill your customers. This page explains when each charge happens on our side and what your system must record so both ends match: bill your customer before we bill you, and stop paying for customers who have left.
+
+The full detail of each rule is in [Extra numbers & On Demand](/api/extra-numbers), [Phone line pricing and billing](/phone-lines-pricing) and [Plans](/plans).
+
+## WhatsApp connections (numbers)
+
+### When we charge
+
+- **Creating a number or generating its QR / connection link does not charge.** The charge happens at the number's **first connection**. A number that never connected counts neither toward capacity nor toward billing. See [Charged at the first connection](/api/extra-numbers#charged-at-the-first-connection).
+- **If a connected number goes over the capacity you already paid for, we charge the extra number right away**: the wallet first, then the saved card. The first charge is **prorated** to the days left in your cycle.
+- **With no wallet balance and no saved card, creating a number over capacity is refused.**
+- **A paid number is good for the whole cycle.** Deleting a number mid-cycle is not refunded, but the slot stays yours until the cycle ends: you can connect another number in it without paying again.
+- **On official API (Meta) numbers, conversations and templates are billed by Meta**, straight to the WhatsApp Business account's payment method. That cost does not go through Pilot Status and is not included in any plan.
+
+### What the monthly renewal charges depends on the plan
+
+| Plan | What the renewal charges | To pay less next cycle |
+| --- | --- | --- |
+| **Pay As You Go** | The numbers that are **still connected** on the renewal day. | Delete the number before the renewal. There is nothing to schedule. |
+| **On Demand, Basic, Premium, Enterprise** (with extras) | The plan plus the **paid capacity** in extra numbers, even if some of those numbers were deleted. | **Schedule the reduction** with `DELETE /v1/subscription/extra-numbers` (or in the dashboard). It takes effect next cycle. Deleting the number alone does not lower the charge. |
+
+See [Paid capacity is a 30-day entitlement](/api/extra-numbers#paid-capacity-is-a-30-day-entitlement) and [Pay As You Go works differently](/api/extra-numbers#pay-as-you-go-works-differently).
+
+### When a payment fails
+
+- **Extra-number charge refused at connection:** the number stays connected, but **sending from it is blocked** (`409 NUMBER_BLOCKED`, `reason: "extra_charge_unpaid"`) and the Owner is notified. Topping up the wallet or saving a card retries the charge on its own. You can also pay right away with **Pay now** on the **Numbers** page, or with [`POST /v1/numbers/{id}/pay`](/api/numbers/pay).
+- **7 days unpaid:** the number is disconnected, and connecting it again counts as a new first connection, charged again. A Meta Cloud API number is never disconnected: it stays blocked for sending until it is paid.
+- **Monthly renewal refused:** there is a **2-day grace period**, with a new attempt every 12 hours. After that, sending through the API is suspended (`422 BILLING_SUSPENDED`) until the payment goes through.
+- **15 days suspended**, on a plan billed from the wallet: the subscription is cancelled and the workspace goes back to the **Free** plan. The Owner is notified by email and WhatsApp. Numbers are not disconnected, but whatever goes over the Free limits is blocked.
+
+### What your system must record
+
+- **Which customer owns each number**, and the **date of its first connection**. The [`number.connected`](/concepts/webhooks) webhook is the trigger: that is when we start billing you, so that is when you start billing your customer. `number.disconnected` tells you when the number dropped.
+- **Your cycle's renewal date** with Pilot Status. When one of your customers stops paying, act **before** that date:
+  - on Pay As You Go, delete their number;
+  - on the other plans, delete the number **and** schedule the capacity reduction.
+
+  If you do nothing, you pay that customer's next month.
+- **A cancellation rule that follows ours.** We do not refund the cycle in progress. If you refund your customer, the difference comes out of your pocket. The paid slot stays yours until the cycle ends: use it for your next customer.
+- **Who pays Meta**, if your customers use the official API: who owns the WhatsApp Business account and which payment method is on it. Put that in your contract with your customer.
+- **Numbers blocked for non-payment:** read `extraChargeUnpaidSince` and `extraChargeDisconnectAt` on `GET /v1/numbers` to know what is blocked and when it will be disconnected. See [Pay extra number](/api/numbers/pay#how-to-know-a-number-is-blocked).
+
+## Phone lines
+
+### When we charge
+
+- **R\$ 33.90 per month, per line** (US\$ 33.90 on dollar workspaces), on any plan, including Free.
+- **The purchase charges the whole first month**, with no proration.
+- **Each line renews on the same day of the month it was bought**, independent of the plan's and the numbers' cycle. Five lines bought on different days give five renewal dates.
+- **Lines use the same wallet as the plan and the numbers.** There is no balance reserved per product: whichever charge comes due first uses the balance first.
+- **A line does not count toward the number limit.** If you activate WhatsApp on a line and connect that number to Pilot Status, it is billed like any other number, under the rules in the section above.
+
+### Notices and overdue lines
+
+- **About 48 hours before each renewal**, the holder and the Owner get a notice listing the lines that renew that day and the total.
+- **Without a saved card**, there is also a notice when the wallet balance does not cover the renewals of the next 7 days.
+- **Renewal refused:** the line stays **2 days** with payment pending (a new attempt every 6 hours), then it is **suspended** and, **1 day** later, **returned to the carrier**. See [Overdue lines](/phone-lines-pricing#overdue-lines).
+- **Cancelling a line in good standing:** it keeps working until the end of the month already paid, with no refund, and is returned on that day.
+- **Holder verification rejected:** lines bought while the verification was under review keep working for 3 days and are then returned. What was paid for them comes back as wallet balance.
+
+<Warning>
+  **A return cannot be undone.** There is no guarantee you can buy the same number again, and the line's code history is deleted. If a WhatsApp account was activated on the number, whoever rents it next can request a verification code and take over that account. Never let one of your customers' lines lapse without a decision.
+</Warning>
+
+### What your system must record
+
+- **Which customer owns each line** and its **purchase date**, because it renews monthly on that date.
+- **Bill your customer before the renewal date**, not after. Our grace period is 2 days, and the return is final.
+- **Customer in default:** decide **before the line's anniversary** whether you cancel the line or pay one more month for them.
+- **Useful webhooks** (see [Phone line webhooks](/api/phone-lines/webhooks)): `phone_line.purchased`, `phone_line.renewed`, `phone_line.payment_failed`, `phone_line.suspended`, `phone_line.returned` (with `reason`: `unpaid`, `canceled_by_customer` or `verification_rejected`) and `phone_line.canceled`. Each line also exposes `price`, `currency` and `currentPeriodEnd` through the [phone lines API](/api/phone-lines/overview#pricing-and-payment).
+
+## Balance
+
+- **Keep in the wallet, at least**, the line renewals of the next 7 days **plus** the monthly renewal of your numbers.
+- **Keep a saved card as a backup.** It is what prevents blocked sending and returned lines when the wallet does not cover a charge.
+- The Owner tops up the wallet in **Plans → Wallet**. Through the API, use [`POST /v1/billing/checkout`](/api/extra-numbers).
