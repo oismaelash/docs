@@ -170,13 +170,75 @@ curl -X POST "https://pilotstatus.com.br/v1/webhooks/wh_abc/rotate-secret" \
   **Rotation is immediate and has no overlap window.** The previous secret stops verifying the moment the call returns; deliveries already in flight sign with whichever value their dispatch loaded. Accept either secret on your side for a minute, or rotate while the number is quiet.
 </Warning>
 
-When a secret is set, the header `x-pilot-status-signature` carries the hex-encoded **HMAC-SHA256 of the raw request body**, keyed with the secret. Compute the HMAC over the raw bytes exactly as received (before any JSON parsing) and compare in constant time:
+When a secret is set, the header `x-pilot-status-signature` carries the hex-encoded **HMAC-SHA256 of the raw request body**, keyed with the secret. Compute the HMAC over the raw bytes exactly as received (before any JSON parsing) and compare in constant time.
+
+**With the Python SDK** (`pilot-status` 1.16.0 or later), `verify_webhook_signature(raw_body, signature_header, secret)` does it for you. Pass the body exactly as it came off the wire — Flask `request.get_data()`, FastAPI `await request.body()` — never the parsed and re-serialized JSON, whose bytes differ. It compares in constant time and returns `False`, never raising, for a missing or malformed header, an empty secret or a tampered body:
+
+```bash
+pip install "pilot-status>=1.16.0"
+```
+
+<CodeGroup>
+
+```python Flask
+import os
+
+from flask import Flask, abort, request
+from pilot_status import WEBHOOK_SIGNATURE_HEADER, verify_webhook_signature
+
+app = Flask(__name__)
+SECRET = os.environ["PILOT_STATUS_WEBHOOK_SECRET"]  # the secret returned once on creation or rotation
+
+@app.post("/hooks/pilot-status")
+def pilot_status_hook():
+    raw = request.get_data()  # the raw bytes that were signed, not json.dumps(request.json)
+    if not verify_webhook_signature(raw, request.headers.get(WEBHOOK_SIGNATURE_HEADER), SECRET):
+        abort(401)
+    # ... parse json.loads(raw) and process it
+    return "", 200
+```
+
+```python FastAPI
+import os
+
+from fastapi import FastAPI, HTTPException, Request
+from pilot_status import WEBHOOK_SIGNATURE_HEADER, verify_webhook_signature
+
+app = FastAPI()
+SECRET = os.environ["PILOT_STATUS_WEBHOOK_SECRET"]  # the secret returned once on creation or rotation
+
+@app.post("/hooks/pilot-status")
+async def pilot_status_hook(request: Request):
+    raw = await request.body()  # the raw bytes that were signed
+    if not verify_webhook_signature(raw, request.headers.get(WEBHOOK_SIGNATURE_HEADER), SECRET):
+        raise HTTPException(status_code=401)
+    # ... parse json.loads(raw) and process it
+    return {}
+```
+
+</CodeGroup>
+
+**Without the SDK**, compute it yourself:
+
+<CodeGroup>
 
 ```javascript Node
 const crypto = require("node:crypto");
 const expected = crypto.createHmac("sha256", process.env.WEBHOOK_SECRET).update(rawBody).digest("hex");
 const ok = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.headers["x-pilot-status-signature"] ?? ""));
 ```
+
+```python Python
+import hashlib
+import hmac
+
+# raw_body: the request body exactly as received (bytes).
+def is_valid_signature(raw_body: bytes, signature_header: str | None, secret: str) -> bool:
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected.encode(), (signature_header or "").encode())
+```
+
+</CodeGroup>
 
 ## Deduplicate retries: `Idempotency-Key`
 
