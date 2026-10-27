@@ -1,0 +1,103 @@
+---
+title: "Revenda: como a cobrança funciona e o que o seu sistema precisa controlar"
+sidebarTitle: "Cobrança para revenda"
+description: "Para quem revende conexões de WhatsApp e linhas telefônicas: quando a Pilot Status cobra cada número e cada linha, o que acontece quando o pagamento falha, e o que o seu sistema precisa registrar para cobrar os seus clientes sem pagar por quem já saiu."
+mode: "wide"
+---
+
+Se você revende conexões de WhatsApp ou linhas telefônicas para os seus clientes, a Pilot Status cobra **você**, e você cobra os seus clientes. Esta página explica quando cada cobrança acontece do nosso lado e o que o seu sistema precisa registrar para que as duas pontas fechem: cobrar o seu cliente antes de a gente cobrar você e parar de pagar por quem já saiu.
+
+Os detalhes completos de cada regra estão em [Números extras e On Demand](/pt-BR/api/extra-numbers), [Preço e cobrança das linhas](/pt-BR/phone-lines-pricing) e [Planos](/pt-BR/plans).
+
+## Conexões de WhatsApp (números)
+
+### Quando cobramos
+
+- **Criar o número ou gerar o QR / link de conexão não cobra.** A cobrança acontece na **primeira conexão** do número. Um número que nunca conectou não conta na capacidade nem na cobrança. Veja [Cobrado na primeira conexão](/pt-BR/api/extra-numbers#cobrado-na-primeira-conexão).
+- **Se o número conectado passar da capacidade que você já pagou, cobramos o número extra na hora**: primeiro a carteira, depois o cartão salvo. A primeira cobrança é **proporcional** aos dias que faltam até o fim do seu ciclo.
+- **Sem saldo na carteira e sem cartão salvo, a criação de um número acima da capacidade é recusada.**
+- **O número pago vale pelo ciclo inteiro.** Apagar um número no meio do ciclo não gera reembolso, mas a vaga continua sua até o fim do ciclo: dá para conectar outro número nela sem pagar de novo.
+- **Nos números da API oficial (Meta), as conversas e os templates são cobrados pela Meta**, direto na forma de pagamento da conta WhatsApp Business. Esse custo não passa pela Pilot Status e não está incluído em nenhum plano.
+
+### A renovação mensal
+
+A revenda normalmente fica no plano **Pay As You Go**: sem mensalidade de plano, você paga por número. O preço por número é o do seu contrato.
+
+- **No dia da renovação, cobramos cada número que já conectou alguma vez e não foi apagado**, inclusive os que estiverem desconectados nesse dia.
+- **Desconectar não para a cobrança. Só apagar o número para.** Um número que você apagar antes da renovação não entra no ciclo seguinte.
+- **Não há capacidade para agendar nem para devolver.** Para pagar menos, basta apagar os números que não quer mais.
+
+Veja [No Pay As You Go funciona diferente](/pt-BR/api/extra-numbers#no-pay-as-you-go-funciona-diferente).
+
+<Note>
+  **Nos planos On Demand, Básico, Premium e Enterprise a regra é outra.** A renovação cobra o plano mais a **capacidade paga** em números extras, mesmo que algum desses números tenha sido apagado. Para pagar menos, **agende a redução** com `DELETE /v1/subscription/extra-numbers` (ou pelo painel); ela passa a valer no próximo ciclo. Veja [A capacidade paga é um direito de 30 dias](/pt-BR/api/extra-numbers#a-capacidade-paga-é-um-direito-de-30-dias).
+</Note>
+
+### Quando o pagamento falha
+
+- **Cobrança do número extra recusada na conexão:** o número continua conectado, mas o **envio por ele fica bloqueado** (`409 NUMBER_BLOCKED`, `reason: "extra_charge_unpaid"`) e o Proprietário recebe um aviso. Recarregar a carteira ou salvar um cartão retenta a cobrança sozinho. Também dá para pagar na hora com **Pagar agora**, na página **Números**, ou com [`POST /v1/numbers/{id}/pay`](/pt-BR/api/numbers/pay).
+- **7 dias sem pagamento:** o número é desconectado, e conectar de novo conta como uma nova primeira conexão, cobrada de novo. Um número da Meta Cloud API nunca é desconectado: ele fica bloqueado para envio até ser pago.
+- **Renovação mensal recusada:** há **2 dias de carência**, com nova tentativa a cada 12 horas. Depois disso, os envios pela API são suspensos (`422 BILLING_SUSPENDED`) até o pagamento.
+- **15 dias suspenso**, num plano cobrado pela carteira: a assinatura é cancelada e o workspace volta para o plano **Free**. O Proprietário recebe um aviso por e-mail e WhatsApp. Os números não são desconectados, mas o que passar dos limites do Free fica bloqueado.
+
+### Reativar um número excluído (até 30 dias)
+
+Excluir um número com `DELETE /v1/numbers/{id}` desconecta o aparelho na hora, mas o número fica **30 dias na lixeira**. Nesse prazo, ele pode ser restaurado com [`POST /v1/numbers/{id}/restore`](/pt-BR/api/numbers/create) (ou pelo painel), com o mesmo id, chaves de API, webhooks e histórico. No Pay As You Go:
+
+| Quando você restaura | Cobrança |
+| --- | --- |
+| **No mesmo ciclo**, com a vaga dele ainda livre | **Nada.** A vaga paga continua valendo até a renovação. |
+| **No mesmo ciclo**, mas a vaga já foi usada por outro número | Um número extra, **proporcional** ao resto do ciclo. |
+| **Depois da renovação** | Um número extra, **proporcional** ao resto do ciclo. O número excluído não foi cobrado na renovação e volta acima da capacidade. |
+| Um número que **nunca conectou** | **Nada.** Ele é cobrado na primeira conexão, como qualquer outro. |
+
+- **O número volta desconectado.** Conecte de novo (`GET /v1/numbers/{id}/connect`, ou o fluxo da Meta para um número oficial). Essa reconexão não cobra outra vez.
+- **Se a cobrança não passar**, a resposta é `422`, nada é cobrado e o número continua excluído. Repetir o mesmo restore nunca cobra duas vezes.
+- **Enquanto o número está na lixeira, o mesmo telefone não pode ser criado de novo** (`409 NUMBER_SOFT_DELETED`): restaure-o ou purgue-o.
+- **Depois de 30 dias, a exclusão é definitiva** (`404 RESTORE_WINDOW_EXPIRED`). Purgar antes disso também é definitivo e, num número da Meta, descadastra o número na Meta.
+- O webhook `number.restored` avisa quando um número volta.
+
+Na prática: se o seu cliente atrasou, você excluiu o número antes da renovação e ele pagou depois, restaurar custa o proporcional do que falta do ciclo, e você não perde o histórico nem as configurações dele.
+
+### O que o seu sistema precisa registrar
+
+- **De qual cliente é cada número**, e a **data da primeira conexão** de cada um. O webhook [`number.connected`](/pt-BR/concepts/webhooks) é o gatilho: é a partir dele que a gente cobra você, então é a partir dele que você cobra o seu cliente. `number.disconnected` avisa quando o número caiu.
+- **A data de renovação do seu ciclo** com a Pilot Status. Quando um cliente seu para de pagar, **apague o número dele antes dessa data**. Desconectar não basta. Se você não fizer nada, paga o mês seguinte desse cliente. (Fora do Pay As You Go, apague o número **e** agende a redução da capacidade.)
+- **Uma regra de cancelamento que acompanhe a nossa.** A gente não reembolsa o ciclo em andamento. Se você reembolsar o seu cliente, a diferença sai do seu bolso. A vaga paga continua sua até o fim do ciclo: use-a para o próximo cliente.
+- **Quem paga a Meta**, se os seus clientes usam a API oficial: de quem é a conta WhatsApp Business e qual forma de pagamento está cadastrada nela. Deixe isso no contrato com o seu cliente.
+- **Números bloqueados por falta de pagamento:** leia `extraChargeUnpaidSince` e `extraChargeDisconnectAt` em `GET /v1/numbers` para saber o que está bloqueado e quando será desconectado. Veja [Pagar número extra](/pt-BR/api/numbers/pay#como-saber-que-um-número-está-bloqueado).
+
+## Linhas telefônicas
+
+### Quando cobramos
+
+- **R\$ 33,90 por mês, por linha** (US\$ 33.90 em workspaces em dólar), em qualquer plano, inclusive o Free.
+- **A compra cobra o primeiro mês inteiro**, sem valor proporcional.
+- **Cada linha renova no mesmo dia do mês em que foi comprada**, independente do ciclo do plano e dos números. Cinco linhas compradas em dias diferentes dão cinco datas de renovação.
+- **As linhas usam a mesma carteira do plano e dos números.** Não existe reserva de saldo por produto: a cobrança que vence primeiro usa o saldo primeiro.
+- **A linha não conta no limite de números.** Se você ativar o WhatsApp numa linha e conectar esse número na Pilot Status, ele é cobrado como qualquer outro número, pelas regras da seção anterior.
+
+### Avisos e atraso
+
+- **Cerca de 48 horas antes de cada renovação**, o titular e o Proprietário recebem um aviso com as linhas que renovam naquele dia e o total.
+- **Sem cartão salvo**, há também um aviso quando o saldo da carteira não cobre as renovações dos próximos 7 dias.
+- **Renovação recusada:** a linha fica **2 dias** com pagamento pendente (nova tentativa a cada 6 horas), depois é **suspensa** e, **1 dia** depois, **devolvida à operadora**. Veja [Linhas em atraso](/pt-BR/phone-lines-pricing#linhas-em-atraso).
+- **Cancelar uma linha em dia:** ela continua funcionando até o fim do mês já pago, sem reembolso, e é devolvida nesse dia.
+- **Verificação do titular recusada:** as linhas compradas enquanto a verificação estava em análise continuam funcionando por 3 dias e depois são devolvidas. O valor pago por elas volta como saldo na carteira.
+
+<Warning>
+  **A devolução não tem volta.** Não há garantia de comprar o mesmo número de novo, e o histórico de códigos da linha é apagado. Se havia uma conta do WhatsApp ativada no número, quem alugá-lo depois pode pedir um código de verificação e assumir essa conta. Nunca deixe a linha de um cliente seu vencer sem uma decisão.
+</Warning>
+
+### O que o seu sistema precisa registrar
+
+- **De qual cliente é cada linha** e a **data de compra**, porque a renovação é mensal nessa data.
+- **Cobre o seu cliente antes da data de renovação**, não depois. A nossa carência é de 2 dias, e a devolução é definitiva.
+- **Cliente inadimplente:** decida **antes do aniversário da linha** se vai cancelar a linha ou pagar mais um mês por ele.
+- **Webhooks úteis** (veja [Webhooks das linhas](/pt-BR/api/phone-lines/webhooks)): `phone_line.purchased`, `phone_line.renewed`, `phone_line.payment_failed`, `phone_line.suspended`, `phone_line.returned` (com `reason`: `unpaid`, `canceled_by_customer` ou `verification_rejected`) e `phone_line.canceled`. Cada linha também expõe `price`, `currency` e `currentPeriodEnd` pela [API das linhas](/pt-BR/api/phone-lines/overview#preço-e-pagamento).
+
+## Saldo
+
+- **Mantenha na carteira, pelo menos**, o valor das renovações de linhas dos próximos 7 dias **mais** a renovação mensal dos seus números.
+- **Deixe um cartão salvo como reserva.** É ele que evita o bloqueio de envio e a devolução de linhas quando a carteira não cobre uma cobrança.
+- O Proprietário recarrega a carteira em **Planos → Carteira**. Pela API, use [`POST /v1/billing/checkout`](/pt-BR/api/extra-numbers).
