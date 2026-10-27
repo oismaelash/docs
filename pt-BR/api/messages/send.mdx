@@ -70,6 +70,17 @@ Este é o **único** endpoint de envio. Ele suporta três modos de nível superi
   `image`, `video`, `document`, `audio`, `voice` ou `sticker`. Defina explicitamente quando a extensão da URL não for óbvia (ex.: PDFs cuja URL não termina em `.pdf`). `voice` é entregue como **nota de voz (PTT)** do WhatsApp em qualquer número; `audio` é entregue como **arquivo de áudio** em números oficiais (Meta Cloud API) e como nota de voz em números não oficiais (Pilot Status web) — para enviar uma nota de voz, use `voice` (veja [Áudio e nota de voz](/pt-BR/guides/media-messages#áudio-e-nota-de-voz)). Antes do envio, o áudio é convertido para AAC em MP4 (`audio/mp4`) em números oficiais e para Ogg/Opus em números não oficiais. Para `audio` e `voice`, um indicador de presença é exibido ao contato logo antes da entrega: números não oficiais (Pilot Status web) mostram "gravando áudio"; números Meta Cloud API mostram "digitando" — a Cloud API não tem variante de gravação, e ele só aparece quando a conversa tem uma mensagem recebida recente para ancorar. O "digitando" é mostrado antes de todo envio conversacional em números Meta e Evolution — nos números Meta, a menos que `markRead` seja `false` (veja [Confirmação de leitura e digitando](#confirmação-de-leitura-e-digitando)); você também pode dispará-lo de forma independente via [Indicador de Digitando](/pt-BR/api/messages/typing). `sticker` envia uma **figurinha** do WhatsApp — só em envio direto de mídia, nunca com `templateId`, nunca com `caption`, e o arquivo precisa ser **`image/webp`** com **exatamente 512×512 pixels** (estática até **100 KB**, animada até **500 KB**).
 </ParamField>
 
+<ParamField body="mediaFilename" type="string">
+  Nome de arquivo que o destinatário vê num **documento** — de 1 a 240 caracteres; `/` e `\` viram `_`. Aceito em:
+
+  - um **envio direto de documento** (`media` \+ `mediaType: "document"`, sem `templateId` e sem `text`). Sem ele, o nome vem do último trecho da URL.
+  - um **envio de template cujo template aprovado tem cabeçalho `DOCUMENT`** — com `media` (o documento que substitui o exemplo do template) ou sem ele (renomeia o documento guardado no template). Se você também enviar `mediaType`, ele precisa ser `document`.
+
+  Sem `mediaFilename`, o documento do template chega sem título adequado em números oficiais (Meta Cloud API) — o WhatsApp mostra o genérico "Documento" — e com um nome deduzido da URL em números não oficiais. Funciona na Meta Cloud API, na Evolution v2 e na Evolution GO.
+
+  Um envio de texto livre (`text`) com ele retorna `400` ("mediaFilename is only supported for direct media sends and templates with a document header"), assim como qualquer `mediaType` diferente de `document`. Num template cujo cabeçalho é `IMAGE`, `VIDEO`, `TEXT` ou inexistente, retorna `422` `MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`, com `details.templateName` e `details.headerType` — o nome não teria onde entrar, então é recusado em vez de descartado.
+</ParamField>
+
 ### Envio de mídia direta
 
 Envie mídia por conta própria fornecendo `media` \+ `mediaType` **sem** `templateId` e **sem** `text`. Nesse modo, `buttons`, `header`, `footer` e `variables` **não são permitidos**; um `caption` opcional é suportado para `image`, `video` e `document`, mas **não** para `audio`, `voice` ou `sticker`.
@@ -316,6 +327,20 @@ curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
   }'
 ```
 
+```bash Template com cabeçalho de documento + nome do arquivo
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "nota-fiscal-emitida",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "João" },
+    "media": "https://cdn.example.com/files/8f3a1c.pdf",
+    "mediaType": "document",
+    "mediaFilename": "Nota Fiscal 123.pdf"
+  }'
+```
+
 ```bash Nova tentativa segura (Idempotency-Key)
 curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
   -H "Content-Type: application/json" \
@@ -331,6 +356,8 @@ curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
 </CodeGroup>
 
 No exemplo **Template \+ mídia \+ botões**, o `buttons` não substitui os botões do template num número Meta (oficial): ali os botões do template aprovado são fixos, e um botão de URL dinâmica ou o código de um botão de copiar código é preenchido por `variables` (veja [Botões](#botões)).
+
+No exemplo **Template com cabeçalho de documento \+ nome do arquivo**, o template aprovado `nota-fiscal-emitida` tem cabeçalho `DOCUMENT`: `media` substitui o documento de exemplo dele e `mediaFilename` é o nome que o destinatário vê. Deixe `media` de fora para enviar o documento guardado no template com o nome novo.
 
 ## Resposta (202)
 
@@ -396,12 +423,12 @@ Derive a chave de algo estável do seu lado que identifique a mensagem, para que
 
 | Status | Significado |
 | --- | --- |
-| `400` | Payload inválido (ex.: telefone fora do E.164, campos obrigatórios ausentes, `MISSING_TEMPLATE_VARIABLES` / `INVALID_TEMPLATE_VARIABLE_VALUE` nomeando a chave, ou texto livre não suportado pelo provedor: `code: FREE_FORM_NOT_SUPPORTED`), ou, num número oficial, template não aprovado na Meta: `code: META_TEMPLATE_NOT_APPROVED`, ou uma `Idempotency-Key` com mais de 255 caracteres ou com caractere de controle: `code: IDEMPOTENCY_KEY_INVALID` (`details.maxLength`: `255`) |
+| `400` | Payload inválido (ex.: telefone fora do E.164, campos obrigatórios ausentes, `MISSING_TEMPLATE_VARIABLES` / `INVALID_TEMPLATE_VARIABLE_VALUE` nomeando a chave, ou texto livre não suportado pelo provedor: `code: FREE_FORM_NOT_SUPPORTED`), ou, num número oficial, template não aprovado na Meta: `code: META_TEMPLATE_NOT_APPROVED`, ou uma `Idempotency-Key` com mais de 255 caracteres ou com caractere de controle: `code: IDEMPOTENCY_KEY_INVALID` (`details.maxLength`: `255`), ou `mediaFilename` num envio de texto livre (`text`) ou com `mediaType` diferente de `document` |
 | `401` | Header de chave de API ausente/inválido (`x-api-key` / `x-api-key-id`) |
 | `403` | Uma chave com escopo de tenant usada em um endpoint com escopo de número |
 | `404` | Template não encontrado ou sem uma versão aprovada |
 | `409` | Uma requisição com a mesma `Idempotency-Key` e o mesmo corpo ainda está em andamento (`code: IDEMPOTENCY_KEY_IN_USE`) — tente de novo com a mesma chave daqui a pouco. Ou a `Idempotency-Key` já foi usada com um corpo diferente nas últimas 24 horas (`code: IDEMPOTENCY_KEY_REUSED`) — use uma chave nova |
-| `422` | Cobrança do tenant suspensa (`code: BILLING_SUSPENDED`) — inadimplência, ou saldo WALLET / de extras não pago; regularize seus créditos ou cartão para retomar os envios |
+| `422` | Cobrança do tenant suspensa (`code: BILLING_SUSPENDED`) — inadimplência, ou saldo WALLET / de extras não pago; regularize seus créditos ou cartão para retomar os envios. Ou `mediaFilename` num template cujo cabeçalho aprovado não é `DOCUMENT` (`code: MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`, `details.templateName`, `details.headerType`) |
 | `429` | Limite de taxa |
 | `503` | Uma `Idempotency-Key` foi enviada e o armazenamento de idempotência está indisponível (`code: IDEMPOTENCY_UNAVAILABLE`) — nada foi enviado; tente de novo com a mesma chave |
 
