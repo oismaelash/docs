@@ -7,7 +7,28 @@ mode: "wide"
 
 Se você revende conexões de WhatsApp ou linhas telefônicas para os seus clientes, a Pilot Status cobra **você**, e você cobra os seus clientes. Esta página explica quando cada cobrança acontece do nosso lado e o que o seu sistema precisa registrar para que as duas pontas fechem: cobrar o seu cliente antes de a gente cobrar você e parar de pagar por quem já saiu.
 
-Os detalhes completos de cada regra estão em [Números extras e On Demand](/pt-BR/api/extra-numbers), [Preço e cobrança das linhas](/pt-BR/phone-lines-pricing) e [Planos](/pt-BR/plans).
+Os detalhes completos de cada regra estão em [Números extras e On Demand](/pt-BR/api/extra-numbers), [Preço e cobrança das linhas](/pt-BR/phone-lines-pricing) e [Planos](/pt-BR/plans). Para automatizar, veja [Tipos de chave](/pt-BR/api/key-types), [Criar workspaces](/pt-BR/api/workspaces), [Carteira e cartão pela API](/pt-BR/api/wallet-and-card) e [Webhooks do workspace](/pt-BR/api/workspace-webhooks).
+
+## Um workspace por cliente final
+
+**Mantenha cada cliente seu num workspace próprio.** Cobrança, suspensão e carteira funcionam por workspace. Se todos os clientes dividem o seu workspace, uma renovação recusada para todos de uma vez; com um workspace por cliente, uma renovação recusada suspende **só os números daquele cliente**, e os outros continuam enviando.
+
+- **Crie os workspaces pela API** com uma [chave de conta](/pt-BR/api/key-types#chaves-de-conta) (`ps_account_`, em **Perfil → API**): [`POST /v1/workspaces`](/pt-BR/api/workspaces#criar-um-workspace). Você é o Proprietário de cada um, e a resposta traz a chave principal do workspace. Depois, aja em qualquer um deles com a mesma chave de conta e o cabeçalho `x-workspace-id`.
+- **Depois que a equipe da Pilot Status marca você como revendedor, todo workspace que você criar já nasce no Pay As You Go**, cobrado pela carteira, com **os seus preços de revenda**: o preço por número do seu contrato e o seu preço de linha. Nada é cobrado na criação.
+- **Cada workspace tem a sua carteira, o seu cartão salvo e a sua data de renovação** (um mês depois de criado). Abasteça cada um com [Pix ou cartão pela API](/pt-BR/api/wallet-and-card), ou vincule o seu cartão compartilhado (abaixo).
+- **Por padrão, você pode ser dono de até 10 workspaces.** Acima disso, `POST /v1/workspaces` responde `409 WORKSPACE_LIMIT_REACHED` com o `limit`. Peça um teto maior à equipe da Pilot Status.
+- **Os workspaces que você já tinha mantêm o plano.** Levar um cliente existente para um workspace próprio significa conectar os números dele lá: um número não muda de workspace.
+
+### Cartão compartilhado
+
+A equipe da Pilot Status pode vincular **o seu cartão** — o cartão salvo num dos seus workspaces — como **cartão compartilhado** dos workspaces dos seus clientes: uma vez configurado na sua conta, todo workspace que você criar o herda, e a equipe também pode vinculá-lo a um workspace de cada vez. Ele é uma reserva, não a forma de pagamento principal:
+
+- **Ele paga só o que a plataforma cobra**: a renovação mensal, números extras, compras e renovações de linhas telefônicas.
+- **Ele só é usado quando a carteira do workspace não cobre a cobrança e o workspace não tem cartão próprio.** Um cartão salvo no workspace do cliente sempre vem primeiro.
+- **Ele nunca paga uma recarga.** Ninguém no workspace do cliente consegue gastá-lo quando quiser: recargas são pagas com Pix, com a página hospedada ou com um cartão digitado na hora.
+- O vínculo fica registrado no **Histórico** do workspace como **Cartão de reserva vinculado** / **Cartão de reserva desvinculado**.
+
+Se você quer que a inadimplência de um cliente suspenda só esse cliente, **não conte com o cartão compartilhado para ele**: com o cartão, as renovações dele são cobradas de você.
 
 ## Conexões de WhatsApp (números)
 
@@ -21,7 +42,7 @@ Os detalhes completos de cada regra estão em [Números extras e On Demand](/pt-
 
 ### A renovação mensal
 
-A revenda normalmente fica no plano **Pay As You Go**: sem mensalidade de plano, você paga por número. O preço por número é o do seu contrato.
+A revenda fica no plano **Pay As You Go**: sem mensalidade de plano, você paga por número. O preço por número é o do seu contrato, e todo workspace que você criar o herda.
 
 - **No dia da renovação, cobramos cada número que já conectou alguma vez e não foi apagado**, inclusive os que estiverem desconectados nesse dia.
 - **Desconectar não para a cobrança. Só apagar o número para.** Um número que você apagar antes da renovação não entra no ciclo seguinte.
@@ -37,10 +58,10 @@ Veja [No Pay As You Go funciona diferente](/pt-BR/api/extra-numbers#no-pay-as-yo
 
 - **Cobrança do número extra recusada na conexão:** o número continua conectado, mas o **envio por ele fica bloqueado** (`409 NUMBER_BLOCKED`, `reason: "extra_charge_unpaid"`) e o Proprietário recebe um aviso. Recarregar a carteira ou salvar um cartão retenta a cobrança sozinho. Também dá para pagar na hora com **Pagar agora**, na página **Números**, ou com [`POST /v1/numbers/{id}/pay`](/pt-BR/api/numbers/pay).
 - **7 dias sem pagamento:** o número é desconectado, e conectar de novo conta como uma nova primeira conexão, cobrada de novo. Um número da Meta Cloud API nunca é desconectado: ele fica bloqueado para envio até ser pago.
-- **Renovação mensal recusada:** há **2 dias de carência**, com nova tentativa a cada 12 horas. Depois disso, **todos os números do workspace param de enviar ao mesmo tempo**: API (`422 BILLING_SUSPENDED`), chat do painel, Chatwoot e as mensagens que já estavam na fila. Os números continuam conectados, **receber mensagens continua** e os webhooks de entrada seguem chegando. As linhas telefônicas não são afetadas: elas têm cobrança própria. Recarregar a carteira ou salvar um cartão roda a cobrança de novo e libera os envios.
+- **Renovação mensal recusada:** há **2 dias de carência**, com nova tentativa a cada 12 horas. Depois disso, **todos os números daquele workspace param de enviar ao mesmo tempo**: API (`422 BILLING_SUSPENDED`), chat do painel, Chatwoot e as mensagens que já estavam na fila. Os números continuam conectados, **receber mensagens continua** e os webhooks de entrada seguem chegando. As linhas telefônicas não são afetadas: elas têm cobrança própria. Recarregar a carteira ou salvar um cartão roda a cobrança de novo e libera os envios.
 
   <Warning>
-    **Quem é suspenso é a sua conta, não o seu cliente.** Se a **sua** renovação falhar, todos os seus clientes param de enviar de uma vez. Mantenha um cartão salvo como reserva.
+    **Quem é suspenso é o workspace, não um número.** Se todos os seus clientes dividem um workspace e a renovação dele falha, todos param de enviar de uma vez. Mantenha [um workspace por cliente final](#um-workspace-por-cliente-final): assim, uma renovação recusada suspende só os números daquele cliente.
   </Warning>
 - **15 dias suspenso**, num plano cobrado pela carteira: a assinatura é cancelada e o workspace volta para o plano **Free**. O Proprietário recebe um aviso por e-mail e WhatsApp. Os números não são desconectados, mas o que passar dos limites do Free fica bloqueado.
 
@@ -65,8 +86,8 @@ Na prática: se o seu cliente atrasou, você excluiu o número antes da renovaç
 
 ### O que o seu sistema precisa registrar
 
-- **De qual cliente é cada número**, e a **data da primeira conexão** de cada um. O webhook [`number.connected`](/pt-BR/concepts/webhooks) é o gatilho: é a partir dele que a gente cobra você, então é a partir dele que você cobra o seu cliente. `number.disconnected` avisa quando o número caiu.
-- **A data de renovação do seu ciclo** com a Pilot Status. Quando um cliente seu para de pagar, **apague o número dele antes dessa data**. Desconectar não basta. Se você não fizer nada, paga o mês seguinte desse cliente. (Fora do Pay As You Go, apague o número **e** agende a redução da capacidade.)
+- **Qual workspace é de cada cliente** (o `id`, de `POST /v1/workspaces` ou `GET /v1/workspaces`), e **de qual cliente é cada número**, com a **data da primeira conexão** de cada um. O webhook [`number.connected`](/pt-BR/concepts/webhooks) é o gatilho: é a partir dele que a gente cobra você, então é a partir dele que você cobra o seu cliente. `number.disconnected` avisa quando o número caiu.
+- **A data de renovação de cada workspace** com a Pilot Status. Quando um cliente seu para de pagar, **apague o número dele antes dessa data**. Desconectar não basta. Se você não fizer nada, paga o mês seguinte desse cliente. (Fora do Pay As You Go, apague o número **e** agende a redução da capacidade.)
 - **Uma regra de cancelamento que acompanhe a nossa.** A gente não reembolsa o ciclo em andamento. Se você reembolsar o seu cliente, a diferença sai do seu bolso. A vaga paga continua sua até o fim do ciclo: use-a para o próximo cliente.
 - **Quem paga a Meta**, se os seus clientes usam a API oficial: de quem é a conta WhatsApp Business e qual forma de pagamento está cadastrada nela. Deixe isso no contrato com o seu cliente.
 - **Números bloqueados por falta de pagamento:** leia `extraChargeUnpaidSince` e `extraChargeDisconnectAt` em `GET /v1/numbers` para saber o que está bloqueado e quando será desconectado. Veja [Pagar número extra](/pt-BR/api/numbers/pay#como-saber-que-um-número-está-bloqueado).
@@ -75,7 +96,7 @@ Na prática: se o seu cliente atrasou, você excluiu o número antes da renovaç
 
 ### Quando cobramos
 
-- **R\$ 33,90 por mês, por linha** (US\$ 33.90 em workspaces em dólar), em qualquer plano, inclusive o Free.
+- **R\$ 33,90 por mês, por linha** (US\$ 33.90 em workspaces em dólar), em qualquer plano, inclusive o Free — a menos que a equipe da Pilot Status tenha definido **um preço de linha próprio para você**. Nesse caso, todo workspace que você criar o herda, e ele é o preço de toda compra e de toda renovação a partir da próxima. Veja [Preço próprio da linha](/pt-BR/phone-lines-pricing#preço-próprio-da-linha).
 - **A compra cobra o primeiro mês inteiro**, sem valor proporcional.
 - **Cada linha renova no mesmo dia do mês em que foi comprada**, independente do ciclo do plano e dos números. Cinco linhas compradas em dias diferentes dão cinco datas de renovação.
 - **As linhas usam a mesma carteira do plano e dos números.** Não existe reserva de saldo por produto: a cobrança que vence primeiro usa o saldo primeiro.
@@ -98,10 +119,10 @@ Na prática: se o seu cliente atrasou, você excluiu o número antes da renovaç
 - **De qual cliente é cada linha** e a **data de compra**, porque a renovação é mensal nessa data.
 - **Cobre o seu cliente antes da data de renovação**, não depois. A nossa carência é de 2 dias, e a devolução é definitiva.
 - **Cliente inadimplente:** decida **antes do aniversário da linha** se vai cancelar a linha ou pagar mais um mês por ele.
-- **Webhooks úteis** (veja [Webhooks das linhas](/pt-BR/api/phone-lines/webhooks)): `phone_line.purchased`, `phone_line.renewed`, `phone_line.payment_failed`, `phone_line.suspended`, `phone_line.returned` (com `reason`: `unpaid`, `canceled_by_customer` ou `verification_rejected`) e `phone_line.canceled`. Cada linha também expõe `price`, `currency` e `currentPeriodEnd` pela [API das linhas](/pt-BR/api/phone-lines/overview#preço-e-pagamento).
+- **Webhooks úteis** (veja [Webhooks das linhas](/pt-BR/api/phone-lines/webhooks)): `phone_line.purchased`, `phone_line.renewed`, `phone_line.payment_failed`, `phone_line.suspended`, `phone_line.returned` (com `reason`: `unpaid`, `canceled_by_customer` ou `verification_rejected`) e `phone_line.canceled`. Cada linha também expõe `price` (quanto custa a próxima renovação), `amountDue` (quanto pagar uma linha em atraso cobra agora), `currency` e `currentPeriodEnd` pela [API das linhas](/pt-BR/api/phone-lines/list#campos-do-objeto-linha). Os mesmos eventos chegam a um [webhook do workspace](/pt-BR/api/workspace-webhooks).
 
 ## Saldo
 
-- **Mantenha na carteira, pelo menos**, o valor das renovações de linhas dos próximos 7 dias **mais** a renovação mensal dos seus números.
-- **Deixe um cartão salvo como reserva.** É ele que evita o bloqueio de envio e a devolução de linhas quando a carteira não cobre uma cobrança.
-- O Proprietário recarrega a carteira em **Planos → Carteira**. Pela API, use [`POST /v1/billing/checkout`](/pt-BR/api/extra-numbers).
+- **Mantenha na carteira de cada workspace, pelo menos**, o valor das renovações de linhas dos próximos 7 dias **mais** a renovação mensal dos números dele.
+- **Deixe um cartão salvo como reserva** — no workspace, ou o seu [cartão compartilhado](#cartão-compartilhado). É ele que evita o bloqueio de envio e a devolução de linhas quando a carteira não cobre uma cobrança.
+- O Proprietário recarrega a carteira em **Planos → Carteira**. Pela API: Pix ou página hospedada com [`POST /v1/billing/checkout`](/pt-BR/api/wallet-and-card#recarga-com-pix), ou um checkout dentro do seu próprio app com [Stripe Elements](/pt-BR/guides/transparent-checkout). O [`wallet.topup_paid`](/pt-BR/api/workspace-webhooks#evento-de-recarga-paga) avisa quando o dinheiro entrou, para você liberar o serviço do seu cliente do seu lado.
