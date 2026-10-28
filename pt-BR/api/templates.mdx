@@ -181,8 +181,27 @@ curl -X POST https://pilotstatus.com.br/v1/templates \
 </CodeGroup>
 
 - `body` pode ser um **objeto** (recomendado), uma **string JSON** ou **texto simples** (templates só de body).
-- Edite com `PUT /v1/templates/{id}` (mesmo formato); remova com `DELETE /v1/templates/{id}` — para um template Meta isso também pede à Meta para excluí-lo, e a resposta depende do que a Meta faz (veja [Excluir](#excluir)).
+- Edite com `PUT /v1/templates/{id}` (mesmo formato; veja [Editar](#editar)); remova com `DELETE /v1/templates/{id}` — para um template Meta isso também pede à Meta para excluí-lo, e a resposta depende do que a Meta faz (veja [Excluir](#excluir)).
 - `GET /v1/templates` / `GET /v1/templates/{id}` retornam `source` (`META` | `PILOT_STATUS`), `metaStatus` (`APPROVED` | `PENDING` | `REJECTED` | `DISABLED` | `null`), `metaLanguage` e `sendable` — em um número Meta apenas templates `META` com `metaStatus: "APPROVED"` são enviáveis.
+
+## Editar
+
+`PUT /v1/templates/{id}` recebe o mesmo corpo da criação. Em um número Meta a nova versão é reenviada à Meta para aprovação e volta com `metaStatus: "PENDING"`.
+
+Quem decide se um template pode ser editado é a Meta. A regra publicada por ela é que um template aprovado pode ser editado no máximo uma vez a cada 24 horas e 10 vezes a cada 30 dias, mas na prática a Meta ainda pode recusar. Quando a Meta recusa por causa do estado atual do template (código `100`, subcódigo `2388003` da Graph: "Message templates can only be edited if they have been rejected."), a API retorna `409`:
+
+```json Resposta 409
+{
+  "error": "Meta does not allow editing this template in its current state (only rejected templates can be edited). Create a new template with the change, or send the document at send time. | A Meta não permite editar este template no estado atual (só templates rejeitados podem ser editados). Crie um novo template com a alteração ou envie o documento no momento do envio.",
+  "code": "TEMPLATE_NOT_EDITABLE",
+  "meta_user_message": "Message templates can only be edited if they have been rejected."
+}
+```
+
+- `code` é `TEMPLATE_NOT_EDITABLE`. `error` é uma frase bilíngue `English | Português`. `meta_user_message` é o texto da própria Meta, ou `null`.
+- **Quando a Meta recusa uma edição, por qualquer motivo, nada muda na Pilot Status:** o template guardado mantém o corpo e o `metaStatus` anteriores, e continua igual ao que está na Meta. Antes, o corpo novo era guardado como `PENDING` mesmo com a recusa da Meta.
+- **O que fazer:** crie um novo template com a alteração (`POST /v1/templates`, com outro nome). Se o que você queria mudar é o documento do cabeçalho, mantenha o template e envie o documento como parâmetro no momento do envio — o `media` por envio do `POST /v1/messages/send` ([Mídia com templates](/pt-BR/guides/media-messages#mídia-com-templates)).
+- A ferramenta MCP `templates_update` passa por esta mesma rota e retorna o mesmo `409`.
 
 ## Excluir
 
@@ -334,6 +353,7 @@ Botões de link/URL aceitam uma única variável que deve estar no **final** da 
 | Nome de exibição ainda não aprovado | Aguarde a aprovação da Meta | `131037` |
 | Parâmetro obrigatório ausente (ex.: variável de botão não preenchida) | Preencha todas as variáveis do template — para placeholder numerado em botão de template criado no painel da Meta, como `button_<N>` | `131008` |
 | Botão de pagamento não liberado para esta WABA | Aguarde a liberação de pagamentos pela Meta | `100/subcode 2388128` |
+| Edição recusada: a Meta só permite editar templates rejeitados (`409 TEMPLATE_NOT_EDITABLE`) | Crie um novo template ou envie o documento no momento do envio — veja [Editar](#editar) | `100/subcode 2388003` |
 | Link/variável de botão URL inválidos | Verifique o link e `{{…}}` | `100` |
 | Falha no upload de mídia para a Meta | Arquivo do header acessível \+ formato válido | — |
 | Arquivo do header muito grande / não suportado | Imagem ≤5MB JPEG/PNG, vídeo ≤16MB MP4, PDF ≤10MB | `131002/131003` |
