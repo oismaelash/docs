@@ -1,7 +1,7 @@
 ---
 title: "MCP Server"
 sidebarTitle: "MCP Server"
-description: "Connect AI agents to WhatsApp via the hosted Pilot Status MCP server: OAuth or x-api-key auth, 121 tools over the public /v1 API, per-number grants."
+description: "Connect AI agents to WhatsApp via the hosted Pilot Status MCP server: OAuth or x-api-key auth, 122 tools over the public /v1 API, per-number grants."
 mode: "wide"
 ---
 
@@ -32,7 +32,7 @@ Any MCP client that supports custom OAuth connectors can connect the same way. C
 ```
 
 <Tip>
-Start here: `/mcp` is the default, and your client shows each call for you to approve. For agents that build reports, loop over many items or run on a tight context, use **`https://mcp.pilotstatus.com.br/code`** instead of `/mcp` (not alongside it): the agent gets 2 tools (`describe` and `execute`) instead of 114 and writes a TypeScript script that calls `await ps.<tool>(args)`. Same credentials. [MCP Code Mode](/integrations/mcp-code-mode)
+Start here: `/mcp` is the default, and your client shows each call for you to approve. For agents that build reports, loop over many items or run on a tight context, use **`https://mcp.pilotstatus.com.br/code`** instead of `/mcp` (not alongside it): the agent gets 2 tools (`describe` and `execute`) instead of 122 and writes a TypeScript script that calls `await ps.<tool>(args)`. Same credentials. [MCP Code Mode](/integrations/mcp-code-mode)
 </Tip>
 
 ## Authentication
@@ -54,7 +54,7 @@ npx @pilot-status/mcp-server
 
 Supply your `ps_*` API key via the `x-api-key` header (HTTP mode) or environment configuration, depending on your MCP client.
 
-## Available tools (121)
+## Available tools (122)
 
 | Area | Tools |
 | --- | --- |
@@ -77,12 +77,14 @@ Supply your `ps_*` API key via the `x-api-key` header (HTTP mode) or environment
 | Workspace | `workspace_get`, `workspace_members_list`, `workspace_members_invite`, `workspace_members_resend`, `workspace_members_update`, `workspace_members_set_numbers`, `workspace_members_remove` |
 | Phone lines | `phone_lines_verification_get`, `phone_lines_verification_start`, `phone_lines_verification_confirm_contact`, `phone_lines_verification_resend_contact`, `phone_lines_verification_resend_document`, `phone_lines_activation_audio` |
 | Phone-line webhooks | `phone_lines_webhooks_list`, `phone_lines_webhooks_get`, `phone_lines_webhooks_create`, `phone_lines_webhooks_update`, `phone_lines_webhooks_delete`, `phone_lines_webhooks_deliveries_list`, `phone_lines_webhooks_deliveries_get` |
+| Documentation | `docs_search` |
 
 Notes:
 
 - `templates_create`/`templates_update` require the `examples` object (one real sample per variable; missing → `400 TEMPLATE_EXAMPLES_REQUIRED`) and accept media headers by **URL only** — base64 is REST-only.
 - `templates_update` returns `409 TEMPLATE_NOT_EDITABLE` when Meta does not allow editing the template in its current state (only rejected templates can be edited); the stored template is left unchanged. Create a new template with the change, or send the document at send time. [Edit](/api/templates#edit)
 - `messages_send` supports the three send modes: `templateId`, `text`, or direct media (`media` \+ `mediaType`; use `mediaType: "voice"` for a voice note on any number — `"audio"` arrives as an audio file on official numbers and as a voice note on unofficial ones).
+- `messages_send` with `mediaType: "audio"` or `"voice"` takes `media` **only as a public http(s) URL** to a real audio file. A base64 data URI for audio or voice — or any `data:audio/*` media, whatever the `mediaType` — is refused with `400 MCP_AUDIO_URL_REQUIRED` before anything is sent: no message is created. Image and document data URIs are still accepted, for a file the user actually attached. The rule is MCP-only — it applies to `/mcp`, [Code Mode](/integrations/mcp-code-mode) and the in-app AI agent; the [REST API](/api/messages/send) still accepts audio as a data URI. It exists because models invent base64 audio: those bytes are not a playable file and the send failed later with [`MEDIA_TRANSCODE_FAILED`](/api/messages/log-error-codes#media-preparation-on-official-numbers).
 - `messages_send` takes `markRead: false` to reply on an official (Meta) number without the typing indicator and without marking the conversation read — for an agent whose replies a person should still find unread. The number-wide default is `markReadOnSend` on `numbers_settings_update` / `numbers_create`. `messages_typing` on a Meta number marks the conversation read, so such an agent must not call it. [Read receipt and typing](/api/messages/send#read-receipt-and-typing)
 - `messages_send` takes an optional `idempotencyKey` (up to 255 characters), sent as the `Idempotency-Key` header. Within 24 hours, calling it again with the same key and the same arguments returns the first accepted response without sending again — so an agent that retries after a timeout does not message the contact twice. The same key with different arguments is `409 IDEMPOTENCY_KEY_REUSED`; while the first call is still running, `409 IDEMPOTENCY_KEY_IN_USE`. Derive the key from what makes the send unique (e.g. order id \+ recipient). [Idempotency](/api/messages/send#idempotency)
 - Inbound media: on META numbers feed `media.id` to `media_get`; on unofficial (Pilot Status web) numbers use `media.url` directly.
@@ -93,6 +95,7 @@ Notes:
 - `webhooks_create` and `webhooks_update`: `"*"` subscribes to every event except `lead.received`, which is opt-in — list it by name (for example `["*", "lead.received"]`). See [`lead.received`](/api/webhooks/events#lead-payload).
 - Phone-line tools take a tenant-scoped credential only. The `phone_lines_verification_*` tools are OWNER only (`phone_lines:purchase`); `phone_lines_verification_start` requires an `idempotencyKey` (sent as the `Idempotency-Key` header). `phone_lines_activation_audio` returns the recording's metadata and download URL, never the audio itself.
 - `phone_lines_webhooks_*` manage the [phone-line webhooks](/api/phone-lines/webhooks), a registry of their own that receives only `phone_line.*` events (the number webhooks of `webhooks_*` never receive them). Tenant-scoped credential only; `phone_lines:webhooks` (workspace ADMIN or OWNER). `phone_lines_webhooks_list` also returns `events`, the catalogue of subscribable events: `events` takes a non-empty list of them, or `["*"]` for every phone-line event. `phone_lines_webhooks_create` returns the `plwh_` signing secret **once** — store it right away: it cannot be read again and there is no rotation. It is not idempotent: each call creates another webhook. `phone_lines_webhooks_update` with `active: false` pauses a webhook; `phone_lines_webhooks_delete` removes it and its delivery history permanently. `phone_lines_webhooks_deliveries_list` never carries the payload; `phone_lines_webhooks_deliveries_get` returns it as signed, and on `phone_line.code_received` it contains the activation code.
+- `docs_search` takes a `query` — a question, keywords or an error code, in Portuguese or English — and an optional `limit` (3–5, default 5), and returns `{ query, results, source }`: the 3–5 most relevant pages of this documentation, each with `title`, `url` and `description` (not the page content). It reads the public docs index (`llms.txt` and its pt-BR sub-index; the Playground pages are left out), calls no `/v1` endpoint and needs no permission, key scope or `whatsappNumberId`, so any role can use it and the in-app agent runs it without asking for confirmation. `source` is `live`, or `fallback` when the index could not be fetched and a built-in copy answered; the index is cached for 6 hours. Use it when the user asks how to do something on Pilot Status, or when another tool returns an error code — search the code (e.g. `MEDIA_TRANSCODE_FAILED` leads to [Log Error Codes](/api/messages/log-error-codes)).
 - Token-based routes (remote-pairing public endpoints, embed session minting) are excluded from the tool list because they use a different auth flow.
 
 ## Example tool call
@@ -118,6 +121,7 @@ Notes:
 - `401` — missing or invalid API key.
 - `403` — tenant-scoped key on a number-scoped tool (or vice versa), or a tool outside a per-number grant.
 - `400` — invalid tool arguments (validated against the underlying API schema).
+- `400 MCP_AUDIO_URL_REQUIRED` — `messages_send` got a data URI (base64) for `mediaType` `audio`/`voice`, or a `data:audio/*` media. Send the audio as a public http(s) URL. The message is bilingual (`English | Português`) and nothing was sent.
 
 ## Related
 
