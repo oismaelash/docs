@@ -1,0 +1,312 @@
+---
+title: "Wallet and Card via API — Pix Top-up, Stripe Elements and Saved Card"
+sidebarTitle: "Wallet and card"
+description: "Top up the prepaid wallet and save the workspace's card through the public API: Pix with copy-and-paste code and QR, hosted Stripe Checkout, or your own checkout page with Stripe Elements (setup intents and payment intents with sync and Idempotency-Key), plus the top-up status endpoint."
+mode: "wide"
+---
+
+# Wallet and card via API
+
+Every charge of a workspace — numbers, plan, phone lines — comes out of its **prepaid wallet** first and, for whatever the wallet does not cover, from its **saved card**. These endpoints let your system fund both without sending your customer to the dashboard:
+
+| Method | Endpoint | What it does |
+| --- | --- | --- |
+| `POST` | `/v1/billing/checkout` | Wallet top-up by **Pix** or by **hosted Stripe Checkout**, or a hosted page to **save a card**. |
+| `GET` | `/v1/billing/topups/{id}` | Status of a top-up order: `pending`, `paid`, `expired` or `failed`. |
+| `POST` | `/v1/billing/card/setup-intent` | Starts a card save on **your own page** with Stripe Elements. |
+| `POST` | `/v1/billing/card/setup-intent/{id}/sync` | Makes the confirmed card the workspace's saved card right away. |
+| `POST` | `/v1/billing/payment-intents` | Starts a card top-up on **your own page** with Stripe Elements. |
+| `POST` | `/v1/billing/payment-intents/{id}/sync` | Credits the confirmed top-up right away. |
+
+**Nothing is charged by these calls.** They only issue the charge: a person pays the Pix, fills in the hosted page, or confirms the card on your page. The wallet is credited when the payment is confirmed, and the [`wallet.topup_paid`](/api/workspace-webhooks#paid-top-up-event) webhook tells you.
+
+<Tip>
+  To build a checkout inside your own app — card fields on your page, no redirect — follow the guide [Transparent checkout with Stripe Elements](/guides/transparent-checkout).
+</Tip>
+
+## Credentials and permissions
+
+- **A workspace-level credential:** a [workspace key](/api/key-types#workspace-keys), or an [account key](/api/key-types#account-keys) with `x-workspace-id`. A number key, or a token limited to some numbers, gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**.
+- **Role**, with an account key or an OAuth/MCP token: topping up and saving a card are **Owner** actions; reading a top-up status (`GET /v1/billing/topups/{id}`) needs **Owner or Admin**. A lower role gets **403 `PERMISSION_DENIED`**. A workspace key has no user, so no role applies.
+- **Currency:** the amount is always in the workspace's currency (`BRL` or `USD`). It cannot be chosen per request.
+
+## Top up with Pix
+
+Pix is available on **BRL** workspaces. `POST /v1/billing/checkout` with `purpose: "wallet_topup"`, `method: "pix"` and the `amount`:
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_your_key" \
+  -d '{ "purpose": "wallet_topup", "method": "pix", "amount": 100 }'
+```
+
+```json Response (200)
+{
+  "purpose": "wallet_topup",
+  "method": "pix",
+  "orderId": "cmh2b4k1n0001to8example2p",
+  "status": "pending",
+  "amount": 100,
+  "currency": "BRL",
+  "pix": {
+    "transactionId": "pdev_tx_8f2a1c",
+    "copyPaste": "00020126580014br.gov.bcb.pix0136…6304ABCD",
+    "qrCode": "iVBORw0KGgoAAAANSUhEUgAA…",
+    "expiresAt": "2026-10-28T11:15:00.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+- Show `pix.copyPaste` (the copy-and-paste code) and/or `pix.qrCode` (the QR code image, base64-encoded; it can be `null`) to whoever pays. A Pix **expires in 1 hour** (`pix.expiresAt`).
+- Keep `orderId`: it is how you follow the payment with [`GET /v1/billing/topups/{id}`](#follow-a-top-up) and how the `wallet.topup_paid` webhook names it.
+- **A USD workspace gets 400 `PIX_NOT_ELIGIBLE`.** Use a card.
+- `successUrl` and `cancelUrl` have no meaning for a Pix: sending them gets **400 `FIELD_NOT_APPLICABLE`**.
+
+## Top up or save a card on a hosted Stripe page
+
+The same endpoint, with `method: "card"` (the default), answers with a `url` to a page hosted by Stripe. Open it in the browser of whoever pays.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_your_key" \
+  -d '{
+    "purpose": "wallet_topup",
+    "amount": 50,
+    "successUrl": "https://app.example.com/billing?paid=1",
+    "cancelUrl": "https://app.example.com/billing"
+  }'
+```
+
+```json Response (200)
+{
+  "url": "https://checkout.stripe.com/c/pay/cs_live_…",
+  "purpose": "wallet_topup",
+  "method": "card",
+  "orderId": "cmh2b5m2p0002to8example6r",
+  "amount": 50,
+  "currency": "BRL"
+}
+```
+
+With `purpose: "add_card"` the page **saves a card** on the workspace, with no charge. The response is `{ "url": "…", "purpose": "add_card" }`. The card becomes the workspace's saved card, on every plan: it backs the wallet for every charge — numbers, plan renewals and phone lines. `method` does not apply to `add_card` (**400 `FIELD_NOT_APPLICABLE`**).
+
+<ParamField body="purpose" type="string" required>
+  `wallet_topup` or `add_card`. Anything else → **400 `INVALID_PURPOSE`**.
+</ParamField>
+
+<ParamField body="amount" type="number">
+  Required for `wallet_topup`: a positive number in the workspace's currency. Missing, zero, negative or not a number → **400 `INVALID_AMOUNT`**.
+</ParamField>
+
+<ParamField body="method" type="string" default="card">
+  `card` or `pix`, only for `wallet_topup`. Anything else → **400 `INVALID_METHOD`**.
+</ParamField>
+
+<ParamField body="successUrl" type="string">
+  Card only. Where the hosted page sends the browser after paying or saving.
+</ParamField>
+
+<ParamField body="cancelUrl" type="string">
+  Card only. Where the hosted page sends the browser when the person gives up.
+</ParamField>
+
+The hosted card rails need a billing e-mail for the workspace; without one the answer is **400 `NO_BILLING_EMAIL`**. Pix does not.
+
+## Follow a top-up
+
+`GET https://pilotstatus.com.br/v1/billing/topups/{id}`, with the `orderId` of any top-up — Pix, hosted page or Elements.
+
+```json Response (200)
+{
+  "topup": {
+    "id": "cmh2b4k1n0001to8example2p",
+    "status": "paid",
+    "amount": 100,
+    "currency": "BRL",
+    "method": "pix",
+    "provider": "PAGUE_DEV",
+    "createdAt": "2026-10-28T10:15:00.000Z",
+    "paidAt": "2026-10-28T10:17:42.000Z",
+    "expiresAt": "2026-10-28T11:15:00.000Z"
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `status` | `pending`, `paid`, `expired` (a Pix not paid within its hour) or `failed`. |
+| `method` | `pix` or `card`. |
+| `provider` | `PAGUE_DEV` for Pix, `STRIPE` for card. |
+| `paidAt` | When the wallet was credited, or `null`. |
+| `expiresAt` | Pix only: one hour after `createdAt`. `null` for card. |
+
+- **It only reads.** It calls no payment provider, so polling it is cheap. The order turns `paid` when the payment provider confirms the payment to us.
+- **Prefer the webhook to polling.** [`wallet.topup_paid`](/api/workspace-webhooks#paid-top-up-event) arrives once per credited order. If you poll right after receiving it, the order may still read `pending` for a moment: read it again.
+- An id from another workspace gets the same **404 `TOPUP_NOT_FOUND`** as an id that does not exist.
+
+## Card on your own page (Stripe Elements)
+
+With these endpoints the card fields are on **your** page, built with Stripe's [Payment Element](https://docs.stripe.com/payments/payment-element). Your server asks us for an intent; your page confirms it with Stripe.js; your server calls `sync`.
+
+<Warning>
+  **Card data never reaches Pilot Status, and must never reach your server either.** The card number goes from the payer's browser straight to Stripe, inside Stripe's own fields. Your API key stays on your server. This keeps card data out of your systems and out of ours, which is what keeps your PCI DSS scope small. Never collect card numbers in your own inputs and never send them to any API.
+</Warning>
+
+All four endpoints:
+
+- answer with `Cache-Control: no-store` — a `clientSecret` lets whoever holds it confirm the intent, so do not cache or log it;
+- return the `publishableKey` to load Stripe.js with, so you do not need any Stripe account of your own;
+- answer **503 `PAYMENTS_NOT_CONFIGURED`** when card payments are not available on our side. Offer Pix (BRL) or try again later.
+
+### Save a card
+
+`POST https://pilotstatus.com.br/v1/billing/card/setup-intent`, with **no body** (or `{}`). Any field gets **400 `UNKNOWN_FIELDS`**.
+
+```json Response (200)
+{
+  "clientSecret": "seti_1QabcDEF_secret_xyz",
+  "setupIntentId": "seti_1QabcDEF",
+  "publishableKey": "pk_live_…"
+}
+```
+
+On your page, mount the Payment Element with `clientSecret` and call `stripe.confirmSetup(...)`. When it resolves, call:
+
+`POST https://pilotstatus.com.br/v1/billing/card/setup-intent/{setupIntentId}/sync`
+
+```json Response (200)
+{
+  "setupIntentId": "seti_1QabcDEF",
+  "status": "succeeded",
+  "saved": true,
+  "card": { "brand": "visa", "last4": "4242", "expMonth": 12, "expYear": 2030 }
+}
+```
+
+- `sync` reads the intent from Stripe; it never trusts your page. When Stripe says `succeeded`, the card becomes the workspace's saved card, replacing the previous one.
+- **Not succeeded yet** (`processing`, `requires_action`, …): `saved: false`, `card: null` and Stripe's `status`. Call again later, or rely on our side: Stripe also notifies us, and the card is saved then.
+- **Idempotent.** Calling it again, or racing our own Stripe notification, saves the card once.
+- An id that is not a `seti_…` → **400 `INVALID_SETUP_INTENT_ID`**. An id we did not create for this workspace → **404 `SETUP_INTENT_NOT_FOUND`**.
+
+### Top up with a card
+
+`POST https://pilotstatus.com.br/v1/billing/payment-intents`
+
+<ParamField body="purpose" type="string" required>
+  `wallet_topup`, the only value today. Anything else → **400 `INVALID_PURPOSE`**.
+</ParamField>
+
+<ParamField body="amount" type="number" required>
+  A positive number in the workspace's currency, rounded to cents. Not positive → **400 `INVALID_AMOUNT`**. Below Stripe's minimum card charge → **400 `AMOUNT_TOO_SMALL`**.
+</ParamField>
+
+<ParamField body="saveCard" type="boolean" default="false">
+  `true` also saves this card as the workspace's card once the payment succeeds. Not a boolean → **400 `INVALID_FIELD_TYPE`**.
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string">
+  Optional. Up to 255 characters, no control characters (otherwise **400 `IDEMPOTENCY_KEY_INVALID`**). See below.
+</ParamField>
+
+Any other body field gets **400 `UNKNOWN_FIELDS`**.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/billing/payment-intents" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_your_key" \
+  -H "Idempotency-Key: topup-customer-42-2026-10-28" \
+  -d '{ "purpose": "wallet_topup", "amount": 150, "saveCard": true }'
+```
+
+```json Response (200)
+{
+  "clientSecret": "pi_3QabcDEF_secret_xyz",
+  "paymentIntentId": "pi_3QabcDEF",
+  "orderId": "cmh2b7q4s0003to8example8t",
+  "amount": 150,
+  "currency": "BRL",
+  "publishableKey": "pk_live_…"
+}
+```
+
+</CodeGroup>
+
+On your page, call `stripe.confirmPayment(...)` with `clientSecret`. When it resolves, call:
+
+`POST https://pilotstatus.com.br/v1/billing/payment-intents/{paymentIntentId}/sync`
+
+```json Response (200)
+{
+  "paymentIntentId": "pi_3QabcDEF",
+  "status": "succeeded",
+  "amount": 150,
+  "currency": "BRL",
+  "orderId": "cmh2b7q4s0003to8example8t",
+  "orderStatus": "COMPLETED",
+  "credited": true,
+  "balance": 212.4,
+  "cardSaved": true
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `status` | Stripe's status of the payment. |
+| `orderStatus` | `COMPLETED` when the wallet has the money; `PENDING` while Stripe has not confirmed; `FAILED` when the payment was cancelled; `UNCHANGED` when it was cancelled and the order had already been closed. |
+| `credited` | `true` only on the call that credited the wallet. A repeat, or a call after our own Stripe notification already credited it, answers `false` with `orderStatus: "COMPLETED"`. |
+| `balance` | The wallet balance right after this credit, or `null` when this call did not credit. |
+| `cardSaved` | `true` when `saveCard` was set and the card is now the workspace's card. |
+
+- **`sync` never charges.** It is not Stripe's `/confirm`: it only reconciles what Stripe already decided. The wallet is credited **exactly once**, by `sync` or by our Stripe notification, whichever comes first.
+- An id that is not a `pi_…` → **400 `INVALID_PAYMENT_INTENT_ID`**. An id we did not create as a top-up of this workspace → **404 `PAYMENT_INTENT_NOT_FOUND`**.
+- The `orderId` works on [`GET /v1/billing/topups/{id}`](#follow-a-top-up) like any other top-up.
+
+### Idempotency-Key
+
+Send it on `POST /v1/billing/payment-intents` so that a retry after a timeout does not open a second order.
+
+- **Absent:** every call creates a new order and a new payment intent.
+- **Same key and same body within 24 hours:** you get the **same** `orderId`, `paymentIntentId` and `clientSecret`, with the header `Idempotent-Replayed: true`. Nothing new is created.
+- **Same key, different body:** **409 `IDEMPOTENCY_KEY_REUSED`**. Use a new key.
+- **Same key while the first call is still running:** **409 `IDEMPOTENCY_KEY_IN_USE`**. Retry in a moment.
+- Keys are per workspace. A call that failed validation, or failed afterwards, does not spend the key.
+
+## Errors
+
+Errors carry a `code` and an `error` message; the newer endpoints give it as `English | Português`, and the Elements endpoints put extra detail in `details` (for example `details.unknownFields`).
+
+| Status | `code` | Where | What happened |
+| --- | --- | --- | --- |
+| `400` | `INVALID_PURPOSE` | `checkout`, `payment-intents` | `purpose` missing or not accepted. |
+| `400` | `INVALID_AMOUNT` | `checkout`, `payment-intents` | `amount` missing, zero, negative or not a number. |
+| `400` | `INVALID_METHOD` | `checkout` | `method` is not `card` or `pix`. |
+| `400` | `FIELD_NOT_APPLICABLE` | `checkout` | `method` on `add_card`, or `successUrl`/`cancelUrl` on a Pix. |
+| `400` | `PIX_NOT_ELIGIBLE` | `checkout` | Pix on a workspace that does not bill in BRL. |
+| `400` | `NO_BILLING_EMAIL` | `checkout` (card) | The workspace has no billing e-mail. |
+| `400` | `INVALID_BODY` | Elements | The body is not a JSON object. |
+| `400` | `UNKNOWN_FIELDS` | Elements | A field the endpoint does not accept. |
+| `400` | `INVALID_FIELD_TYPE` | `payment-intents` | `saveCard` is not a boolean. |
+| `400` | `AMOUNT_TOO_SMALL` | `payment-intents` | Below Stripe's minimum card charge. |
+| `400` | `IDEMPOTENCY_KEY_INVALID` | `payment-intents` | Key longer than 255 characters or with control characters. |
+| `400` | `INVALID_SETUP_INTENT_ID` / `INVALID_PAYMENT_INTENT_ID` | `…/sync` | The id is not a `seti_…` / `pi_…`. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | all | A number key, or a token limited to some numbers. |
+| `403` | `PERMISSION_DENIED` | all | The user's role does not allow it. |
+| `404` | `TOPUP_NOT_FOUND` | `topups/{id}` | No top-up order with that id in this workspace. |
+| `404` | `SETUP_INTENT_NOT_FOUND` / `PAYMENT_INTENT_NOT_FOUND` | `…/sync` | Not an intent we created for this workspace. |
+| `409` | `IDEMPOTENCY_KEY_REUSED` / `IDEMPOTENCY_KEY_IN_USE` | `payment-intents` | See [Idempotency-Key](#idempotency-key). |
+| `500` | `CHECKOUT_FAILED` / `TOPUP_READ_FAILED` / `BILLING_REQUEST_FAILED` | — | Unexpected failure. |
+| `503` | `PAYMENTS_NOT_CONFIGURED` | Elements | Card payments are not available right now. |
+
+The authentication errors (`401`, `400 WORKSPACE_ID_REQUIRED`, `403 WORKSPACE_MEMBERSHIP_REQUIRED`) are described in [Key types](/api/key-types#errors).
+
+## Reseller workspaces and the shared card
+
+A reseller's end-customer workspace may be linked to the reseller's **shared card** by the Pilot Status team. That card only backs the **charges the platform makes** — renewals, numbers, lines — when the workspace's wallet does not cover them and the workspace has no card of its own. It is **never** used by these endpoints: a top-up here is paid by whoever pays the Pix, the hosted page or your Elements form, and `add_card` or a setup intent saves a card on the workspace itself, which then takes precedence over the shared one. See [Billing for resellers](/reseller-billing#shared-card).
