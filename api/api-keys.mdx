@@ -12,7 +12,7 @@ Every request to the Pilot Status API requires an API key in one of these header
 - `x-api-key`: the raw key (`ps_...`)
 - `x-api-key-id`: the API key ID (the backend resolves it internally)
 
-All keys use the `ps_` prefix.
+All keys use the `ps_` prefix. Keys created from 2026-10-28 on also carry their kind — `ps_number_`, `ps_workspace_` or `ps_account_`. This page covers number keys; for workspace keys (primary and named) and account keys, see [Key types](/api/key-types) and [Create workspaces](/api/workspaces#workspace-keys).
 
 <Frame caption="The API Keys page — each number has one default key (shown masked) with a Regenerate action, plus per-number privacy & retention.">
   ![Pilot Status API Keys page](/images/dashboard/api-keys.png)
@@ -23,19 +23,17 @@ All keys use the `ps_` prefix.
 | Scope | Bound to | Where to find it |
 | --- | --- | --- |
 | **Number-scoped** (default) | One WhatsApp number — all action/data endpoints for that number (send, status, groups, templates, media, calls…) | Dashboard → **API Keys** page (one default key per number; **Regenerate**) |
-| **Tenant-scoped** (singleton) | The tenant (no number) — account-level management: `/v1/numbers/*`, `/v1/remote-pairing/*`, `/v1/api-keys`, `/v1/branding`, `/v1/webhooks/*`, `/v1/subscription/*`. Cannot send messages. | Dashboard → **Profile** → **API** tab |
+| **Tenant-scoped** (workspace key) | The tenant (no number) — account-level management: `/v1/numbers/*`, `/v1/remote-pairing/*`, `/v1/api-keys`, `/v1/branding`, `/v1/webhooks/*`, `/v1/subscription/*`, `/v1/billing/*`. It also acts on any number with `x-whatsapp-number-id`. | Dashboard → **Workspace keys** (`/workspace-api-keys`) |
+| **Account key** | You, the user — any workspace you are a member of, picked with `x-workspace-id`, with your role there | Dashboard → **Profile** → **API** tab |
 
-There are **no sub-keys** (no parent/child). In the dashboard, keys are **regenerated**, not created: each WhatsApp number has one default number-scoped key, and the tenant-scoped key is a singleton.
+There are **no sub-keys** (no parent/child). Number keys are **regenerated**, not created: each WhatsApp number has one default number-scoped key. A workspace has one **primary** workspace key and can add **named** ones (see [Workspace keys](/api/key-types#workspace-keys)).
 
 A tenant-scoped key on a per-number action endpoint gets **403 `TENANT_SCOPE_NOT_ALLOWED`**; a number-scoped key on a tenant-only endpoint gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**.
 
-<Frame caption="The tenant-scoped key lives in Profile → API — it manages numbers via the public API and cannot send messages.">
-  ![Tenant-scoped API key in Profile → API](/images/dashboard/tenant-api-key.png)
-</Frame>
 
 ## GET /v1/api-keys — List keys (tenant-scoped only)
 
-A number-scoped key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. Returns a **lean flat array — one item per number** — with `numberId`, `number`, `displayName`, `keyId`, `keyLast4`, plus the real usable value (`key`, `revealable: true`). Legacy keys come back with `key: null` and `revealable: false` — regenerate that number to obtain a usable value.
+A number-scoped key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. With an account key (`x-workspace-id`), it requires the **Owner** role, since it returns keys in plaintext; regenerating a number's key (`POST`) requires **Owner or Admin**. Workspace keys are not listed here. Returns a **lean flat array — one item per number** — with `numberId`, `number`, `displayName`, `keyId`, `keyLast4`, plus the real usable value (`key`, `revealable: true`). Legacy keys come back with `key: null` and `revealable: false` — regenerate that number to obtain a usable value.
 
 <Note>
   **One entry per number — the most recently created key.** A number can hold more than one key, and the listing now collapses them to the newest one instead of returning a row per key. The older keys are **not** revoked: they keep authenticating, they just stop being listed. Keys with no number attached are still listed individually.
@@ -82,6 +80,9 @@ curl -X POST "https://pilotstatus.com.br/v1/api-keys" \
 ## POST /v1/api-keys/regenerate — Rotate the caller's own key
 
 Rotates the **calling key's own scope** key (works for both scopes): the current key is invalidated and the new raw key is returned **once** in the response.
+
+- **With a workspace key** (primary or named), it rotates the workspace's **primary** key. Named keys are not touched: a named key that calls it keeps working.
+- **With an account key and `x-workspace-id`**, it rotates that workspace's primary key. Requires the **Owner** role.
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/api-keys/regenerate" \

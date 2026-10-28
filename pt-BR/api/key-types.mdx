@@ -1,0 +1,93 @@
+---
+title: "Tipos de chave de API — Chaves de número, de workspace e de conta"
+sidebarTitle: "Tipos de chave"
+description: "Os três tipos de chave de API do Pilot Status — chaves de número (ps_number_), chaves de workspace (ps_workspace_, com uma chave principal e chaves com nome) e chaves de conta (ps_account_, que escolhem o workspace com x-workspace-id) — onde cada uma é criada e os erros que cada uma pode receber."
+mode: "wide"
+---
+
+# Tipos de chave de API
+
+O Pilot Status tem três tipos de chave de API. Todas vão no mesmo cabeçalho `x-api-key`, e o prefixo diz de que tipo é a chave.
+
+| Tipo | Prefixo | Pertence a | Onde você cria | Para que serve |
+| --- | --- | --- | --- | --- |
+| **Chave de número** | `ps_number_` | Um número de WhatsApp | **API Keys** (`/api-keys`) | Enviar e ler por esse número. |
+| **Chave de workspace** | `ps_workspace_` | Um workspace | **Chaves do workspace** (`/workspace-api-keys`) | Gerenciar o workspace: números, linhas, cobrança, webhooks. Também atua em qualquer número do workspace com `x-whatsapp-number-id`. |
+| **Chave de conta** | `ps_account_` | **Você**, o usuário | **Perfil → API** (`/profile?tab=api`) | Criar workspaces e atuar em qualquer workspace do qual você é membro, com o seu papel nele. |
+
+<Note>
+  **Chaves criadas antes de 28/10/2026 continuam funcionando.** Elas têm o formato antigo `ps_` + hex, sem o tipo no prefixo. Uma chave de número legada continua sendo uma chave de número, e uma chave com escopo de tenant legada continua sendo uma chave de workspace. Você não precisa trocá-las.
+</Note>
+
+## Chaves de número
+
+Nada mudou aqui. Cada número de WhatsApp tem **uma chave padrão**, na página **API Keys**, que você **regenera** (não existe "criar outra"). Ela atua só no próprio número: uma chave de número em um endpoint exclusivo de workspace recebe **403 `NUMBER_SCOPE_NOT_ALLOWED`**. Veja [Chaves de API](/pt-BR/api/api-keys).
+
+## Chaves de workspace
+
+Uma chave de workspace é o que a documentação chama de **chave com escopo de tenant**: ela é vinculada ao workspace, não a um número. Elas ficam numa tela própria, **Chaves do workspace** (`/workspace-api-keys`), na barra lateral. Antes de 28/10/2026 a chave do workspace ficava em **Perfil → API**; essa aba agora guarda as suas chaves de conta.
+
+Um workspace tem dois tipos de chave de workspace:
+
+| | Chave principal | Chaves com nome |
+| --- | --- | --- |
+| Quantas | Uma | Até **50** por workspace, contando a principal |
+| Quem gera | **Proprietário** | **Proprietário ou Administrador** |
+| Usada por | O agente de IA do app e qualquer integração que você configurar com ela | Uma integração cada, para você revogar uma sem derrubar as outras |
+| Revogar | **Não é possível** — regenere-a | Sim, vale a partir da próxima requisição |
+| Regenerar | Sim. Só a principal muda; as chaves com nome continuam funcionando | Não: revogue-a e crie outra |
+
+- **A chave bruta aparece uma única vez**, quando é criada ou regenerada. Guarde-a na hora.
+- **A sua chave com escopo de tenant atual é a chave principal do workspace.**
+- **Uma chave com nome criada por um membro é revogada quando esse membro sai do workspace.**
+- Pela API, uma chave de conta lista, cria e revoga chaves de workspace com [`/v1/workspaces/{id}/api-keys`](/pt-BR/api/workspaces#chaves-do-workspace), e rotaciona a chave principal com `POST /v1/api-keys/regenerate`.
+
+## Chaves de conta
+
+Uma chave de conta é **sua, não de um workspace**. Qualquer usuário pode criar uma em **Perfil → API**, até **20** por usuário. Uma chave alcança todo workspace do qual você é membro ativo e, em cada requisição, atua com o **seu papel atual** no workspace indicado: se você for rebaixado ou removido, a chave perde esse acesso na próxima requisição.
+
+É a chave que um revendedor usa para [criar um workspace por cliente final](/pt-BR/api/workspaces) e operar todos eles com uma única credencial.
+
+### Escolha o workspace com `x-workspace-id`
+
+Em todo endpoint que atua sobre um workspace, envie o id do workspace em `x-workspace-id`. Os ids vêm de [`GET /v1/workspaces`](/pt-BR/api/workspaces#listar-seus-workspaces).
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers" \
+  -H "x-api-key: ps_account_your_account_key" \
+  -H "x-workspace-id: cmh2a1b2c0001ws8example7k"
+```
+
+- **Dentro desse workspace, a chave se comporta como a própria chave do workspace**, limitada ao seu papel. Um papel que não permite a ação recebe **403 `PERMISSION_DENIED`**.
+- **Um membro restrito a alguns números** alcança só esses números, como no painel.
+- **`x-whatsapp-number-id`** restringe a requisição a um número desse workspace, como numa chave de workspace. Um id que não é de um número desse workspace recebe **404 `NUMBER_NOT_FOUND`**.
+- **`x-api-key-id` não é aceito** com chave de conta. Enviar os dois recebe `401` `API key headers mismatch`.
+- **Chaves de conta carregam um usuário.** Por isso elas fazem o que uma chave de workspace não faz, como [gerenciar membros](/pt-BR/api/workspace) (conforme o seu papel), e podem criar chaves de workspace, o que tokens OAuth/MCP não podem.
+
+### Erros
+
+| Status | `code` | Quando |
+| --- | --- | --- |
+| `400` | `WORKSPACE_ID_REQUIRED` | Uma chave de conta em um endpoint que atua sobre um workspace, sem `x-workspace-id`. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | Você não é membro ativo do workspace em `x-workspace-id` (ou no caminho). Um workspace que não existe ou está arquivado recebe a mesma resposta. |
+| `403` | `ACCOUNT_KEY_REQUIRED` | Uma chave de workspace, uma chave de número ou um token OAuth/MCP em um endpoint que só chaves de conta podem chamar (`/v1/workspaces*`). |
+| `403` | `PERMISSION_DENIED` | O seu papel nesse workspace não permite a ação. |
+| `401` | — | A chave não existe ou foi revogada (`Invalid API key`). |
+
+<Accordion title="Mensagens de erro exatas">
+  | `code` | `error` |
+  | --- | --- |
+  | `WORKSPACE_ID_REQUIRED` | `An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) \| Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)` |
+  | `WORKSPACE_MEMBERSHIP_REQUIRED` | `The user behind this account API key is not an active member of the workspace named by x-workspace-id \| O usuário desta API key de conta não é membro ativo do workspace indicado em x-workspace-id` |
+  | `ACCOUNT_KEY_REQUIRED` | `This endpoint requires an account API key (ps_account_…), created in Profile → API. Workspace keys, number keys and OAuth tokens cannot use it \| Este endpoint exige uma API key de conta (ps_account_…), criada em Perfil → API. Chaves de workspace, de número e tokens OAuth não podem usá-lo` |
+</Accordion>
+
+<Warning>
+  **Uma chave de conta é a credencial mais poderosa que você pode ter.** Ela alcança todo workspace do qual você faz parte, com o seu papel em cada um. Mantenha-a só no seu servidor, nunca num navegador ou app, e revogue-a em **Perfil → API** se ela vazar.
+</Warning>
+
+## Qual chave usar
+
+- **Você envia mensagens por um número:** uma chave de número.
+- **Você opera um workspace e gerencia seus números, linhas e cobrança:** uma chave de workspace — uma com nome por integração.
+- **Você revende e mantém um workspace por cliente:** uma chave de conta para criar os workspaces e atuar em cada um com `x-workspace-id`. Veja [Cobrança para revendedores](/pt-BR/reseller-billing).

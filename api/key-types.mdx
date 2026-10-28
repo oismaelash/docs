@@ -1,0 +1,93 @@
+---
+title: "API Key Types — Number, Workspace and Account Keys"
+sidebarTitle: "Key types"
+description: "The three kinds of Pilot Status API key — number keys (ps_number_), workspace keys (ps_workspace_, with a primary key and named keys) and account keys (ps_account_, which pick a workspace with x-workspace-id) — where each one is created and the errors each one can get."
+mode: "wide"
+---
+
+# API key types
+
+Pilot Status has three kinds of API key. All of them go in the same `x-api-key` header, and the prefix tells you which kind a key is.
+
+| Kind | Prefix | Belongs to | Where you create it | What it is for |
+| --- | --- | --- | --- | --- |
+| **Number key** | `ps_number_` | One WhatsApp number | **API Keys** (`/api-keys`) | Send and read through that number. |
+| **Workspace key** | `ps_workspace_` | One workspace | **Workspace keys** (`/workspace-api-keys`) | Manage the workspace: numbers, lines, billing, webhooks. It also acts on any number of the workspace with `x-whatsapp-number-id`. |
+| **Account key** | `ps_account_` | **You**, the user | **Profile → API** (`/profile?tab=api`) | Create workspaces and act in any workspace you are a member of, with your role there. |
+
+<Note>
+  **Keys created before 2026-10-28 keep working.** They have the older `ps_` + hex format, with no kind in the prefix. A legacy number key is still a number key, and a legacy tenant-scoped key is still a workspace key. You do not need to replace them.
+</Note>
+
+## Number keys
+
+Nothing changed here. Each WhatsApp number has **one default key**, on the **API Keys** page, which you **regenerate** (there is no "create another"). It acts only on its own number: a number key on a workspace-only endpoint gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. See [API keys](/api/api-keys).
+
+## Workspace keys
+
+A workspace key is what the docs call a **tenant-scoped key**: it is bound to the workspace, not to a number. They live on their own screen, **Workspace keys** (`/workspace-api-keys`), in the sidebar. Before 2026-10-28 the workspace key was in **Profile → API**; that tab now holds your account keys.
+
+A workspace has two kinds of workspace key:
+
+| | Primary key | Named keys |
+| --- | --- | --- |
+| How many | One | Up to **50** per workspace, the primary included |
+| Who generates it | **Owner** | **Owner or Admin** |
+| Used by | The in-app AI agent, and any integration you set up with it | One integration each, so you can revoke one without taking the others down |
+| Revoke | **Not possible** — regenerate it instead | Yes, effective on the next request |
+| Regenerate | Yes. Only the primary changes; the named keys keep working | No: revoke it and create another |
+
+- **The raw key is shown once**, when it is created or regenerated. Store it right away.
+- **Your existing tenant-scoped key is the workspace's primary key.**
+- **A named key minted by a member is revoked when that member leaves the workspace.**
+- Through the API, an account key lists, creates and revokes workspace keys with [`/v1/workspaces/{id}/api-keys`](/api/workspaces#workspace-keys), and rotates the primary key with `POST /v1/api-keys/regenerate`.
+
+## Account keys
+
+An account key is **yours, not a workspace's**. Any user can create one in **Profile → API**, up to **20** per user. One key reaches every workspace you are an active member of, and on each request it acts with **your current role** in the workspace it names: if you are demoted or removed, the key loses that access on the next request.
+
+It is the key a reseller uses to [create one workspace per end customer](/api/workspaces) and operate all of them with a single credential.
+
+### Pick the workspace with `x-workspace-id`
+
+On every endpoint that acts on a workspace, send the workspace id in `x-workspace-id`. The ids come from [`GET /v1/workspaces`](/api/workspaces#list-your-workspaces).
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers" \
+  -H "x-api-key: ps_account_your_account_key" \
+  -H "x-workspace-id: cmh2a1b2c0001ws8example7k"
+```
+
+- **Inside that workspace, the key behaves like the workspace's own key**, cut down to your role. A role that does not allow the action gets **403 `PERMISSION_DENIED`**.
+- **A member limited to some numbers** reaches only those numbers, as in the dashboard.
+- **`x-whatsapp-number-id`** narrows the request to one number of that workspace, as with a workspace key. An id that is not a number of that workspace gets **404 `NUMBER_NOT_FOUND`**.
+- **`x-api-key-id` is not supported** with an account key. Sending both gets `401` `API key headers mismatch`.
+- **Account keys carry a user.** Because of that they can do what a workspace key cannot, such as [managing members](/api/workspace) (according to your role), and they can mint workspace keys, which OAuth/MCP tokens cannot.
+
+### Errors
+
+| Status | `code` | When |
+| --- | --- | --- |
+| `400` | `WORKSPACE_ID_REQUIRED` | An account key on an endpoint that acts on a workspace, with no `x-workspace-id`. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | You are not an active member of the workspace in `x-workspace-id` (or in the path). A workspace that does not exist or is archived gets the same answer. |
+| `403` | `ACCOUNT_KEY_REQUIRED` | A workspace key, a number key or an OAuth/MCP token on an endpoint that only account keys can call (`/v1/workspaces*`). |
+| `403` | `PERMISSION_DENIED` | Your role in that workspace does not allow the action. |
+| `401` | — | The key does not exist or was revoked (`Invalid API key`). |
+
+<Accordion title="Exact error messages">
+  | `code` | `error` |
+  | --- | --- |
+  | `WORKSPACE_ID_REQUIRED` | `An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) \| Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)` |
+  | `WORKSPACE_MEMBERSHIP_REQUIRED` | `The user behind this account API key is not an active member of the workspace named by x-workspace-id \| O usuário desta API key de conta não é membro ativo do workspace indicado em x-workspace-id` |
+  | `ACCOUNT_KEY_REQUIRED` | `This endpoint requires an account API key (ps_account_…), created in Profile → API. Workspace keys, number keys and OAuth tokens cannot use it \| Este endpoint exige uma API key de conta (ps_account_…), criada em Perfil → API. Chaves de workspace, de número e tokens OAuth não podem usá-lo` |
+</Accordion>
+
+<Warning>
+  **An account key is the most powerful credential you can hold.** It reaches every workspace you belong to, with your role in each. Keep it on your server only, never in a browser or an app, and revoke it in **Profile → API** if it leaks.
+</Warning>
+
+## Which key to use
+
+- **You send messages from one number:** a number key.
+- **You run one workspace and manage its numbers, lines and billing:** a workspace key — a named one per integration.
+- **You resell and keep one workspace per customer:** an account key to create the workspaces and act in each one with `x-workspace-id`. See [Billing for resellers](/reseller-billing).

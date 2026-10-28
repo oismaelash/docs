@@ -1,0 +1,213 @@
+---
+title: "Workspaces API — Create Workspaces and Their Keys"
+sidebarTitle: "Create workspaces"
+description: "List the workspaces you belong to, create a new one with POST /v1/workspaces (it comes with its primary key), and list, create and revoke its workspace keys — all with an account key (ps_account_). Covers the per-user ceiling and how reseller workspaces are born on Pay As You Go."
+mode: "wide"
+---
+
+# Workspaces API
+
+These endpoints work at the level of **your user**, not of one workspace. They answer **only to an [account key](/api/key-types#account-keys)** (`ps_account_`, created in **Profile → API**).
+
+| Method | Endpoint | What it does |
+| --- | --- | --- |
+| `GET` | `/v1/workspaces` | The workspaces you are an active member of, with your role in each. |
+| `POST` | `/v1/workspaces` | Creates a workspace that you own, with its primary key. |
+| `GET` | `/v1/workspaces/{workspaceId}/api-keys` | The workspace's keys (primary and named), masked. |
+| `POST` | `/v1/workspaces/{workspaceId}/api-keys` | Creates a named workspace key. |
+| `DELETE` | `/v1/workspaces/{workspaceId}/api-keys/{keyId}` | Revokes a named workspace key. |
+
+<Note>
+  **Only account keys.** A workspace key, a number key or an OAuth/MCP token gets **403 `ACCOUNT_KEY_REQUIRED`**. OAuth/MCP tokens are refused on purpose: these endpoints mint keys, and a key minted through a connector would keep working after the connector is revoked. `x-workspace-id` is ignored here: the workspace, when there is one, is in the path.
+</Note>
+
+Every response is sent with `Cache-Control: no-store`. Errors are `{ "error": "English | Português", "code": "…" }`.
+
+## List your workspaces
+
+`GET https://pilotstatus.com.br/v1/workspaces`
+
+```bash
+curl "https://pilotstatus.com.br/v1/workspaces" \
+  -H "x-api-key: ps_account_your_account_key"
+```
+
+```json Response (200)
+{
+  "data": [
+    {
+      "id": "cmh2a1b2c0001ws8example7k",
+      "name": "Acme Resale",
+      "role": "OWNER",
+      "plan": "PAY_AS_YOU_GO",
+      "createdAt": "2026-03-02T12:00:00.000Z"
+    },
+    {
+      "id": "cmh2a9z8y0002ws8example1q",
+      "name": "Bakery Downtown",
+      "role": "OWNER",
+      "plan": "PAY_AS_YOU_GO",
+      "createdAt": "2026-10-28T09:15:00.000Z"
+    }
+  ]
+}
+```
+
+- **Only workspaces where your membership is active.** Archived workspaces are left out.
+- `role` is your role in that workspace: `OWNER`, `ADMIN`, `AGENT` or `ANALYST`.
+- `plan` is the workspace's current plan (`FREE`, `PAY_AS_YOU_GO`, `ON_DEMAND`, …).
+- Use the `id` in `x-workspace-id` to act inside that workspace with the same account key.
+
+## Create a workspace
+
+`POST https://pilotstatus.com.br/v1/workspaces` with `{ "name": "…" }`. You become the workspace's **Owner**, and the response carries its **primary key**, shown **this one time only**.
+
+<ParamField body="name" type="string" required>
+  1 to 60 characters, after trimming spaces.
+</ParamField>
+
+`name` is the only field accepted. Any other field gets **400 `UNKNOWN_FIELDS`**.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/workspaces" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_account_your_account_key" \
+  -d '{ "name": "Bakery Downtown" }'
+```
+
+```json Response (201)
+{
+  "id": "cmh2a9z8y0002ws8example1q",
+  "name": "Bakery Downtown",
+  "plan": "PAY_AS_YOU_GO",
+  "createdAt": "2026-10-28T09:15:00.000Z",
+  "role": "OWNER",
+  "apiKey": {
+    "id": "cmh2aa0010003ak8example4d",
+    "name": "Workspace API Key",
+    "key": "ps_workspace_9f3c1a7e5b2d8f4a6c0e9b1d7f3a5c8e2b4d6f8a0c1e3b5d",
+    "prefix": "ps_workspace_",
+    "last4": "3b5d",
+    "isPrimary": true,
+    "createdAt": "2026-10-28T09:15:00.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+- **`apiKey.key` comes only in this response.** Store it before doing anything else. Later reads show only `prefix` and `last4`.
+- **`apiKey` can be `null`.** The workspace is saved first and the key is minted next. If minting fails, the answer is still `201`, so that a retry does not create a second workspace. Rotate the primary key with `POST /v1/api-keys/regenerate` (account key plus `x-workspace-id`, Owner role), or create a named key with [`POST /v1/workspaces/{id}/api-keys`](#create-a-named-key).
+- **Creating is not idempotent.** Two `POST`s create two workspaces. After a timeout, check `GET /v1/workspaces` before trying again.
+
+### How the new workspace is born
+
+| You are | Plan | Prices | Card |
+| --- | --- | --- | --- |
+| A regular user | **Free** | The standard ones | None |
+| A **reseller** (marked by the Pilot Status team) | **Pay As You Go**, billed from the wallet | **Your reseller prices**: the per-number price and the phone line price agreed with you | **Your shared card**, when the Pilot Status team linked one to your account |
+
+Reseller workspaces start with nothing charged: no plan fee, no numbers and no balance. The first charge is the first number that connects, or the first line you buy. The **shared card** is a backup: it pays a charge only when the workspace's wallet does not cover it **and** the workspace has no card of its own. See [Billing for resellers](/reseller-billing#one-workspace-per-end-customer).
+
+<Note>
+  The reseller mark, the reseller prices and the shared card are set by the **Pilot Status team**, not through the API. Talk to us to set them up. They apply to workspaces created from then on; workspaces you already had keep their plan.
+</Note>
+
+### How many workspaces you can own
+
+Each user can own up to **10 workspaces** by default, counting every workspace where you are the active Owner, your first one included. Over the limit, the answer is **409 `WORKSPACE_LIMIT_REACHED`**, with the limit in `limit`:
+
+```json Response (409)
+{
+  "error": "You already own 10 workspaces, which is the limit | Você já é dono de 10 workspaces, que é o limite",
+  "code": "WORKSPACE_LIMIT_REACHED",
+  "limit": 10
+}
+```
+
+The limit is a brake against abuse, not a plan rule. If you resell and need more, the Pilot Status team raises it for your user.
+
+## Workspace keys
+
+These three endpoints manage the [workspace keys](/api/key-types#workspace-keys) of one workspace, with your **current role** in it. Not being an active member, or a workspace that does not exist or is archived, all get the same **403 `WORKSPACE_MEMBERSHIP_REQUIRED`**.
+
+### List the keys
+
+`GET https://pilotstatus.com.br/v1/workspaces/{workspaceId}/api-keys` — **Owner or Admin**.
+
+```json Response (200)
+{
+  "data": [
+    {
+      "id": "cmh2aa0010003ak8example4d",
+      "name": "Workspace API Key",
+      "prefix": "ps_workspace_",
+      "last4": "3b5d",
+      "isPrimary": true,
+      "createdAt": "2026-10-28T09:15:00.000Z",
+      "lastUsedAt": "2026-10-28T09:20:11.000Z"
+    },
+    {
+      "id": "cmh2ab7770004ak8example9m",
+      "name": "Billing integration",
+      "prefix": "ps_workspace_",
+      "last4": "a1c0",
+      "isPrimary": false,
+      "createdAt": "2026-10-28T10:02:40.000Z",
+      "lastUsedAt": null
+    }
+  ]
+}
+```
+
+The raw key never comes back here. Number keys are not listed: they are managed on [`/v1/api-keys`](/api/api-keys).
+
+### Create a named key
+
+`POST https://pilotstatus.com.br/v1/workspaces/{workspaceId}/api-keys` with `{ "name": "…" }` — **Owner or Admin**.
+
+<ParamField body="name" type="string" required>
+  1 to 60 characters, after trimming spaces. Use it to tell which integration holds the key.
+</ParamField>
+
+```json Response (201)
+{
+  "apiKey": {
+    "id": "cmh2ab7770004ak8example9m",
+    "name": "Billing integration",
+    "key": "ps_workspace_4e8b0d2f6a1c3e5b7d9f0a2c4e6b8d0f1a3c5e7b9d0fa1c0",
+    "prefix": "ps_workspace_",
+    "last4": "a1c0",
+    "isPrimary": false,
+    "createdAt": "2026-10-28T10:02:40.000Z"
+  }
+}
+```
+
+The raw `key` is shown **this one time only**. The key is recorded as created by you, so it is revoked if you are removed from the workspace. A workspace holds up to **50** workspace keys; over that, **409 `WORKSPACE_KEY_LIMIT_REACHED`** with `limit`.
+
+### Revoke a named key
+
+`DELETE https://pilotstatus.com.br/v1/workspaces/{workspaceId}/api-keys/{keyId}` — **Owner or Admin**. Answers `{ "id": "…", "revokedAt": "…" }`. The key stops working on the next request.
+
+- **The primary key cannot be revoked** (**409 `PRIMARY_KEY_NOT_REVOCABLE`**): the in-app AI agent uses it. Rotate it instead with `POST /v1/api-keys/regenerate`, sending your account key and `x-workspace-id` (Owner role). Only the primary changes; named keys keep working.
+- An id that is not a workspace key of this workspace gets **404 `API_KEY_NOT_FOUND`**. Number keys are managed on [`/v1/api-keys`](/api/api-keys).
+
+## Errors
+
+| Status | `code` | Where | What happened |
+| --- | --- | --- | --- |
+| `400` | `NAME_REQUIRED` | `POST` | `name` missing or blank. |
+| `400` | `NAME_TOO_LONG` | `POST` | `name` longer than 60 characters. `maxLength` says the limit. |
+| `400` | `UNKNOWN_FIELDS` | `POST` | Fields other than `name`. `unknownFields` names them. |
+| `401` | — | all | Missing, invalid or revoked key. |
+| `403` | `ACCOUNT_KEY_REQUIRED` | all | The credential is not an account key. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | `…/{workspaceId}/…` | You are not an active member of that workspace, or it does not exist. |
+| `403` | `PERMISSION_DENIED` | `…/{workspaceId}/…` | Your role there is below Admin. |
+| `404` | `API_KEY_NOT_FOUND` | `DELETE` | No workspace key with that id in that workspace. |
+| `409` | `WORKSPACE_LIMIT_REACHED` | `POST /v1/workspaces` | You already own as many workspaces as your limit. `limit` says how many. |
+| `409` | `WORKSPACE_KEY_LIMIT_REACHED` | `POST …/api-keys` | The workspace already has 50 workspace keys. |
+| `409` | `PRIMARY_KEY_NOT_REVOCABLE` | `DELETE` | The id is the primary key. |
+| `500` | — | all | Unexpected failure (`Internal server error`). |
