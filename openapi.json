@@ -191,6 +191,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "numberId": "cmm0abc123",
                   "instance": {
                     "id": "num_01HZX...",
                     "number": "5511999999999",
@@ -201,7 +202,36 @@
                   },
                   "qrcodeBase64": "data:image/png;base64,iVBORw0KGgo...",
                   "pairingCode": "ABCD-1234",
-                  "linkedApiKeyId": "key_01HZX..."
+                  "linkedApiKeyId": null
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "numberId": {
+                      "type": "string",
+                      "description": "The number id — the same `id` as `GET /v1/numbers`, the one `DELETE /v1/numbers/{id}` takes and the webhooks' `data.numberId`. Not the same as `instance.id` (the instance id, unchanged)."
+                    },
+                    "instance": {
+                      "type": "object",
+                      "description": "The created instance. Unchanged; `instance.id` is the instance id."
+                    },
+                    "qrcodeBase64": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "pairingCode": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "linkedApiKeyId": {
+                      "type": "null",
+                      "description": "Always `null` (key linking was retired)."
+                    }
+                  }
                 }
               }
             }
@@ -3432,7 +3462,7 @@
     "/v1/billing/checkout": {
       "post": {
         "summary": "Wallet top-up (card or Pix) / add a card",
-        "description": "Tops up the pre-paid wallet or saves a card — nothing is charged until a person pays. purpose:\"wallet_topup\" (requires amount > 0, in the account currency) with method \"card\" (default) returns a hosted Stripe `url`; with method \"pix\" (BRL only) returns `orderId` and `pix { transactionId, copyPaste, qrCode, expiresAt }` — the Pix expires in 1 hour. Follow the order with `GET /v1/billing/topups/{orderId}`. purpose:\"add_card\" returns a hosted page to save a card on the workspace, which then backs the wallet on every charge. Account-level action: requires a TENANT-scoped key (403 NUMBER_SCOPE_NOT_ALLOWED for a number key); Owner only with an account key or OAuth token.\n\n**Requires a tenant-scoped key** — a workspace key, or an account key with `x-workspace-id`.",
+        "description": "Tops up the pre-paid wallet or saves a card — nothing is charged until a person pays. purpose:\"wallet_topup\" (requires amount > 0, in the account currency) with method \"card\" (default) returns a hosted Stripe `url`; with method \"pix\" (BRL only) returns `orderId` and `pix { transactionId, copyPaste, qrCode, expiresAt }` — the Pix expires in 1 hour. Follow the order with `GET /v1/billing/topups/{orderId}`. purpose:\"add_card\" returns a hosted page to save a card on the workspace, which then backs the wallet on every charge. Account-level action: requires a TENANT-scoped key (403 NUMBER_SCOPE_NOT_ALLOWED for a number key); Owner only with an account key or OAuth token.\n\n**Requires a tenant-scoped key** — a workspace key, or an account key with `x-workspace-id`.\n\nErrors are bilingual (`English | Português`) since 2026-10-29: `INVALID_PURPOSE`, `INVALID_AMOUNT`, `NO_BILLING_EMAIL` (400) and `CHECKOUT_FAILED` (500) used to be English only. Codes and statuses did not change — branch on `code`.",
         "tags": [
           "Billing"
         ],
@@ -3554,6 +3584,27 @@
                       "error": "The request body is not valid JSON | O corpo da requisição não é um JSON válido",
                       "code": "INVALID_BODY"
                     }
+                  },
+                  "invalidPurpose": {
+                    "summary": "Unknown purpose",
+                    "value": {
+                      "error": "purpose must be 'wallet_topup' or 'add_card'. | purpose deve ser 'wallet_topup' ou 'add_card'.",
+                      "code": "INVALID_PURPOSE"
+                    }
+                  },
+                  "invalidAmount": {
+                    "summary": "Amount not positive",
+                    "value": {
+                      "error": "amount must be a positive number. | amount deve ser um número positivo.",
+                      "code": "INVALID_AMOUNT"
+                    }
+                  },
+                  "noBillingEmail": {
+                    "summary": "No billing e-mail (card)",
+                    "value": {
+                      "error": "This workspace has no billing e-mail on file. | Este workspace não tem e-mail de cobrança cadastrado.",
+                      "code": "NO_BILLING_EMAIL"
+                    }
                   }
                 }
               }
@@ -3619,6 +3670,28 @@
                 },
                 "example": {
                   "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`CHECKOUT_FAILED` — unexpected failure creating the checkout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Failed to create the checkout session. | Não foi possível criar a sessão de pagamento.",
+                  "code": "CHECKOUT_FAILED"
                 }
               }
             }
@@ -18806,6 +18879,20 @@
                           }
                         }
                       }
+                    },
+                    "price": {
+                      "type": "number",
+                      "example": 33.9,
+                      "description": "Monthly price of ONE new line for this workspace, shown before the purchase. Honors the workspace's own phone line price set by the Pilot Status team; it is the same amount `POST /v1/phone-lines` charges."
+                    },
+                    "currency": {
+                      "type": "string",
+                      "enum": [
+                        "BRL",
+                        "USD"
+                      ],
+                      "example": "BRL",
+                      "description": "The workspace's currency — the currency of `price` and of the purchase."
                     }
                   }
                 },
@@ -18821,7 +18908,9 @@
                       "number": "551148637201",
                       "display": "(11) 4863-7201"
                     }
-                  ]
+                  ],
+                  "price": 33.9,
+                  "currency": "BRL"
                 }
               }
             }
@@ -26488,6 +26577,27 @@
                           "createdAt": {
                             "type": "string",
                             "format": "date-time"
+                          },
+                          "sharedCard": {
+                            "type": "object",
+                            "description": "Whether the workspace is linked to a shared (reserve) card, and to which source workspace.",
+                            "properties": {
+                              "linked": {
+                                "type": "boolean",
+                                "description": "`true` when the workspace falls back to the reserve card of `sourceWorkspaceId`."
+                              },
+                              "sourceWorkspaceId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "The workspace whose saved card backs this one; `null` when not linked."
+                              }
+                            },
+                            "required": [
+                              "linked",
+                              "sourceWorkspaceId"
+                            ]
                           }
                         }
                       }
@@ -26501,7 +26611,11 @@
                       "name": "Bakery Downtown",
                       "role": "OWNER",
                       "plan": "PAY_AS_YOU_GO",
-                      "createdAt": "2026-10-28T09:15:00.000Z"
+                      "createdAt": "2026-10-28T09:15:00.000Z",
+                      "sharedCard": {
+                        "linked": true,
+                        "sourceWorkspaceId": "cmh2a1b2c0001ws8example7k"
+                      }
                     }
                   ]
                 }
@@ -26563,7 +26677,7 @@
       },
       "post": {
         "summary": "Create a workspace",
-        "description": "Creates a workspace owned by the account key's user and mints its PRIMARY workspace key, returned **only in this response**. A regular user's workspace is born on Free; a reseller's (marked by the Pilot Status team) on Pay As You Go, billed from the wallet, with the reseller's prices and, when linked, the reseller's shared card. Each user owns up to 10 workspaces by default (`409 WORKSPACE_LIMIT_REACHED`, with `limit`). `name` is the only accepted field. If the key cannot be minted the answer is still `201` with `apiKey: null` — rotate the primary with `POST /v1/api-keys/regenerate` (account key + `x-workspace-id`). Not idempotent: two calls create two workspaces.\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
+        "description": "Creates a workspace owned by the account key's user and mints its PRIMARY workspace key, returned **only in this response**. A regular user's workspace is born on Free; a reseller's (marked by the Pilot Status team) on Pay As You Go, billed from the wallet, with the reseller's prices. Each user owns up to 10 workspaces by default (`409 WORKSPACE_LIMIT_REACHED`, with `limit`). `shareCard: true` links the new workspace to your reserve card (the shared card whose source workspace the Pilot Status team configured for you); `false` or ABSENT means NOT shared. **Behavior change (2026-10-29):** before, a reseller's workspace inherited the reserve card automatically. With `shareCard: true` the card is checked first and, on `409 SHARED_CARD_NOT_CONFIGURED`, `SOURCE_ARCHIVED` or `NO_SHARED_OWNER`, no workspace is created. `name` and `shareCard` are the only accepted fields. If the key cannot be minted the answer is still `201` with `apiKey: null` — rotate the primary with `POST /v1/api-keys/regenerate` (account key + `x-workspace-id`). Not idempotent: two calls create two workspaces.\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
         "tags": [
           "Workspace"
         ],
@@ -26579,6 +26693,12 @@
                     "type": "string",
                     "description": "1 to 60 characters, after trimming.",
                     "example": "Bakery Downtown"
+                  },
+                  "shareCard": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "`true` links the new workspace to your reserve card (shared card). `false` or absent: not shared. Must be a JSON boolean (`400 INVALID_SHARE_CARD` otherwise).",
+                    "example": true
                   }
                 },
                 "required": [
@@ -26608,6 +26728,10 @@
                     "last4": "3b5d",
                     "isPrimary": true,
                     "createdAt": "2026-10-28T09:15:00.000Z"
+                  },
+                  "sharedCard": {
+                    "linked": true,
+                    "sourceWorkspaceId": "cmh2a1b2c0001ws8example7k"
                   }
                 }
               }
@@ -26622,7 +26746,7 @@
             }
           },
           "400": {
-            "description": "`NAME_REQUIRED`, `NAME_TOO_LONG` (`maxLength`) or `UNKNOWN_FIELDS` (`unknownFields`)",
+            "description": "`UNKNOWN_FIELDS` (`unknownFields`), `INVALID_SHARE_CARD` (`shareCard` not a boolean), `NAME_REQUIRED` or `NAME_TOO_LONG` (`maxLength`) — checked in this order",
             "content": {
               "application/json": {
                 "schema": {
@@ -26687,7 +26811,7 @@
             }
           },
           "409": {
-            "description": "You already own as many workspaces as your limit",
+            "description": "`WORKSPACE_LIMIT_REACHED` (`limit`); with `shareCard: true`, also `SHARED_CARD_NOT_CONFIGURED`, `SOURCE_ARCHIVED` or `NO_SHARED_OWNER`. In every case no workspace is created",
             "content": {
               "application/json": {
                 "schema": {
@@ -26700,7 +26824,8 @@
                       "type": "string"
                     },
                     "limit": {
-                      "type": "integer"
+                      "type": "integer",
+                      "description": "Only on `WORKSPACE_LIMIT_REACHED`."
                     }
                   }
                 },
@@ -27112,6 +27237,379 @@
                 "example": {
                   "error": "The primary workspace key cannot be revoked; rotate it with POST /v1/api-keys/regenerate | A chave principal do workspace não pode ser revogada; gere uma nova com POST /v1/api-keys/regenerate",
                   "code": "PRIMARY_KEY_NOT_REVOCABLE"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspaceId}/shared-card": {
+      "put": {
+        "summary": "Link the shared card",
+        "description": "Links your reserve card (shared card) to `{workspaceId}`: when the workspace's own wallet does not cover a platform charge (renewal, extra numbers, phone lines) and it has no card of its own, your card pays it. The source is the workspace the Pilot Status team configured as your reserve card. No body. Owner of `{workspaceId}` only. Idempotent: already linked to the same source → `200` with `changed: false`. On a change, the workspace's History records **Backup card linked** (no e-mail).\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
+        "tags": [
+          "Workspace"
+        ],
+        "operationId": "put_workspaces_shared_card",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace id, from `GET /v1/workspaces`.",
+            "example": "cmh2a9z8y0002ws8example1q"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Linked (or already linked: `changed: false`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "sharedCard": {
+                      "type": "object",
+                      "description": "Whether the workspace is linked to a shared (reserve) card, and to which source workspace.",
+                      "properties": {
+                        "linked": {
+                          "type": "boolean",
+                          "description": "`true` when the workspace falls back to the reserve card of `sourceWorkspaceId`."
+                        },
+                        "sourceWorkspaceId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "The workspace whose saved card backs this one; `null` when not linked."
+                        }
+                      },
+                      "required": [
+                        "linked",
+                        "sourceWorkspaceId"
+                      ]
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "`false` when the workspace was already in the requested state: nothing was recorded."
+                    }
+                  }
+                },
+                "example": {
+                  "workspaceId": "cmh2a9z8y0002ws8example1q",
+                  "sharedCard": {
+                    "linked": true,
+                    "sourceWorkspaceId": "cmh2a1b2c0001ws8example7k"
+                  },
+                  "changed": true
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            }
+          },
+          "400": {
+            "description": "`UNKNOWN_FIELDS` (the endpoint takes no body fields) or `SELF_SOURCE` (`{workspaceId}` is the source workspace)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "unknownFields": {
+                    "summary": "A field was sent",
+                    "value": {
+                      "error": "This endpoint takes no body fields | Este endpoint não aceita campos no corpo",
+                      "code": "UNKNOWN_FIELDS"
+                    }
+                  },
+                  "selfSource": {
+                    "summary": "Workspace is the source",
+                    "value": {
+                      "error": "A workspace cannot use its own card as a shared card | Um workspace não pode usar o próprio cartão como cartão compartilhado",
+                      "code": "SELF_SOURCE"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or revoked API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Invalid API key"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an account key (`ACCOUNT_KEY_REQUIRED`), not an active member of the workspace or the workspace does not exist / is archived (`WORKSPACE_MEMBERSHIP_REQUIRED`), or a role below Owner (`PERMISSION_DENIED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This endpoint requires an account API key (ps_account_…), created in Profile → API. Workspace keys, number keys and OAuth tokens cannot use it | Este endpoint exige uma API key de conta (ps_account_…), criada em Perfil → API. Chaves de workspace, de número e tokens OAuth não podem usá-lo",
+                  "code": "ACCOUNT_KEY_REQUIRED"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`SHARED_CARD_NOT_CONFIGURED`, `SOURCE_ARCHIVED` or `NO_SHARED_OWNER` — nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "notConfigured": {
+                    "summary": "No reserve card configured",
+                    "value": {
+                      "error": "No reserve card is configured for your user | Nenhum cartão de reserva está configurado para o seu usuário",
+                      "code": "SHARED_CARD_NOT_CONFIGURED"
+                    }
+                  },
+                  "sourceArchived": {
+                    "summary": "Source archived",
+                    "value": {
+                      "error": "Source workspace is archived | O workspace de origem está arquivado",
+                      "code": "SOURCE_ARCHIVED"
+                    }
+                  },
+                  "noSharedOwner": {
+                    "summary": "Not an owner of the source",
+                    "value": {
+                      "error": "You are not an active owner of the source workspace | Você não é dono ativo do workspace de origem",
+                      "code": "NO_SHARED_OWNER"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Unlink the shared card",
+        "description": "Unlinks the reserve card from `{workspaceId}`: from then on your card no longer pays that customer's renewals, and a failed renewal suspends only that workspace. No body. Owner of `{workspaceId}` only. Idempotent: not linked → `200` with `changed: false`. On a change, the workspace's History records **Backup card unlinked** (no e-mail).\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
+        "tags": [
+          "Workspace"
+        ],
+        "operationId": "delete_workspaces_shared_card",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace id, from `GET /v1/workspaces`.",
+            "example": "cmh2a9z8y0002ws8example1q"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unlinked (or was not linked: `changed: false`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "sharedCard": {
+                      "type": "object",
+                      "description": "Whether the workspace is linked to a shared (reserve) card, and to which source workspace.",
+                      "properties": {
+                        "linked": {
+                          "type": "boolean",
+                          "description": "`true` when the workspace falls back to the reserve card of `sourceWorkspaceId`."
+                        },
+                        "sourceWorkspaceId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "The workspace whose saved card backs this one; `null` when not linked."
+                        }
+                      },
+                      "required": [
+                        "linked",
+                        "sourceWorkspaceId"
+                      ]
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "`false` when the workspace was already in the requested state: nothing was recorded."
+                    }
+                  }
+                },
+                "example": {
+                  "workspaceId": "cmh2a9z8y0002ws8example1q",
+                  "sharedCard": {
+                    "linked": false,
+                    "sourceWorkspaceId": null
+                  },
+                  "changed": true
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            }
+          },
+          "400": {
+            "description": "`UNKNOWN_FIELDS` — the endpoint takes no body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "unknownFields": {
+                    "summary": "A field was sent",
+                    "value": {
+                      "error": "This endpoint takes no body fields | Este endpoint não aceita campos no corpo",
+                      "code": "UNKNOWN_FIELDS"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or revoked API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Invalid API key"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an account key (`ACCOUNT_KEY_REQUIRED`), not an active member of the workspace or the workspace does not exist / is archived (`WORKSPACE_MEMBERSHIP_REQUIRED`), or a role below Owner (`PERMISSION_DENIED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This endpoint requires an account API key (ps_account_…), created in Profile → API. Workspace keys, number keys and OAuth tokens cannot use it | Este endpoint exige uma API key de conta (ps_account_…), criada em Perfil → API. Chaves de workspace, de número e tokens OAuth não podem usá-lo",
+                  "code": "ACCOUNT_KEY_REQUIRED"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`NO_SHARED_OWNER` — the workspace is linked to a source you are not an active Owner of",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "noSharedOwner": {
+                    "summary": "Not an owner of the source",
+                    "value": {
+                      "error": "You are not an active owner of the source workspace | Você não é dono ativo do workspace de origem",
+                      "code": "NO_SHARED_OWNER"
+                    }
+                  }
                 }
               }
             }
