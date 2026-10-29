@@ -126,6 +126,34 @@ app.listen(3000);
 
 The wallet is credited **once**, whether by your `sync` or by our own notification from Stripe. To learn about it on your side without polling, subscribe a [workspace webhook](/api/workspace-webhooks) to `wallet.topup_paid`: it fires once per credited top-up, for Pix and card alike.
 
+## Browser error but charged
+
+`stripe.confirmPayment` can come back with a **network error even when Stripe has already charged the card** — the connection dropped after the charge and before the answer reached the browser. This happened in production on 2026-10-29.
+
+**Never show "payment failed" on that error alone.** For an `error` of type `api_connection_error` (or any error that is not a card decline), check with the server before telling the customer anything:
+
+1. Poll [`POST /v1/billing/payment-intents/{paymentIntentId}/sync`](#3-your-server-sync-and-react) — or `GET /v1/billing/topups/{orderId}` with the `orderId` from step 1 — every 2–3 seconds for about **30 seconds**.
+2. Stop as soon as `sync` answers `orderStatus: "COMPLETED"` (or the top-up answers `status: "paid"`): the payment went through.
+3. If it is still pending after ~30 s, tell the customer the payment is **being confirmed**, not that it failed. `sync` answering `orderStatus: "FAILED"` (or the top-up `status: "failed"`) is the only failure you show.
+
+```javascript
+async function waitForPaid(paymentIntentId, { timeoutMs = 30000, everyMs = 2500 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = await fetch(`/billing/topup/${paymentIntentId}/sync`, { method: "POST" });
+    const { orderStatus } = await r.json();
+    if (orderStatus === "COMPLETED") return "paid";
+    if (orderStatus === "FAILED") return "failed";
+    await new Promise((resolve) => setTimeout(resolve, everyMs));
+  }
+  return "pending"; // show "confirming", never "failed"
+}
+```
+
+<Warning>
+  The source of truth is the [`wallet.topup_paid`](/api/workspace-webhooks) workspace webhook: it fires once per credited top-up, even when the browser never learned the payment succeeded. Reconcile your records from it, not from what the browser saw.
+</Warning>
+
 ## Saving a card without charging
 
 The flow is the same with a setup intent:
