@@ -217,6 +217,56 @@ Quem decide se um template pode ser editado é a Meta. A regra publicada por ela
 - Um `409` significa que **nada foi removido**: a Meta rejeitou a exclusão (ex.: o system token não tem permissão na WABA), então o template ainda existe na Meta e o nome dele **continua reservado**. O registro local é mantido, e a mensagem nomeia o template e o motivo. Corrija a permissão e tente de novo.
 - Se a Meta informar que o template não existe (um 404 de verdade / "template does not exist"), o registro local obsoleto é removido e você ainda recebe `200 { "deleted": true, "id" }`.
 
+## Insights
+
+`GET /v1/templates/{id}/insights` retorna os números da Meta para um template: quantas mensagens foram enviadas, entregues e lidas, a taxa de leitura, os cliques em botões e uma série dia a dia. `{id}` é o id ou o nome do template, como no `GET /v1/templates/{id}`.
+
+```bash curl
+curl "https://pilotstatus.com.br/v1/templates/boas_vindas/insights?days=7" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+```json Resposta 200
+{
+  "templateId": "tpl_01HZX...",
+  "template": { "name": "boas_vindas", "status": "APPROVED", "category": "UTILITY", "language": "pt_BR", "qualityScore": "GREEN" },
+  "days": 7,
+  "totals": { "sent": 1240, "delivered": 1198, "read": 873 },
+  "readRate": 0.7287,
+  "clicks": [
+    { "type": "quick_reply_button", "buttonContent": "Quero saber mais", "count": 112 },
+    { "type": "url_button", "buttonContent": "https://exemplo.com.br/oferta", "count": 64 }
+  ],
+  "daily": [
+    { "date": "2026-10-22", "sent": 180, "delivered": 175, "read": 130 },
+    { "date": "2026-10-28", "sent": 175, "delivered": 167, "read": 120 }
+  ]
+}
+```
+
+- **`days`** é opcional: `7`, `30` ou `90`, padrão `30`. Qualquer outro valor retorna `400 INVALID_DAYS`.
+- **`readRate`** é `read / delivered`, de 0 a 1. É `null` quando nada foi entregue na janela.
+- **`daily`** tem uma entrada por dia (UTC), do mais antigo ao mais recente. **`clicks`** tem uma entrada por botão, com o tipo e o texto do botão informados pela Meta.
+- **Os dados vêm das análises de templates da Meta:** granularidade diária, só os últimos 90 dias, e os dias mais recentes ainda podem estar sendo preenchidos — os números de ontem e de hoje podem crescer numa chamada posterior.
+- **A primeira chamada** para uma conta do WhatsApp Business pode ativar os insights de templates dessa conta na Meta. Você não precisa fazer nada no Gerenciador de Negócios da Meta.
+- **Acesso:** o mesmo do `GET /v1/templates/{id}` — permissão `templates:read`, e uma chave com escopo de número só vê templates dos seus números.
+- **SDKs e integrações:** `client.templates.insights(id, { days })` (Node), `client.templates.insights(id, days=30)` (Python), a ferramenta MCP `templates_insights` e o nó do n8n **Template → Get Insights**.
+
+| HTTP | `code` | Quando |
+| --- | --- | --- |
+| `400` | `INVALID_DAYS` | `days` não é `7`, `30` nem `90` |
+| `404` | `TEMPLATE_NOT_FOUND` | O template não existe no escopo da chave |
+| `409` | `TEMPLATE_NOT_ON_META` | O template nunca foi enviado à Meta (template só da Pilot Status) |
+| `409` | `NO_META_NUMBER_FOR_WABA` | Nenhum número Meta conectado pertence à conta do WhatsApp Business do template |
+| `422` | `TEMPLATE_INSIGHTS_UNAVAILABLE_SMB` | O número está no app WhatsApp Business (coexistência) — a Meta não fornece insights de templates para essas contas |
+| `422` | `META_REJECTED` | A Meta recusou o pedido — a metade em inglês de `error` traz a mensagem da própria Meta |
+| `503` | `META_UNAVAILABLE` | A Meta está temporariamente indisponível — tente de novo mais tarde |
+| `500` | `INTERNAL_ERROR` | Erro inesperado no servidor |
+
+Os erros usam o formato padrão `{ "error": "<English> | <Português>", "code": "..." }`, por exemplo `{ "error": "days must be one of 7, 30 or 90. | days deve ser 7, 30 ou 90.", "code": "INVALID_DAYS" }`.
+
+Se nem a Meta nem a cópia local informarem o status ou o idioma do template, `template.status` vem como `"UNKNOWN"` e `template.language` como `""`.
+
 ## Templates de carrossel
 
 Um **template de carrossel** é um template aprovado cujo `body` carrega um bloco `carousel`: uma faixa rolável na horizontal com **2 a 10** cartões de mídia, cada um com sua própria imagem, linha de texto e botões. Templates de carrossel são **exclusivos de números Meta** e sempre da categoria **MARKETING** — em um número Meta a criação é enviada à Meta como um componente `CAROUSEL`.
