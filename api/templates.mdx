@@ -217,6 +217,53 @@ Meta decides whether a template can be edited. Its published rule is that an app
 - A `409` means **nothing was removed**: Meta rejected the deletion (e.g. the system token lacks permission on the WABA), so the template still exists on Meta and its name **stays reserved**. The local row is kept, and the message names the template and the reason. Fix the underlying permission and retry.
 - If Meta reports the template does not exist (a genuine 404 / "template does not exist"), the stale local row is removed and you still get `200 { "deleted": true, "id" }`.
 
+## Insights
+
+`GET /v1/templates/{id}/insights` returns Meta's numbers for a template: how many messages were sent, delivered and read, the read rate, button clicks and a day-by-day series. `{id}` is the template id or name, as in `GET /v1/templates/{id}`.
+
+```bash curl
+curl "https://pilotstatus.com.br/v1/templates/boas_vindas/insights?days=7" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+```json Response 200
+{
+  "templateId": "tpl_01HZX...",
+  "template": { "name": "boas_vindas", "status": "APPROVED", "category": "UTILITY", "language": "pt_BR", "qualityScore": "GREEN" },
+  "days": 7,
+  "totals": { "sent": 1240, "delivered": 1198, "read": 873 },
+  "readRate": 0.7287,
+  "clicks": [
+    { "type": "quick_reply_button", "buttonContent": "Quero saber mais", "count": 112 },
+    { "type": "url_button", "buttonContent": "https://exemplo.com.br/oferta", "count": 64 }
+  ],
+  "daily": [
+    { "date": "2026-10-22", "sent": 180, "delivered": 175, "read": 130 },
+    { "date": "2026-10-28", "sent": 175, "delivered": 167, "read": 120 }
+  ]
+}
+```
+
+- **`days`** is optional: `7`, `30` or `90`, default `30`. Any other value returns `400 INVALID_DAYS`.
+- **`readRate`** is `read / delivered`, from 0 to 1. It is `null` when nothing was delivered in the window.
+- **`daily`** has one entry per day (UTC), oldest first. **`clicks`** has one entry per button, with Meta's button type and text.
+- **The data comes from Meta's template analytics:** daily granularity, only the last 90 days, and the most recent days may still be filling in — numbers for yesterday and today can grow on a later call.
+- **The first call** for a WhatsApp Business Account may turn on template insights for that account at Meta. You do not need to do anything in Meta Business Manager.
+- **Access:** the same as `GET /v1/templates/{id}` — permission `templates:read`, and a number-scoped key only sees templates of its numbers.
+- **SDKs and integrations:** `client.templates.insights(id, { days })` (Node), `client.templates.insights(id, days=30)` (Python), the MCP tool `templates_insights` and the n8n node **Template → Get Insights**.
+
+| HTTP | `code` | When |
+| --- | --- | --- |
+| `400` | `INVALID_DAYS` | `days` is not `7`, `30` or `90` |
+| `404` | `TEMPLATE_NOT_FOUND` | The template does not exist in the key's scope |
+| `409` | `TEMPLATE_NOT_ON_META` | The template was never submitted to Meta (a Pilot Status-only template) |
+| `409` | `NO_META_NUMBER_FOR_WABA` | No connected Meta number belongs to the template's WhatsApp Business Account |
+| `422` | `TEMPLATE_INSIGHTS_UNAVAILABLE_SMB` | The number is on the WhatsApp Business App (coexistence) — Meta does not provide template insights for these accounts |
+| `422` | `META_REJECTED` | Meta refused the request |
+| `503` | `META_UNAVAILABLE` | Meta is temporarily unavailable — retry later |
+
+Errors use the standard shape `{ "error": "<English> | <Português>", "code": "..." }`.
+
 ## Carousel templates
 
 A **carousel template** is an approved template whose `body` carries a `carousel` block: a horizontally-scrollable strip of **2–10** media cards, each with its own image, body line and buttons. Carousel templates are **Meta-only** and always category **MARKETING** — on a Meta number the create is submitted to Meta as a `CAROUSEL` component.
