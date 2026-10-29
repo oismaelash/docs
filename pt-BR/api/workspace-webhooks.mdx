@@ -1,0 +1,123 @@
+---
+title: "Webhooks do workspace — Eventos das linhas telefônicas e da carteira"
+sidebarTitle: "Webhooks do workspace"
+description: "Webhooks para eventos do workspace, e não de um número: todos os eventos das linhas telefônicas mais o wallet.topup_paid, a recarga paga da carteira. Gerencie pelo painel ou por /v1/workspace/webhooks; os eventos da carteira são opt-in, e \"*\" cobre só os eventos das linhas."
+mode: "wide"
+---
+
+# Webhooks do workspace
+
+Alguns eventos pertencem ao **workspace**, não a um número de WhatsApp: uma linha telefônica foi renovada, uma recarga da carteira foi paga. Eles vão para os **webhooks do workspace**, um cadastro separado dos [webhooks de número](/pt-BR/api/webhooks/configure).
+
+Os webhooks do workspace são o **mesmo cadastro** dos [webhooks das linhas](/pt-BR/api/phone-lines/webhooks), vistos de uma superfície mais ampla:
+
+- **`/v1/phone-lines/webhooks`** aceita só os eventos das linhas.
+- **`/v1/workspace/webhooks`** aceita todos os eventos do workspace: os eventos das linhas **e** o `wallet.topup_paid`. Ele lista todos os webhooks do workspace, inclusive os criados pela superfície das linhas.
+
+Mesmo segredo de assinatura (`plwh_`), mesma assinatura, mesmas retentativas e o mesmo log de entregas nas duas. Um webhook de número — mesmo inscrito em `"*"` — nunca recebe estes eventos.
+
+## Configurar
+
+- **No painel:** **Chaves do workspace** (`/workspace-api-keys`), seção **Webhooks do workspace**, como **Proprietário ou Administrador**. Os webhooks que escutam só eventos das linhas também aparecem em **Linhas → Webhooks das linhas**.
+- **Pela API:** os endpoints abaixo, com uma [chave de workspace](/pt-BR/api/key-types#chaves-de-workspace) ou uma [chave de conta](/pt-BR/api/key-types#chaves-de-conta) com `x-workspace-id`. Uma chave de número recebe **403 `NUMBER_SCOPE_NOT_ALLOWED`**. Com uma chave de conta ou um token OAuth/MCP, o usuário precisa ser **Proprietário ou Administrador** (caso contrário, `403 PERMISSION_DENIED`).
+
+| Método | Endpoint | Descrição |
+| --- | --- | --- |
+| `GET` | `/v1/workspace/webhooks` | Lista os webhooks do workspace (do mais antigo para o mais novo) e o catálogo de eventos. |
+| `POST` | `/v1/workspace/webhooks` | Cria um webhook. Devolve o segredo de assinatura, **só desta vez**. |
+| `GET` | `/v1/workspace/webhooks/{id}` | Obtém um webhook. |
+| `PATCH` | `/v1/workspace/webhooks/{id}` | Edita nome, URL e eventos, ou pausa e retoma (`active`). |
+| `DELETE` | `/v1/workspace/webhooks/{id}` | Exclui um webhook e o histórico de entregas dele. |
+| `GET` | `/v1/workspace/webhooks/{id}/deliveries` | As entregas mais recentes, da mais nova para a mais antiga, sem o corpo. `limit` de 1 a 200, padrão 50. |
+| `GET` | `/v1/workspace/webhooks/{id}/deliveries/{deliveryId}` | Uma entrega completa, com o corpo exato que foi enviado e assinado. |
+
+Os formatos de requisição e resposta, as regras de nome e URL e os erros são os mesmos de [`/v1/phone-lines/webhooks`](/pt-BR/api/phone-lines/webhooks#pela-api) — só mudam os eventos aceitos.
+
+### Criar um webhook para recargas pagas
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/workspace/webhooks" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_your_key" \
+  -d '{
+    "name": "Billing",
+    "url": "https://hooks.example.com/pilot/wallet",
+    "events": ["wallet.topup_paid"]
+  }'
+```
+
+```json Resposta (201)
+{
+  "webhook": {
+    "id": "cmh2c1d2e0001wh8example4f",
+    "name": "Billing",
+    "url": "https://hooks.example.com/pilot/wallet",
+    "events": ["wallet.topup_paid"],
+    "active": true,
+    "secret": "plwh_7a1c3e5b9d0f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e1b3d5f",
+    "createdAt": "2026-10-28T11:00:00.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+<Warning>
+  **O `secret` vem só nesta resposta** e não tem rotação. Guarde-o antes de qualquer outra coisa. Criar não é idempotente: um `POST` repetido cria um segundo webhook.
+</Warning>
+
+### `"*"` e os eventos da carteira
+
+**`"*"` significa todos os eventos das linhas, e só eles.** Os eventos da carteira são **opt-in**: um webhook recebe `wallet.topup_paid` só se o nomear em `events`. Assim, um webhook criado para as linhas com `"*"` não passa a receber eventos de dinheiro que nunca pediu.
+
+Para receber tudo, liste os dois: `["*", "wallet.topup_paid"]`.
+
+<Note>
+  Um webhook que nomeia um evento da carteira também pode ser lido, excluído e ter as entregas listadas em `/v1/phone-lines/webhooks`, mas **editá-lo ali é recusado** com **400 `INVALID_WEBHOOK`**, porque aquela superfície não conhece os eventos da carteira. Edite-o em `/v1/workspace/webhooks`.
+</Note>
+
+## Eventos
+
+| Evento | Quando dispara |
+| --- | --- |
+| `phone_line.*` | Os eventos das linhas telefônicas. Veja [Webhooks das linhas → Eventos](/pt-BR/api/phone-lines/webhooks#eventos). |
+| `wallet.topup_paid` | Um pedido de recarga da carteira foi pago e o dinheiro está na carteira. |
+
+## Evento de recarga paga
+
+Dispara **uma vez por pedido de recarga creditado**, em todos os caminhos: Pix, a página hospedada do Stripe, um [checkout transparente](/pt-BR/guides/transparent-checkout) e também as recargas feitas pelo painel. Uma reentrega ou uma confirmação duplicada do provedor de pagamento não o dispara de novo. Cobranças feitas pela plataforma — renovações, números, linhas — e ajustes de saldo feitos pela equipe da Pilot Status não o disparam.
+
+```json
+{
+  "id": "cmh2c3f4g0002dl8example6h",
+  "event": "wallet.topup_paid",
+  "createdAt": "2026-10-28T10:17:42.000Z",
+  "data": {
+    "orderId": "cmh2b4k1n0001to8example2p",
+    "amount": 100,
+    "currency": "BRL",
+    "method": "pix",
+    "provider": "PAGUE_DEV",
+    "paidAt": "2026-10-28T10:17:42.000Z",
+    "balance": 162.4
+  }
+}
+```
+
+| Campo | Descrição |
+| --- | --- |
+| `orderId` | O pedido de recarga — o `orderId` devolvido por `POST /v1/billing/checkout` ou `POST /v1/billing/payment-intents`. Leia-o com [`GET /v1/billing/topups/{id}`](/pt-BR/api/wallet-and-card#acompanhar-uma-recarga). |
+| `amount` | O valor creditado, em `currency`. |
+| `currency` | `BRL` ou `USD`. |
+| `method` | `pix` ou `card`. |
+| `provider` | `PAGUE_DEV` (Pix) ou `STRIPE` (cartão). |
+| `paidAt` | ISO 8601 — quando a carteira foi creditada. |
+| `balance` | O saldo da carteira logo depois deste crédito. |
+
+**Identifique a recarga pelo `orderId`**, e deduplique as entregas pelo `id` do envelope (enviado também no header `Idempotency-Key`). O webhook só é enviado depois que o pedido é concluído: quando ele chega, o [`GET /v1/billing/topups/{id}`](/pt-BR/api/wallet-and-card#acompanhar-uma-recarga) já responde `status: "paid"`.
+
+## Payload, assinatura e retentativas
+
+Toda entrega é um `POST` com `{ id, event, createdAt, data }`, assinado com `x-pilot-status-signature` (HMAC-SHA256 em hexadecimal do corpo bruto, com o segredo do webhook), com `Idempotency-Key` igual ao `id`. Cada entrega tem 6 tentativas no total, ao longo de cerca de 15 minutos. Código de verificação e detalhes: [Webhooks das linhas → Verificar a assinatura](/pt-BR/api/phone-lines/webhooks#verificar-a-assinatura) e [Entrega e retentativas](/pt-BR/api/phone-lines/webhooks#entrega-e-retentativas).

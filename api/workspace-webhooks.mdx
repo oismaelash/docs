@@ -1,0 +1,123 @@
+---
+title: "Workspace Webhooks — Phone Line and Wallet Events"
+sidebarTitle: "Workspace webhooks"
+description: "Webhooks for events of the workspace rather than of a number: every phone-line event plus wallet.topup_paid, the paid wallet top-up. Manage them in the dashboard or through /v1/workspace/webhooks; wallet events are opt-in, and \"*\" covers phone-line events only."
+mode: "wide"
+---
+
+# Workspace webhooks
+
+Some events belong to the **workspace**, not to a WhatsApp number: a phone line was renewed, a wallet top-up was paid. They go to **workspace webhooks**, a registry separate from the [number webhooks](/api/webhooks/configure).
+
+Workspace webhooks are the **same registry** as the [phone line webhooks](/api/phone-lines/webhooks), seen from a wider surface:
+
+- **`/v1/phone-lines/webhooks`** accepts only phone-line events.
+- **`/v1/workspace/webhooks`** accepts every workspace event: the phone-line events **and** `wallet.topup_paid`. It lists every webhook of the workspace, including the ones created on the phone-lines surface.
+
+Same signing secret (`plwh_`), same signature, same retries and the same delivery log on both. A number webhook — even one subscribed to `"*"` — never receives these events.
+
+## Configure
+
+- **In the dashboard:** **Workspace keys** (`/workspace-api-keys`), section **Workspace webhooks**, as an **Owner or Admin**. Webhooks listening only to phone-line events also show under **Phone lines → Line webhooks**.
+- **Through the API:** the endpoints below, with a [workspace key](/api/key-types#workspace-keys) or an [account key](/api/key-types#account-keys) with `x-workspace-id`. A number key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. With an account key or an OAuth/MCP token, the user must be an **Owner or Admin** (`403 PERMISSION_DENIED` otherwise).
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/v1/workspace/webhooks` | List the workspace webhooks (oldest first) and the event catalogue. |
+| `POST` | `/v1/workspace/webhooks` | Create a webhook. Returns the signing secret, **this one time only**. |
+| `GET` | `/v1/workspace/webhooks/{id}` | Get a webhook. |
+| `PATCH` | `/v1/workspace/webhooks/{id}` | Edit name, URL and events, or pause and resume (`active`). |
+| `DELETE` | `/v1/workspace/webhooks/{id}` | Delete a webhook and its delivery history. |
+| `GET` | `/v1/workspace/webhooks/{id}/deliveries` | The latest deliveries, newest first, without their body. `limit` from 1 to 200, default 50. |
+| `GET` | `/v1/workspace/webhooks/{id}/deliveries/{deliveryId}` | One delivery in full, with the exact body that was sent and signed. |
+
+The request and response shapes, the name and URL rules and the errors are the same as on [`/v1/phone-lines/webhooks`](/api/phone-lines/webhooks#through-the-api) — only the accepted events differ.
+
+### Create a webhook for paid top-ups
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/workspace/webhooks" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_your_key" \
+  -d '{
+    "name": "Billing",
+    "url": "https://hooks.example.com/pilot/wallet",
+    "events": ["wallet.topup_paid"]
+  }'
+```
+
+```json Response (201)
+{
+  "webhook": {
+    "id": "cmh2c1d2e0001wh8example4f",
+    "name": "Billing",
+    "url": "https://hooks.example.com/pilot/wallet",
+    "events": ["wallet.topup_paid"],
+    "active": true,
+    "secret": "plwh_7a1c3e5b9d0f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e1b3d5f",
+    "createdAt": "2026-10-28T11:00:00.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+<Warning>
+  **The `secret` comes only in this response** and has no rotation. Store it before anything else. Creating is not idempotent: a repeated `POST` creates a second webhook.
+</Warning>
+
+### `"*"` and wallet events
+
+**`"*"` means every phone-line event, and only those.** Wallet events are **opt-in**: a webhook receives `wallet.topup_paid` only if it names it in `events`. That keeps a webhook created for phone lines with `"*"` from starting to receive money events it never asked for.
+
+To get everything, list both: `["*", "wallet.topup_paid"]`.
+
+<Note>
+  A webhook that names a wallet event can be read, deleted and have its deliveries listed on `/v1/phone-lines/webhooks` too, but **editing it there is refused** with **400 `INVALID_WEBHOOK`**, because that surface does not know wallet events. Edit it on `/v1/workspace/webhooks`.
+</Note>
+
+## Events
+
+| Event | When it fires |
+| --- | --- |
+| `phone_line.*` | The phone-line events. See [Phone line webhooks → Events](/api/phone-lines/webhooks#events). |
+| `wallet.topup_paid` | A wallet top-up order was paid and the money is in the wallet. |
+
+## Paid top-up event
+
+Fires **once per credited top-up order**, on every rail: Pix, the hosted Stripe page, a [transparent checkout](/guides/transparent-checkout), and also top-ups made in the dashboard. A redelivery or a duplicate confirmation from the payment provider does not fire it again. Charges made by the platform — renewals, numbers, lines — and balance adjustments by the Pilot Status team do not fire it.
+
+```json
+{
+  "id": "cmh2c3f4g0002dl8example6h",
+  "event": "wallet.topup_paid",
+  "createdAt": "2026-10-28T10:17:42.000Z",
+  "data": {
+    "orderId": "cmh2b4k1n0001to8example2p",
+    "amount": 100,
+    "currency": "BRL",
+    "method": "pix",
+    "provider": "PAGUE_DEV",
+    "paidAt": "2026-10-28T10:17:42.000Z",
+    "balance": 162.4
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `orderId` | The top-up order — the `orderId` returned by `POST /v1/billing/checkout` or `POST /v1/billing/payment-intents`. Read it with [`GET /v1/billing/topups/{id}`](/api/wallet-and-card#follow-a-top-up). |
+| `amount` | The amount credited, in `currency`. |
+| `currency` | `BRL` or `USD`. |
+| `method` | `pix` or `card`. |
+| `provider` | `PAGUE_DEV` (Pix) or `STRIPE` (card). |
+| `paidAt` | ISO 8601 — when the wallet was credited. |
+| `balance` | The wallet balance right after this credit. |
+
+**Match the top-up by `orderId`**, and dedupe deliveries by the envelope's `id` (also sent as the `Idempotency-Key` header). The webhook is sent only after the order is completed: when it arrives, [`GET /v1/billing/topups/{id}`](/api/wallet-and-card#follow-a-top-up) already answers `status: "paid"`.
+
+## Payload, signature and retries
+
+Every delivery is a `POST` with `{ id, event, createdAt, data }`, signed with `x-pilot-status-signature` (hex HMAC-SHA256 of the raw body with the webhook's secret), with `Idempotency-Key` equal to `id`. Each delivery gets 6 attempts in total, over about 15 minutes. Verification code and details: [Phone line webhooks → Verify the signature](/api/phone-lines/webhooks#verify-the-signature) and [Delivery and retries](/api/phone-lines/webhooks#delivery-and-retries).

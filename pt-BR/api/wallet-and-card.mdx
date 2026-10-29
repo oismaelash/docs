@@ -1,0 +1,312 @@
+---
+title: "Carteira e cartão pela API — Recarga com Pix, Stripe Elements e cartão salvo"
+sidebarTitle: "Carteira e cartão"
+description: "Recarregue a carteira pré-paga e salve o cartão do workspace pela API pública: Pix com código copia e cola e QR, Checkout hospedado do Stripe ou sua própria página de pagamento com Stripe Elements (setup intents e payment intents com sync e Idempotency-Key), além do endpoint de status da recarga."
+mode: "wide"
+---
+
+# Carteira e cartão pela API
+
+Toda cobrança de um workspace — números, plano, linhas telefônicas — sai primeiro da **carteira pré-paga** e, no que a carteira não cobrir, do **cartão salvo**. Estes endpoints permitem que o seu sistema abasteça os dois sem mandar o seu cliente ao painel:
+
+| Método | Endpoint | O que faz |
+| --- | --- | --- |
+| `POST` | `/v1/billing/checkout` | Recarga da carteira por **Pix** ou pelo **Checkout hospedado do Stripe**, ou uma página hospedada para **salvar um cartão**. |
+| `GET` | `/v1/billing/topups/{id}` | Status de um pedido de recarga: `pending`, `paid`, `expired` ou `failed`. |
+| `POST` | `/v1/billing/card/setup-intent` | Inicia o salvamento de um cartão na **sua própria página** com Stripe Elements. |
+| `POST` | `/v1/billing/card/setup-intent/{id}/sync` | Torna o cartão confirmado o cartão salvo do workspace na hora. |
+| `POST` | `/v1/billing/payment-intents` | Inicia uma recarga com cartão na **sua própria página** com Stripe Elements. |
+| `POST` | `/v1/billing/payment-intents/{id}/sync` | Credita na hora a recarga confirmada. |
+
+**Nenhuma destas chamadas cobra nada.** Elas só emitem a cobrança: uma pessoa paga o Pix, preenche a página hospedada ou confirma o cartão na sua página. A carteira é creditada quando o pagamento é confirmado, e o webhook [`wallet.topup_paid`](/pt-BR/api/workspace-webhooks#evento-de-recarga-paga) avisa você.
+
+<Tip>
+  Para montar um checkout dentro do seu próprio app — campos do cartão na sua página, sem redirecionamento — siga o guia [Checkout transparente com Stripe Elements](/pt-BR/guides/transparent-checkout).
+</Tip>
+
+## Credenciais e permissões
+
+- **Uma credencial de nível de workspace:** uma [chave de workspace](/pt-BR/api/key-types#chaves-de-workspace), ou uma [chave de conta](/pt-BR/api/key-types#chaves-de-conta) com `x-workspace-id`. Uma chave de número, ou um token limitado a alguns números, recebe **403 `NUMBER_SCOPE_NOT_ALLOWED`**.
+- **Papel**, com uma chave de conta ou um token OAuth/MCP: recarregar e salvar cartão são ações do **Proprietário**; ler o status de uma recarga (`GET /v1/billing/topups/{id}`) exige **Proprietário ou Administrador**. Um papel abaixo disso recebe **403 `PERMISSION_DENIED`**. Uma chave de workspace não tem usuário, então nenhum papel se aplica.
+- **Moeda:** o valor é sempre na moeda do workspace (`BRL` ou `USD`). Não dá para escolher por requisição.
+
+## Recarga com Pix
+
+O Pix está disponível em workspaces em **BRL**. `POST /v1/billing/checkout` com `purpose: "wallet_topup"`, `method: "pix"` e o `amount`:
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_your_key" \
+  -d '{ "purpose": "wallet_topup", "method": "pix", "amount": 100 }'
+```
+
+```json Resposta (200)
+{
+  "purpose": "wallet_topup",
+  "method": "pix",
+  "orderId": "cmh2b4k1n0001to8example2p",
+  "status": "pending",
+  "amount": 100,
+  "currency": "BRL",
+  "pix": {
+    "transactionId": "pdev_tx_8f2a1c",
+    "copyPaste": "00020126580014br.gov.bcb.pix0136…6304ABCD",
+    "qrCode": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA…",
+    "expiresAt": "2026-10-28T11:15:00.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+- Mostre `pix.copyPaste` (o código copia e cola) e/ou `pix.qrCode` (a imagem do QR code como URI `data:image/png;base64,…`, pronta para um `<img src>`; pode vir `null`) para quem vai pagar. Um Pix **expira em 1 hora** (`pix.expiresAt`).
+- Guarde o `orderId`: é com ele que você acompanha o pagamento em [`GET /v1/billing/topups/{id}`](#acompanhar-uma-recarga) e é ele que o webhook `wallet.topup_paid` informa.
+- **Um workspace em USD recebe 400 `PIX_NOT_ELIGIBLE`.** Use cartão.
+- `successUrl` e `cancelUrl` não fazem sentido num Pix: enviá-los dá **400 `FIELD_NOT_APPLICABLE`**.
+
+## Recarga ou cartão numa página hospedada do Stripe
+
+O mesmo endpoint, com `method: "card"` (o padrão), responde com uma `url` para uma página hospedada pelo Stripe. Abra-a no navegador de quem vai pagar.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_your_key" \
+  -d '{
+    "purpose": "wallet_topup",
+    "amount": 50,
+    "successUrl": "https://app.example.com/billing?paid=1",
+    "cancelUrl": "https://app.example.com/billing"
+  }'
+```
+
+```json Resposta (200)
+{
+  "url": "https://checkout.stripe.com/c/pay/cs_live_…",
+  "purpose": "wallet_topup",
+  "method": "card",
+  "orderId": "cmh2b5m2p0002to8example6r",
+  "amount": 50,
+  "currency": "BRL"
+}
+```
+
+Com `purpose: "add_card"`, a página **salva um cartão** no workspace, sem cobrar nada. A resposta é `{ "url": "…", "purpose": "add_card" }`. O cartão passa a ser o cartão salvo do workspace, em qualquer plano: ele cobre a carteira em toda cobrança — números, renovações do plano e linhas telefônicas. `method` não se aplica ao `add_card` (**400 `FIELD_NOT_APPLICABLE`**).
+
+<ParamField body="purpose" type="string" required>
+  `wallet_topup` ou `add_card`. Qualquer outro valor → **400 `INVALID_PURPOSE`**.
+</ParamField>
+
+<ParamField body="amount" type="number">
+  Obrigatório no `wallet_topup`: um número positivo na moeda do workspace. Ausente, zero, negativo ou não numérico → **400 `INVALID_AMOUNT`**.
+</ParamField>
+
+<ParamField body="method" type="string" default="card">
+  `card` ou `pix`, só no `wallet_topup`. Qualquer outro valor → **400 `INVALID_METHOD`**.
+</ParamField>
+
+<ParamField body="successUrl" type="string">
+  Só cartão. Para onde a página hospedada leva o navegador depois de pagar ou salvar.
+</ParamField>
+
+<ParamField body="cancelUrl" type="string">
+  Só cartão. Para onde a página hospedada leva o navegador quando a pessoa desiste.
+</ParamField>
+
+Os caminhos hospedados com cartão exigem um e-mail de cobrança no workspace; sem ele, a resposta é **400 `NO_BILLING_EMAIL`**. O Pix não exige.
+
+## Acompanhar uma recarga
+
+`GET https://pilotstatus.com.br/v1/billing/topups/{id}`, com o `orderId` de qualquer recarga — Pix, página hospedada ou Elements.
+
+```json Resposta (200)
+{
+  "topup": {
+    "id": "cmh2b4k1n0001to8example2p",
+    "status": "paid",
+    "amount": 100,
+    "currency": "BRL",
+    "method": "pix",
+    "provider": "PAGUE_DEV",
+    "createdAt": "2026-10-28T10:15:00.000Z",
+    "paidAt": "2026-10-28T10:17:42.000Z",
+    "expiresAt": "2026-10-28T11:15:00.000Z"
+  }
+}
+```
+
+| Campo | Descrição |
+| --- | --- |
+| `status` | `pending`, `paid`, `expired` (um Pix não pago dentro da sua hora) ou `failed`. |
+| `method` | `pix` ou `card`. |
+| `provider` | `PAGUE_DEV` para Pix, `STRIPE` para cartão. |
+| `paidAt` | Quando a carteira foi creditada, ou `null`. |
+| `expiresAt` | Só Pix: uma hora depois de `createdAt`. `null` para cartão. |
+
+- **Só lê.** Não chama nenhum provedor de pagamento, então consultar repetidamente é barato. O pedido passa a `paid` quando o provedor de pagamento nos confirma o pagamento.
+- **Prefira o webhook a consultar em loop.** O [`wallet.topup_paid`](/pt-BR/api/workspace-webhooks#evento-de-recarga-paga) chega uma vez por pedido creditado. Ele só é enviado depois que o pedido é concluído, então, quando chega, este endpoint já responde `paid`.
+- Um id de outro workspace recebe o mesmo **404 `TOPUP_NOT_FOUND`** de um id que não existe.
+
+## Cartão na sua própria página (Stripe Elements)
+
+Com estes endpoints, os campos do cartão ficam na **sua** página, feitos com o [Payment Element](https://docs.stripe.com/payments/payment-element) do Stripe. O seu servidor nos pede um intent; a sua página o confirma com o Stripe.js; o seu servidor chama o `sync`.
+
+<Warning>
+  **Os dados do cartão nunca chegam à Pilot Status, e também nunca devem chegar ao seu servidor.** O número do cartão vai do navegador de quem paga direto para o Stripe, dentro dos campos do próprio Stripe. A sua API key fica no seu servidor. Isso mantém os dados de cartão fora dos seus sistemas e dos nossos, e é o que mantém pequeno o seu escopo de PCI DSS. Nunca colete números de cartão em campos seus e nunca os envie para nenhuma API.
+</Warning>
+
+Os quatro endpoints:
+
+- respondem com `Cache-Control: no-store` — um `clientSecret` permite a quem o tiver confirmar o intent, então não o guarde em cache nem em log;
+- devolvem a `publishableKey` com que carregar o Stripe.js, então você não precisa de uma conta Stripe própria;
+- respondem **503 `PAYMENTS_NOT_CONFIGURED`** quando pagamentos com cartão não estão disponíveis do nosso lado. Ofereça Pix (BRL) ou tente de novo mais tarde.
+
+### Salvar um cartão
+
+`POST https://pilotstatus.com.br/v1/billing/card/setup-intent`, **sem corpo** (ou `{}`). Qualquer campo dá **400 `UNKNOWN_FIELDS`**.
+
+```json Resposta (200)
+{
+  "clientSecret": "seti_1QabcDEF_secret_xyz",
+  "setupIntentId": "seti_1QabcDEF",
+  "publishableKey": "pk_live_…"
+}
+```
+
+Na sua página, monte o Payment Element com o `clientSecret` e chame `stripe.confirmSetup(...)`. Quando ele resolver, chame:
+
+`POST https://pilotstatus.com.br/v1/billing/card/setup-intent/{setupIntentId}/sync`
+
+```json Resposta (200)
+{
+  "setupIntentId": "seti_1QabcDEF",
+  "status": "succeeded",
+  "saved": true,
+  "card": { "brand": "visa", "last4": "4242", "expMonth": 12, "expYear": 2030 }
+}
+```
+
+- O `sync` lê o intent no Stripe; ele nunca confia na sua página. Quando o Stripe diz `succeeded`, o cartão passa a ser o cartão salvo do workspace, substituindo o anterior.
+- **Ainda não concluído** (`processing`, `requires_action`, …): `saved: false`, `card: null` e o `status` do Stripe. Chame de novo mais tarde, ou conte com o nosso lado: o Stripe também nos avisa, e o cartão é salvo nesse momento.
+- **Idempotente.** Chamar de novo, ou concorrer com o nosso próprio aviso do Stripe, salva o cartão uma vez só.
+- Um id que não é `seti_…` → **400 `INVALID_SETUP_INTENT_ID`**. Um id que não criamos para este workspace → **404 `SETUP_INTENT_NOT_FOUND`**.
+
+### Recarga com cartão
+
+`POST https://pilotstatus.com.br/v1/billing/payment-intents`
+
+<ParamField body="purpose" type="string" required>
+  `wallet_topup`, o único valor hoje. Qualquer outro → **400 `INVALID_PURPOSE`**.
+</ParamField>
+
+<ParamField body="amount" type="number" required>
+  Um número positivo na moeda do workspace, arredondado para centavos. Não positivo → **400 `INVALID_AMOUNT`**. Abaixo do mínimo de cobrança com cartão do Stripe → **400 `AMOUNT_TOO_SMALL`**.
+</ParamField>
+
+<ParamField body="saveCard" type="boolean" default="false">
+  `true` também salva este cartão como o cartão do workspace quando o pagamento for concluído. Se não for booleano → **400 `INVALID_FIELD_TYPE`**.
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string">
+  Opcional. Até 255 caracteres, sem caracteres de controle (caso contrário, **400 `IDEMPOTENCY_KEY_INVALID`**). Veja abaixo.
+</ParamField>
+
+Qualquer outro campo do corpo dá **400 `UNKNOWN_FIELDS`**.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/billing/payment-intents" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_your_key" \
+  -H "Idempotency-Key: topup-customer-42-2026-10-28" \
+  -d '{ "purpose": "wallet_topup", "amount": 150, "saveCard": true }'
+```
+
+```json Resposta (200)
+{
+  "clientSecret": "pi_3QabcDEF_secret_xyz",
+  "paymentIntentId": "pi_3QabcDEF",
+  "orderId": "cmh2b7q4s0003to8example8t",
+  "amount": 150,
+  "currency": "BRL",
+  "publishableKey": "pk_live_…"
+}
+```
+
+</CodeGroup>
+
+Na sua página, chame `stripe.confirmPayment(...)` com o `clientSecret`. Quando ele resolver, chame:
+
+`POST https://pilotstatus.com.br/v1/billing/payment-intents/{paymentIntentId}/sync`
+
+```json Resposta (200)
+{
+  "paymentIntentId": "pi_3QabcDEF",
+  "status": "succeeded",
+  "amount": 150,
+  "currency": "BRL",
+  "orderId": "cmh2b7q4s0003to8example8t",
+  "orderStatus": "COMPLETED",
+  "credited": true,
+  "balance": 212.4,
+  "cardSaved": true
+}
+```
+
+| Campo | Descrição |
+| --- | --- |
+| `status` | O status do pagamento no Stripe. |
+| `orderStatus` | `COMPLETED` quando a carteira já tem o dinheiro; `PENDING` enquanto o Stripe não confirmou; `FAILED` quando o pagamento foi cancelado; `UNCHANGED` quando foi cancelado e o pedido já estava fechado. |
+| `credited` | `true` só na chamada que creditou a carteira. Uma repetição, ou uma chamada depois de o nosso aviso do Stripe já ter creditado, responde `false` com `orderStatus: "COMPLETED"`. |
+| `balance` | O saldo da carteira logo depois deste crédito, ou `null` quando esta chamada não creditou. |
+| `cardSaved` | `true` quando `saveCard` foi enviado e o cartão agora é o cartão do workspace. |
+
+- **O `sync` nunca cobra.** Ele não é o `/confirm` do Stripe: só reconcilia o que o Stripe já decidiu. A carteira é creditada **exatamente uma vez**, pelo `sync` ou pelo nosso aviso do Stripe, o que chegar primeiro.
+- Um id que não é `pi_…` → **400 `INVALID_PAYMENT_INTENT_ID`**. Um id que não criamos como recarga deste workspace → **404 `PAYMENT_INTENT_NOT_FOUND`**.
+- O `orderId` funciona em [`GET /v1/billing/topups/{id}`](#acompanhar-uma-recarga) como o de qualquer outra recarga.
+
+### Idempotency-Key
+
+Envie-a no `POST /v1/billing/payment-intents` para que uma nova tentativa depois de um timeout não abra um segundo pedido.
+
+- **Ausente:** toda chamada cria um novo pedido e um novo payment intent.
+- **Mesma chave e mesmo corpo em até 24 horas:** você recebe o **mesmo** `orderId`, `paymentIntentId` e `clientSecret`, com o header `Idempotent-Replayed: true`. Nada novo é criado.
+- **Mesma chave, corpo diferente:** **409 `IDEMPOTENCY_KEY_REUSED`**. Use uma chave nova.
+- **Mesma chave enquanto a primeira chamada ainda está rodando:** **409 `IDEMPOTENCY_KEY_IN_USE`**. Tente de novo em instantes.
+- As chaves são por workspace. Uma chamada que falhou na validação, ou falhou depois, não gasta a chave.
+
+## Erros
+
+Os erros trazem um `code` e uma mensagem `error`; os endpoints mais novos a dão como `English | Português`, e os endpoints do Elements põem detalhes extras em `details` (por exemplo, `details.unknownFields`).
+
+| Status | `code` | Onde | O que aconteceu |
+| --- | --- | --- | --- |
+| `400` | `INVALID_PURPOSE` | `checkout`, `payment-intents` | `purpose` ausente ou não aceito. |
+| `400` | `INVALID_AMOUNT` | `checkout`, `payment-intents` | `amount` ausente, zero, negativo ou não numérico. |
+| `400` | `INVALID_METHOD` | `checkout` | `method` não é `card` nem `pix`. |
+| `400` | `FIELD_NOT_APPLICABLE` | `checkout` | `method` no `add_card`, ou `successUrl`/`cancelUrl` num Pix. |
+| `400` | `PIX_NOT_ELIGIBLE` | `checkout` | Pix num workspace que não cobra em BRL. |
+| `400` | `NO_BILLING_EMAIL` | `checkout` (cartão) | O workspace não tem e-mail de cobrança. |
+| `400` | `INVALID_BODY` | Elements | O corpo não é um objeto JSON. |
+| `400` | `UNKNOWN_FIELDS` | Elements | Um campo que o endpoint não aceita. |
+| `400` | `INVALID_FIELD_TYPE` | `payment-intents` | `saveCard` não é booleano. |
+| `400` | `AMOUNT_TOO_SMALL` | `payment-intents` | Abaixo do mínimo de cobrança com cartão do Stripe. |
+| `400` | `IDEMPOTENCY_KEY_INVALID` | `payment-intents` | Chave com mais de 255 caracteres ou com caracteres de controle. |
+| `400` | `INVALID_SETUP_INTENT_ID` / `INVALID_PAYMENT_INTENT_ID` | `…/sync` | O id não é um `seti_…` / `pi_…`. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | todos | Uma chave de número, ou um token limitado a alguns números. |
+| `403` | `PERMISSION_DENIED` | todos | O papel do usuário não permite. |
+| `404` | `TOPUP_NOT_FOUND` | `topups/{id}` | Nenhum pedido de recarga com esse id neste workspace. |
+| `404` | `SETUP_INTENT_NOT_FOUND` / `PAYMENT_INTENT_NOT_FOUND` | `…/sync` | Não é um intent que criamos para este workspace. |
+| `409` | `IDEMPOTENCY_KEY_REUSED` / `IDEMPOTENCY_KEY_IN_USE` | `payment-intents` | Veja [Idempotency-Key](#idempotency-key). |
+| `500` | `CHECKOUT_FAILED` / `TOPUP_READ_FAILED` / `BILLING_REQUEST_FAILED` | — | Falha inesperada. |
+| `503` | `PAYMENTS_NOT_CONFIGURED` | Elements | Pagamentos com cartão não estão disponíveis no momento. |
+
+Os erros de autenticação (`401`, `400 WORKSPACE_ID_REQUIRED`, `403 WORKSPACE_MEMBERSHIP_REQUIRED`) estão descritos em [Tipos de chave](/pt-BR/api/key-types#erros).
+
+## Revendedores e o cartão compartilhado
+
+O workspace de um cliente final de um revendedor pode ser vinculado, pela equipe da Pilot Status, ao **cartão compartilhado** do revendedor. Esse cartão só cobre as **cobranças que a plataforma faz** — renovações, números, linhas — quando a carteira do workspace não as cobre e o workspace não tem cartão próprio. Ele **nunca** é usado por estes endpoints: uma recarga aqui é paga por quem paga o Pix, a página hospedada ou o seu formulário do Elements, e o `add_card` ou um setup intent salvam um cartão no próprio workspace, que passa a ter prioridade sobre o compartilhado. Veja [Cobrança para revendedores](/pt-BR/reseller-billing#cartão-compartilhado).

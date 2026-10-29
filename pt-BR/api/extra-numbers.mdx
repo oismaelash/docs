@@ -13,10 +13,10 @@ Compre um número extra de WhatsApp pela API pública com uma chave **de escopo 
   ![Aba de cartão salvo na página de Planos](/images/dashboard/saved-card.png)
 </Frame>
 
-A cobrança roda sobre uma **carteira pré-paga**: primeiro os créditos, depois o cartão salvo para o que os créditos não cobrirem. Os créditos podem ser recarregados pelo painel (cartão ou PIX) ou pela API (só cartão).
+A cobrança roda sobre uma **carteira pré-paga**: primeiro os créditos, depois o cartão salvo para o que os créditos não cobrirem. Os créditos podem ser recarregados pelo painel ou pela API, por cartão ou Pix (workspaces em BRL). Veja [Carteira e cartão pela API](/pt-BR/api/wallet-and-card).
 
 <Note>
-  Chaves de escopo de número recebem **403** — use a chave de escopo do tenant (painel **Profile → API**).
+  Chaves de escopo de número recebem **403** — use uma [chave de workspace](/pt-BR/api/key-types#chaves-de-workspace) (painel **Chaves do workspace**), ou uma chave de conta com `x-workspace-id`.
 </Note>
 
 ## Cobrado na primeira conexão
@@ -139,7 +139,7 @@ Comportamento:
 - **Corpo malformado é recusado, não vira padrão.** Um corpo que não é JSON válido — por exemplo, um `{"quantity": 3` truncado — retorna **`400 INVALID_BODY`** antes de qualquer prévia, cobrança ou mudança de plano: nada é cobrado. Só um corpo **vazio** (nenhum byte) significa `quantity = 1`. Veja [Corpo JSON malformado](/pt-BR/api/overview#corpo-json-malformado).
 - **Já no On Demand / pago.** Comprar incrementa sua contagem de números; as mensagens permanecem ilimitadas.
 - **Pagamento.** O custo proporcional é cobrado **na hora**: primeiro da sua **carteira pré-paga**, e o que sobrar vai no cartão salvo (painel **Plans → Cartão**, ou `POST /v1/billing/checkout` com `add_card`). Uma compra bem-sucedida responde `{ "success": true, "charged": true, … }` — `creditsUsed` e `cardCharged` mostram como a cobrança foi dividida, e `paidExtraNumbers` já inclui a vaga nova, então você pode criar o número com `POST /v1/numbers` em seguida. **Esta rota nunca devolve link de checkout** (não existe `checkoutUrl`, e `charged` nunca vem `false`): sem créditos suficientes e sem cartão salvo, ela retorna **`402 INSUFFICIENT_FUNDS`** — nada é cobrado, e os créditos que ela chegou a usar são devolvidos. Recarregue ou salve um cartão e tente de novo.
-- **A recorrência mensal sai da carteira**, não de uma assinatura à parte. A cada ciclo, `paidExtraNumbers × preço unitário` é debitado dos créditos, com o cartão salvo como reserva. Recarregue com `POST /v1/billing/checkout` (`wallet_topup`, só cartão) ou pelo painel, onde o PIX também está disponível — dá para rodar On Demand só com créditos de PIX recarregados pelo painel, sem nunca salvar um cartão.
+- **A recorrência mensal sai da carteira**, não de uma assinatura à parte. A cada ciclo, `paidExtraNumbers × preço unitário` é debitado dos créditos, com o cartão salvo como reserva. Recarregue pelo painel ou pela API, por cartão ou Pix ([Carteira e cartão pela API](/pt-BR/api/wallet-and-card)) — dá para rodar On Demand só com créditos de Pix, sem nunca salvar um cartão.
 
 <Note>
   Mantenha créditos ou um cartão salvo disponíveis. Se a cobrança de um ciclo não puder ser paga, você tem **2 dias** para adicionar créditos ou atualizar o cartão antes que seus números parem de **enviar** (o recebimento continua). Adicionar saldo reativa na hora.
@@ -151,7 +151,7 @@ Comportamento:
 
 | Status | `code` | O que aconteceu | O que fazer |
 | --- | --- | --- | --- |
-| `402` | `INSUFFICIENT_FUNDS` | A carteira não cobriu a cobrança **e** não há cartão salvo utilizável. É o único caso que realmente é sobre o seu saldo. | Recarregue a carteira (`POST /v1/billing/checkout`, `wallet_topup` — só cartão; PIX só pelo painel) ou salve um cartão. Depois tente de novo. |
+| `402` | `INSUFFICIENT_FUNDS` | A carteira não cobriu a cobrança **e** não há cartão salvo utilizável. É o único caso que realmente é sobre o seu saldo. | Recarregue a carteira (`POST /v1/billing/checkout`, `wallet_topup` com `method` `card` ou `pix`) ou salve um cartão. Depois tente de novo. |
 | `402` | `PAYMENT_FAILED` | A cobrança foi tentada e não se concluiu. Ou o emissor recusou o cartão, ou a tentativa falhou por um motivo que não conseguimos atribuir ao seu saldo. | Corrija ou troque o cartão e tente de novo. Adicionar créditos também pode resolver, já que os créditos são gastos antes do cartão. |
 | `502` | `PAYMENT_PROVIDER_ERROR` | Não conseguimos obter resposta do processador de pagamento. | **Confira seu extrato antes de tentar de novo** — veja o aviso abaixo. |
 
@@ -252,7 +252,7 @@ curl -X DELETE "https://pilotstatus.com.br/v1/subscription/extra-numbers/schedul
 
 ## POST /v1/billing/checkout — Recarga de carteira / adicionar um cartão
 
-Gera uma URL de checkout hospedada para ações de cobrança:
+Recarrega a carteira (página de cartão hospedada ou Pix) ou abre uma página hospedada para salvar um cartão. A referência completa — Pix, status da recarga e um formulário de cartão na sua própria página com Stripe Elements — está em [Carteira e cartão pela API](/pt-BR/api/wallet-and-card).
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
@@ -261,16 +261,17 @@ curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
   -d '{ "purpose": "wallet_topup", "amount": 50 }'
 ```
 
-- `purpose: "wallet_topup"` — recarrega a carteira pré-paga. **Só cartão**: o checkout hospedado do Stripe não oferece PIX — recarga por PIX existe só pelo painel (contas em BRL). **Exige `amount`**: um número positivo, na moeda da sua conta (a da carteira, `BRL` ou `USD` — não dá para escolher por requisição). Ausente, zero, negativo ou não numérico retorna `400` `{ "error": "amount must be a positive number", "code": "INVALID_AMOUNT" }`.
-- `purpose: "add_card"` — salva um cartão para futuras cobranças On Demand.
+- `purpose: "wallet_topup"` — recarrega a carteira pré-paga. `method: "card"` (padrão) devolve uma página hospedada do Stripe; `method: "pix"` (só workspaces em BRL) devolve um código Pix copia e cola e um QR code — veja [Recarga com Pix](/pt-BR/api/wallet-and-card#recarga-com-pix). **Exige `amount`**: um número positivo, na moeda da sua conta (a da carteira, `BRL` ou `USD` — não dá para escolher por requisição). Ausente, zero, negativo ou não numérico retorna `400` `{ "error": "amount must be a positive number", "code": "INVALID_AMOUNT" }`.
+- `purpose: "add_card"` — salva um cartão no workspace, em qualquer plano. Ele serve de reserva da carteira em toda cobrança: números extras, renovações do plano (inclusive Pay As You Go) e linhas telefônicas.
 - Um corpo que não é JSON válido retorna `400` [`INVALID_BODY`](/pt-BR/api/overview#corpo-json-malformado). Corpo vazio, ou sem um `purpose` conhecido, retorna `400 INVALID_PURPOSE`.
 
-A resposta contém uma `url` para abrir no navegador. No `wallet_topup` ela traz também `orderId`, `amount` e `currency`:
+Com `method: "card"` e com `add_card`, a resposta contém uma `url` para abrir no navegador. No `wallet_topup` ela traz também `method`, `orderId`, `amount` e `currency`; acompanhe o pedido com [`GET /v1/billing/topups/{orderId}`](/pt-BR/api/wallet-and-card#acompanhar-uma-recarga):
 
 ```json
 {
   "url": "https://checkout.stripe.com/c/pay/cs_test_…",
   "purpose": "wallet_topup",
+  "method": "card",
   "orderId": "…",
   "amount": 50,
   "currency": "BRL"

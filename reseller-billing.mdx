@@ -7,7 +7,28 @@ mode: "wide"
 
 If you resell WhatsApp connections or phone lines to your own customers, Pilot Status bills **you**, and you bill your customers. This page explains when each charge happens on our side and what your system must record so both ends match: bill your customer before we bill you, and stop paying for customers who have left.
 
-The full detail of each rule is in [Extra numbers & On Demand](/api/extra-numbers), [Phone line pricing and billing](/phone-lines-pricing) and [Plans](/plans).
+The full detail of each rule is in [Extra numbers & On Demand](/api/extra-numbers), [Phone line pricing and billing](/phone-lines-pricing) and [Plans](/plans). To automate it, see [Key types](/api/key-types), [Create workspaces](/api/workspaces), [Wallet and card via API](/api/wallet-and-card) and [Workspace webhooks](/api/workspace-webhooks).
+
+## One workspace per end customer
+
+**Keep each of your customers in a workspace of their own.** Billing, suspension and the wallet all work per workspace. If every customer shares your workspace, one failed renewal stops all of them at once; with one workspace per customer, a failed renewal suspends **only that customer's numbers**, and the others keep sending.
+
+- **Create the workspaces through the API** with an [account key](/api/key-types#account-keys) (`ps_account_`, in **Profile → API**): [`POST /v1/workspaces`](/api/workspaces#create-a-workspace). You are the Owner of each one, and the response carries the workspace's primary key. Then act in any of them with the same account key and the `x-workspace-id` header.
+- **Once the Pilot Status team marks you as a reseller, every workspace you create is born on Pay As You Go**, billed from the wallet, with **your reseller prices**: the per-number price in your contract and your phone line price. Nothing is charged at creation.
+- **Each workspace has its own wallet, its own saved card and its own renewal date** (one month after it was created). Fund each one with [Pix or card through the API](/api/wallet-and-card), or link your shared card (below).
+- **You can own up to 10 workspaces by default.** Over that, `POST /v1/workspaces` answers `409 WORKSPACE_LIMIT_REACHED` with the `limit`. Ask the Pilot Status team for a higher ceiling.
+- **Workspaces you already had keep their plan.** Moving an existing customer to a workspace of their own means connecting their numbers there: a number cannot move between workspaces.
+
+### Shared card
+
+The Pilot Status team can link **your card** — the card saved on one of your workspaces — as the **shared card** of your customers' workspaces: once it is set on your account, every workspace you create inherits it, and the team can also link it to a workspace one by one. It is a backup, not the main payment method:
+
+- **It pays only what the platform charges**: the monthly renewal, extra numbers, phone line purchases and renewals.
+- **It is used only when the workspace's wallet does not cover the charge and the workspace has no card of its own.** A card saved on the customer's workspace always comes first.
+- **It never pays a top-up.** Nobody in the customer's workspace can spend it on demand: top-ups are paid with Pix, the hosted page or a card typed in at that moment.
+- The link is recorded in the workspace's **History** as **Backup card linked** / **Backup card unlinked**.
+
+If you want a customer's failure to pay to suspend only that customer, **do not rely on the shared card for them**: with it, their renewals are charged to you.
 
 ## WhatsApp connections (numbers)
 
@@ -21,7 +42,7 @@ The full detail of each rule is in [Extra numbers & On Demand](/api/extra-number
 
 ### The monthly renewal
 
-Resellers are usually on the **Pay As You Go** plan: no plan fee, you pay per number. The price per number is the one in your contract.
+Resellers are on the **Pay As You Go** plan: no plan fee, you pay per number. The price per number is the one in your contract, and every workspace you create inherits it.
 
 - **On the renewal day, we charge every number that has ever connected and was not deleted**, including the ones that are disconnected on that day.
 - **Disconnecting does not stop the charge. Only deleting the number does.** A number you delete before the renewal does not enter the next cycle.
@@ -37,10 +58,10 @@ See [Pay As You Go works differently](/api/extra-numbers#pay-as-you-go-works-dif
 
 - **Extra-number charge refused at connection:** the number stays connected, but **sending from it is blocked** (`409 NUMBER_BLOCKED`, `reason: "extra_charge_unpaid"`) and the Owner is notified. Topping up the wallet or saving a card retries the charge on its own. You can also pay right away with **Pay now** on the **Numbers** page, or with [`POST /v1/numbers/{id}/pay`](/api/numbers/pay).
 - **7 days unpaid:** the number is disconnected, and connecting it again counts as a new first connection, charged again. A Meta Cloud API number is never disconnected: it stays blocked for sending until it is paid.
-- **Monthly renewal refused:** there is a **2-day grace period**, with a new attempt every 12 hours. After that, **every number in the workspace stops sending at once**: the API (`422 BILLING_SUSPENDED`), the dashboard chat, Chatwoot and the messages already queued. Numbers stay connected, **receiving keeps working** and inbound webhooks keep arriving. Phone lines are not affected: they have their own billing. Topping up the wallet or saving a card runs the charge again and releases sending.
+- **Monthly renewal refused:** there is a **2-day grace period**, with a new attempt every 12 hours. After that, **every number in that workspace stops sending at once**: the API (`422 BILLING_SUSPENDED`), the dashboard chat, Chatwoot and the messages already queued. Numbers stay connected, **receiving keeps working** and inbound webhooks keep arriving. Phone lines are not affected: they have their own billing. Topping up the wallet or saving a card runs the charge again and releases sending.
 
   <Warning>
-    **What gets suspended is your account, not your customer.** If **your** renewal fails, all your customers stop sending at once. Keep a saved card as a backup.
+    **What gets suspended is the workspace, not one number.** If all your customers share one workspace and its renewal fails, all of them stop sending at once. Keep [one workspace per end customer](#one-workspace-per-end-customer): then a failed renewal suspends only that customer's numbers.
   </Warning>
 - **15 days suspended**, on a plan billed from the wallet: the subscription is cancelled and the workspace goes back to the **Free** plan. The Owner is notified by email and WhatsApp. Numbers are not disconnected, but whatever goes over the Free limits is blocked.
 
@@ -65,8 +86,8 @@ In practice: if your customer paid late, you deleted their number before the ren
 
 ### What your system must record
 
-- **Which customer owns each number**, and the **date of its first connection**. The [`number.connected`](/concepts/webhooks) webhook is the trigger: that is when we start billing you, so that is when you start billing your customer. `number.disconnected` tells you when the number dropped.
-- **Your cycle's renewal date** with Pilot Status. When one of your customers stops paying, **delete their number before that date**. Disconnecting is not enough. If you do nothing, you pay that customer's next month. (Outside Pay As You Go, delete the number **and** schedule the capacity reduction.)
+- **Which workspace belongs to each customer** (its `id`, from `POST /v1/workspaces` or `GET /v1/workspaces`), and **which customer owns each number**, with the **date of its first connection**. The [`number.connected`](/concepts/webhooks) webhook is the trigger: that is when we start billing you, so that is when you start billing your customer. `number.disconnected` tells you when the number dropped.
+- **Each workspace's renewal date** with Pilot Status. When one of your customers stops paying, **delete their number before that date**. Disconnecting is not enough. If you do nothing, you pay that customer's next month. (Outside Pay As You Go, delete the number **and** schedule the capacity reduction.)
 - **A cancellation rule that follows ours.** We do not refund the cycle in progress. If you refund your customer, the difference comes out of your pocket. The paid slot stays yours until the cycle ends: use it for your next customer.
 - **Who pays Meta**, if your customers use the official API: who owns the WhatsApp Business account and which payment method is on it. Put that in your contract with your customer.
 - **Numbers blocked for non-payment:** read `extraChargeUnpaidSince` and `extraChargeDisconnectAt` on `GET /v1/numbers` to know what is blocked and when it will be disconnected. See [Pay extra number](/api/numbers/pay#how-to-know-a-number-is-blocked).
@@ -75,7 +96,7 @@ In practice: if your customer paid late, you deleted their number before the ren
 
 ### When we charge
 
-- **R\$ 33.90 per month, per line** (US\$ 33.90 on dollar workspaces), on any plan, including Free.
+- **R\$ 33,90 per month, per line** (US\$ 33.90 on dollar workspaces), on any plan, including Free — unless the Pilot Status team set **your own phone line price**. Then every workspace you create inherits it, and it is the price of every purchase and of every renewal from the next one on. See [Your own phone line price](/phone-lines-pricing#your-own-phone-line-price).
 - **The purchase charges the whole first month**, with no proration.
 - **Each line renews on the same day of the month it was bought**, independent of the plan's and the numbers' cycle. Five lines bought on different days give five renewal dates.
 - **Lines use the same wallet as the plan and the numbers.** There is no balance reserved per product: whichever charge comes due first uses the balance first.
@@ -98,10 +119,10 @@ In practice: if your customer paid late, you deleted their number before the ren
 - **Which customer owns each line** and its **purchase date**, because it renews monthly on that date.
 - **Bill your customer before the renewal date**, not after. Our grace period is 2 days, and the return is final.
 - **Customer in default:** decide **before the line's anniversary** whether you cancel the line or pay one more month for them.
-- **Useful webhooks** (see [Phone line webhooks](/api/phone-lines/webhooks)): `phone_line.purchased`, `phone_line.renewed`, `phone_line.payment_failed`, `phone_line.suspended`, `phone_line.returned` (with `reason`: `unpaid`, `canceled_by_customer` or `verification_rejected`) and `phone_line.canceled`. Each line also exposes `price`, `currency` and `currentPeriodEnd` through the [phone lines API](/api/phone-lines/overview#pricing-and-payment).
+- **Useful webhooks** (see [Phone line webhooks](/api/phone-lines/webhooks)): `phone_line.purchased`, `phone_line.renewed`, `phone_line.payment_failed`, `phone_line.suspended`, `phone_line.returned` (with `reason`: `unpaid`, `canceled_by_customer` or `verification_rejected`) and `phone_line.canceled`. Each line also exposes `price` (what its next renewal costs), `amountDue` (what paying an overdue line now charges), `currency` and `currentPeriodEnd` through the [phone lines API](/api/phone-lines/list#line-object-fields). The same events reach a [workspace webhook](/api/workspace-webhooks).
 
 ## Balance
 
-- **Keep in the wallet, at least**, the line renewals of the next 7 days **plus** the monthly renewal of your numbers.
-- **Keep a saved card as a backup.** It is what prevents blocked sending and returned lines when the wallet does not cover a charge.
-- The Owner tops up the wallet in **Plans → Wallet**. Through the API, use [`POST /v1/billing/checkout`](/api/extra-numbers).
+- **Keep in each workspace's wallet, at least**, the line renewals of the next 7 days **plus** the monthly renewal of its numbers.
+- **Keep a saved card as a backup** — on the workspace, or your [shared card](#shared-card). It is what prevents blocked sending and returned lines when the wallet does not cover a charge.
+- The Owner tops up the wallet in **Plans → Wallet**. Through the API: Pix or a hosted page with [`POST /v1/billing/checkout`](/api/wallet-and-card#top-up-with-pix), or a checkout inside your own app with [Stripe Elements](/guides/transparent-checkout). [`wallet.topup_paid`](/api/workspace-webhooks#paid-top-up-event) tells you when the money is in, so you can release your customer's service on your side.

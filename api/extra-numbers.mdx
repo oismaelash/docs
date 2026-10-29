@@ -13,10 +13,10 @@ Buy an extra WhatsApp number via the public API with a **tenant-scoped** key. Pr
   ![Saved card tab in the Plans page](/images/dashboard/saved-card.png)
 </Frame>
 
-Billing runs off a **prepaid wallet**: credits first, saved card for whatever the credits do not cover. Credits can be topped up in the dashboard (card or PIX) or through the API (card only).
+Billing runs off a **prepaid wallet**: credits first, saved card for whatever the credits do not cover. Credits can be topped up in the dashboard or through the API, by card or Pix (BRL workspaces). See [Wallet and card via API](/api/wallet-and-card).
 
 <Note>
-  Number-scoped keys get **403** — use the tenant-scoped key (dashboard **Profile → API**).
+  Number-scoped keys get **403** — use a [workspace key](/api/key-types#workspace-keys) (dashboard **Workspace keys**), or an account key with `x-workspace-id`.
 </Note>
 
 ## Charged at the first connection
@@ -139,7 +139,7 @@ Behaviour:
 - **A malformed body is refused, not defaulted.** A body that is not valid JSON — e.g. a truncated `{"quantity": 3` — returns **`400 INVALID_BODY`** before any preview, charge or plan change: nothing is billed. Only an **empty** body (no bytes at all) means `quantity = 1`. See [Malformed JSON body](/api/overview#malformed-json-body).
 - **Already On Demand / paid.** Buying increments your number count; messages stay unlimited.
 - **Payment.** The prorated cost is charged **on the spot**: from your **prepaid wallet** first, then any remainder from your saved card (dashboard **Plans → Cartão**, or `POST /v1/billing/checkout` with `add_card`). A successful purchase answers `{ "success": true, "charged": true, … }` — `creditsUsed` and `cardCharged` show how the charge was split, and `paidExtraNumbers` already includes the new slot, so you can create the number with `POST /v1/numbers` right away. **This route never returns a checkout link** (there is no `checkoutUrl`, and `charged` is never `false`): with neither enough credits nor a saved card it returns **`402 INSUFFICIENT_FUNDS`** — nothing is charged, and any credits it had started to use are put back. Top up or save a card, then retry.
-- **The monthly recurrence comes out of the wallet**, not a separate subscription. Each cycle, `paidExtraNumbers × unit price` is debited from your credits, falling back to your saved card. Top the wallet up with `POST /v1/billing/checkout` (`wallet_topup`, card only) or in the dashboard, where PIX is also available — so you can run On Demand on PIX credits topped up in the dashboard and never save a card.
+- **The monthly recurrence comes out of the wallet**, not a separate subscription. Each cycle, `paidExtraNumbers × unit price` is debited from your credits, falling back to your saved card. Top the wallet up in the dashboard or through the API, by card or Pix ([Wallet and card via API](/api/wallet-and-card)) — so you can run On Demand on Pix credits and never save a card.
 
 <Note>
   Keep either credits or a saved card available. If a cycle's charge cannot be funded, you get **2 days** to add credits or update the card before all your numbers stop **sending** (inbound keeps working). Adding funds reactivates immediately.
@@ -155,7 +155,7 @@ Behaviour:
 
 | Status | `code` | What happened | What to do |
 | --- | --- | --- | --- |
-| `402` | `INSUFFICIENT_FUNDS` | The wallet could not cover the charge **and** there is no usable saved card. This is the only bucket that is genuinely about your balance. | Top the wallet up (`POST /v1/billing/checkout`, `wallet_topup` — card only; PIX only in the dashboard) or save a card. Then retry. |
+| `402` | `INSUFFICIENT_FUNDS` | The wallet could not cover the charge **and** there is no usable saved card. This is the only bucket that is genuinely about your balance. | Top the wallet up (`POST /v1/billing/checkout`, `wallet_topup` with `method` `card` or `pix`) or save a card. Then retry. |
 | `402` | `PAYMENT_FAILED` | The charge was attempted and did not complete. Either the issuer declined the card, or the attempt failed for a reason we cannot attribute to your balance. | Fix or replace the card, then retry. Adding credits may also clear it, since credits are spent before the card. |
 | `502` | `PAYMENT_PROVIDER_ERROR` | We could not get an answer out of the payment processor. | **Check your statement before retrying** — see the note below. |
 
@@ -256,7 +256,7 @@ curl -X DELETE "https://pilotstatus.com.br/v1/subscription/extra-numbers/schedul
 
 ## POST /v1/billing/checkout — Wallet top-up / add a card
 
-Generates a hosted checkout URL for billing actions:
+Tops up the wallet (hosted card page or Pix) or opens a hosted page to save a card. The full reference — Pix, top-up status, and a card form on your own page with Stripe Elements — is in [Wallet and card via API](/api/wallet-and-card).
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
@@ -265,16 +265,17 @@ curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
   -d '{ "purpose": "wallet_topup", "amount": 50 }'
 ```
 
-- `purpose: "wallet_topup"` — top up the prepaid wallet. **Card only**: the hosted Stripe checkout offers no PIX — PIX top-ups exist only in the dashboard (BRL accounts). **Requires `amount`**: a positive number, in your account currency (the wallet's `BRL` or `USD` — it cannot be chosen per request). Missing, zero, negative or non-numeric returns `400` `{ "error": "amount must be a positive number", "code": "INVALID_AMOUNT" }`.
-- `purpose: "add_card"` — save a card for future On Demand charges.
+- `purpose: "wallet_topup"` — top up the prepaid wallet. `method: "card"` (default) returns a hosted Stripe page; `method: "pix"` (BRL workspaces only) returns a Pix copy-and-paste code and QR code instead — see [Top up with Pix](/api/wallet-and-card#top-up-with-pix). **Requires `amount`**: a positive number, in your account currency (the wallet's `BRL` or `USD` — it cannot be chosen per request). Missing, zero, negative or non-numeric returns `400` `{ "error": "amount must be a positive number", "code": "INVALID_AMOUNT" }`.
+- `purpose: "add_card"` — save a card on the workspace, on any plan. It backs the wallet on every charge: extra numbers, plan renewals (Pay As You Go included) and phone lines.
 - A body that is not valid JSON returns `400` [`INVALID_BODY`](/api/overview#malformed-json-body). An empty body, or one without a known `purpose`, returns `400 INVALID_PURPOSE`.
 
-The response contains a `url` to open in the browser. For `wallet_topup` it also carries the `orderId`, `amount` and `currency`:
+With `method: "card"` and with `add_card`, the response contains a `url` to open in the browser. For `wallet_topup` it also carries the `method`, `orderId`, `amount` and `currency`; follow the order with [`GET /v1/billing/topups/{orderId}`](/api/wallet-and-card#follow-a-top-up):
 
 ```json
 {
   "url": "https://checkout.stripe.com/c/pay/cs_test_…",
   "purpose": "wallet_topup",
+  "method": "card",
   "orderId": "…",
   "amount": 50,
   "currency": "BRL"

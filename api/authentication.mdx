@@ -1,7 +1,7 @@
 ---
 title: "API Authentication with x-api-key | Pilot Status"
 sidebarTitle: "Authentication"
-description: "Authenticate with the x-api-key or x-api-key-id header, ps_ key prefix, number-scoped vs tenant-scoped keys, and key rotation."
+description: "Authenticate with the x-api-key or x-api-key-id header, the ps_number_, ps_workspace_ and ps_account_ key prefixes, number-scoped vs tenant-scoped keys, account keys with x-workspace-id, and key rotation."
 mode: "wide"
 ---
 
@@ -18,12 +18,13 @@ Every request to the Pilot Status API requires an API key in one of these header
 
 ## Key prefix
 
-All raw keys use the `ps_` prefix.
+All raw keys start with `ps_`. Keys created from 2026-10-28 on also carry their kind: `ps_number_` (number key), `ps_workspace_` (workspace key) or `ps_account_` (account key). Older keys (`ps_` + hex) keep working unchanged. See [Key types](/api/key-types).
 
 ## Where to find an API key
 
 - **Number-scoped** key: dashboard `/api-keys` — each WhatsApp number has **one default key** that you can **Regenerate** (there are no sub-keys / no parent-child).
-- **Tenant-scoped** key: dashboard **Profile → API** tab — a singleton you generate/regenerate.
+- **Tenant-scoped** key (workspace key): dashboard **Workspace keys** (`/workspace-api-keys`) — the workspace's **primary key**, plus **named keys**, one per integration.
+- **Account key** (`ps_account_`): dashboard **Profile → API** — your own key, which acts in any workspace you are a member of, picked with the `x-workspace-id` header. See [Account keys](/api/key-types#account-keys).
 
 <Note>
   The raw API key is shown only once when generated/regenerated. Store it securely.
@@ -36,7 +37,7 @@ Every API key has a **scope** that determines which endpoints it can call. Both 
 | Scope | Bound to | Can call | Where to find it |
 | --- | --- | --- | --- |
 | **Number-scoped** (default) | One WhatsApp number | All action/data endpoints for that number — `POST /v1/messages/send`, message status, cancel, groups, newsletters, templates, analytics, media | Dashboard → **API Keys** page (one default key per number; **Regenerate**) |
-| **Tenant-scoped** (singleton) | The tenant (no number) | Everything. Number lifecycle — `/v1/numbers/*` and `/v1/remote-pairing/*` — account resources (`/v1/api-keys`, `/v1/branding`, `/v1/subscription/extra-numbers`, `/v1/billing/checkout`, `/v1/webhooks/*`, `/v1/embed/sessions`), **and** every per-number endpoint of any number in the tenant by naming it in `x-whatsapp-number-id`. | Dashboard → **Profile** → **API** tab |
+| **Tenant-scoped** (workspace key) | The tenant (no number) | Everything. Number lifecycle — `/v1/numbers/*` and `/v1/remote-pairing/*` — account resources (`/v1/api-keys`, `/v1/branding`, `/v1/subscription/extra-numbers`, `/v1/billing/checkout`, `/v1/webhooks/*`, `/v1/embed/sessions`), **and** every per-number endpoint of any number in the tenant by naming it in `x-whatsapp-number-id`. | Dashboard → **Workspace keys** |
 
 ### Number-scoped key
 
@@ -44,16 +45,12 @@ The default key type. It is linked to a single WhatsApp number and is used for a
 
 ### Tenant-scoped key
 
-A tenant-scoped key is a **singleton per tenant** with **no associated number**. It is intended for SaaS platforms that connect and manage multiple numbers (including their customers' numbers) via the public API.
-
-<Frame caption="Profile → API — the tenant-scoped key (manages numbers and acts on any of them via the public API).">
-  ![Tenant API key](/images/dashboard/tenant-api-key.png)
-</Frame>
+A tenant-scoped key — a **workspace key** (`ps_workspace_`) — has **no associated number**. It is intended for SaaS platforms that connect and manage multiple numbers (including their customers' numbers) via the public API. Each workspace has one **primary key** (the one the in-app AI agent uses) and can add **named keys**, one per integration, that are revoked independently. See [Workspace keys](/api/key-types#workspace-keys).
 
 - It manages numbers via `/v1/numbers/*` and `/v1/remote-pairing/*`, and manages account resources: `/v1/api-keys` (list every number's key and regenerate it), `/v1/branding`, `/v1/subscription/extra-numbers`, `/v1/billing/checkout`, `/v1/webhooks/*`, and `/v1/embed/sessions` (connect).
 - It is the **only** scope that can manage per-number API keys via `POST /v1/api-keys` — a number-scoped key cannot.
 - It can call any **per-number** endpoint — sending included — by naming the number in the `x-whatsapp-number-id` header. You do not need a separate key per number.
-- It is generated/regenerated in the dashboard under **Profile → API** tab.
+- It is generated/regenerated in the dashboard under **Workspace keys** (`/workspace-api-keys`). Before 2026-10-28 it was in **Profile → API**, which now holds your account keys.
 
 ### Acting on a specific number with a tenant key
 
@@ -87,7 +84,7 @@ curl -X POST "https://pilotstatus.com.br/v1/api-keys/regenerate" \
   -H "x-api-key: ps_your_current_key"
 ```
 
-Regenerating invalidates the previous key immediately; the new raw key is returned only once.
+Regenerating invalidates the previous key immediately; the new raw key is returned only once. Called with a workspace key — the primary or a named one — it rotates the workspace's **primary** key; named keys keep working.
 
 ## Example requests
 
@@ -109,6 +106,7 @@ curl "https://pilotstatus.com.br/v1/messages/msg_abc" \
 
 - `401` — missing or invalid `x-api-key` / `x-api-key-id` header.
 - `403` — valid key, but operation blocked (e.g., a tenant-scoped key calling a per-number action endpoint → `code: "TENANT_SCOPE_NOT_ALLOWED"`, or a number-scoped key calling a tenant-only endpoint → `code: "NUMBER_SCOPE_NOT_ALLOWED"`).
+- Account keys add `400 WORKSPACE_ID_REQUIRED`, `403 WORKSPACE_MEMBERSHIP_REQUIRED` and `403 ACCOUNT_KEY_REQUIRED` — see [Key types → Errors](/api/key-types#errors).
 
 ## Security best practices
 

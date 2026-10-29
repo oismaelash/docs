@@ -1,0 +1,213 @@
+---
+title: "API de Workspaces — Crie workspaces e suas chaves"
+sidebarTitle: "Criar workspaces"
+description: "Liste os workspaces dos quais você faz parte, crie um novo com POST /v1/workspaces (ele já vem com a chave principal) e liste, crie e revogue as chaves de workspace dele — tudo com uma chave de conta (ps_account_). Inclui o teto por usuário e como os workspaces de revendedor nascem no Pay As You Go."
+mode: "wide"
+---
+
+# API de Workspaces
+
+Estes endpoints atuam no nível do **seu usuário**, não de um workspace. Eles respondem **apenas a uma [chave de conta](/pt-BR/api/key-types#chaves-de-conta)** (`ps_account_`, criada em **Perfil → API**).
+
+| Método | Endpoint | O que faz |
+| --- | --- | --- |
+| `GET` | `/v1/workspaces` | Os workspaces dos quais você é membro ativo, com o seu papel em cada um. |
+| `POST` | `/v1/workspaces` | Cria um workspace do qual você é Proprietário, com a chave principal dele. |
+| `GET` | `/v1/workspaces/{workspaceId}/api-keys` | As chaves do workspace (principal e com nome), mascaradas. |
+| `POST` | `/v1/workspaces/{workspaceId}/api-keys` | Cria uma chave de workspace com nome. |
+| `DELETE` | `/v1/workspaces/{workspaceId}/api-keys/{keyId}` | Revoga uma chave de workspace com nome. |
+
+<Note>
+  **Só chaves de conta.** Uma chave de workspace, uma chave de número ou um token OAuth/MCP recebe **403 `ACCOUNT_KEY_REQUIRED`**. Tokens OAuth/MCP são recusados de propósito: estes endpoints criam chaves, e uma chave criada por um conector continuaria funcionando depois que o conector fosse revogado. `x-workspace-id` é ignorado aqui: o workspace, quando existe, está no caminho.
+</Note>
+
+Toda resposta sai com `Cache-Control: no-store`. Os erros são `{ "error": "English | Português", "code": "…" }`.
+
+## Listar seus workspaces
+
+`GET https://pilotstatus.com.br/v1/workspaces`
+
+```bash
+curl "https://pilotstatus.com.br/v1/workspaces" \
+  -H "x-api-key: ps_account_your_account_key"
+```
+
+```json Response (200)
+{
+  "data": [
+    {
+      "id": "cmh2a1b2c0001ws8example7k",
+      "name": "Acme Resale",
+      "role": "OWNER",
+      "plan": "PAY_AS_YOU_GO",
+      "createdAt": "2026-03-02T12:00:00.000Z"
+    },
+    {
+      "id": "cmh2a9z8y0002ws8example1q",
+      "name": "Bakery Downtown",
+      "role": "OWNER",
+      "plan": "PAY_AS_YOU_GO",
+      "createdAt": "2026-10-28T09:15:00.000Z"
+    }
+  ]
+}
+```
+
+- **Só os workspaces em que a sua participação está ativa.** Workspaces arquivados ficam de fora.
+- `role` é o seu papel naquele workspace: `OWNER`, `ADMIN`, `AGENT` ou `ANALYST`.
+- `plan` é o plano atual do workspace (`FREE`, `PAY_AS_YOU_GO`, `ON_DEMAND`, …).
+- Use o `id` em `x-workspace-id` para atuar dentro daquele workspace com a mesma chave de conta.
+
+## Criar um workspace
+
+`POST https://pilotstatus.com.br/v1/workspaces` com `{ "name": "…" }`. Você se torna o **Proprietário** do workspace, e a resposta traz a **chave principal** dele, exibida **só esta vez**.
+
+<ParamField body="name" type="string" required>
+  De 1 a 60 caracteres, depois de remover espaços nas pontas.
+</ParamField>
+
+`name` é o único campo aceito. Qualquer outro campo recebe **400 `UNKNOWN_FIELDS`**.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/workspaces" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_account_your_account_key" \
+  -d '{ "name": "Bakery Downtown" }'
+```
+
+```json Response (201)
+{
+  "id": "cmh2a9z8y0002ws8example1q",
+  "name": "Bakery Downtown",
+  "plan": "PAY_AS_YOU_GO",
+  "createdAt": "2026-10-28T09:15:00.000Z",
+  "role": "OWNER",
+  "apiKey": {
+    "id": "cmh2aa0010003ak8example4d",
+    "name": "Workspace API Key",
+    "key": "ps_workspace_9f3c1a7e5b2d8f4a6c0e9b1d7f3a5c8e2b4d6f8a0c1e3b5d",
+    "prefix": "ps_workspace_",
+    "last4": "3b5d",
+    "isPrimary": true,
+    "createdAt": "2026-10-28T09:15:00.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+- **`apiKey.key` vem só nesta resposta.** Guarde-a antes de qualquer outra coisa. As leituras seguintes mostram só `prefix` e `last4`.
+- **`apiKey` pode vir `null`.** O workspace é salvo primeiro e a chave é criada em seguida. Se a criação da chave falhar, a resposta continua sendo `201`, para que uma nova tentativa não crie um segundo workspace. Gere a chave principal com `POST /v1/api-keys/regenerate` (chave de conta mais `x-workspace-id`, papel de Proprietário), ou crie uma chave com nome com [`POST /v1/workspaces/{id}/api-keys`](#criar-uma-chave-com-nome).
+- **Criar não é idempotente.** Dois `POST`s criam dois workspaces. Depois de um timeout, confira `GET /v1/workspaces` antes de tentar de novo.
+
+### Como o novo workspace nasce
+
+| Você é | Plano | Preços | Cartão |
+| --- | --- | --- | --- |
+| Um usuário comum | **Free** | Os padrão | Nenhum |
+| Um **revendedor** (marcado pela equipe do Pilot Status) | **Pay As You Go**, cobrado da carteira | **Os seus preços de revenda**: o preço por número e o preço da linha telefônica combinados com você | **O seu cartão compartilhado**, quando a equipe do Pilot Status vinculou um à sua conta |
+
+Workspaces de revenda começam sem nada cobrado: sem mensalidade de plano, sem números e sem saldo. A primeira cobrança é o primeiro número que conecta, ou a primeira linha que você compra. O **cartão compartilhado** é uma reserva: ele paga uma cobrança só quando a carteira do workspace não cobre **e** o workspace não tem cartão próprio. Veja [Cobrança para revendedores](/pt-BR/reseller-billing#um-workspace-por-cliente-final).
+
+<Note>
+  A marcação de revendedor, os preços de revenda e o cartão compartilhado são configurados pela **equipe do Pilot Status**, não pela API. Fale com a gente para configurá-los. Eles valem para os workspaces criados a partir daí; os workspaces que você já tinha mantêm o plano.
+</Note>
+
+### Quantos workspaces você pode ter
+
+Cada usuário pode ser Proprietário de até **10 workspaces** por padrão, contando todo workspace em que você é o Proprietário ativo, o primeiro incluído. Acima do limite, a resposta é **409 `WORKSPACE_LIMIT_REACHED`**, com o limite em `limit`:
+
+```json Response (409)
+{
+  "error": "You already own 10 workspaces, which is the limit | Você já é dono de 10 workspaces, que é o limite",
+  "code": "WORKSPACE_LIMIT_REACHED",
+  "limit": 10
+}
+```
+
+O limite é um freio contra abuso, não uma regra de plano. Se você revende e precisa de mais, a equipe do Pilot Status aumenta o teto do seu usuário.
+
+## Chaves do workspace
+
+Estes três endpoints gerenciam as [chaves de workspace](/pt-BR/api/key-types#chaves-de-workspace) de um workspace, com o seu **papel atual** nele. Não ser membro ativo, ou um workspace que não existe ou está arquivado, recebem todos a mesma resposta **403 `WORKSPACE_MEMBERSHIP_REQUIRED`**.
+
+### Listar as chaves
+
+`GET https://pilotstatus.com.br/v1/workspaces/{workspaceId}/api-keys` — **Proprietário ou Administrador**.
+
+```json Response (200)
+{
+  "data": [
+    {
+      "id": "cmh2aa0010003ak8example4d",
+      "name": "Workspace API Key",
+      "prefix": "ps_workspace_",
+      "last4": "3b5d",
+      "isPrimary": true,
+      "createdAt": "2026-10-28T09:15:00.000Z",
+      "lastUsedAt": "2026-10-28T09:20:11.000Z"
+    },
+    {
+      "id": "cmh2ab7770004ak8example9m",
+      "name": "Billing integration",
+      "prefix": "ps_workspace_",
+      "last4": "a1c0",
+      "isPrimary": false,
+      "createdAt": "2026-10-28T10:02:40.000Z",
+      "lastUsedAt": null
+    }
+  ]
+}
+```
+
+A chave bruta nunca volta aqui. Chaves de número não são listadas: elas são gerenciadas em [`/v1/api-keys`](/pt-BR/api/api-keys).
+
+### Criar uma chave com nome
+
+`POST https://pilotstatus.com.br/v1/workspaces/{workspaceId}/api-keys` com `{ "name": "…" }` — **Proprietário ou Administrador**.
+
+<ParamField body="name" type="string" required>
+  De 1 a 60 caracteres, depois de remover espaços nas pontas. Use-o para saber qual integração guarda a chave.
+</ParamField>
+
+```json Response (201)
+{
+  "apiKey": {
+    "id": "cmh2ab7770004ak8example9m",
+    "name": "Billing integration",
+    "key": "ps_workspace_4e8b0d2f6a1c3e5b7d9f0a2c4e6b8d0f1a3c5e7b9d0fa1c0",
+    "prefix": "ps_workspace_",
+    "last4": "a1c0",
+    "isPrimary": false,
+    "createdAt": "2026-10-28T10:02:40.000Z"
+  }
+}
+```
+
+A `key` bruta aparece **só esta vez**. A chave fica registrada como criada por você, então ela é revogada se você for removido do workspace. Um workspace tem até **50** chaves de workspace ativas — chaves revogadas não contam; acima disso, **409 `WORKSPACE_KEY_LIMIT_REACHED`** com `limit`.
+
+### Revogar uma chave com nome
+
+`DELETE https://pilotstatus.com.br/v1/workspaces/{workspaceId}/api-keys/{keyId}` — **Proprietário ou Administrador**. Responde `{ "id": "…", "revokedAt": "…" }`. A chave para de funcionar na próxima requisição. Revogar uma chave que já está revogada também responde `200`, com o `revokedAt` original, então repetir a chamada é seguro.
+
+- **A chave principal não pode ser revogada** (**409 `PRIMARY_KEY_NOT_REVOCABLE`**): o agente de IA do app a usa. Rotacione-a com `POST /v1/api-keys/regenerate`, enviando a sua chave de conta e `x-workspace-id` (papel de Proprietário). Só a principal muda; as chaves com nome continuam funcionando.
+- Um id que não é de uma chave de workspace deste workspace recebe **404 `API_KEY_NOT_FOUND`**. Chaves de número são gerenciadas em [`/v1/api-keys`](/pt-BR/api/api-keys).
+
+## Erros
+
+| Status | `code` | Onde | O que aconteceu |
+| --- | --- | --- | --- |
+| `400` | `NAME_REQUIRED` | `POST` | `name` ausente ou em branco. |
+| `400` | `NAME_TOO_LONG` | `POST` | `name` com mais de 60 caracteres. `maxLength` informa o limite. |
+| `400` | `UNKNOWN_FIELDS` | `POST` | Campos além de `name`. `unknownFields` diz quais. |
+| `401` | — | todos | Chave ausente, inválida ou revogada. |
+| `403` | `ACCOUNT_KEY_REQUIRED` | todos | A credencial não é uma chave de conta. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | `…/{workspaceId}/…` | Você não é membro ativo desse workspace, ou ele não existe. |
+| `403` | `PERMISSION_DENIED` | `…/{workspaceId}/…` | O seu papel nele está abaixo de Administrador. |
+| `404` | `API_KEY_NOT_FOUND` | `DELETE` | Nenhuma chave de workspace com esse id nesse workspace. |
+| `409` | `WORKSPACE_LIMIT_REACHED` | `POST /v1/workspaces` | Você já é Proprietário de tantos workspaces quanto o seu limite. `limit` diz quantos. |
+| `409` | `WORKSPACE_KEY_LIMIT_REACHED` | `POST …/api-keys` | O workspace já tem 50 chaves de workspace ativas (não revogadas). |
+| `409` | `PRIMARY_KEY_NOT_REVOCABLE` | `DELETE` | O id é o da chave principal. |
+| `500` | — | todos | Falha inesperada (`Internal server error`). |
