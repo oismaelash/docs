@@ -181,8 +181,27 @@ curl -X POST https://pilotstatus.com.br/v1/templates \
 </CodeGroup>
 
 - `body` may be an **object** (recommended), a **JSON string**, or **plain text** (body-only templates).
-- Edit with `PUT /v1/templates/{id}` (same shape); remove with `DELETE /v1/templates/{id}` — for a Meta template this also asks Meta to delete it, and the response depends on Meta's answer (see [Delete](#delete)).
+- Edit with `PUT /v1/templates/{id}` (same shape; see [Edit](#edit)); remove with `DELETE /v1/templates/{id}` — for a Meta template this also asks Meta to delete it, and the response depends on Meta's answer (see [Delete](#delete)).
 - `GET /v1/templates` / `GET /v1/templates/{id}` return `source` (`META` | `PILOT_STATUS`), `metaStatus` (`APPROVED` | `PENDING` | `REJECTED` | `DISABLED` | `null`), `metaLanguage`, and `sendable` — on a Meta number only `META` templates with `metaStatus: "APPROVED"` are sendable.
+
+## Edit
+
+`PUT /v1/templates/{id}` takes the same body as create. On a Meta number the new version is re-submitted to Meta for approval and comes back with `metaStatus: "PENDING"`.
+
+Meta decides whether a template can be edited. Its published rule is that an approved template can be edited at most once every 24 hours and 10 times every 30 days, but in practice Meta may still refuse. When Meta refuses because of the template's current state (Graph code `100`, subcode `2388003`: "Message templates can only be edited if they have been rejected."), the API returns `409`:
+
+```json Response 409
+{
+  "error": "Meta does not allow editing this template in its current state (only rejected templates can be edited). Create a new template with the change, or send the document at send time. | A Meta não permite editar este template no estado atual (só templates rejeitados podem ser editados). Crie um novo template com a alteração ou envie o documento no momento do envio.",
+  "code": "TEMPLATE_NOT_EDITABLE",
+  "meta_user_message": "Message templates can only be edited if they have been rejected."
+}
+```
+
+- `code` is `TEMPLATE_NOT_EDITABLE`. `error` is a bilingual `English | Português` sentence. `meta_user_message` is Meta's own text, or `null`.
+- **When Meta refuses an edit, for any reason, nothing changes on Pilot Status:** the stored template keeps its previous body and `metaStatus`, so it still matches what Meta has. Before, the new body was stored as `PENDING` even though Meta had refused it.
+- **What to do:** create a new template with the change (`POST /v1/templates`, under a new name). If what you wanted to change is the header document, keep the template and send the document as a runtime parameter at send time — the per-send `media` of `POST /v1/messages/send` ([Media with templates](/guides/media-messages#media-with-templates)).
+- The MCP tool `templates_update` goes through this same route and returns the same `409`.
 
 ## Delete
 
@@ -323,6 +342,7 @@ Link/URL buttons accept a single variable that must be at the **end** of the URL
 | Cause | Fix | Meta code |
 | --- | --- | --- |
 | Too many variables vs fixed text | Add wording or reduce variables | `2388293` |
+| `POST /v1/templates` or `PUT /v1/templates/{id}` body is not valid JSON, empty included | Send a valid JSON object — answered `400 INVALID_BODY` before anything is saved ([Malformed JSON body](/api/overview#malformed-json-body)) | — |
 
 ### Meta rejected the submission
 
@@ -334,6 +354,7 @@ Link/URL buttons accept a single variable that must be at the **end** of the URL
 | Display name not approved yet | Wait for Meta approval | `131037` |
 | Required parameter missing (e.g. an unfilled button variable) | Supply every template variable — for a numbered button placeholder in a template created in Meta's console, as `button_<N>` | `131008` |
 | Payment button not enabled for this WABA | Wait for Meta to enable payments | `100/subcode 2388128` |
+| Edit refused: Meta only lets rejected templates be edited (`409 TEMPLATE_NOT_EDITABLE`) | Create a new template, or send the document at send time — see [Edit](#edit) | `100/subcode 2388003` |
 | URL button invalid link/variable | Check link and `{{…}}` | `100` |
 | Media upload to Meta failed | Header file reachable \+ valid format | — |
 | Header file too large / unsupported | Image ≤5MB JPEG/PNG, video ≤16MB MP4, PDF ≤10MB | `131002/131003` |

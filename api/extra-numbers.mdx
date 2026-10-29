@@ -136,6 +136,7 @@ curl -X POST "https://pilotstatus.com.br/v1/subscription/extra-numbers" \
 Behaviour:
 
 - **Free → On Demand conversion.** If you are on the **Free** plan, buying an extra number moves you to On Demand: your current (formerly free, 200-message-limited) number becomes a **paid, unlimited** number **and** the new number is billed too. So buying 1 extra while Free bills you for **2** numbers. Because this changes what you pay, the `POST` returns **409 `CONFIRMATION_REQUIRED`** (with the preview) unless you send `confirm: true`.
+- **A malformed body is refused, not defaulted.** A body that is not valid JSON — e.g. a truncated `{"quantity": 3` — returns **`400 INVALID_BODY`** before any preview, charge or plan change: nothing is billed. Only an **empty** body (no bytes at all) means `quantity = 1`. See [Malformed JSON body](/api/overview#malformed-json-body).
 - **Already On Demand / paid.** Buying increments your number count; messages stay unlimited.
 - **Payment.** The prorated cost is charged **on the spot**: from your **prepaid wallet** first, then any remainder from your saved card (dashboard **Plans → Cartão**, or `POST /v1/billing/checkout` with `add_card`). A successful purchase answers `{ "success": true, "charged": true, … }` — `creditsUsed` and `cardCharged` show how the charge was split, and `paidExtraNumbers` already includes the new slot, so you can create the number with `POST /v1/numbers` right away. **This route never returns a checkout link** (there is no `checkoutUrl`, and `charged` is never `false`): with neither enough credits nor a saved card it returns **`402 INSUFFICIENT_FUNDS`** — nothing is charged, and any credits it had started to use are put back. Top up or save a card, then retry.
 - **The monthly recurrence comes out of the wallet**, not a separate subscription. Each cycle, `paidExtraNumbers × unit price` is debited from your credits, falling back to your saved card. Top the wallet up in the dashboard or through the API, by card or Pix ([Wallet and card via API](/api/wallet-and-card)) — so you can run On Demand on Pix credits and never save a card.
@@ -228,6 +229,7 @@ Behaviour:
 - **Cannot drop below connected numbers.** If the target would leave your limit under the numbers you still have connected, it returns **409 `NUMBER_LIMIT_EXCEEDED`** (`{ currentNumberCount, maxNumbers }`) — delete a number first.
 - **Not available on Pay As You Go.** Returns **409 `NOT_APPLICABLE_FOR_PLAN`**. There is no paid capacity to give back: Pay As You Go bills the numbers you have, and the next cycle already charges only the numbers that have connected and were not deleted. To pay less, delete the number — scheduling nothing is required.
 - **`quantity`** defaults to `1` and is clamped so you never go below `0` paid extras. Number-scoped keys get **403**.
+- **Malformed body.** A body that is not valid JSON returns **`400 INVALID_BODY`** and nothing is scheduled. An empty body still means `quantity = 1`.
 
 Response — `paidExtraNumbers` stays at the current (this-cycle) value; `scheduledPaidExtraNumbers` is the target that takes effect next cycle:
 
@@ -265,6 +267,7 @@ curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
 
 - `purpose: "wallet_topup"` — top up the prepaid wallet. `method: "card"` (default) returns a hosted Stripe page; `method: "pix"` (BRL workspaces only) returns a Pix copy-and-paste code and QR code instead — see [Top up with Pix](/api/wallet-and-card#top-up-with-pix). **Requires `amount`**: a positive number, in your account currency (the wallet's `BRL` or `USD` — it cannot be chosen per request). Missing, zero, negative or non-numeric returns `400` `{ "error": "amount must be a positive number", "code": "INVALID_AMOUNT" }`.
 - `purpose: "add_card"` — save a card on the workspace, on any plan. It backs the wallet on every charge: extra numbers, plan renewals (Pay As You Go included) and phone lines.
+- A body that is not valid JSON returns `400` [`INVALID_BODY`](/api/overview#malformed-json-body). An empty body, or one without a known `purpose`, returns `400 INVALID_PURPOSE`.
 
 With `method: "card"` and with `add_card`, the response contains a `url` to open in the browser. For `wallet_topup` it also carries the `method`, `orderId`, `amount` and `currency`; follow the order with [`GET /v1/billing/topups/{orderId}`](/api/wallet-and-card#follow-a-top-up):
 

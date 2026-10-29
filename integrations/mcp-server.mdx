@@ -1,7 +1,7 @@
 ---
 title: "MCP Server"
 sidebarTitle: "MCP Server"
-description: "Connect AI agents to WhatsApp via the hosted Pilot Status MCP server: OAuth or x-api-key auth, 134 tools over the public /v1 API, per-number grants."
+description: "Connect AI agents to WhatsApp via the hosted Pilot Status MCP server: OAuth or x-api-key auth, 135 tools over the public /v1 API, per-number grants."
 mode: "wide"
 ---
 
@@ -32,7 +32,7 @@ Any MCP client that supports custom OAuth connectors can connect the same way. C
 ```
 
 <Tip>
-Start here: `/mcp` is the default, and your client shows each call for you to approve. For agents that build reports, loop over many items or run on a tight context, use **`https://mcp.pilotstatus.com.br/code`** instead of `/mcp` (not alongside it): the agent gets 2 tools (`describe` and `execute`) instead of 114 and writes a TypeScript script that calls `await ps.<tool>(args)`. Same credentials. [MCP Code Mode](/integrations/mcp-code-mode)
+Start here: `/mcp` is the default, and your client shows each call for you to approve. For agents that build reports, loop over many items or run on a tight context, use **`https://mcp.pilotstatus.com.br/code`** instead of `/mcp` (not alongside it): the agent gets 2 tools (`describe` and `execute`) instead of 135 and writes a TypeScript script that calls `await ps.<tool>(args)`. Same credentials. [MCP Code Mode](/integrations/mcp-code-mode)
 </Tip>
 
 ## Authentication
@@ -61,7 +61,7 @@ An [account key](/api/key-types#account-keys) (`ps_account_…`, created in **Pr
 }
 ```
 
-- **Without `x-workspace-id`**, only the `workspaces_*` tools work. Every other tool answers `WORKSPACE_ID_REQUIRED` without calling the API, with a message explaining where to set the id.
+- **Without `x-workspace-id`**, only the `workspaces_*` tools and `docs_search` work (`docs_search` calls no `/v1` endpoint, so it needs no workspace). Every other tool answers `WORKSPACE_ID_REQUIRED` without calling the API, with a message explaining where to set the id.
 - **To switch workspaces**, change the header and reconnect, or configure one connection per workspace. A workspace's own `ps_workspace_` key needs no header.
 - With an OAuth token the header is ignored: the token already names its workspace.
 
@@ -75,7 +75,7 @@ npx @pilot-status/mcp-server
 
 Supply your `ps_*` API key via the `x-api-key` header (HTTP mode) or environment configuration, depending on your MCP client. A self-hosted server also reads `PILOT_STATUS_API_KEY` from its environment and, for an account key, `PILOT_STATUS_WORKSPACE_ID`. That variable applies only to the key set in `PILOT_STATUS_API_KEY`, never to a key a connection sends in its own `x-api-key` header: send `x-workspace-id` with that one instead.
 
-## Available tools (134)
+## Available tools (135)
 
 | Area | Tools |
 | --- | --- |
@@ -100,11 +100,14 @@ Supply your `ps_*` API key via the `x-api-key` header (HTTP mode) or environment
 | Phone-line webhooks | `phone_lines_webhooks_list`, `phone_lines_webhooks_get`, `phone_lines_webhooks_create`, `phone_lines_webhooks_update`, `phone_lines_webhooks_delete`, `phone_lines_webhooks_deliveries_list`, `phone_lines_webhooks_deliveries_get` |
 | Workspace webhooks | `workspace_webhooks_list`, `workspace_webhooks_get`, `workspace_webhooks_create`, `workspace_webhooks_update`, `workspace_webhooks_delete`, `workspace_webhooks_deliveries_list`, `workspace_webhooks_deliveries_get` |
 | Workspaces (account key) | `workspaces_list`, `workspaces_create`, `workspaces_api_keys_list`, `workspaces_api_keys_create`, `workspaces_api_keys_revoke` |
+| Documentation | `docs_search` |
 
 Notes:
 
 - `templates_create`/`templates_update` require the `examples` object (one real sample per variable; missing → `400 TEMPLATE_EXAMPLES_REQUIRED`) and accept media headers by **URL only** — base64 is REST-only.
+- `templates_update` returns `409 TEMPLATE_NOT_EDITABLE` when Meta does not allow editing the template in its current state (only rejected templates can be edited); the stored template is left unchanged. Create a new template with the change, or send the document at send time. [Edit](/api/templates#edit)
 - `messages_send` supports the three send modes: `templateId`, `text`, or direct media (`media` \+ `mediaType`; use `mediaType: "voice"` for a voice note on any number — `"audio"` arrives as an audio file on official numbers and as a voice note on unofficial ones).
+- `messages_send` with `mediaType: "audio"` or `"voice"` takes `media` **only as a public http(s) URL** to a real audio file. A base64 data URI for audio or voice — or any `data:audio/*` media, whatever the `mediaType` — is refused with `400 MCP_AUDIO_URL_REQUIRED` before anything is sent: no message is created. Image and document data URIs are still accepted, for a file the user actually attached. The rule is MCP-only — it applies to `/mcp`, [Code Mode](/integrations/mcp-code-mode) and the in-app AI agent; the [REST API](/api/messages/send) still accepts audio as a data URI. It exists because models invent base64 audio: those bytes are not a playable file and the send failed later with [`MEDIA_TRANSCODE_FAILED`](/api/messages/log-error-codes#media-preparation-on-official-numbers).
 - `messages_send` takes `markRead: false` to reply on an official (Meta) number without the typing indicator and without marking the conversation read — for an agent whose replies a person should still find unread. The number-wide default is `markReadOnSend` on `numbers_settings_update` / `numbers_create`. `messages_typing` on a Meta number marks the conversation read, so such an agent must not call it. [Read receipt and typing](/api/messages/send#read-receipt-and-typing)
 - `messages_send` takes an optional `idempotencyKey` (up to 255 characters), sent as the `Idempotency-Key` header. Within 24 hours, calling it again with the same key and the same arguments returns the first accepted response without sending again — so an agent that retries after a timeout does not message the contact twice. The same key with different arguments is `409 IDEMPOTENCY_KEY_REUSED`; while the first call is still running, `409 IDEMPOTENCY_KEY_IN_USE`. Derive the key from what makes the send unique (e.g. order id \+ recipient). [Idempotency](/api/messages/send#idempotency)
 - Inbound media: on META numbers feed `media.id` to `media_get`; on unofficial (Pilot Status web) numbers use `media.url` directly.
@@ -117,7 +120,8 @@ Notes:
 - `phone_lines_webhooks_*` manage the [phone-line webhooks](/api/phone-lines/webhooks), a registry of their own that receives only `phone_line.*` events (the number webhooks of `webhooks_*` never receive them). Tenant-scoped credential only; `phone_lines:webhooks` (workspace ADMIN or OWNER). `phone_lines_webhooks_list` also returns `events`, the catalogue of subscribable events: `events` takes a non-empty list of them, or `["*"]` for every phone-line event. `phone_lines_webhooks_create` returns the `plwh_` signing secret **once** — store it right away: it cannot be read again and there is no rotation. It is not idempotent: each call creates another webhook. `phone_lines_webhooks_update` with `active: false` pauses a webhook; `phone_lines_webhooks_delete` removes it and its delivery history permanently. `phone_lines_webhooks_deliveries_list` never carries the payload; `phone_lines_webhooks_deliveries_get` returns it as signed, and on `phone_line.code_received` it contains the activation code.
 - `billing_checkout` takes an optional `method`: `card` (default) returns a hosted checkout `url`; `pix` (BRL workspaces only, otherwise `400 PIX_NOT_ELIGIBLE`) returns `orderId` and `pix { transactionId, copyPaste, qrCode, expiresAt }` for the user to pay in their bank app. `successUrl`/`cancelUrl` only apply to card checkouts (`400 FIELD_NOT_APPLICABLE` with `pix`). Nothing is charged until a human pays. `billing_topups_get` reads the top-up order by that `orderId` — `status` `pending`, `paid` (wallet credited), `expired` or `failed` — without calling the payment provider. The Stripe Elements endpoints (`/v1/billing/card/setup-intent*`, `/v1/billing/payment-intents*`) have no tool: their `clientSecret` is only usable by Stripe.js in a browser. See [Wallet and card via API](/api/wallet-and-card).
 - `workspace_webhooks_*` manage the [workspace webhooks](/api/workspace-webhooks) (`/v1/workspace/webhooks*`): the same registry as `phone_lines_webhooks_*` (same rows, `plwh_` secret, signature and deliveries), with a wider event set — every `phone_line.*` event plus `wallet.topup_paid` (a wallet top-up was credited). `"*"` still means every phone-line event only: `wallet.topup_paid` is opt-in, list it by name (for example `["*", "wallet.topup_paid"]`). Tenant-scoped credential only; `phone_lines:webhooks` (workspace ADMIN or OWNER). `workspace_webhooks_create` returns the signing secret **once**, like `phone_lines_webhooks_create`.
-- `workspaces_*` take an **account key** only (`ps_account_…`, created in Profile → API, sent as `x-api-key`): an OAuth/connector token, a workspace key or a number key gets `403 ACCOUNT_KEY_REQUIRED`. `workspaces_list` lists the workspaces the key's user is an active member of, with their role; `workspaces_create` creates one owned by that user and returns its primary workspace key **once** (`409 WORKSPACE_LIMIT_REACHED` at the user's ceiling). `workspaces_api_keys_list` (masked), `workspaces_api_keys_create` (a named `ps_workspace_` key, returned once; `409 WORKSPACE_KEY_LIMIT_REACHED`) and `workspaces_api_keys_revoke` (`409 PRIMARY_KEY_NOT_REVOCABLE` for the primary key) need the user's live role ADMIN or OWNER in that workspace, otherwise `403 WORKSPACE_MEMBERSHIP_REQUIRED` or `PERMISSION_DENIED`. The in-app AI agent does not offer them. They need no `x-workspace-id`; every other tool used with an account key does (see [With an account key](#with-an-account-key)). See [Create workspaces](/api/workspaces).
+- `workspaces_*` take an **account key** only (`ps_account_…`, created in Profile → API, sent as `x-api-key`): an OAuth/connector token, a workspace key or a number key gets `403 ACCOUNT_KEY_REQUIRED`. `workspaces_list` lists the workspaces the key's user is an active member of, with their role; `workspaces_create` creates one owned by that user and returns its primary workspace key **once** (`409 WORKSPACE_LIMIT_REACHED` at the user's ceiling). `workspaces_api_keys_list` (masked), `workspaces_api_keys_create` (a named `ps_workspace_` key, returned once; `409 WORKSPACE_KEY_LIMIT_REACHED`) and `workspaces_api_keys_revoke` (`409 PRIMARY_KEY_NOT_REVOCABLE` for the primary key) need the user's live role ADMIN or OWNER in that workspace, otherwise `403 WORKSPACE_MEMBERSHIP_REQUIRED` or `PERMISSION_DENIED`. The in-app AI agent does not offer them. They need no `x-workspace-id`, and neither does `docs_search`; every other tool used with an account key does (see [With an account key](#with-an-account-key)). See [Create workspaces](/api/workspaces).
+- `docs_search` takes a `query` — a question, keywords or an error code, in Portuguese or English — and an optional `limit` (3–5, default 5), and returns `{ query, results, source }`: the 3–5 most relevant pages of this documentation, each with `title`, `url` and `description` (not the page content). It reads the public docs index (`llms.txt` and its pt-BR sub-index; the Playground pages are left out), calls no `/v1` endpoint and needs no permission, key scope or `whatsappNumberId`, so any role can use it and the in-app agent runs it without asking for confirmation. `source` is `live`, or `fallback` when the index could not be fetched and a built-in copy answered; the index is cached for 6 hours. Use it when the user asks how to do something on Pilot Status, or when another tool returns an error code — search the code (e.g. `MEDIA_TRANSCODE_FAILED` leads to [Log Error Codes](/api/messages/log-error-codes)).
 - Token-based routes (remote-pairing public endpoints, embed session minting) are excluded from the tool list because they use a different auth flow.
 
 ## Example tool call
@@ -143,6 +147,7 @@ Notes:
 - `401` — missing or invalid API key.
 - `403` — tenant-scoped key on a number-scoped tool (or vice versa), or a tool outside a per-number grant.
 - `400` — invalid tool arguments (validated against the underlying API schema).
+- `400 MCP_AUDIO_URL_REQUIRED` — `messages_send` got a data URI (base64) for `mediaType` `audio`/`voice`, or a `data:audio/*` media. Send the audio as a public http(s) URL. The message is bilingual (`English | Português`) and nothing was sent.
 
 ## Related
 

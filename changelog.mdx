@@ -6,7 +6,7 @@ icon: "clock-rotate-left"
 
 What's new on the Pilot Status platform — API additions, changes and notable fixes. Subscribe via the RSS icon above.
 
-<Update label="2026-10-28" tags={["API", "Billing", "Webhooks", "Phone Lines"]}>
+<Update label="2026-10-29" tags={["API", "Billing", "Payments", "Webhooks", "Phone Lines", "MCP", "Fixed"]}>
   ## Reselling: one workspace per customer, account keys, Pix and card through the API
 
   **Resellers can now create one workspace per end customer through the API, operate all of them with a single key, and fund each one with Pix or card without the dashboard.** A failed renewal then suspends only that customer's numbers. [Billing for resellers](/reseller-billing#one-workspace-per-end-customer)
@@ -17,7 +17,50 @@ What's new on the Pilot Status platform — API additions, changes and notable f
   - **Wallet and card through the API:** `POST /v1/billing/checkout` now takes `method: "pix"` (BRL) and returns the copy-and-paste code and QR; `GET /v1/billing/topups/{id}` reads any top-up's status. A card form on your own page with Stripe Elements: `POST /v1/billing/card/setup-intent` and `POST /v1/billing/payment-intents` (optional `Idempotency-Key`), each with a `…/{id}/sync`. `503 PAYMENTS_NOT_CONFIGURED` when card payments are unavailable. [Wallet and card via API](/api/wallet-and-card) · [Transparent checkout guide](/guides/transparent-checkout)
   - **Workspace webhooks** at `/v1/workspace/webhooks*` — the phone-line webhook registry plus the new event **`wallet.topup_paid`**, opt-in: `"*"` still covers phone-line events only. [Workspace webhooks](/api/workspace-webhooks)
   - **Phone lines:** a workspace can have its **own phone line price**, set by the Pilot Status team (at least R\$ 23,90 / US\$ 23.90), applied to purchases and to each line from its next renewal. Lines now carry **`amountDue`**, what paying an overdue line now charges; `price` is what the next renewal costs. [Your own phone line price](/phone-lines-pricing#your-own-phone-line-price)
-  - **MCP server: 134 tools.** New: `workspaces_list`, `workspaces_create`, `workspaces_api_keys_list`, `workspaces_api_keys_create`, `workspaces_api_keys_revoke` (account key only), `billing_topups_get`, and the seven `workspace_webhooks_*`; `billing_checkout` takes `method: "pix"`. With an account key, add `x-workspace-id` to the MCP connection. [MCP server](/integrations/mcp-server#with-an-account-key)
+  - **MCP server: 135 tools.** New: `workspaces_list`, `workspaces_create`, `workspaces_api_keys_list`, `workspaces_api_keys_create`, `workspaces_api_keys_revoke` (account key only), `billing_topups_get`, and the seven `workspace_webhooks_*`; `billing_checkout` takes `method: "pix"`. With an account key, add `x-workspace-id` to the MCP connection; without it, only the `workspaces_*` tools and `docs_search` work. [MCP server](/integrations/mcp-server#with-an-account-key)
+
+  ## API: malformed JSON body returns `400 INVALID_BODY`
+
+  **In the `/v1` API, a non-empty request body that is not valid JSON now returns `400` with `code: "INVALID_BODY"`** and the bilingual message `"The request body is not valid JSON | O corpo da requisição não é um JSON válido"`. Nothing is sent, charged, created or changed. [Malformed JSON body](/api/overview#malformed-json-body)
+
+  - **Billing fix — extra numbers:** on `POST /v1/subscription/extra-numbers`, a truncated body such as `{"quantity": 3` used to fall back to `quantity = 1` and **charge** for one number. It now returns `400 INVALID_BODY` before any preview or charge. `DELETE /v1/subscription/extra-numbers` and `POST /v1/billing/checkout` get the same check. [Extra numbers](/api/extra-numbers)
+  - **Before:** a malformed body answered `500` on `POST /v1/messages/send`, `POST /v1/templates` and `PUT /v1/templates/{id}` — an error that looks temporary, so integrations retried it forever. On other routes it was silently read as `{}` or as defaults. On `messages/send` the `400` does not reserve the `Idempotency-Key`.
+  - **An empty body keeps each route's previous behaviour:** `POST /v1/subscription/extra-numbers` with no body still means `quantity = 1`, and `POST /v1/chatwoot/history-sync` with no body still uses the defaults (30 days). Routes that require a body — `messages/send`, `templates`, `messages/cancel`, `messages/read`, `messages/typing`, `webhooks` — answer the same `400` to an empty body.
+  - **Same standard shape everywhere:** `messages/cancel`, `messages/read` and `messages/typing` already returned `400`, but as `{ "error": "Invalid JSON body" }`; they now carry `code` and the bilingual message. On `POST /v1/webhooks` and `PATCH /v1/webhooks/{id}`, valid JSON that is not an object returns `400 INVALID_BODY` with `"The request body must be a JSON object | O corpo da requisição deve ser um objeto JSON"`.
+  - **Routes covered:** `messages/send`, `messages/{cancel,read,typing}`, `messages/{id}/resend`, `templates` (`POST`, `PUT`), `subscription/extra-numbers` (`POST`, `DELETE`), `billing/checkout`, `calls*`, `groups*`, `numbers` (`POST`, `PATCH /{id}`, `meta`, `remote-pairing`), `api-keys`, `branding`, `embed/sessions`, `flows/{id}` (`PATCH`), `meta-embedded*`, `workspace/members*`, `chatwoot/history-sync` and `webhooks*`.
+</Update>
+
+<Update label="2026-10-28" tags={["MCP"]}>
+  ## MCP: `docs_search` finds the right page of this documentation
+
+  **New tool on the [MCP server](/integrations/mcp-server), which now lists 122: `docs_search` returns the 3–5 most relevant pages of the Pilot Status documentation for a question or an error code**, each with `title`, `url` and `description`.
+
+  - **Input:** `query` (Portuguese or English) and an optional `limit` from 3 to 5 (default 5). **Output:** `{ query, results, source }`, where `source` is `live` or `fallback` (a built-in copy of the index, used when the live index cannot be fetched).
+  - **When the agent uses it:** when the user asks how to do something on Pilot Status, and when another tool returns an error code — searching `MEDIA_TRANSCODE_FAILED`, for example, leads to [Log Error Codes](/api/messages/log-error-codes).
+  - **No permission needed:** it reads the public docs index (`llms.txt` and its pt-BR sub-index, without the Playground pages), calls no `/v1` endpoint and takes no `whatsappNumberId`. Any role can use it, and the in-app AI agent runs it without asking for confirmation. The index is cached for 6 hours.
+  - **Where:** `/mcp`, [Code Mode](/integrations/mcp-code-mode) (`ps.docs_search`, theme `docs`) and the in-app AI agent.
+</Update>
+
+<Update label="2026-10-28" tags={["MCP", "Messages"]}>
+  ## MCP: audio and voice only by URL; faster Code Mode scripts
+
+  **Through MCP, `messages_send` with `mediaType` `audio` or `voice` now requires `media` to be a public http(s) URL.** A base64 data URI for audio or voice — or any `data:audio/*` media, whatever the `mediaType` — is refused with `400 MCP_AUDIO_URL_REQUIRED` before anything is sent. [MCP server](/integrations/mcp-server#common-errors)
+
+  - **Why:** AI clients were inventing base64 audio. Some came with a literal `...` inside and were refused; others were bytes ffmpeg could not open, and the message failed after the `202` with [`MEDIA_TRANSCODE_FAILED`](/api/messages/log-error-codes#media-preparation-on-official-numbers). Now the refusal comes at once, and no message is created.
+  - **Where it applies:** `/mcp`, [Code Mode](/integrations/mcp-code-mode) and the in-app AI agent. The error message is bilingual (`English | Português`).
+  - **What does not change:** image and document data URIs are still accepted via MCP, and the [REST API](/api/messages/send) still accepts audio and voice as a data URI.
+  - **Code Mode:** the description of `execute` now tells the agent to reuse the `whatsappNumberId` (and other ids) it already has instead of calling `numbers_list` again, to run independent calls with `await Promise.all([...])` instead of one by one in a loop, to ask for a small `pageSize` with filters, and to use an http(s) URL for `media`, never invented base64. [Scripts that run fast](/integrations/mcp-code-mode#writing-scripts-that-run-fast)
+</Update>
+
+<Update label="2026-10-28" tags={["Templates", "API", "MCP"]}>
+  ## Templates: `409 TEMPLATE_NOT_EDITABLE` when Meta refuses an edit
+
+  **`PUT /v1/templates/{id}` now returns `409` `TEMPLATE_NOT_EDITABLE` when Meta does not allow editing the template in its current state** (Graph code `100`, subcode `2388003`: "Message templates can only be edited if they have been rejected."). Before, it came back as a `400` carrying only Meta's raw message. [Edit](/api/templates#edit)
+
+  - **Body:** `error` is a bilingual `English | Português` sentence, `code` is `TEMPLATE_NOT_EDITABLE`, and `meta_user_message` carries Meta's own text, or `null`.
+  - **Nothing changes when Meta refuses an edit, for any reason:** the stored template keeps its previous body and `metaStatus`, so it still matches what Meta has. Before, the new body was stored with status `PENDING` even though Meta had refused it.
+  - **What to do:** create a new template with the change, or send the document as a runtime parameter at send time ([Media with templates](/guides/media-messages#media-with-templates)). Meta's published rule allows editing an approved template at most once every 24 hours and 10 times every 30 days, but Meta may still refuse.
+  - **MCP:** `templates_update` goes through the same route and returns the same `409`.
 </Update>
 
 <Update label="2026-10-27" tags={["Messages", "API", "Shipped"]}>

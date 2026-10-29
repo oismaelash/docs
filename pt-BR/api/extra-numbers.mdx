@@ -136,6 +136,7 @@ curl -X POST "https://pilotstatus.com.br/v1/subscription/extra-numbers" \
 Comportamento:
 
 - **Conversão Free → On Demand.** Se você está no plano **Free**, comprar um número extra move você para o On Demand: seu número atual (antes gratuito, limitado a 200 mensagens) se torna um número **pago e ilimitado** **e** o novo número também é cobrado. Portanto, comprar 1 extra estando no Free cobra você por **2** números. Como isso altera o que você paga, o `POST` retorna **409 `CONFIRMATION_REQUIRED`** (com a prévia) a menos que você envie `confirm: true`.
+- **Corpo malformado é recusado, não vira padrão.** Um corpo que não é JSON válido — por exemplo, um `{"quantity": 3` truncado — retorna **`400 INVALID_BODY`** antes de qualquer prévia, cobrança ou mudança de plano: nada é cobrado. Só um corpo **vazio** (nenhum byte) significa `quantity = 1`. Veja [Corpo JSON malformado](/pt-BR/api/overview#corpo-json-malformado).
 - **Já no On Demand / pago.** Comprar incrementa sua contagem de números; as mensagens permanecem ilimitadas.
 - **Pagamento.** O custo proporcional é cobrado **na hora**: primeiro da sua **carteira pré-paga**, e o que sobrar vai no cartão salvo (painel **Plans → Cartão**, ou `POST /v1/billing/checkout` com `add_card`). Uma compra bem-sucedida responde `{ "success": true, "charged": true, … }` — `creditsUsed` e `cardCharged` mostram como a cobrança foi dividida, e `paidExtraNumbers` já inclui a vaga nova, então você pode criar o número com `POST /v1/numbers` em seguida. **Esta rota nunca devolve link de checkout** (não existe `checkoutUrl`, e `charged` nunca vem `false`): sem créditos suficientes e sem cartão salvo, ela retorna **`402 INSUFFICIENT_FUNDS`** — nada é cobrado, e os créditos que ela chegou a usar são devolvidos. Recarregue ou salve um cartão e tente de novo.
 - **A recorrência mensal sai da carteira**, não de uma assinatura à parte. A cada ciclo, `paidExtraNumbers × preço unitário` é debitado dos créditos, com o cartão salvo como reserva. Recarregue pelo painel ou pela API, por cartão ou Pix ([Carteira e cartão pela API](/pt-BR/api/wallet-and-card)) — dá para rodar On Demand só com créditos de Pix, sem nunca salvar um cartão.
@@ -224,6 +225,7 @@ Comportamento:
 - **Não pode ficar abaixo dos números conectados.** Se o alvo deixaria o limite abaixo dos números que você ainda tem conectados, retorna **409 `NUMBER_LIMIT_EXCEEDED`** (`{ currentNumberCount, maxNumbers }`) — delete um número antes.
 - **Não existe no Pay As You Go.** Retorna **409 `NOT_APPLICABLE_FOR_PLAN`**. Não há capacidade paga a devolver: o Pay As You Go cobra pelos números que você tem, e o próximo ciclo já cobra apenas os números que já conectaram e não foram excluídos. Para pagar menos, delete o número — não é preciso agendar nada.
 - **`quantity`** tem default `1` e é limitado para nunca ficar abaixo de `0` extras pagos. Chaves de escopo de número recebem **403**.
+- **Corpo malformado.** Um corpo que não é JSON válido retorna **`400 INVALID_BODY`** e nada é agendado. Corpo vazio continua significando `quantity = 1`.
 
 Resposta — `paidExtraNumbers` continua no valor do ciclo atual; `scheduledPaidExtraNumbers` é o alvo que passa a valer no próximo ciclo:
 
@@ -261,6 +263,7 @@ curl -X POST "https://pilotstatus.com.br/v1/billing/checkout" \
 
 - `purpose: "wallet_topup"` — recarrega a carteira pré-paga. `method: "card"` (padrão) devolve uma página hospedada do Stripe; `method: "pix"` (só workspaces em BRL) devolve um código Pix copia e cola e um QR code — veja [Recarga com Pix](/pt-BR/api/wallet-and-card#recarga-com-pix). **Exige `amount`**: um número positivo, na moeda da sua conta (a da carteira, `BRL` ou `USD` — não dá para escolher por requisição). Ausente, zero, negativo ou não numérico retorna `400` `{ "error": "amount must be a positive number", "code": "INVALID_AMOUNT" }`.
 - `purpose: "add_card"` — salva um cartão no workspace, em qualquer plano. Ele serve de reserva da carteira em toda cobrança: números extras, renovações do plano (inclusive Pay As You Go) e linhas telefônicas.
+- Um corpo que não é JSON válido retorna `400` [`INVALID_BODY`](/pt-BR/api/overview#corpo-json-malformado). Corpo vazio, ou sem um `purpose` conhecido, retorna `400 INVALID_PURPOSE`.
 
 Com `method: "card"` e com `add_card`, a resposta contém uma `url` para abrir no navegador. No `wallet_topup` ela traz também `method`, `orderId`, `amount` e `currency`; acompanhe o pedido com [`GET /v1/billing/topups/{orderId}`](/pt-BR/api/wallet-and-card#acompanhar-uma-recarga):
 
