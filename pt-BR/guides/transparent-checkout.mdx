@@ -126,6 +126,34 @@ O `sync` responde com o resultado na hora:
 
 A carteira é creditada **uma vez só**, seja pelo seu `sync`, seja pelo nosso próprio aviso do Stripe. Para saber disso do seu lado sem consultar em loop, inscreva um [webhook do workspace](/pt-BR/api/workspace-webhooks) em `wallet.topup_paid`: ele dispara uma vez por recarga creditada, seja Pix ou cartão.
 
+## Erro no navegador, mas cobrou
+
+O `stripe.confirmPayment` pode voltar com um **erro de rede mesmo quando a Stripe já cobrou o cartão** — a conexão caiu depois da cobrança e antes de a resposta chegar ao navegador. Isso aconteceu em produção em 29/10/2026.
+
+**Nunca mostre "pagamento recusado" só por esse erro.** Para um `error` do tipo `api_connection_error` (ou qualquer erro que não seja recusa do cartão), confira com o servidor antes de dizer qualquer coisa ao cliente:
+
+1. Consulte o [`POST /v1/billing/payment-intents/{paymentIntentId}/sync`](#3-seu-servidor-sync-e-reação) — ou o `GET /v1/billing/topups/{orderId}`, com o `orderId` do passo 1 — a cada 2–3 segundos, por cerca de **30 segundos**.
+2. Pare assim que o `sync` responder `orderStatus: "COMPLETED"` (ou a recarga responder `status: "paid"`): o pagamento foi aprovado.
+3. Se ainda estiver pendente depois de ~30 s, diga ao cliente que o pagamento **está sendo confirmado**, não que falhou. Só mostre falha quando o `sync` responder `orderStatus: "FAILED"` (ou a recarga, `status: "failed"`).
+
+```javascript
+async function waitForPaid(paymentIntentId, { timeoutMs = 30000, everyMs = 2500 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = await fetch(`/billing/topup/${paymentIntentId}/sync`, { method: "POST" });
+    const { orderStatus } = await r.json();
+    if (orderStatus === "COMPLETED") return "paid";
+    if (orderStatus === "FAILED") return "failed";
+    await new Promise((resolve) => setTimeout(resolve, everyMs));
+  }
+  return "pending"; // mostre "confirmando", nunca "recusado"
+}
+```
+
+<Warning>
+  A fonte da verdade é o webhook de workspace [`wallet.topup_paid`](/pt-BR/api/workspace-webhooks): ele dispara uma vez por recarga creditada, mesmo quando o navegador nunca soube que o pagamento deu certo. Concilie seus registros por ele, não pelo que o navegador viu.
+</Warning>
+
 ## Salvar um cartão sem cobrar
 
 O fluxo é o mesmo com um setup intent:

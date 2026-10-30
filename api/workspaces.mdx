@@ -1,7 +1,7 @@
 ---
 title: "Workspaces API — Create Workspaces and Their Keys"
 sidebarTitle: "Create workspaces"
-description: "List the workspaces you belong to, create a new one with POST /v1/workspaces (it comes with its primary key), and list, create and revoke its workspace keys — all with an account key (ps_account_). Covers the per-user ceiling and how reseller workspaces are born on Pay As You Go."
+description: "List the workspaces you belong to, create a new one with POST /v1/workspaces (it comes with its primary key), list, create and revoke its workspace keys, and link or unlink your reserve card per workspace — all with an account key (ps_account_). Covers the per-user ceiling, how reseller workspaces are born on Pay As You Go and shareCard."
 mode: "wide"
 ---
 
@@ -16,6 +16,8 @@ These endpoints work at the level of **your user**, not of one workspace. They a
 | `GET` | `/v1/workspaces/{workspaceId}/api-keys` | The workspace's keys (primary and named), masked. |
 | `POST` | `/v1/workspaces/{workspaceId}/api-keys` | Creates a named workspace key. |
 | `DELETE` | `/v1/workspaces/{workspaceId}/api-keys/{keyId}` | Revokes a named workspace key. |
+| `PUT` | `/v1/workspaces/{workspaceId}/shared-card` | Links your reserve card (shared card) to the workspace. |
+| `DELETE` | `/v1/workspaces/{workspaceId}/shared-card` | Unlinks your reserve card from the workspace. |
 
 <Note>
   **Only account keys.** A workspace key, a number key or an OAuth/MCP token gets **403 `ACCOUNT_KEY_REQUIRED`**. OAuth/MCP tokens are refused on purpose: these endpoints mint keys, and a key minted through a connector would keep working after the connector is revoked. `x-workspace-id` is ignored here: the workspace, when there is one, is in the path.
@@ -40,14 +42,16 @@ curl "https://pilotstatus.com.br/v1/workspaces" \
       "name": "Acme Resale",
       "role": "OWNER",
       "plan": "PAY_AS_YOU_GO",
-      "createdAt": "2026-03-02T12:00:00.000Z"
+      "createdAt": "2026-03-02T12:00:00.000Z",
+      "sharedCard": { "linked": false, "sourceWorkspaceId": null }
     },
     {
       "id": "cmh2a9z8y0002ws8example1q",
       "name": "Bakery Downtown",
       "role": "OWNER",
       "plan": "PAY_AS_YOU_GO",
-      "createdAt": "2026-10-28T09:15:00.000Z"
+      "createdAt": "2026-10-28T09:15:00.000Z",
+      "sharedCard": { "linked": true, "sourceWorkspaceId": "cmh2a1b2c0001ws8example7k" }
     }
   ]
 }
@@ -56,17 +60,26 @@ curl "https://pilotstatus.com.br/v1/workspaces" \
 - **Only workspaces where your membership is active.** Archived workspaces are left out.
 - `role` is your role in that workspace: `OWNER`, `ADMIN`, `AGENT` or `ANALYST`.
 - `plan` is the workspace's current plan (`FREE`, `PAY_AS_YOU_GO`, `ON_DEMAND`, …).
+- `sharedCard` says whether the workspace is linked to a shared card: `linked` and, when linked, the `sourceWorkspaceId` whose card backs it (`null` when not linked). See [Shared card per workspace](#shared-card-per-workspace).
 - Use the `id` in `x-workspace-id` to act inside that workspace with the same account key.
 
 ## Create a workspace
 
-`POST https://pilotstatus.com.br/v1/workspaces` with `{ "name": "…" }`. You become the workspace's **Owner**, and the response carries its **primary key**, shown **this one time only**.
+`POST https://pilotstatus.com.br/v1/workspaces` with `{ "name": "…" }` and, optionally, `"shareCard": true`. You become the workspace's **Owner**, and the response carries its **primary key**, shown **this one time only**.
 
 <ParamField body="name" type="string" required>
   1 to 60 characters, after trimming spaces.
 </ParamField>
 
-`name` is the only field accepted. Any other field gets **400 `UNKNOWN_FIELDS`**.
+<ParamField body="shareCard" type="boolean">
+  `true` links the new workspace to **your reserve card** (the [shared card](#shared-card-per-workspace)), so it backs this customer's renewals. `false` or **absent**: the workspace is **not** shared. Must be a JSON boolean: `"true"`, `1` or `null` get **400 `INVALID_SHARE_CARD`**.
+</ParamField>
+
+`name` and `shareCard` are the only fields accepted. Any other field gets **400 `UNKNOWN_FIELDS`**.
+
+<Warning>
+  **Behavior change (2026-10-29): the reserve card is no longer shared automatically.** Before, a workspace a reseller created through `POST /v1/workspaces` inherited the reserve card on its own. Now it is shared **only when you send `"shareCard": true`**. If your integration counted on the old behavior, add the field, or link existing workspaces with [`PUT …/shared-card`](#link-the-shared-card).
+</Warning>
 
 <CodeGroup>
 
@@ -74,7 +87,7 @@ curl "https://pilotstatus.com.br/v1/workspaces" \
 curl -X POST "https://pilotstatus.com.br/v1/workspaces" \
   -H "Content-Type: application/json" \
   -H "x-api-key: ps_account_your_account_key" \
-  -d '{ "name": "Bakery Downtown" }'
+  -d '{ "name": "Bakery Downtown", "shareCard": true }'
 ```
 
 ```json Response (201)
@@ -92,7 +105,8 @@ curl -X POST "https://pilotstatus.com.br/v1/workspaces" \
     "last4": "3b5d",
     "isPrimary": true,
     "createdAt": "2026-10-28T09:15:00.000Z"
-  }
+  },
+  "sharedCard": { "linked": true, "sourceWorkspaceId": "cmh2a1b2c0001ws8example7k" }
 }
 ```
 
@@ -101,18 +115,20 @@ curl -X POST "https://pilotstatus.com.br/v1/workspaces" \
 - **`apiKey.key` comes only in this response.** Store it before doing anything else. Later reads show only `prefix` and `last4`.
 - **`apiKey` can be `null`.** The workspace is saved first and the key is minted next. If minting fails, the answer is still `201`, so that a retry does not create a second workspace. Rotate the primary key with `POST /v1/api-keys/regenerate` (account key plus `x-workspace-id`, Owner role), or create a named key with [`POST /v1/workspaces/{id}/api-keys`](#create-a-named-key).
 - **Creating is not idempotent.** Two `POST`s create two workspaces. After a timeout, check `GET /v1/workspaces` before trying again.
+- **`sharedCard`** tells you how the workspace was born: `{ "linked": false, "sourceWorkspaceId": null }` without `shareCard: true`.
+- **With `shareCard: true`, the card is checked before anything is created.** No reserve card configured for you (**409 `SHARED_CARD_NOT_CONFIGURED`**), the source workspace archived (**409 `SOURCE_ARCHIVED`**) or you no longer an active Owner of it (**409 `NO_SHARED_OWNER`**): **no workspace is created**, so retrying without `shareCard` is safe.
 
 ### How the new workspace is born
 
 | You are | Plan | Prices | Card |
 | --- | --- | --- | --- |
 | A regular user | **Free** | The standard ones | None |
-| A **reseller** (marked by the Pilot Status team) | **Pay As You Go**, billed from the wallet | **Your reseller prices**: the per-number price and the phone line price agreed with you | **Your shared card**, when the Pilot Status team linked one to your account |
+| A **reseller** (marked by the Pilot Status team) | **Pay As You Go**, billed from the wallet | **Your reseller prices**: the per-number price and the phone line price agreed with you | **None**, unless you send `shareCard: true` — then **your reserve card** (shared card) |
 
-Reseller workspaces start with nothing charged: no plan fee, no numbers and no balance. The first charge is the first number that connects, or the first line you buy. The **shared card** is a backup: it pays a charge only when the workspace's wallet does not cover it **and** the workspace has no card of its own. See [Billing for resellers](/reseller-billing#one-workspace-per-end-customer).
+Reseller workspaces start with nothing charged: no plan fee, no numbers and no balance. The first charge is the first number that connects, or the first line you buy. The **shared card** is a backup: it pays a charge only when the workspace's wallet does not cover it **and** the workspace has no card of its own. See [Billing for resellers](/reseller-billing#shared-card).
 
 <Note>
-  The reseller mark, the reseller prices and the shared card are set by the **Pilot Status team**, not through the API. Talk to us to set them up. They apply to workspaces created from then on; workspaces you already had keep their plan.
+  The reseller mark and the reseller prices are set by the **Pilot Status team**, not through the API. The team also configures **which of your workspaces holds your reserve card** — that is what allows you to share it. Which customer workspaces use it is **your** decision, per workspace: `shareCard` on creation, or [`PUT`/`DELETE …/shared-card`](#shared-card-per-workspace) afterwards. Talk to us to set them up. They apply to workspaces created from then on; workspaces you already had keep their plan.
 </Note>
 
 ### How many workspaces you can own
@@ -128,6 +144,61 @@ Each user can own up to **10 workspaces** by default, counting every workspace w
 ```
 
 The limit is a brake against abuse, not a plan rule. If you resell and need more, the Pilot Status team raises it for your user.
+
+## Shared card per workspace
+
+Your **reserve card** is the card saved on one of your workspaces — the **source workspace**, chosen by the Pilot Status team for your user. A customer workspace **linked** to it falls back to that card when its own wallet does not cover a platform charge and it has no card of its own (its own card always comes first; the fallback is one hop: the source's own shared card is not followed). You decide which customer workspaces are linked:
+
+- **On creation:** `"shareCard": true` on [`POST /v1/workspaces`](#create-a-workspace). Absent or `false`, the workspace is not linked.
+- **Afterwards:** `PUT` links, `DELETE` unlinks — below. **Unlink a customer who stopped paying** and your card no longer pays that customer's renewals: a failed renewal then suspends only them.
+
+Both endpoints require you to be the **Owner** of `{workspaceId}` — not an active member, a workspace that does not exist or is archived get **403 `WORKSPACE_MEMBERSHIP_REQUIRED`**, and a role below Owner gets **403 `PERMISSION_DENIED`**. They take **no body** (an empty body or `{}`); any field gets **400 `UNKNOWN_FIELDS`**.
+
+### Link the shared card
+
+`PUT https://pilotstatus.com.br/v1/workspaces/{workspaceId}/shared-card`
+
+```bash
+curl -X PUT "https://pilotstatus.com.br/v1/workspaces/cmh2a9z8y0002ws8example1q/shared-card" \
+  -H "x-api-key: ps_account_your_account_key"
+```
+
+```json Response (200)
+{
+  "workspaceId": "cmh2a9z8y0002ws8example1q",
+  "sharedCard": { "linked": true, "sourceWorkspaceId": "cmh2a1b2c0001ws8example7k" },
+  "changed": true
+}
+```
+
+- **Idempotent.** Already linked to the same source: `200` with `"changed": false`, and nothing is recorded.
+- The link is recorded in the workspace's **History** as **Backup card linked**. No e-mail is sent.
+- **409 `SHARED_CARD_NOT_CONFIGURED`** — the Pilot Status team has not configured a reserve card for you.
+- **400 `SELF_SOURCE`** — `{workspaceId}` is the source workspace itself.
+- **409 `SOURCE_ARCHIVED`** — the source workspace is archived.
+- **409 `NO_SHARED_OWNER`** — you are no longer an active Owner of the source workspace.
+
+### Unlink the shared card
+
+`DELETE https://pilotstatus.com.br/v1/workspaces/{workspaceId}/shared-card`
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/workspaces/cmh2a9z8y0002ws8example1q/shared-card" \
+  -H "x-api-key: ps_account_your_account_key"
+```
+
+```json Response (200)
+{
+  "workspaceId": "cmh2a9z8y0002ws8example1q",
+  "sharedCard": { "linked": false, "sourceWorkspaceId": null },
+  "changed": true
+}
+```
+
+- **Idempotent.** Not linked: `200` with `"changed": false`, and nothing is recorded.
+- The unlink is recorded in the workspace's **History** as **Backup card unlinked**. No e-mail is sent.
+- From then on, the workspace's charges use only its own wallet and card. If they do not cover a renewal, **that workspace** is suspended — your card is not charged.
+- **409 `NO_SHARED_OWNER`** — the workspace is linked to a source workspace you are not an active Owner of. Ask the Pilot Status team.
 
 ## Workspace keys
 
@@ -201,13 +272,20 @@ The raw `key` is shown **this one time only**. The key is recorded as created by
 | --- | --- | --- | --- |
 | `400` | `NAME_REQUIRED` | `POST` | `name` missing or blank. |
 | `400` | `NAME_TOO_LONG` | `POST` | `name` longer than 60 characters. `maxLength` says the limit. |
-| `400` | `UNKNOWN_FIELDS` | `POST` | Fields other than `name`. `unknownFields` names them. |
+| `400` | `UNKNOWN_FIELDS` | `POST`, `…/shared-card` | Fields other than `name` and `shareCard` on `POST /v1/workspaces`; any field on `…/shared-card`. `unknownFields` names them. |
+| `400` | `INVALID_SHARE_CARD` | `POST /v1/workspaces` | `shareCard` is present but not a JSON boolean (`"true"`, `1`, `null`, …). |
+| `400` | `SELF_SOURCE` | `PUT …/shared-card` | The workspace is the source of your reserve card. |
 | `401` | — | all | Missing, invalid or revoked key. |
 | `403` | `ACCOUNT_KEY_REQUIRED` | all | The credential is not an account key. |
 | `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | `…/{workspaceId}/…` | You are not an active member of that workspace, or it does not exist. |
-| `403` | `PERMISSION_DENIED` | `…/{workspaceId}/…` | Your role there is below Admin. |
+| `403` | `PERMISSION_DENIED` | `…/{workspaceId}/…` | Your role there is below Admin (below Owner on `…/shared-card`). |
 | `404` | `API_KEY_NOT_FOUND` | `DELETE` | No workspace key with that id in that workspace. |
 | `409` | `WORKSPACE_LIMIT_REACHED` | `POST /v1/workspaces` | You already own as many workspaces as your limit. `limit` says how many. |
 | `409` | `WORKSPACE_KEY_LIMIT_REACHED` | `POST …/api-keys` | The workspace already has 50 live (non-revoked) workspace keys. |
 | `409` | `PRIMARY_KEY_NOT_REVOCABLE` | `DELETE` | The id is the primary key. |
+| `409` | `SHARED_CARD_NOT_CONFIGURED` | `POST` with `shareCard: true`, `PUT …/shared-card` | No reserve card is configured for you. On `POST`, no workspace is created. |
+| `409` | `SOURCE_ARCHIVED` | `POST` with `shareCard: true`, `PUT …/shared-card` | The source workspace of your reserve card is archived. On `POST`, no workspace is created. |
+| `409` | `NO_SHARED_OWNER` | `POST` with `shareCard: true`, `…/shared-card` | You are not an active Owner of the source workspace. On `POST`, no workspace is created. |
 | `500` | — | all | Unexpected failure (`Internal server error`). |
+
+On `POST /v1/workspaces` the checks run in this order: `UNKNOWN_FIELDS`, `INVALID_SHARE_CARD`, `NAME_REQUIRED` / `NAME_TOO_LONG`, `WORKSPACE_LIMIT_REACHED`, and only then, with `shareCard: true`, the reserve card checks (`SHARED_CARD_NOT_CONFIGURED`, `SOURCE_ARCHIVED`, `NO_SHARED_OWNER`).
