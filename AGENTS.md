@@ -35,5 +35,6 @@
 ## Translations
 
 - Every `pt-BR/` page must live at the **same path** as its English page: `playground/numbers/list-numbers.mdx` ↔ `pt-BR/playground/numbers/list-numbers.mdx`. Translate the `title`, never the slug. If the paths differ, the language switcher cannot find the counterpart and shows **Português (BR)** disabled on that page.
+- Every page must also be in the `docs.json` navigation. A page outside it (the home page, until 31/10/2026) gets **Português (BR)** disabled too.
 - When renaming a slug, add a permanent entry to `redirects` in `docs.json`.
 - `node scripts/check-i18n-paths.mjs` checks both rules (files and `docs.json` navigation); the `i18n paths` workflow runs it on every PR and fails it on any mismatch.
