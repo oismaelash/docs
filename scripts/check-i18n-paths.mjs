@@ -7,8 +7,6 @@ import { join, relative } from "node:path";
 
 const ROOT = process.argv[2] ?? process.cwd();
 const PT = "pt-BR";
-// Pages that intentionally exist in a single language.
-const SINGLE_LANGUAGE = new Set(["index.mdx"]);
 const SKIP_DIRS = new Set([".git", ".github", "node_modules", "scripts", "snippets", "images"]);
 
 function listMdx(dir, out = []) {
@@ -40,7 +38,7 @@ const ptFiles = new Set(files.filter((f) => f.startsWith(`${PT}/`)).map((f) => f
 const enFiles = new Set(files.filter((f) => !f.startsWith(`${PT}/`)));
 for (const f of ptFiles) if (!enFiles.has(f)) problems.push(`${PT}/${f}: no English page at ${f}`);
 for (const f of enFiles) {
-  if (!ptFiles.has(f) && !SINGLE_LANGUAGE.has(f)) problems.push(`${f}: no translation at ${PT}/${f}`);
+  if (!ptFiles.has(f)) problems.push(`${f}: no translation at ${PT}/${f}`);
 }
 
 // 2. Navigation: both languages must list the same pages.
@@ -53,6 +51,13 @@ if (en && pt) {
   const ptNav = new Set(navPages(pt).map((p) => (p.startsWith(`${PT}/`) ? p.slice(PT.length + 1) : p)));
   for (const p of enNav) if (!ptNav.has(p)) problems.push(`docs.json: "${p}" is in the English navigation but ${PT}/${p} is not in the ${PT} navigation`);
   for (const p of ptNav) if (!enNav.has(p)) problems.push(`docs.json: "${PT}/${p}" is in the ${PT} navigation but "${p}" is not in the English navigation`);
+
+  // 3. A page outside the navigation also gets the switcher disabled (the home page did, until 31/10/2026).
+  const navAll = new Set([...navPages(en), ...navPages(pt)]);
+  for (const f of files) {
+    const page = f.replace(/\.mdx$/, "");
+    if (!navAll.has(page)) problems.push(`${f}: not in docs.json navigation (language switcher is disabled on pages outside it)`);
+  }
 }
 
 if (problems.length) {
