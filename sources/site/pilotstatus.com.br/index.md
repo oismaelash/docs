@@ -411,7 +411,7 @@ Atendimento
 
 Precisa de mais de 13 números ou quer validar se a Pilot Status atende sua operação? Fale com nosso time — entendemos seu caso de uso e montamos um plano sob medida.
 
-[Falar com nosso time](https://wa.me/5585936180633?text=Ol%C3%A1!%20Tenho%20um%20caso%20de%20uso%20espec%C3%ADfico%20e%20quero%20falar%20com%20o%20time%20sobre%20planos.)
+[Falar com nosso time](https://wa.me/5585984387245?text=Ol%C3%A1!%20Tenho%20um%20caso%20de%20uso%20espec%C3%ADfico%20e%20quero%20falar%20com%20o%20time%20sobre%20planos.)
 
 ## Migre com confiança.
 
@@ -435,7 +435,7 @@ https://pilotstatus.com.br/api/layer/{provider}/
 
 Basta apontar sua base URL para o endereço acima. Suas chamadas e webhooks continuam funcionando sem alterações.
 
-Migrar agoraVer documentação[Falar com o time](https://wa.me/5585936180633?text=Ol%C3%A1!%20Quero%20falar%20com%20o%20time%20sobre%20migra%C3%A7%C3%A3o%20para%20a%20Pilot%20Status.)
+Migrar agoraVer documentação[Falar com o time](https://wa.me/5585984387245?text=Ol%C3%A1!%20Quero%20falar%20com%20o%20time%20sobre%20migra%C3%A7%C3%A3o%20para%20a%20Pilot%20Status.)
 
 FAQ
 
