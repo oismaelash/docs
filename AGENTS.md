@@ -31,3 +31,8 @@
 
 {/* Define what should and shouldn't be documented */}
 {/* Example: Don't document internal admin features */}
+
+## Translations
+
+- Every `pt-BR/` page must live at the **same path** as its English page: `playground/numbers/list-numbers.mdx` ↔ `pt-BR/playground/numbers/list-numbers.mdx`. Translate the `title`, never the slug. If the paths differ, the language switcher cannot find the counterpart and shows **Português (BR)** disabled on that page.
+- When renaming a slug, add a permanent entry to `redirects` in `docs.json`.
