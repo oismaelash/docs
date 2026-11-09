@@ -20,7 +20,12 @@ O documento do iframe é hospedado em um subdomínio do Pilot, então suas próp
 
 ## POST /v1/embed/sessions — Gerar um token de embed do Chat
 
-Gere tokens de embed no **seu backend**, nunca no navegador. Autenticado com a chave de API `ps_` do seu tenant (header `x-api-key`).
+Gere tokens de embed no **seu backend**, nunca no navegador. Autenticado com uma chave de API `ps_` (header `x-api-key`) — chave de workspace, chave de número (só chat), chave de conta com `x-workspace-id` — ou com um token de acesso OAuth.
+
+- **`chat`** exige papel de **Atendente ou acima** por trás de uma chave de conta ou token OAuth; um Analista recebe `403 PERMISSION_DENIED`.
+- **`connect`** exige credencial com escopo de tenant (uma chave de número recebe `403 NUMBER_SCOPE_NOT_ALLOWED`) e, para um usuário, **Administrador ou Proprietário**.
+
+Não é possível gerar um token que alcance mais do que a sua própria credencial.
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/embed/sessions" \
@@ -39,19 +44,19 @@ curl -X POST "https://pilotstatus.com.br/v1/embed/sessions" \
 </ParamField>
 
 <ParamField body="whatsappNumberIds" type="string[]">
-  **Obrigatório para `surface: "chat"`** — os números sobre os quais o embed pode atuar. Uma chave `ps_` **com escopo de número** ignora isso e é forçada ao seu próprio número.
+  **Obrigatório para `surface: "chat"`** — de 1 a 50 ids de número (o id do `WhatsAppNumber`) sobre os quais o embed pode atuar; todos precisam ser do seu workspace. Uma credencial **com escopo de número** — chave de número, ou chave de workspace restringida com `x-whatsapp-number-id` — ignora isso e é forçada ao seu próprio número.
 </ParamField>
 
 <ParamField body="allowedOrigins" type="string[]" required>
-  Origens exatas autorizadas a enquadrar o embed (mín. 1), ex. `["https://app.tenant.com"]`.
+  De 1 a 20 origens exatas autorizadas a enquadrar o embed — `scheme://host[:port]`, `http` ou `https`, sem caminho, query ou fragmento — ex. `["https://app.tenant.com"]`. Uma `/` final é removida, o valor vai para minúsculas e duplicatas são descartadas.
 </ParamField>
 
 <ParamField body="brandingOverride" type="object">
   Override opcional de branding por sessão (veja White-label abaixo).
 </ParamField>
 
-<ParamField body="ttlSeconds" type="number">
-  Tempo de vida do token. Padrões: **chat 15 min**, **connect 30 min**.
+<ParamField body="ttlSeconds" type="integer">
+  Tempo de vida do token em segundos, um inteiro positivo de até **3600** (1 hora). Padrões: **chat 900** (15 min), **connect 1800** (30 min).
 </ParamField>
 
 Resposta `201`:
@@ -68,7 +73,16 @@ Resposta `201`:
 
 O `token` é de curta duração. O SDK o injeta no iframe **em memória** — nunca em uma URL.
 
-Um corpo que não é JSON válido retorna `400 INVALID_BODY` e nenhum token é emitido. Veja [Corpo JSON malformado](/pt-BR/api/overview#corpo-json-malformado).
+Um corpo que não é JSON válido retorna `400 INVALID_BODY` e nenhum token é emitido. Veja [Corpo JSON malformado](/pt-BR/api/overview#corpo-json-malformado). Campos que o schema não conhece são ignorados.
+
+| Status | `code` | O que aconteceu |
+| --- | --- | --- |
+| `400` | — | `{ "error": "Validation error", "details": … }`: campo ausente, de tipo errado ou fora do intervalo |
+| `400` | `NUMBERS_REQUIRED` | `surface: "chat"` com credencial de workspace e sem `whatsappNumberIds` |
+| `400` | `NO_NUMBER` | `surface: "chat"` com credencial de escopo de número que não indica número nenhum (ex.: token OAuth consentido para números específicos, sem `x-whatsapp-number-id`) |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | `surface: "connect"` com credencial de escopo de número |
+| `403` | `PERMISSION_DENIED` | O papel do usuário não permite gerar essa superfície |
+| `404` | `NUMBER_NOT_FOUND` | Alguns `whatsappNumberIds` não são números do seu workspace; `missing` lista quais |
 
 ## POST /api/public/embed/refresh — Renovação deslizante
 

@@ -15279,7 +15279,7 @@
     "/v1/api-keys": {
       "get": {
         "summary": "List API keys",
-        "description": "Tenant-scoped only (a number-scoped key gets 403 NUMBER_SCOPE_NOT_ALLOWED, and an OAuth grant must be full-tenant). Returns a lean flat list — one item per tenant number — with numberId, number, displayName, keyId, keyLast4 and the real usable value (`key` field) when the key was created with encryption enabled (`revealable: true`). Legacy keys come back with `key: null` and `revealable: false` (regenerate that number to obtain a usable value).\n\n**Requires a tenant-scoped key.**",
+        "description": "Tenant-scoped only (a number-scoped key gets 403 NUMBER_SCOPE_NOT_ALLOWED, and an OAuth grant must be full-tenant). Returns a lean flat list — one item per tenant number — with numberId, number, displayName, keyId, keyLast4 and the real usable value (`key` field) when the key was created with encryption enabled (`revealable: true`). Legacy keys come back with `key: null` and `revealable: false` (regenerate that number to obtain a usable value).\n\n**Requires a tenant-scoped credential.** With an account key (`x-workspace-id`) the user must be **OWNER** (`apikeys:reveal`), since keys come back in plaintext. Over OAuth/MCP the user must be the workspace **OWNER**, checked live on every call (`403 OAUTH_SECRET_REQUIRES_OWNER` otherwise), and the act is recorded in an audit log first; if that record cannot be written, nothing happens and the answer is `500 OAUTH_SECRET_AUDIT_UNAVAILABLE`.",
         "tags": [
           "API Keys"
         ],
@@ -15313,7 +15313,7 @@
             }
           },
           "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15334,7 +15334,7 @@
             }
           },
           "403": {
-            "description": "Number-scoped key used on a tenant-only endpoint",
+            "description": "`NUMBER_SCOPE_NOT_ALLOWED` (number-scoped credential), `OAUTH_SECRET_REQUIRES_OWNER` (OAuth user who is not the live OWNER), `PERMISSION_DENIED` (account key of a user who is not the OWNER) or `WORKSPACE_MEMBERSHIP_REQUIRED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15355,32 +15355,14 @@
               }
             }
           },
-          "429": {
-            "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Too many requests"
-                }
-              }
-            }
+          "500": {
+            "description": "`OAUTH_SECRET_AUDIT_UNAVAILABLE` (OAuth only: the audit record could not be written, so nothing was done — retry) or an unexpected failure (`{ \"error\": \"Internal server error\" }`)."
           }
         }
       },
       "post": {
         "summary": "Regenerate a number's API key",
-        "description": "REGENERATES the default API key of a single number (the product keeps exactly one default key per number — there is no \"create another key\"). Tenant-scoped only (403 NUMBER_SCOPE_NOT_ALLOWED for a number key). Pass the number in whatsappNumberId: its previous key is rotated/invalidated and the new raw value (`key` field) is returned ONLY ONCE — store it. Unknown number → 404 NUMBER_NOT_FOUND.\n\n**Requires a tenant-scoped key.**",
+        "description": "REGENERATES the default API key of a single number (the product keeps exactly one default key per number — there is no \"create another key\"). Tenant-scoped only (403 NUMBER_SCOPE_NOT_ALLOWED for a number key). Pass the number in whatsappNumberId: its previous key is rotated/invalidated and the new raw value (`key` field) is returned ONLY ONCE — store it. Unknown number → 404 NUMBER_NOT_FOUND.\n\n`whatsappNumberId` accepts the number's id or its instance id (both come from `GET /v1/numbers`). The new key has the `ps_number_` prefix.\n\n**Requires a tenant-scoped credential.** With an account key (`x-workspace-id`) the user must be **ADMIN or OWNER** (`apikeys:rotate`). Over OAuth/MCP the user must be the workspace **OWNER**, checked live on every call (`403 OAUTH_SECRET_REQUIRES_OWNER` otherwise), and the act is recorded in an audit log first; if that record cannot be written, nothing happens and the answer is `500 OAUTH_SECRET_AUDIT_UNAVAILABLE`.",
         "tags": [
           "API Keys"
         ],
@@ -15422,7 +15404,7 @@
             }
           },
           "400": {
-            "description": "Invalid payload or parameters — or `INVALID_BODY` when the body is not valid JSON",
+            "description": "`{ \"error\": \"Validation error\", \"details\": … }` when `whatsappNumberId` is missing or empty — or `INVALID_BODY` when the body is not valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15455,7 +15437,7 @@
             }
           },
           "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15476,7 +15458,7 @@
             }
           },
           "403": {
-            "description": "Number-scoped key used on a tenant-only endpoint",
+            "description": "`NUMBER_SCOPE_NOT_ALLOWED` (number-scoped credential), `OAUTH_SECRET_REQUIRES_OWNER` (OAuth user who is not the live OWNER), `PERMISSION_DENIED` (account key of a user below ADMIN) or `WORKSPACE_MEMBERSHIP_REQUIRED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15497,8 +15479,8 @@
               }
             }
           },
-          "429": {
-            "description": "Rate limit exceeded",
+          "404": {
+            "description": "`NUMBER_NOT_FOUND`: `whatsappNumberId` is not a number of this workspace.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15513,10 +15495,14 @@
                   }
                 },
                 "example": {
-                  "error": "Too many requests"
+                  "error": "WhatsApp number not found",
+                  "code": "NUMBER_NOT_FOUND"
                 }
               }
             }
+          },
+          "500": {
+            "description": "`OAUTH_SECRET_AUDIT_UNAVAILABLE` (OAuth only: the audit record could not be written, so nothing was done — retry) or an unexpected failure (`{ \"error\": \"Internal server error\" }`)."
           }
         }
       }
@@ -15524,7 +15510,7 @@
     "/v1/api-keys/regenerate": {
       "post": {
         "summary": "Regenerate API key",
-        "description": "Rotates THE API key for the calling scope — the product keeps ONE key per scope, not many. A number-scoped key rotates that number's default key; a tenant-scoped key rotates the tenant key. The old key is revoked and the new one (key field) is returned ONLY ONCE. Not available for per-number OAuth grants (403).",
+        "description": "Rotates THE API key of the calling scope — the product keeps ONE key per scope, not many. The old key stops working and the new one (`key` field) is returned ONLY ONCE, with status `201`.\n\n- A **number key** rotates that number's default key (`ps_number_`).\n- A **workspace key** — the primary or a named one, even when narrowed with `x-whatsapp-number-id` — rotates the workspace's **primary** key (`ps_workspace_`); named keys keep working.\n- An **account key** with `x-workspace-id` rotates that workspace's primary key; the user must be the **OWNER** (`apikeys:reveal`).\n- An **OAuth/MCP token** consented for the whole workspace rotates the primary key too, only while the user is the live **OWNER** (`403 OAUTH_SECRET_REQUIRES_OWNER`), recorded in an audit log first (`500 OAUTH_SECRET_AUDIT_UNAVAILABLE` if the record cannot be written).\n- A token consented for specific numbers, or an account key of a member restricted to some numbers, gets `403 NUMBERS_GRANT_NOT_ALLOWED`.",
         "tags": [
           "API Keys"
         ],
@@ -15547,8 +15533,29 @@
               }
             }
           },
+          "400": {
+            "description": "A number-scoped credential with no number attached (`No WhatsApp number is associated with this API key`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "No WhatsApp number is associated with this API key"
+                }
+              }
+            }
+          },
           "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15568,26 +15575,14 @@
               }
             }
           },
-          "429": {
-            "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Too many requests"
-                }
-              }
-            }
+          "403": {
+            "description": "`NUMBERS_GRANT_NOT_ALLOWED` (per-number OAuth grant or restricted account key), `OAUTH_SECRET_REQUIRES_OWNER`, `PERMISSION_DENIED` (account key of a user who is not the OWNER) or `WORKSPACE_MEMBERSHIP_REQUIRED`."
+          },
+          "404": {
+            "description": "The key's number no longer exists."
+          },
+          "500": {
+            "description": "`OAUTH_SECRET_AUDIT_UNAVAILABLE` (OAuth only: the audit record could not be written, so nothing was done — retry) or an unexpected failure (`{ \"error\": \"Internal server error\" }`)."
           }
         }
       }
@@ -18438,7 +18433,7 @@
     "/v1/branding": {
       "get": {
         "summary": "Read tenant branding",
-        "description": "Returns the connect page's (/connect/<token>) branding/white-label: logo, colors, title/subtitle, support link and the white-label toggle. Requires a tenant-scoped API key — number-scoped keys get 403 (NUMBER_SCOPE_NOT_ALLOWED).\n\n**Requires a tenant-scoped key.**",
+        "description": "Returns the connect page's (/connect/<token>) branding/white-label: logo, colors, title/subtitle, support link and the white-label toggle. Requires a tenant-scoped API key — number-scoped keys get 403 (NUMBER_SCOPE_NOT_ALLOWED).\n\n**Requires a tenant-scoped credential.** An account key or OAuth token needs a user of **ADMIN or OWNER** (`workspace:branding:manage`), on `GET` too.",
         "tags": [
           "Branding"
         ],
@@ -18464,7 +18459,7 @@
             }
           },
           "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18485,7 +18480,7 @@
             }
           },
           "403": {
-            "description": "Number-scoped key used on a tenant-only endpoint",
+            "description": "`NUMBER_SCOPE_NOT_ALLOWED` (number-scoped credential), `PERMISSION_DENIED` (user below ADMIN) or `WORKSPACE_MEMBERSHIP_REQUIRED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18505,33 +18500,12 @@
                 }
               }
             }
-          },
-          "429": {
-            "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Too many requests"
-                }
-              }
-            }
           }
         }
       },
       "put": {
         "summary": "Update tenant branding",
-        "description": "Upserts the tenant branding. All fields optional: send null to clear, omit to keep. Colors are hex #RRGGBB; URLs https. Requires a tenant-scoped API key (403 NUMBER_SCOPE_NOT_ALLOWED for number-scoped keys). Logo upload: POST /api/branding/logo (dashboard session, multipart PNG/JPG/WebP ≤2MB).\n\n**Requires a tenant-scoped key.**",
+        "description": "Upserts the tenant branding. All fields optional: send null to clear, omit to keep. Colors are hex #RRGGBB; URLs https (max 2048 characters). Keys the schema does not know are ignored; `button` is validated but not stored at the workspace level (it only applies per pairing link). Requires a tenant-scoped API key (403 NUMBER_SCOPE_NOT_ALLOWED for number-scoped keys). Logo upload: POST /api/branding/logo (dashboard session, multipart PNG/JPG/WebP ≤2MB).\n\n**Requires a tenant-scoped credential.** An account key or OAuth token needs a user of **ADMIN or OWNER** (`workspace:branding:manage`), on `GET` too.",
         "tags": [
           "Branding"
         ],
@@ -18543,15 +18517,66 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "companyName": {
-                    "type": "string",
-                    "description": "Header title (replaces \"Pilot Status\").",
-                    "example": "Acme"
+                  "logoUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "description": "https URL shown in the header."
                   },
                   "primaryColor": {
-                    "type": "string",
-                    "description": "Primary color (buttons/accents).",
-                    "example": "#1fd286"
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Primary color (buttons/accents), `#RRGGBB`.",
+                    "example": "#1fd286",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "backgroundColor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "pattern": "^#[0-9a-fA-F]{6}$",
+                    "description": "Page/card background, `#RRGGBB`."
+                  },
+                  "companyName": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Header title (replaces \"Pilot Status\").",
+                    "example": "Acme",
+                    "maxLength": 60
+                  },
+                  "subtitle": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 120,
+                    "description": "Header subtitle."
+                  },
+                  "supportUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "description": "https URL of a \"Need help?\" link."
+                  },
+                  "defaultRedirectUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "description": "https URL to send the user to after a successful connection."
                   },
                   "hidePilotStatusBranding": {
                     "type": "boolean",
@@ -18612,7 +18637,7 @@
             }
           },
           "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18633,7 +18658,7 @@
             }
           },
           "403": {
-            "description": "Number-scoped key used on a tenant-only endpoint",
+            "description": "`NUMBER_SCOPE_NOT_ALLOWED` (number-scoped credential), `PERMISSION_DENIED` (user below ADMIN) or `WORKSPACE_MEMBERSHIP_REQUIRED`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18654,26 +18679,8 @@
               }
             }
           },
-          "429": {
-            "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Too many requests"
-                }
-              }
-            }
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       }
@@ -18681,7 +18688,7 @@
     "/v1/connect/{token}/branding": {
       "get": {
         "summary": "Resolved connect page branding",
-        "description": "Returns the resolved branding for a connect page (precedence: per-link override > tenant branding > Pilot Status default). Accepts both token shapes (remote-pairing UUID or Meta Embedded Signup JWT). Token-public endpoint; always 200 (falls back to defaults for an invalid token).",
+        "description": "Returns the resolved branding for a connect page (precedence: per-link override > tenant branding > Pilot Status default). Accepts both token shapes (remote-pairing UUID or Meta Embedded Signup JWT). Token-public endpoint — no API key needed; always 200 (falls back to defaults for an invalid token).",
         "tags": [
           "Branding"
         ],
@@ -18713,71 +18720,9 @@
                 }
               }
             }
-          },
-          "400": {
-            "description": "Invalid payload or parameters",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Validation error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Unauthorized"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Too many requests"
-                }
-              }
-            }
           }
-        }
+        },
+        "security": []
       }
     },
     "/v1/meta-embedded/{token}/complete": {
@@ -18957,7 +18902,7 @@
     "/v1/embed/sessions": {
       "post": {
         "summary": "Create embed session",
-        "description": "Creates a short-lived embed session token (JWT) to mount the chat (surface:\"chat\") or connect (surface:\"connect\") microfrontend on your own site via the @pilot-status/embed SDK. allowedOrigins (1–20 exact origins) restricts where the iframe may run; brandingOverride applies per-session branding; ttlSeconds controls validity (chat 15min, connect 30min, max 60min). Works with a number- or tenant-scoped key — a number-scoped key can only embed its own number. Refresh via POST /api/public/embed/refresh.",
+        "description": "Creates a short-lived embed session token (JWT) to mount the chat (`surface: \"chat\"`) or connect (`surface: \"connect\"`) microfrontend on your own site via the @pilot-status/embed SDK. `allowedOrigins` (1–20 exact `http(s)://host[:port]` origins) restricts where the iframe may run; `brandingOverride` applies per-session branding; `ttlSeconds` controls validity (default 900 for chat, 1800 for connect; max 3600). Fields the schema does not know are ignored. Refresh via `POST /api/public/embed/refresh`.\n\n**Credentials:** a workspace key, a number key (chat only — it can only embed its own number), an account key with `x-workspace-id`, or an OAuth token. `chat` needs a user of **AGENT or above** (`messages:send`); `connect` needs a tenant-scoped credential (`403 NUMBER_SCOPE_NOT_ALLOWED`) and a user of **ADMIN or above** (`numbers:connect`).",
         "tags": [
           "Embed"
         ],
@@ -18972,7 +18917,11 @@
                   "surface": {
                     "type": "string",
                     "description": "Microfrontend to embed.",
-                    "example": "chat"
+                    "example": "chat",
+                    "enum": [
+                      "chat",
+                      "connect"
+                    ]
                   },
                   "whatsappNumberIds": {
                     "type": "array",
@@ -18982,7 +18931,9 @@
                     },
                     "example": [
                       "num_01HZX..."
-                    ]
+                    ],
+                    "minItems": 1,
+                    "maxItems": 50
                   },
                   "allowedOrigins": {
                     "type": "array",
@@ -18992,16 +18943,20 @@
                     },
                     "example": [
                       "https://app.tenant.com"
-                    ]
+                    ],
+                    "minItems": 1,
+                    "maxItems": 20
                   },
                   "brandingOverride": {
                     "type": "object",
                     "description": "Per-session branding (logo/colors/title) overriding the tenant branding."
                   },
                   "ttlSeconds": {
-                    "type": "string",
+                    "type": "integer",
                     "description": "Token validity in seconds (default 900 chat / 1800 connect).",
-                    "example": "900"
+                    "example": 900,
+                    "minimum": 1,
+                    "maximum": 3600
                   }
                 },
                 "required": [
@@ -19032,7 +18987,7 @@
             }
           },
           "400": {
-            "description": "Invalid payload or parameters — or `INVALID_BODY` when the body is not valid JSON",
+            "description": "`{ \"error\": \"Validation error\", \"details\": … }` (missing, mistyped or out-of-range field), `NUMBERS_REQUIRED` (chat with a workspace credential and no `whatsappNumberIds`), `NO_NUMBER` (chat with a number-scoped credential that names no number) — or `INVALID_BODY` when the body is not valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19065,7 +19020,7 @@
             }
           },
           "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19085,8 +19040,11 @@
               }
             }
           },
-          "429": {
-            "description": "Rate limit exceeded",
+          "403": {
+            "description": "`NUMBER_SCOPE_NOT_ALLOWED` (connect with a number-scoped credential), `PERMISSION_DENIED` (the user's role cannot mint this surface) or `WORKSPACE_MEMBERSHIP_REQUIRED`."
+          },
+          "404": {
+            "description": "`NUMBER_NOT_FOUND`: some `whatsappNumberIds` are not numbers of this workspace; `missing` lists them.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19101,7 +19059,11 @@
                   }
                 },
                 "example": {
-                  "error": "Too many requests"
+                  "error": "One or more numbers not found for this tenant",
+                  "code": "NUMBER_NOT_FOUND",
+                  "missing": [
+                    "wa_unknown"
+                  ]
                 }
               }
             }
@@ -23928,7 +23890,7 @@
     "/v1/workspace": {
       "get": {
         "summary": "Get the workspace",
-        "description": "The credential's workspace. Members are unlimited on every plan: `seatLimit` is always `null`, and `seatsUsed` (active members **and** pending invitations still in date) is informational only.",
+        "description": "The credential's workspace. Members are unlimited on every plan: `seatLimit` is always `null`, and `seatsUsed` (active members **and** pending invitations still in date) is informational only.\n\n**Credentials:** a tenant-scoped `ps_` key, or an OAuth/MCP token or account key of any role (ANALYST included). A number-scoped key gets `403 NUMBER_SCOPE_NOT_ALLOWED`: this is account-wide. Sent with `Cache-Control: no-store`.",
         "tags": [
           "Workspace"
         ],
@@ -23971,8 +23933,14 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`."
+          },
           "403": {
-            "description": "Insufficient role, wrong credential, or invitations disabled."
+            "description": "Number-scoped key (`NUMBER_SCOPE_NOT_ALLOWED` — this is an account-wide resource) or OAuth/MCP user no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`)."
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       },
@@ -25146,7 +25114,7 @@
             }
           },
           "500": {
-            "description": "Unexpected failure (`INTERNAL_ERROR`).",
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25173,7 +25141,7 @@
     "/v1/workspace/members": {
       "get": {
         "summary": "List members",
-        "description": "Active members and pending invitations in one list, distinguished by `status`.\n\n**Never returns a token or `inviteUrl`** — only a hash is stored, so the link is not derivable after the fact. To get a link for a pending invitation, use `resend`.",
+        "description": "Active members and pending invitations in one list, distinguished by `status`.\n\n**Never returns a token or `inviteUrl`** — only a hash is stored, so the link is not derivable after the fact. To get a link for a pending invitation, use `resend`.\n\n**Credentials:** a tenant-scoped `ps_` key, or an OAuth/MCP token or account key whose user is **ADMIN or OWNER** (`members:read`). A number-scoped key gets `403 NUMBER_SCOPE_NOT_ALLOWED`. Sent with `Cache-Control: no-store`.",
         "tags": [
           "Workspace"
         ],
@@ -25218,7 +25186,8 @@
                             "type": "string",
                             "enum": [
                               "PENDING",
-                              "ACTIVE"
+                              "ACTIVE",
+                              "DECLINED"
                             ]
                           },
                           "allowedNumberIds": {
@@ -25248,6 +25217,27 @@
                           "inviteExpired": {
                             "type": "boolean",
                             "description": "`true` when the invitation has expired: the row still exists, but its link no longer works."
+                          },
+                          "inviteEmailSentAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time",
+                            "description": "When the invitation e-mail actually left. `null` = not sent (yet)."
+                          },
+                          "inviteEmailStatus": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "SENT",
+                              "QUEUED",
+                              "NOT_SENT",
+                              null
+                            ],
+                            "description": "For a PENDING invitation: `SENT`, `QUEUED` (less than 5 minutes old) or `NOT_SENT`. `null` for anyone who is not pending."
                           }
                         }
                       }
@@ -25270,14 +25260,20 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`."
+          },
           "403": {
-            "description": "Insufficient role, wrong credential, or invitations disabled."
+            "description": "Number-scoped key (`NUMBER_SCOPE_NOT_ALLOWED`), a user below ADMIN (`PERMISSION_DENIED`) or no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`)."
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       },
       "post": {
         "summary": "Invite a member",
-        "description": "Invites an e-mail address. An address that already has a pending invitation is NOT an error: the token is rotated in place (the old link dies) and the response is `200` instead of `201`.\n\n**OAuth required.** A classic key (`x-api-key`) is refused: an `x-api-key` request has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover.",
+        "description": "Invites an e-mail address. An address that already has a pending invitation is NOT an error: the token is rotated in place (the old link dies) and the response is `200` (`resent: true`) instead of `201`. The same happens for a DECLINED invitation.\n\n`role` defaults to `AGENT`. An OWNER can assign `ADMIN`, `AGENT` or `ANALYST`; an ADMIN only `AGENT` or `ANALYST`. Any other role — `OWNER` included — is `403 ROLE_NOT_ASSIGNABLE`, with `assignableRoles`. `inviteUrl` is returned only with `sendEmail: false`. An e-mail failure never fails the call.\n\n**A user on the wire.** Only an OAuth/MCP token or an account key (`ps_account_`) reaches it. A workspace or number `ps_` key is refused with `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`: an `x-api-key` request with such a key has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover. The user must be **ADMIN or OWNER** (`members:invite`).\n\n**Rate limits** (with or without e-mail): 30 invitations per hour per workspace (shared with `resend`), 3 per hour per recipient address, 60 per hour per IP — `429 RATE_LIMITED` with `retryAfterSeconds` and `Retry-After`.",
         "tags": [
           "Workspace"
         ],
@@ -25302,7 +25298,8 @@
                       "ANALYST"
                     ],
                     "description": "`OWNER` is NEVER assignable — becoming the owner is a transfer of ownership.",
-                    "example": "AGENT"
+                    "example": "AGENT",
+                    "default": "AGENT"
                   },
                   "allowedNumberIds": {
                     "type": "array",
@@ -25318,14 +25315,16 @@
                   }
                 },
                 "required": [
-                  "email",
-                  "role"
+                  "email"
                 ]
               }
             }
           }
         },
         "responses": {
+          "200": {
+            "description": "Existing pending (or declined) invitation rotated — same body as `201`, with `resent: true`."
+          },
           "201": {
             "description": "Invitation created",
             "content": {
@@ -25363,7 +25362,8 @@
                           "type": "string",
                           "enum": [
                             "PENDING",
-                            "ACTIVE"
+                            "ACTIVE",
+                            "DECLINED"
                           ]
                         },
                         "allowedNumberIds": {
@@ -25393,6 +25393,27 @@
                         "inviteExpired": {
                           "type": "boolean",
                           "description": "`true` when the invitation has expired: the row still exists, but its link no longer works."
+                        },
+                        "inviteEmailSentAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time",
+                          "description": "When the invitation e-mail actually left. `null` = not sent (yet)."
+                        },
+                        "inviteEmailStatus": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "SENT",
+                            "QUEUED",
+                            "NOT_SENT",
+                            null
+                          ],
+                          "description": "For a PENDING invitation: `SENT`, `QUEUED` (less than 5 minutes old) or `NOT_SENT`. `null` for anyone who is not pending."
                         }
                       }
                     },
@@ -25402,17 +25423,22 @@
                         "null"
                       ],
                       "description": "Present only with `sendEmail: false`."
+                    },
+                    "resent": {
+                      "type": "boolean",
+                      "description": "`true` when an existing pending or declined invitation was rotated (then the status is `200`)."
+                    },
+                    "emailSent": {
+                      "type": "boolean",
+                      "description": "Whether an invitation e-mail was enqueued (`sendEmail`)."
                     }
                   }
                 }
               }
             }
           },
-          "200": {
-            "description": "Pending invitation rotated"
-          },
           "400": {
-            "description": "Invalid payload (`INVALID_EMAIL`, missing role) — or `INVALID_BODY` when the body is not valid JSON",
+            "description": "`INVALID_EMAIL` (address not plausible) — or `INVALID_BODY` when the body is not valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25438,14 +25464,20 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`."
+          },
           "403": {
-            "description": "Insufficient role, wrong credential, or invitations disabled."
+            "description": "`MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS` (workspace or number `ps_` key), `NUMBER_SCOPE_NOT_ALLOWED` (credential restricted to some numbers), `PERMISSION_DENIED` (user below ADMIN), `WORKSPACE_MEMBERSHIP_REQUIRED`, `ROLE_NOT_ASSIGNABLE` (with `assignableRoles`) or `FEATURE_DISABLED` (invitations turned off for the account)."
           },
           "409": {
-            "description": "State conflict: `ALREADY_MEMBER`, `OWNER_INVITE_FORBIDDEN`, `OWNER_IMMUTABLE`."
+            "description": "`ALREADY_MEMBER`: that address is already an active member."
           },
           "429": {
-            "description": "Rate limited per workspace, per recipient and per IP."
+            "description": "`RATE_LIMITED` — 30/h per workspace, 3/h per recipient, 60/h per IP. `retryAfterSeconds` in the body and `Retry-After` header."
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       }
@@ -25453,7 +25485,7 @@
     "/v1/workspace/members/{id}": {
       "patch": {
         "summary": "Change a member's role",
-        "description": "Changes the role and, optionally, the per-number scope. Promoting to ADMIN clears the scope: ADMIN is workspace-wide, and storing a restriction the gate ignores would make the response lie.\n\n**OAuth required.** A classic key (`x-api-key`) is refused: an `x-api-key` request has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover.",
+        "description": "Changes the role and, optionally, the per-number scope. **OWNER only** (`members:role:update`). `allowedNumberIds` omitted keeps the current scope; `[]` sets it to all numbers. The member's OAuth refresh tokens are revoked. The owner's own role cannot change here (`409 OWNER_IMMUTABLE`). Promoting to ADMIN clears the scope: ADMIN is workspace-wide, and storing a restriction the gate ignores would make the response lie.\n\n**A user on the wire.** Only an OAuth/MCP token or an account key (`ps_account_`) reaches it. A workspace or number `ps_` key is refused with `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`: an `x-api-key` request with such a key has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover.",
         "tags": [
           "Workspace"
         ],
@@ -25501,10 +25533,10 @@
         },
         "responses": {
           "200": {
-            "description": "Member updated"
+            "description": "Member updated. Body: `{ \"member\": { ... } }`, same shape as the list."
           },
           "400": {
-            "description": "Invalid payload (`INVALID_EMAIL`, missing role) — or `INVALID_BODY` when the body is not valid JSON",
+            "description": "`ROLE_NOT_ASSIGNABLE` (`role` missing, unknown or `OWNER`; `assignableRoles` lists the valid ones) — or `INVALID_BODY` when the body is not valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -25530,20 +25562,26 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`."
+          },
           "403": {
-            "description": "Insufficient role, wrong credential, or invitations disabled."
+            "description": "`MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS` (workspace or number `ps_` key), `NUMBER_SCOPE_NOT_ALLOWED`, `PERMISSION_DENIED` (caller is not the OWNER) or `WORKSPACE_MEMBERSHIP_REQUIRED`."
+          },
+          "404": {
+            "description": "`NOT_FOUND`: the membership id is not in this workspace."
           },
           "409": {
-            "description": "State conflict: `ALREADY_MEMBER`, `OWNER_INVITE_FORBIDDEN`, `OWNER_IMMUTABLE`."
+            "description": "`OWNER_IMMUTABLE` (the target is the owner) or `WOULD_ORPHAN_WORKSPACE`."
           },
-          "429": {
-            "description": "Rate limited per workspace, per recipient and per IP."
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       },
       "delete": {
         "summary": "Remove a member or revoke an invitation",
-        "description": "One route for both: an invitation and a membership are the same row.\n\nIf the member created API keys that are still active, the removal STOPS with `409 MEMBER_HAS_API_KEYS` and returns the list. Repeat with `apiKeyAction=revoke` or `apiKeyAction=keep` — **there is no default**, because revoking by omission takes down production integrations in the middle of an offboarding.\n\n**OAuth required.** A classic key (`x-api-key`) is refused: an `x-api-key` request has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover.",
+        "description": "One route for both: an invitation and a membership are the same row.\n\nIf the member created API keys that are still active, the removal STOPS with `409 MEMBER_HAS_API_KEYS` and returns the list. Repeat with `apiKeyAction=revoke` or `apiKeyAction=keep` — in the query string or as `{\"apiKeyAction\": \"…\"}` in the body; the query wins — **there is no default**, because revoking by omission takes down production integrations in the middle of an offboarding.\n\n**OWNER only** (`members:remove`). The owner cannot be removed (`409 OWNER_IMMUTABLE`). The removed user's OAuth refresh tokens are revoked.\n\n**A user on the wire.** Only an OAuth/MCP token or an account key (`ps_account_`) reaches it. A workspace or number `ps_` key is refused with `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`: an `x-api-key` request with such a key has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover.",
         "tags": [
           "Workspace"
         ],
@@ -25574,13 +25612,56 @@
         ],
         "responses": {
           "200": {
-            "description": "Removed"
+            "description": "Removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "removed": {
+                      "type": "boolean"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "apiKeysRevoked": {
+                      "type": "integer"
+                    },
+                    "apiKeysReassigned": {
+                      "type": "integer"
+                    },
+                    "oauthTokensRevoked": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "removed": true,
+                  "email": "someone@acme.com",
+                  "apiKeysRevoked": 0,
+                  "apiKeysReassigned": 0,
+                  "oauthTokensRevoked": 1
+                }
+              }
+            }
           },
-          "409": {
-            "description": "`MEMBER_HAS_API_KEYS` (with the list in `apiKeys`) or `OWNER_IMMUTABLE`."
+          "400": {
+            "description": "`INVALID_BODY`: the body is not valid JSON (an empty body is fine)."
+          },
+          "401": {
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`."
           },
           "403": {
-            "description": "Insufficient role, wrong credential, or invitations disabled."
+            "description": "`MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS` (workspace or number `ps_` key), `NUMBER_SCOPE_NOT_ALLOWED`, `PERMISSION_DENIED` (caller is not the OWNER) or `WORKSPACE_MEMBERSHIP_REQUIRED`."
+          },
+          "404": {
+            "description": "`NOT_FOUND`: the membership id is not in this workspace."
+          },
+          "409": {
+            "description": "`MEMBER_HAS_API_KEYS` (with the list in `apiKeys` and a `hint`), `OWNER_IMMUTABLE` or `WOULD_ORPHAN_WORKSPACE`."
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       }
@@ -25588,7 +25669,7 @@
     "/v1/workspace/members/{id}/resend": {
       "post": {
         "summary": "Resend an invitation",
-        "description": "Rotates the token (the previous link dies) and re-enqueues the e-mail.\n\nThis is what makes `sendEmail: false` recoverable — since only the hash is stored, without this route a caller who lost the response would have no way back.\n\n**OAuth required.** A classic key (`x-api-key`) is refused: an `x-api-key` request has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover.",
+        "description": "Rotates the token (the previous link dies) and, unless `sendEmail` is `false`, re-enqueues the e-mail. The response is `{ member, emailSent, inviteUrl? }` — `inviteUrl` only with `sendEmail: false`.\n\nThis is what makes `sendEmail: false` recoverable — since only the hash is stored, without this route a caller who lost the response would have no way back.\n\n**A user on the wire.** Only an OAuth/MCP token or an account key (`ps_account_`) reaches it. A workspace or number `ps_` key is refused with `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`: an `x-api-key` request with such a key has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover. The user must be **ADMIN or OWNER** (`members:invite`).\n\n**Rate limit** — only when an e-mail is sent: 3 resends per hour per invitation, plus the invite's workspace (30/h) and IP (60/h) limits — `429 RATE_LIMITED`.",
         "tags": [
           "Workspace"
         ],
@@ -25651,11 +25732,23 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`."
+          },
           "403": {
-            "description": "Insufficient role, wrong credential, or invitations disabled."
+            "description": "`MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS` (workspace or number `ps_` key), `NUMBER_SCOPE_NOT_ALLOWED`, `PERMISSION_DENIED` (user below ADMIN), `WORKSPACE_MEMBERSHIP_REQUIRED` or `FEATURE_DISABLED` (invitations turned off for the account)."
+          },
+          "404": {
+            "description": "`NOT_FOUND`: the membership id is not in this workspace."
           },
           "409": {
-            "description": "`ALREADY_MEMBER` (already accepted) or `NOT_FOUND`."
+            "description": "`ALREADY_MEMBER`: the invitation was already accepted."
+          },
+          "429": {
+            "description": "`RATE_LIMITED` (only when an e-mail is sent). `retryAfterSeconds` in the body and `Retry-After` header."
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       }
@@ -25663,7 +25756,7 @@
     "/v1/workspace/members/{id}/numbers": {
       "patch": {
         "summary": "Set which numbers a member sees",
-        "description": "Sets which WhatsApp numbers of the workspace an AGENT or ANALYST sees and acts on, without changing the role. Works on pending invitations too.\n\n`allowedNumberIds` is **required** and **replaces the whole list**. `[]` means **all numbers**, including numbers connected later — not none. A member restricted to specific numbers does not gain new numbers automatically.\n\nThe member's OAuth refresh tokens are revoked, so a narrower scope applies on their next call.\n\n**OAuth required, ADMIN or OWNER.** A classic key (`x-api-key`) is refused with `MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`: an `x-api-key` request has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover. To change the role, use `PATCH /v1/workspace/members/{id}` (OWNER only).",
+        "description": "Sets which WhatsApp numbers of the workspace an AGENT or ANALYST sees and acts on, without changing the role. Works on pending invitations too.\n\n`allowedNumberIds` is **required** and **replaces the whole list**. `[]` means **all numbers**, including numbers connected later — not none. A member restricted to specific numbers does not gain new numbers automatically.\n\nThe member's OAuth refresh tokens are revoked, so a narrower scope applies on their next call.\n\n**A user on the wire, ADMIN or OWNER.** Only an OAuth/MCP token or an account key (`ps_account_`) reaches it. A workspace or number `ps_` key is refused with `MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`: such a request has no user behind it, and allowing writes to the member list would turn any key of the workspace into a path to account takeover. To change the role, use `PATCH /v1/workspace/members/{id}` (OWNER only).",
         "tags": [
           "Workspace"
         ],
@@ -25736,6 +25829,9 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`."
+          },
           "403": {
             "description": "`MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS` (classic key), `PERMISSION_DENIED` (caller is AGENT or ANALYST) or `WORKSPACE_MEMBERSHIP_REQUIRED`."
           },
@@ -25744,6 +25840,9 @@
           },
           "409": {
             "description": "`SCOPE_NOT_APPLICABLE`: the target is OWNER or ADMIN, who always see every number."
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       }
@@ -36847,7 +36946,7 @@
             }
           },
           "403": {
-            "description": "Not an account key (`ACCOUNT_KEY_REQUIRED`), not an active member of the workspace (`WORKSPACE_MEMBERSHIP_REQUIRED`), or a role below Admin (`PERMISSION_DENIED`)",
+            "description": "Not an account key (`ACCOUNT_KEY_REQUIRED`): workspace keys, number keys and OAuth/MCP tokens cannot use it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -36867,12 +36966,15 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       },
       "post": {
         "summary": "Create a workspace",
-        "description": "Creates a workspace owned by the account key's user and mints its PRIMARY workspace key, returned **only in this response**. A regular user's workspace is born on Free; a reseller's (marked by the Pilot Status team) on Pay As You Go, billed from the wallet, with the reseller's prices. Each user owns up to 10 workspaces by default (`409 WORKSPACE_LIMIT_REACHED`, with `limit`). `shareCard: true` links the new workspace to your reserve card (the shared card whose source workspace the Pilot Status team configured for you); `false` or ABSENT means NOT shared. **Behavior change (2026-10-29):** before, a reseller's workspace inherited the reserve card automatically. With `shareCard: true` the card is checked first and, on `409 SHARED_CARD_NOT_CONFIGURED`, `SOURCE_ARCHIVED` or `NO_SHARED_OWNER`, no workspace is created. `name` and `shareCard` are the only accepted fields. If the key cannot be minted the answer is still `201` with `apiKey: null` — rotate the primary with `POST /v1/api-keys/regenerate` (account key + `x-workspace-id`). Not idempotent: two calls create two workspaces.\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
+        "description": "Creates a workspace owned by the account key's user and mints its PRIMARY workspace key, returned **only in this response**. A regular user's workspace is born on Free; a reseller's (marked by the Pilot Status team) on Pay As You Go, billed from the wallet, with the reseller's prices. Each user owns up to 10 workspaces by default (`409 WORKSPACE_LIMIT_REACHED`, with `limit`). `shareCard: true` links the new workspace to your reserve card (the shared card whose source workspace the Pilot Status team configured for you); `false` or ABSENT means NOT shared. **Behavior change (2026-10-29):** before, a reseller's workspace inherited the reserve card automatically. With `shareCard: true` the card is checked first and, on `409 SHARED_CARD_NOT_CONFIGURED`, `SOURCE_ARCHIVED` or `NO_SHARED_OWNER`, no workspace is created. `name` and `shareCard` are the only accepted fields; a body that is not a JSON object (malformed JSON included) is read as empty, so it gets `400 NAME_REQUIRED`. If the key cannot be minted the answer is still `201` with `apiKey: null` — rotate the primary with `POST /v1/api-keys/regenerate` (account key + `x-workspace-id`). Not idempotent: two calls create two workspaces.\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
         "tags": [
           "Workspace"
         ],
@@ -36984,7 +37086,7 @@
             }
           },
           "403": {
-            "description": "Not an account key (`ACCOUNT_KEY_REQUIRED`), not an active member of the workspace (`WORKSPACE_MEMBERSHIP_REQUIRED`), or a role below Admin (`PERMISSION_DENIED`)",
+            "description": "Not an account key (`ACCOUNT_KEY_REQUIRED`): workspace keys, number keys and OAuth/MCP tokens cannot use it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -37031,6 +37133,9 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       }
@@ -37135,12 +37240,15 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       },
       "post": {
         "summary": "Create a named workspace key",
-        "description": "Mints a NAMED `ps_workspace_` key (never the primary), returned **only in this response**. Owner or Admin (`apikeys:rotate`). The key is recorded as created by the account key's user and is revoked if that user leaves the workspace. Up to 50 live (non-revoked) workspace keys per workspace, primary included (`409 WORKSPACE_KEY_LIMIT_REACHED`, with `limit`).\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
+        "description": "Mints a NAMED `ps_workspace_` key (never the primary), returned **only in this response**. Owner or Admin (`apikeys:rotate`). The key is recorded as created by the account key's user: removing that user from the workspace stops with `409 MEMBER_HAS_API_KEYS` until the OWNER decides to revoke or keep it. A body that is not a JSON object is read as empty (`400 NAME_REQUIRED`). Up to 50 live (non-revoked) workspace keys per workspace, primary included (`409 WORKSPACE_KEY_LIMIT_REACHED`, with `limit`).\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
         "tags": [
           "Workspace"
         ],
@@ -37271,7 +37379,7 @@
             }
           },
           "409": {
-            "description": "The workspace already has 50 live workspace keys",
+            "description": "`WORKSPACE_KEY_LIMIT_REACHED`: the workspace already has 50 live workspace keys (`limit`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -37295,6 +37403,9 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       }
@@ -37393,7 +37504,7 @@
             }
           },
           "404": {
-            "description": "No workspace key with that id in that workspace",
+            "description": "`API_KEY_NOT_FOUND`: no workspace key with that id in that workspace.",
             "content": {
               "application/json": {
                 "schema": {
@@ -37415,7 +37526,7 @@
             }
           },
           "409": {
-            "description": "The id is the primary key",
+            "description": "`PRIMARY_KEY_NOT_REVOCABLE`: the id is the primary key — rotate it with `POST /v1/api-keys/regenerate`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -37435,6 +37546,9 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Unexpected failure: `{ \"error\": \"Internal server error\" }`, no `code`."
           }
         }
       }

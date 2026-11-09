@@ -20,7 +20,12 @@ The iframe document is hosted on a Pilot subdomain, so its own `/api` calls are 
 
 ## POST /v1/embed/sessions — Mint a Chat embed token
 
-Mint embed tokens on **your backend**, never in the browser. Authenticated with your tenant's `ps_` API key (`x-api-key` header).
+Mint embed tokens on **your backend**, never in the browser. Authenticated with a `ps_` API key (`x-api-key` header) — a workspace key, a number key (chat only), an account key with `x-workspace-id` — or an OAuth access token.
+
+- **`chat`** needs a role of **Agent or above** behind an account key or OAuth token; an Analyst gets `403 PERMISSION_DENIED`.
+- **`connect`** needs a tenant-scoped credential (a number key gets `403 NUMBER_SCOPE_NOT_ALLOWED`) and, for a user, **Admin or Owner**.
+
+You cannot mint a token that reaches further than your own credential.
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/embed/sessions" \
@@ -39,19 +44,19 @@ curl -X POST "https://pilotstatus.com.br/v1/embed/sessions" \
 </ParamField>
 
 <ParamField body="whatsappNumberIds" type="string[]">
-  **Required for `surface: "chat"`** — the numbers the embed may act on. A **number-scoped** `ps_` key ignores this and is forced to its own number.
+  **Required for `surface: "chat"`** — 1 to 50 number ids (the `WhatsAppNumber` id) that the embed may act on; every one must belong to your workspace. A **number-scoped** credential — a number key, or a workspace key narrowed with `x-whatsapp-number-id` — ignores this and is forced to its own number.
 </ParamField>
 
 <ParamField body="allowedOrigins" type="string[]" required>
-  Exact origins allowed to frame the embed (min 1), e.g. `["https://app.tenant.com"]`.
+  1 to 20 exact origins allowed to frame the embed — `scheme://host[:port]`, `http` or `https`, no path, query or fragment — e.g. `["https://app.tenant.com"]`. A trailing `/` is dropped, the value is lowercased and duplicates are removed.
 </ParamField>
 
 <ParamField body="brandingOverride" type="object">
   Optional per-session branding override (see White-label below).
 </ParamField>
 
-<ParamField body="ttlSeconds" type="number">
-  Token lifetime. Defaults: **chat 15 min**, **connect 30 min**.
+<ParamField body="ttlSeconds" type="integer">
+  Token lifetime in seconds, a positive integer up to **3600** (1 hour). Defaults: **chat 900** (15 min), **connect 1800** (30 min).
 </ParamField>
 
 Response `201`:
@@ -68,7 +73,16 @@ Response `201`:
 
 The `token` is short-lived. The SDK injects it into the iframe **in memory** — never in a URL.
 
-A body that is not valid JSON returns `400 INVALID_BODY` and no token is minted. See [Malformed JSON body](/api/overview#malformed-json-body).
+A body that is not valid JSON returns `400 INVALID_BODY` and no token is minted. See [Malformed JSON body](/api/overview#malformed-json-body). Fields the schema does not know are ignored.
+
+| Status | `code` | What happened |
+| --- | --- | --- |
+| `400` | — | `{ "error": "Validation error", "details": … }`: a field is missing, has the wrong type or is out of range |
+| `400` | `NUMBERS_REQUIRED` | `surface: "chat"` with a workspace credential and no `whatsappNumberIds` |
+| `400` | `NO_NUMBER` | `surface: "chat"` with a number-scoped credential that names no number (e.g. an OAuth token consented for specific numbers, without `x-whatsapp-number-id`) |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | `surface: "connect"` with a number-scoped credential |
+| `403` | `PERMISSION_DENIED` | The user's role cannot mint this surface |
+| `404` | `NUMBER_NOT_FOUND` | Some `whatsappNumberIds` are not numbers of your workspace; `missing` lists them |
 
 ## POST /api/public/embed/refresh — Sliding refresh
 
