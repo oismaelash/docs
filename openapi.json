@@ -42,7 +42,7 @@
     "/v1/numbers": {
       "get": {
         "summary": "List numbers",
-        "description": "Lists every WhatsApp number on the tenant (PILOT_STATUS and Meta Cloud API), including connection state and API key prefixes. Authenticate with x-api-key-id (or x-api-key: ps_…). Every item also carries `extraChargeUnpaidSince` and `extraChargeDisconnectAt` (ISO 8601 or `null`): set while the number's extra-number charge is unpaid and sending from it is blocked — settle it with `POST /v1/numbers/{id}/pay`. They sit at the top level of the item, are not part of `health`, and do not change `state`.",
+        "description": "Lists every WhatsApp number on the tenant (PILOT_STATUS and Meta Cloud API), including connection state and API key prefixes. Authenticate with x-api-key-id (or x-api-key: ps_…). Every item also carries `extraChargeUnpaidSince` and `extraChargeDisconnectAt` (ISO 8601 or `null`): set while the number's extra-number charge is unpaid and sending from it is blocked — settle it with `POST /v1/numbers/{id}/pay`. They sit at the top level of the item, are not part of `health`, and do not change `state`. Requires an account-wide credential (workspace key, or an OAuth token granted the whole workspace): a number-scoped key, or an OAuth token granted only some numbers, gets 403 `NUMBER_SCOPE_NOT_ALLOWED`. `state` of an unofficial number (one item per number): `OPEN` (every connection open), `PARTIAL` (only some), `DISCONNECTED` (none) or `SHADOWBAN` (with `reason`); of a Meta number: `OPEN`/`DISCONNECTED` from `health.sendable`.",
         "tags": [
           "Numbers"
         ],
@@ -98,6 +98,28 @@
               }
             }
           },
+          "403": {
+            "description": "Number-scoped credential (`NUMBER_SCOPE_NOT_ALLOWED`), or OAuth/account user who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This endpoint requires a tenant-scoped API key",
+                  "code": "NUMBER_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -138,12 +160,16 @@
                   "name": {
                     "type": "string",
                     "description": "Display name for the number.",
-                    "example": "Suporte"
+                    "example": "Suporte",
+                    "minLength": 1,
+                    "maxLength": 60
                   },
                   "number": {
                     "type": "string",
                     "description": "Phone number (min 10 digits, optional +).",
-                    "example": "5511999999999"
+                    "example": "5511999999999",
+                    "minLength": 10,
+                    "pattern": "^\\+?\\d+$"
                   },
                   "linkToApiKey": {
                     "type": "boolean",
@@ -175,6 +201,22 @@
                         "example": true
                       }
                     }
+                  },
+                  "piiMode": {
+                    "type": "string",
+                    "enum": [
+                      "STORE_INDEFINITE",
+                      "STORE_X_DAYS",
+                      "RELAY_ONLY"
+                    ],
+                    "default": "STORE_INDEFINITE",
+                    "description": "Data-retention policy of the number. Any other value: 400 `Invalid piiMode`."
+                  },
+                  "piiRetentionDays": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3650,
+                    "description": "Required with `piiMode: STORE_X_DAYS`; ignored for the other modes."
                   }
                 },
                 "required": [
@@ -290,6 +332,76 @@
               }
             }
           },
+          "402": {
+            "description": "Capacity gate: `error` is `PLAN_NUMBER_LIMIT_REACHED` or `INSUFFICIENT_FUNDS` (the code arrives in `error`), with `plan`, `maxNumbers`, `currentNumberCount`, `extras`, `proratedTotal`, `walletBalance`, `currency`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "PLAN_NUMBER_LIMIT_REACHED",
+                  "plan": "FREE",
+                  "maxNumbers": 1,
+                  "currentNumberCount": 1
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `numbers:connect` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or a per-number OAuth grant (`NUMBERS_GRANT_NOT_ALLOWED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:connect).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The number already exists (`Number already exists`), or was deleted in this workspace and is inside its 30-day window (`NUMBER_SOFT_DELETED`, with `numberId` and `restorableUntil`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This number was deleted and is inside the 30-day recovery window. Use POST /v1/numbers/{id}/restore to recover it, or DELETE /v1/numbers/{id}/purge to discard it for good and recreate it.",
+                  "code": "NUMBER_SOFT_DELETED",
+                  "numberId": "num_01HZX...",
+                  "restorableUntil": "2026-12-09T12:00:00.000Z"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -310,6 +422,28 @@
                 }
               }
             }
+          },
+          "502": {
+            "description": "The provider refused to create the instance; nothing is kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Failed to create instance",
+                  "details": "Upstream provider returned 500"
+                }
+              }
+            }
           }
         }
       }
@@ -317,7 +451,7 @@
     "/v1/numbers/meta": {
       "post": {
         "summary": "Create Meta number (Cloud API)",
-        "description": "Manual Meta Cloud API onboarding: you already own the WABA + system-user token and pass the credentials directly. Returns the created number + the webhook URL/verifyToken you must configure in your Meta app. (No credentials yet? Use /api/v1/numbers/remote-pairing with provider=META.)",
+        "description": "Manual Meta Cloud API onboarding: you already own the WABA + system-user token and pass the credentials directly. Returns the created number + the webhook URL/verifyToken you must configure in your Meta app. (No credentials yet? Use /api/v1/numbers/remote-pairing with provider=META.) Any `ps_` key of the workspace can call it; a per-number OAuth grant gets 403 `NUMBERS_GRANT_NOT_ALLOWED`. `webhook.verifyToken` always comes back to `ps_` keys; over OAuth/MCP only once the reveal is recorded in the audit trail — if that record fails, the number is still created but `verifyToken` is `null`, with `secretWithheld: true` and `secretWithheldCode: \"OAUTH_SECRET_AUDIT_UNAVAILABLE\"`.",
         "tags": [
           "Numbers"
         ],
@@ -332,12 +466,16 @@
                   "name": {
                     "type": "string",
                     "description": "Display name for the number.",
-                    "example": "Atendimento"
+                    "example": "Atendimento",
+                    "minLength": 1,
+                    "maxLength": 60
                   },
                   "number": {
                     "type": "string",
                     "description": "Phone number (min 8 digits, optional +).",
-                    "example": "5511999999999"
+                    "example": "5511999999999",
+                    "minLength": 8,
+                    "pattern": "^\\+?\\d+$"
                   },
                   "metaPhoneId": {
                     "type": "string",
@@ -368,6 +506,11 @@
                     "type": "boolean",
                     "description": "Link the number to the calling API key (default true).",
                     "example": "true"
+                  },
+                  "routeWebhooksToPilot": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When `true`, Pilot subscribes the WABA to its own webhook callback (`override_callback_uri`) — this redirects EVERY number on the WABA. The response returns `webhook.routedToPilot: true`."
                   }
                 },
                 "required": [
@@ -458,6 +601,52 @@
                 },
                 "example": {
                   "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Capacity gate: `error` is `PLAN_NUMBER_LIMIT_REACHED` or `INSUFFICIENT_FUNDS` (the code arrives in `error`), with `plan`, `maxNumbers`, `currentNumberCount`, `extras`, `proratedTotal`, `walletBalance`, `currency`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "PLAN_NUMBER_LIMIT_REACHED",
+                  "plan": "FREE",
+                  "maxNumbers": 1,
+                  "currentNumberCount": 1
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `numbers:connect` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or a per-number OAuth grant (`NUMBERS_GRANT_NOT_ALLOWED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:connect).",
+                  "code": "PERMISSION_DENIED"
                 }
               }
             }
@@ -783,6 +972,28 @@
               }
             }
           },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `numbers:connect` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or a per-number OAuth grant (`NUMBERS_GRANT_NOT_ALLOWED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:connect).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -960,6 +1171,49 @@
                 },
                 "example": {
                   "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `numbers:read` (every role), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:read).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Number not found in this workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Number not found"
                 }
               }
             }
@@ -1223,6 +1477,28 @@
               }
             }
           },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `numbers:update` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:update).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Number not found",
             "content": {
@@ -1245,7 +1521,7 @@
       },
       "delete": {
         "summary": "Delete number",
-        "description": "Deletes the number with a 30-day SOFT delete. The paired device is logged out right away; the number itself is kept until `restorableUntil` (returned in the response) and then purged for good by a background job. Within the window: `POST /v1/numbers/{id}/restore` brings it back (reconnection required), `DELETE /v1/numbers/{id}/purge` destroys it immediately. While the number sits in the window, creating the SAME phone again returns `409 NUMBER_SOFT_DELETED`, so a delete-and-recreate flow must purge first. A deleted number is not charged on the next Pay As You Go cycle; on the other plans deleting does NOT reduce paid capacity (see `DELETE /v1/subscription/extra-numbers`).",
+        "description": "Deletes the number with a 30-day SOFT delete. The paired device is logged out right away; the number itself is kept until `restorableUntil` (returned in the response) and then purged for good by a background job. Within the window: `POST /v1/numbers/{id}/restore` brings it back (reconnection required), `DELETE /v1/numbers/{id}/purge` destroys it immediately. While the number sits in the window, creating the SAME phone again returns `409 NUMBER_SOFT_DELETED`, so a delete-and-recreate flow must purge first. A deleted number is not charged on the next Pay As You Go cycle; on the other plans deleting does NOT reduce paid capacity (see `DELETE /v1/subscription/extra-numbers`). `{id}` accepts the number id or the instance id.",
         "tags": [
           "Numbers"
         ],
@@ -1312,6 +1588,49 @@
                 },
                 "example": {
                   "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `numbers:delete` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:delete).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Number not found in this workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Number not found"
                 }
               }
             }
@@ -1389,6 +1708,28 @@
                 },
                 "example": {
                   "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `numbers:restore` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:restore).",
+                  "code": "PERMISSION_DENIED"
                 }
               }
             }
@@ -1685,6 +2026,28 @@
                 },
                 "example": {
                   "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `numbers:connect` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:connect).",
+                  "code": "PERMISSION_DENIED"
                 }
               }
             }
@@ -2019,7 +2382,7 @@
     "/v1/numbers/{id}/status": {
       "get": {
         "summary": "Number connection status",
-        "description": "Syncs and returns the number's current connection state (OPEN/CONNECTING/CLOSE). Meta numbers return OPEN. A Meta number created by POST /v1/numbers/remote-pairing answers PENDING while the end user is still inside the Embedded Signup dialog and EXPIRED once that window closed without completion — both carry `expiresAt`. A 200 does NOT mean connected: poll until `state` is OPEN and stop on EXPIRED. Useful to poll after creating/connecting.",
+        "description": "Syncs and returns the number's current connection state (OPEN/CONNECTING/CLOSE). Meta numbers return OPEN. A Meta number created by POST /v1/numbers/remote-pairing answers PENDING while the end user is still inside the Embedded Signup dialog and EXPIRED once that window closed without completion — both carry `expiresAt`. A 200 does NOT mean connected: poll until `state` is OPEN and stop on EXPIRED. Useful to poll after creating/connecting. On a Meta number `state` is always `OPEN` (no `checkedAt`/`lastKnownAt`) and the response carries `sendable` and `health` (`status`, `code`, `reason`, `qualityRating`, `metaStatus`) — read those to know whether the number can send.",
         "tags": [
           "Numbers"
         ],
@@ -2132,6 +2495,27 @@
               }
             }
           },
+          "404": {
+            "description": "Number not found (no `code` field)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Not found"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -2149,6 +2533,29 @@
                 },
                 "example": {
                   "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The connection check failed; `code` is `PROVIDER_NOT_CONFIGURED` (permanent), `UPSTREAM_TIMEOUT` or `UPSTREAM_ERROR` (transient); `state` carries the last stored state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Failed to fetch status",
+                  "code": "UPSTREAM_TIMEOUT",
+                  "state": "CLOSE"
                 }
               }
             }
@@ -2278,6 +2685,71 @@
               }
             }
           },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `numbers:connect` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (numbers:connect).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown id, or a Meta number (there is no QR connection to pair)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The number is already connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Instance already connected",
+                  "state": "OPEN"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -2295,6 +2767,28 @@
                 },
                 "example": {
                   "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider returned neither a QR code nor a pairing code — retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Failed to generate QR code",
+                  "code": "EMPTY_CONNECT_BUNDLE"
                 }
               }
             }
@@ -12262,14 +12756,15 @@
                 "example": {
                   "valid": true,
                   "name": "Cliente Acme",
-                  "number": "5511988887777",
-                  "state": "CONNECTING"
+                  "maskedNumber": "+5511****7777",
+                  "state": "CONNECTING",
+                  "branding": {}
                 }
               }
             }
           },
-          "400": {
-            "description": "Invalid payload or parameters",
+          "404": {
+            "description": "Unknown or expired token",
             "content": {
               "application/json": {
                 "schema": {
@@ -12284,28 +12779,8 @@
                   }
                 },
                 "example": {
-                  "error": "Validation error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Unauthorized"
+                  "valid": false,
+                  "reason": "expired"
                 }
               }
             }
@@ -12331,7 +12806,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/v1/remote-pairing/{token}/connect": {
@@ -12367,7 +12843,7 @@
             }
           },
           "400": {
-            "description": "Invalid payload or parameters",
+            "description": "The token's instance has no workspace",
             "content": {
               "application/json": {
                 "schema": {
@@ -12382,28 +12858,7 @@
                   }
                 },
                 "example": {
-                  "error": "Validation error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Unauthorized"
+                  "error": "Instance has no tenant"
                 }
               }
             }
@@ -12456,6 +12911,49 @@
               }
             }
           },
+          "404": {
+            "description": "Unknown or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Invalid or expired token"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The number is already connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Instance already connected",
+                  "state": "OPEN"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -12476,8 +12974,31 @@
                 }
               }
             }
+          },
+          "502": {
+            "description": "The provider returned neither a QR code nor a pairing code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Failed to generate QR code",
+                  "code": "EMPTY_CONNECT_BUNDLE"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": []
       }
     },
     "/v1/remote-pairing/{token}/status": {
@@ -12512,8 +13033,8 @@
               }
             }
           },
-          "400": {
-            "description": "Invalid payload or parameters",
+          "404": {
+            "description": "Unknown or expired token",
             "content": {
               "application/json": {
                 "schema": {
@@ -12528,28 +13049,7 @@
                   }
                 },
                 "example": {
-                  "error": "Validation error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Unauthorized"
+                  "error": "Token not found or expired"
                 }
               }
             }
@@ -12575,7 +13075,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/v1/branding": {
@@ -13031,7 +13532,7 @@
             }
           },
           "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Invalid or expired onboarding token (the session lasts 30 minutes)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13046,7 +13547,8 @@
                   }
                 },
                 "example": {
-                  "error": "Unauthorized"
+                  "error": "Invalid or expired onboarding token",
+                  "code": "INVALID_SESSION"
                 }
               }
             }
@@ -13094,7 +13596,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/v1/embed/sessions": {
@@ -15162,8 +15665,51 @@
                   }
                 },
                 "example": {
-                  "error": "Missing number",
+                  "error": "whatsappNumberId is required (x-whatsapp-number-id header)",
                   "code": "NUMBER_REQUIRED"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `integrations:manage` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (integrations:manage).",
+                  "code": "PERMISSION_DENIED"
                 }
               }
             }
@@ -15186,27 +15732,6 @@
                 "example": {
                   "error": "WhatsApp number not found",
                   "code": "NUMBER_NOT_FOUND"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Unauthorized"
                 }
               }
             }
@@ -15338,6 +15863,49 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `integrations:manage` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (integrations:manage).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The number does not belong to this tenant",
             "content": {
@@ -15356,27 +15924,6 @@
                 "example": {
                   "error": "WhatsApp number not found",
                   "code": "NUMBER_NOT_FOUND"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Unauthorized"
                 }
               }
             }
@@ -15510,6 +16057,49 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `integrations:manage` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (integrations:manage).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Chatwoot is not connected for this number",
             "content": {
@@ -15528,27 +16118,6 @@
                 "example": {
                   "error": "Chatwoot is not connected for this number",
                   "code": "NOT_CONNECTED"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Unauthorized"
                 }
               }
             }
@@ -15626,8 +16195,8 @@
               }
             }
           },
-          "404": {
-            "description": "The number does not belong to this tenant",
+          "400": {
+            "description": "No number resolvable (tenant key / per-number grant without x-whatsapp-number-id)",
             "content": {
               "application/json": {
                 "schema": {
@@ -15642,8 +16211,8 @@
                   }
                 },
                 "example": {
-                  "error": "WhatsApp number not found",
-                  "code": "NUMBER_NOT_FOUND"
+                  "error": "whatsappNumberId is required (x-whatsapp-number-id header)",
+                  "code": "NUMBER_REQUIRED"
                 }
               }
             }
@@ -15665,6 +16234,50 @@
                 },
                 "example": {
                   "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `integrations:manage` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (integrations:manage).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The number does not belong to this tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "WhatsApp number not found",
+                  "code": "NUMBER_NOT_FOUND"
                 }
               }
             }
@@ -15785,6 +16398,49 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `integrations:manage` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (integrations:manage).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The number does not belong to this tenant",
             "content": {
@@ -15807,6 +16463,93 @@
               }
             }
           },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/chatwoot/history-sync": {
+      "get": {
+        "summary": "Get Chatwoot history sync status",
+        "description": "Progress of the latest replay of the number's stored history into its Chatwoot inbox. Sync progress: `status` is `QUEUED`, `RUNNING`, `DONE`, `PARTIAL`, `FAILED` or `CANCELED`; `null` when there never was one. The number comes from the key scope (number key) or the x-whatsapp-number-id header (tenant key / OAuth). Needs `integrations:manage` over OAuth / account keys. Served with `Cache-Control: no-store`.",
+        "tags": [
+          "Chatwoot"
+        ],
+        "operationId": "get_chatwoot_history_sync",
+        "parameters": [
+          {
+            "name": "x-whatsapp-number-id",
+            "in": "header",
+            "required": false,
+            "description": "Scopes to a single number (required for tenant keys / per-number OAuth grants).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "num_01HZX..."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Progress",
+            "content": {
+              "application/json": {
+                "example": {
+                  "historySync": {
+                    "status": "RUNNING",
+                    "windowDays": 30,
+                    "total": 120,
+                    "done": 48,
+                    "failed": 0,
+                    "skippedMedia": 2,
+                    "lastErrorCode": null,
+                    "startedAt": "2026-11-09T12:00:05.000Z",
+                    "finishedAt": null
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No number resolvable (tenant key / per-number grant without x-whatsapp-number-id)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "whatsappNumberId is required (x-whatsapp-number-id header)",
+                  "code": "NUMBER_REQUIRED"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
             "content": {
@@ -15824,6 +16567,435 @@
                 },
                 "example": {
                   "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `integrations:manage` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (integrations:manage).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The number does not belong to this tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "WhatsApp number not found",
+                  "code": "NUMBER_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Start Chatwoot history sync",
+        "description": "Replays the already-stored history of a Meta coexistence number (the history imported at Embedded Signup) into its Chatwoot inbox, oldest first. Answers 202 and runs in the background — follow it with GET. Optional body: `windowDays` (`30` or `90`; any other value means `30`) and `markRead` (default `true`: on finish, in API-mirror mode, touched conversations are marked read and resolved). The number checks run before the body is read. Idempotent: only re-posts messages that never landed.",
+        "tags": [
+          "Chatwoot"
+        ],
+        "operationId": "post_chatwoot_history_sync",
+        "parameters": [
+          {
+            "name": "x-whatsapp-number-id",
+            "in": "header",
+            "required": false,
+            "description": "Scopes to a single number (required for tenant keys / per-number OAuth grants).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "num_01HZX..."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "windowDays": {
+                    "type": "integer",
+                    "enum": [
+                      30,
+                      90
+                    ],
+                    "default": 30,
+                    "description": "History window, in days."
+                  },
+                  "markRead": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Mark touched conversations read and resolve them on finish (API-mirror mode)."
+                  }
+                }
+              },
+              "example": {
+                "windowDays": 90,
+                "markRead": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Sync queued",
+            "content": {
+              "application/json": {
+                "example": {
+                  "historySync": {
+                    "status": "QUEUED",
+                    "windowDays": 30,
+                    "total": 0,
+                    "done": 0,
+                    "failed": 0,
+                    "skippedMedia": 0,
+                    "lastErrorCode": null,
+                    "startedAt": null,
+                    "finishedAt": null
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No number resolvable (tenant key / per-number grant without x-whatsapp-number-id) — or `INVALID_BODY` when the body is not valid JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "whatsappNumberId is required (x-whatsapp-number-id header)",
+                  "code": "NUMBER_REQUIRED"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `integrations:manage` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (integrations:manage).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The number does not belong to this tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "WhatsApp number not found",
+                  "code": "NUMBER_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A sync is already `QUEUED` or `RUNNING` for the number (the body carries `historySync`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "historySync": {
+                    "status": "RUNNING",
+                    "windowDays": 30,
+                    "total": 120,
+                    "done": 48,
+                    "failed": 0,
+                    "skippedMedia": 2,
+                    "lastErrorCode": null,
+                    "startedAt": "2026-11-09T12:00:05.000Z",
+                    "finishedAt": null
+                  },
+                  "code": "ALREADY_RUNNING"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`FEATURE_NOT_SUPPORTED` (not a Meta number), `HISTORY_SYNC_NOT_COEXISTENCE` (not a coexistence number), `CHATWOOT_NOT_CONNECTED` (no enabled Chatwoot inbox) or `FEATURE_NOT_SUPPORTED_PII` (the number is `RELAY_ONLY` and stores no content)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This number is not a coexistence number, so there is no stored history to send.",
+                  "code": "HISTORY_SYNC_NOT_COEXISTENCE"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel Chatwoot history sync",
+        "description": "Asks the running sync to stop (the worker stops at its next step and marks it `CANCELED`). Always answers 200 with `code: \"CANCELING\"` and the current state in `historySync` — also when nothing is running.",
+        "tags": [
+          "Chatwoot"
+        ],
+        "operationId": "delete_chatwoot_history_sync",
+        "parameters": [
+          {
+            "name": "x-whatsapp-number-id",
+            "in": "header",
+            "required": false,
+            "description": "Scopes to a single number (required for tenant keys / per-number OAuth grants).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "num_01HZX..."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancellation requested",
+            "content": {
+              "application/json": {
+                "example": {
+                  "historySync": {
+                    "status": "RUNNING",
+                    "windowDays": 30,
+                    "total": 120,
+                    "done": 48,
+                    "failed": 0,
+                    "skippedMedia": 2,
+                    "lastErrorCode": null,
+                    "startedAt": "2026-11-09T12:00:05.000Z",
+                    "finishedAt": null
+                  },
+                  "code": "CANCELING"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No number resolvable (tenant key / per-number grant without x-whatsapp-number-id)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "whatsappNumberId is required (x-whatsapp-number-id header)",
+                  "code": "NUMBER_REQUIRED"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "OAuth/MCP token or account key (`ps_account_`) of a user whose workspace role lacks `integrations:manage` (Admin or Owner), or who is no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`); or OAuth token granted other numbers (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Your workspace role does not allow this action (integrations:manage).",
+                  "code": "PERMISSION_DENIED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The number does not belong to this tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "WhatsApp number not found",
+                  "code": "NUMBER_NOT_FOUND"
                 }
               }
             }

@@ -11,6 +11,8 @@ Create a WhatsApp number via the public API, connect it (QR code or pairing code
 
 <Note>
   Use a **tenant-scoped** API key (recommended for SaaS platforms managing multiple numbers). A number-scoped key also works — it stays bound to the number it already covers. Authenticate with `x-api-key: ps_...`.
+
+  With an OAuth / MCP token or an account key (`ps_account_`), the workspace role is checked: creating, connecting and logging out a number need `numbers:connect`, deleting needs `numbers:delete` and restoring needs `numbers:restore` — **Admin or Owner** — and purging needs `numbers:purge` — **Owner** only. Otherwise the answer is `403 PERMISSION_DENIED`. Workspace and number keys (`ps_workspace_`, `ps_number_`) carry no role and are not subject to this check.
 </Note>
 
 ## POST /v1/numbers — Create a number
@@ -26,11 +28,23 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers" \
 ```
 
 <ParamField body="name" type="string" required>
-  Display name for the number.
+  Display name for the number (1–60 characters).
 </ParamField>
 
 <ParamField body="number" type="string" required>
-  The phone number in E.164 format (e.g. `+5511999999999`).
+  The phone number in E.164 format (e.g. `+5511999999999`): digits only, optional leading `+`, at least 10 characters.
+</ParamField>
+
+<ParamField body="settings" type="object">
+  Optional — the same `settings` block as [`PATCH /v1/numbers/{id}`](/api/numbers/settings), applied before the number connects. This is where `historyImportEnabled` has to be decided. An invalid block answers `400 INVALID_SETTINGS` and nothing is created.
+</ParamField>
+
+<ParamField body="piiMode" type="string" default="STORE_INDEFINITE">
+  Optional data-retention policy: `STORE_INDEFINITE`, `STORE_X_DAYS` or `RELAY_ONLY` — see [Number settings](/api/numbers/settings). Any other value answers `400` `{ "error": "Invalid piiMode" }`.
+</ParamField>
+
+<ParamField body="piiRetentionDays" type="integer">
+  Required with `piiMode: "STORE_X_DAYS"`: an integer from 1 to 3650. Ignored for the other modes.
 </ParamField>
 
 <ParamField body="linkToApiKey" type="boolean" deprecated>
@@ -61,6 +75,8 @@ The response includes `qrcodeBase64` and `pairingCode` (WhatsApp letter pairing 
 
 `instance` is unchanged, and `instance.id` is still the **instance** id, not the number id. Key your records on `numberId`.
 
+The `201` also carries `settings` — the [settings](/api/numbers/settings) the number was created with, defaults included — and, when the body set one of the unofficial-number fields, `settingsSync` (`applied` / `failed` / `skipped`) reporting the push to the provider.
+
 <Warning>
   Call these endpoints only from your **backend** — never expose your `ps_` key in the browser.
 </Warning>
@@ -76,7 +92,7 @@ The response includes `qrcodeBase64` and `pairingCode` (WhatsApp letter pairing 
 
 Provisions an **official Meta Cloud API number** from WABA credentials you already own. This flow is for platforms that already control the WABA and hold a **system-user token**. If you don't have these credentials, use the hosted Embedded Signup via a [remote pairing link](/api/numbers/remote-pairing) with `provider=META` instead.
 
-Requires a **tenant-scoped** API key.
+Any `ps_` key of the workspace can call it; only an OAuth token granted specific numbers is refused (`403 NUMBERS_GRANT_NOT_ALLOWED`). Over OAuth or with an account key it needs `numbers:connect` (Admin or Owner).
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/numbers/meta" \
@@ -98,7 +114,7 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/meta" \
 </ParamField>
 
 <ParamField body="number" type="string" required>
-  The phone number as digits, with an optional leading `+`.
+  The phone number as digits, with an optional leading `+` (at least 8 characters).
 </ParamField>
 
 <ParamField body="metaPhoneId" type="string" required>
@@ -134,11 +150,14 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/meta" \
 Errors:
 
 - `400 INVALID_BODY` — the body of `POST /v1/numbers` or `POST /v1/numbers/meta` is not valid JSON; nothing is created. See [Malformed JSON body](/api/overview#malformed-json-body).
-- `400` — validation error (missing or invalid body fields).
+- `400` — `{ "error": "Validation error", "details": … }`: missing or invalid body fields. On `POST /v1/numbers` also `400 INVALID_SETTINGS` (bad `settings` block) and `400` `{ "error": "Invalid piiMode" }` / the `piiRetentionDays` message.
 - `402 PLAN_NUMBER_LIMIT_REACHED` — your plan's own number allowance is full. **On the Free plan** adding credits does **not** clear it: free a slot, buy an extra number yourself or move up a plan. **On a paid plan** it is answered only when you never bought an extra number and the next one cannot be funded.
 - `402 INSUFFICIENT_FUNDS` — paid plans only: the number would be a **paid extra** and there is neither wallet balance nor a saved card.
 - `403 NUMBERS_GRANT_NOT_ALLOWED` — per-number OAuth grants cannot provision numbers.
+- `403 PERMISSION_DENIED` — OAuth token or account key of a user below Admin (`numbers:connect`).
 - `409` — "Number already exists".
+- `409 NUMBER_SOFT_DELETED` — `POST /v1/numbers` only: the phone was deleted in this workspace and is inside its 30-day window; the body carries `numberId` and `restorableUntil`. See the DELETE section below.
+- `502` — `POST /v1/numbers` only: `{ "error": "Failed to create instance", "details": "Upstream provider returned …" }`. Nothing is kept.
 
 ### Capacity errors and what fixes them
 
@@ -183,6 +202,8 @@ Sending works the moment the number is created — it does not depend on the web
 }
 ```
 
+`webhook.verifyToken` is returned to every `ps_` key. Over an OAuth / MCP connection it is returned only after the reveal is recorded in the workspace's audit trail; if that record cannot be written, the number is still created, but `verifyToken` comes back `null` together with `secretWithheld: true`, `secretWithheldCode: "OAUTH_SECRET_AUDIT_UNAVAILABLE"` and a bilingual `secretWithheldReason`.
+
 Two ways to wire it:
 
 - **Automatic** — pass `routeWebhooksToPilot: true` in the request. Pilot subscribes the WABA for you and the response returns `webhook.routedToPilot: true`; nothing else to configure.
@@ -202,7 +223,9 @@ curl "https://pilotstatus.com.br/v1/numbers/wa_abc/connect" \
 - Response includes fresh `qrcodeBase64` and `pairingCode`.
 - If the number is already connected (`OPEN`), the endpoint returns **409** — there is nothing to pair.
 - **Free plan:** when the plan's allowance is already full and this number never connected, the endpoint returns `402` with `{ "error": "PLAN_NUMBER_LIMIT_REACHED", "code": "PLAN_NUMBER_LIMIT_REACHED", "message": "…", "plan": "FREE", "maxNumbers": 1, "currentNumberCount": 1 }`, and no QR code is generated. `message` is a bilingual sentence, `English | Português`. Re-pairing a number that had already connected is never refused. See [Free plan](/api/extra-numbers#free-plan).
-- Not applicable to **Meta** numbers (they do not use QR pairing).
+- Not applicable to **Meta** numbers (they do not use QR pairing): the endpoint answers `404` `{ "error": "Not found" }`, as it does for an unknown id.
+- `502` `{ "error": "Failed to generate QR code", "code": "EMPTY_CONNECT_BUNDLE" }` when the provider returned neither a QR code nor a pairing code — retry.
+- `{id}` may be the number id or the instance id. Over OAuth or with an account key it needs `numbers:connect` (Admin or Owner).
 - Reflects the same connection state as the Numbers page in the dashboard.
 
 ## DELETE /v1/numbers/{id} — Remove a number
@@ -215,6 +238,8 @@ curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wa_abc" \
 ```json
 { "ok": true, "restorableUntil": "2026-10-23T12:33:06.604Z" }
 ```
+
+`{id}` may be the number id or the instance id. Unknown id: `404` `{ "error": "Number not found" }`.
 
 This is a **30-day soft delete**, not a wipe:
 

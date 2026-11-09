@@ -11,6 +11,8 @@ Crie um número de WhatsApp via API pública, conecte-o (QR code ou código de p
 
 <Note>
   Use uma chave de API **com escopo de tenant** (recomendada para plataformas SaaS que gerenciam múltiplos números). Uma chave com escopo de número também funciona — ela continua presa ao número que já cobre. Autentique com `x-api-key: ps_...`.
+
+  Com um token OAuth / MCP ou uma chave de conta (`ps_account_`), o papel no workspace é conferido: criar, conectar e desconectar um número exigem `numbers:connect`, excluir exige `numbers:delete` e restaurar exige `numbers:restore` — **Admin ou Owner** — e purgar exige `numbers:purge` — só **Owner**. Caso contrário, a resposta é `403 PERMISSION_DENIED`. Chaves de workspace e de número (`ps_workspace_`, `ps_number_`) não têm papel e não passam por essa checagem.
 </Note>
 
 ## POST /v1/numbers — Criar um número
@@ -26,11 +28,23 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers" \
 ```
 
 <ParamField body="name" type="string" required>
-  Nome de exibição do número.
+  Nome de exibição do número (1–60 caracteres).
 </ParamField>
 
 <ParamField body="number" type="string" required>
-  O número de telefone no formato E.164 (ex.: `+5511999999999`).
+  O número de telefone no formato E.164 (ex.: `+5511999999999`): só dígitos, `+` inicial opcional, no mínimo 10 caracteres.
+</ParamField>
+
+<ParamField body="settings" type="object">
+  Opcional — o mesmo bloco `settings` do [`PATCH /v1/numbers/{id}`](/pt-BR/api/numbers/settings), aplicado antes de o número conectar. É aqui que o `historyImportEnabled` precisa ser decidido. Um bloco inválido responde `400 INVALID_SETTINGS` e nada é criado.
+</ParamField>
+
+<ParamField body="piiMode" type="string" default="STORE_INDEFINITE">
+  Política opcional de retenção de dados: `STORE_INDEFINITE`, `STORE_X_DAYS` ou `RELAY_ONLY` — veja [Configuração do número](/pt-BR/api/numbers/settings). Qualquer outro valor responde `400` `{ "error": "Invalid piiMode" }`.
+</ParamField>
+
+<ParamField body="piiRetentionDays" type="integer">
+  Obrigatório com `piiMode: "STORE_X_DAYS"`: um inteiro de 1 a 3650. Ignorado nos outros modos.
 </ParamField>
 
 <ParamField body="linkToApiKey" type="boolean" deprecated>
@@ -61,6 +75,8 @@ A resposta inclui `qrcodeBase64` e `pairingCode` (código de pareamento por letr
 
 `instance` não mudou, e `instance.id` continua sendo o id da **instância**, não o id do número. Use `numberId` como chave nos seus registros.
 
+O `201` também traz `settings` — as [configurações](/pt-BR/api/numbers/settings) com que o número foi criado, padrões incluídos — e, quando o corpo definiu algum dos campos de número não oficial, `settingsSync` (`applied` / `failed` / `skipped`), que relata o envio ao provedor.
+
 <Warning>
   Chame estes endpoints apenas a partir do seu **backend** — nunca exponha sua chave `ps_` no navegador.
 </Warning>
@@ -76,7 +92,7 @@ A resposta inclui `qrcodeBase64` e `pairingCode` (código de pareamento por letr
 
 Provisiona um **número oficial da Meta Cloud API** a partir de credenciais de WABA que você já possui. Este fluxo é para plataformas que já controlam a WABA e têm um **token de system user**. Se você não tem essas credenciais, use o Embedded Signup hospedado via um [link de pareamento remoto](/pt-BR/api/numbers/remote-pairing) com `provider=META`.
 
-Exige uma chave de API **com escopo de tenant**.
+Qualquer chave `ps_` do workspace pode chamá-la; só um token OAuth com acesso a números específicos é recusado (`403 NUMBERS_GRANT_NOT_ALLOWED`). Por OAuth ou com uma chave de conta, exige `numbers:connect` (Admin ou Owner).
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/numbers/meta" \
@@ -98,7 +114,7 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/meta" \
 </ParamField>
 
 <ParamField body="number" type="string" required>
-  O número de telefone em dígitos, com `+` inicial opcional.
+  O número de telefone em dígitos, com `+` inicial opcional (no mínimo 8 caracteres).
 </ParamField>
 
 <ParamField body="metaPhoneId" type="string" required>
@@ -134,11 +150,14 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/meta" \
 Erros:
 
 - `400 INVALID_BODY` — o corpo de `POST /v1/numbers` ou `POST /v1/numbers/meta` não é JSON válido; nada é criado. Veja [Corpo JSON malformado](/pt-BR/api/overview#corpo-json-malformado).
-- `400` — erro de validação (campos do corpo ausentes ou inválidos).
+- `400` — `{ "error": "Validation error", "details": … }`: campos do corpo ausentes ou inválidos. No `POST /v1/numbers` também `400 INVALID_SETTINGS` (bloco `settings` inválido) e `400` `{ "error": "Invalid piiMode" }` / a mensagem de `piiRetentionDays`.
 - `402 PLAN_NUMBER_LIMIT_REACHED` — a cota de números do seu plano está cheia. **No plano Free**, adicionar créditos **não** resolve: libere um slot, compre um número extra por conta própria ou suba de plano. **Em um plano pago**, só é respondido quando você nunca comprou um número extra e o próximo não pode ser custeado.
 - `402 INSUFFICIENT_FUNDS` — só nos planos pagos: o número seria um **extra pago** e não há saldo na carteira nem cartão salvo.
 - `403 NUMBERS_GRANT_NOT_ALLOWED` — grants OAuth por número não podem provisionar números.
+- `403 PERMISSION_DENIED` — token OAuth ou chave de conta de um usuário abaixo de Admin (`numbers:connect`).
 - `409` — "Number already exists" (o número já existe).
+- `409 NUMBER_SOFT_DELETED` — só no `POST /v1/numbers`: o telefone foi excluído neste workspace e está dentro da janela de 30 dias; o corpo traz `numberId` e `restorableUntil`. Veja o DELETE abaixo.
+- `502` — só no `POST /v1/numbers`: `{ "error": "Failed to create instance", "details": "Upstream provider returned …" }`. Nada é mantido.
 
 ### Erros de capacidade e como resolver
 
@@ -183,6 +202,8 @@ O envio funciona assim que o número é criado — não depende do webhook. Para
 }
 ```
 
+O `webhook.verifyToken` é devolvido para qualquer chave `ps_`. Por uma conexão OAuth / MCP, ele só é devolvido depois que a revelação é registrada na trilha de auditoria do workspace; se esse registro não puder ser gravado, o número é criado mesmo assim, mas `verifyToken` volta `null`, junto com `secretWithheld: true`, `secretWithheldCode: "OAUTH_SECRET_AUDIT_UNAVAILABLE"` e um `secretWithheldReason` bilíngue.
+
 Duas formas de conectar:
 
 - **Automática** — passe `routeWebhooksToPilot: true` na requisição. A Pilot inscreve a WABA para você e a resposta retorna `webhook.routedToPilot: true`; nada mais a configurar.
@@ -202,7 +223,9 @@ curl "https://pilotstatus.com.br/v1/numbers/wa_abc/connect" \
 - A resposta inclui `qrcodeBase64` e `pairingCode` novos.
 - Se o número já estiver conectado (`OPEN`), o endpoint retorna **409** — não há nada para parear.
 - **Plano Free:** quando a cota do plano já está cheia e este número nunca conectou, o endpoint retorna `402` com `{ "error": "PLAN_NUMBER_LIMIT_REACHED", "code": "PLAN_NUMBER_LIMIT_REACHED", "message": "…", "plan": "FREE", "maxNumbers": 1, "currentNumberCount": 1 }`, e nenhum QR code é gerado. O `message` é uma frase bilíngue, `English | Português`. Reparear um número que já tinha conectado nunca é recusado. Veja [Plano Free](/pt-BR/api/extra-numbers#plano-free).
-- Não se aplica a números **Meta** (eles não usam pareamento por QR).
+- Não se aplica a números **Meta** (eles não usam pareamento por QR): o endpoint responde `404` `{ "error": "Not found" }`, como para um id desconhecido.
+- `502` `{ "error": "Failed to generate QR code", "code": "EMPTY_CONNECT_BUNDLE" }` quando o provedor não devolveu nem QR code nem código de pareamento — tente de novo.
+- `{id}` pode ser o id do número ou o id da instância. Por OAuth ou com uma chave de conta, exige `numbers:connect` (Admin ou Owner).
 - Reflete o mesmo estado de conexão que a página de Números no painel.
 
 ## DELETE /v1/numbers/{id} — Remover um número
@@ -215,6 +238,8 @@ curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wa_abc" \
 ```json
 { "ok": true, "restorableUntil": "2026-10-23T12:33:06.604Z" }
 ```
+
+`{id}` pode ser o id do número ou o id da instância. Id desconhecido: `404` `{ "error": "Number not found" }`.
 
 É um **soft delete de 30 dias**, não uma exclusão definitiva:
 
