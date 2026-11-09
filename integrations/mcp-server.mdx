@@ -1,7 +1,7 @@
 ---
 title: "MCP Server"
 sidebarTitle: "MCP Server"
-description: "Connect AI agents to WhatsApp via the hosted Pilot Status MCP server: OAuth or x-api-key auth, 148 tools over the public /v1 API, per-number grants."
+description: "Connect Claude, ChatGPT, Cursor, VS Code and other AI agents to WhatsApp via the hosted Pilot Status MCP server: OAuth or x-api-key auth, 148 tools over the public /v1 API, per-number grants."
 mode: "wide"
 ---
 
@@ -35,15 +35,40 @@ Any MCP client that supports custom OAuth connectors can connect the same way. C
 Start here: `/mcp` is the default, and your client shows each call for you to approve. For agents that build reports, loop over many items or run on a tight context, use **`https://mcp.pilotstatus.com.br/code`** instead of `/mcp` (not alongside it): the agent gets 2 tools (`describe` and `execute`) instead of 148 and writes a TypeScript script that calls `await ps.<tool>(args)`. Same credentials. [MCP Code Mode](/integrations/mcp-code-mode)
 </Tip>
 
+## Connect your client
+
+Two ways in, whatever the client: **OAuth** (the client opens a Pilot Status login and consent page; no key is copied anywhere) or an **API key** in the `x-api-key` header. Use `/code` instead of `/mcp` in any URL below to get [Code Mode](/integrations/mcp-code-mode).
+
+| Client | How |
+| --- | --- |
+| **claude.ai** and **Claude Desktop** | Settings → Connectors → **Add custom connector**, URL `https://mcp.pilotstatus.com.br/mcp`, no client id or secret. Connect, log in to Pilot Status and choose the access on the consent screen. Connectors added on claude.ai also show up in Claude Desktop. |
+| **Claude Code** | OAuth: `claude mcp add --transport http pilot-status https://mcp.pilotstatus.com.br/mcp`, then run `/mcp` in Claude Code and pick **Authenticate**. API key: add `--header "x-api-key: ps_your_key_here"` to the same command. |
+| **ChatGPT** | Where your plan allows custom connectors (developer mode), create a connector with the URL `https://mcp.pilotstatus.com.br/mcp` and **OAuth** authentication. ChatGPT registers itself, so leave client id and secret empty. |
+| **Cursor** | API key in `~/.cursor/mcp.json` (or `.cursor/mcp.json` in the project): `{ "mcpServers": { "pilot-status": { "url": "https://mcp.pilotstatus.com.br/mcp", "headers": { "x-api-key": "ps_your_key_here" } } } }`. OAuth does not work in Cursor: its login callback is a `cursor://` address, and the Pilot Status authorization server only accepts `https://` and `http://localhost` callbacks. |
+| **VS Code** (Copilot agent mode) | API key in `.vscode/mcp.json`: `{ "servers": { "pilot-status": { "type": "http", "url": "https://mcp.pilotstatus.com.br/mcp", "headers": { "x-api-key": "ps_your_key_here" } } } }`. |
+| **Any other MCP client** | Streamable HTTP at the URL above. A client that supports OAuth with dynamic client registration and an `https://` or `http://localhost` callback connects with no setup; otherwise send `x-api-key`. |
+
+Which key to send in `x-api-key`: a **number key** (`ps_number_…`) acts on one number; a **workspace key** (`ps_workspace_…`) acts on the whole workspace, so pass `whatsappNumberId` to number-scoped tools; an **account key** (`ps_account_…`) also needs `x-workspace-id` ([below](#with-an-account-key)). [API key types](/api/key-types)
+
+### What the OAuth login does
+
+- **Which workspace.** The connection acts on the workspace that is **selected in your Pilot Status session** when you authorize. The consent screen does not ask which workspace: switch workspace in the dashboard first, then connect. For two workspaces, add two connections.
+- **What it can reach.** On the consent screen you pick **Entire account** (workspace Owner or Admin only) or **specific numbers** (any role, limited to the numbers you can access yourself). A per-number grant restricts every tool to those numbers and blocks account-level tools such as `billing_checkout`, `api_keys_*` and `numbers_create`. Consent is asked on **every** authorization, even with an active session.
+- **Your role still applies.** The token never does more than your workspace role allows, and owner-only tools check the role again on every call.
+- **Session length.** The access token lasts 1 hour and the client refreshes it on its own; the refresh token lasts 30 days and is replaced on each use. After 30 days without use, or after an ownership transfer, connect again.
+- **Revoking.** Remove the connector in your client. Keys and secrets the app already obtained stay valid: see [Secrets and API keys over OAuth](#secrets-and-api-keys-over-oauth).
+
+For client developers: the MCP server publishes `/.well-known/oauth-protected-resource` (RFC 9728) and answers an unauthenticated request with `401` and a `WWW-Authenticate` challenge. The authorization server, `https://pilotstatus.com.br`, publishes `/.well-known/oauth-authorization-server`: dynamic client registration at `/api/oauth/register` (public clients, `token_endpoint_auth_method: none`), authorization code with **PKCE S256** only, and refresh tokens. Redirect URIs must be `https://`, or `http://` on `localhost` / `127.0.0.1`. The transport is stateless: JSON-RPC goes in a `POST`; `GET` and `DELETE` answer `405`.
+
 ## Authentication
 
 | Method | How |
 | --- | --- |
-| OAuth 2.1 | `Authorization: Bearer <token>` — handled automatically by the hosted Claude connector |
+| OAuth 2.1 | `Authorization: Bearer <token>` — handled by the client after the login ([Connect your client](#connect-your-client)) |
 | API key | `x-api-key` header with a `ps_*` key |
 | Account key | `x-api-key` header with a `ps_account_*` key, plus `x-workspace-id` naming the workspace to act on |
 
-Use a **number-scoped** key for tools that operate on a specific number (messaging, conversations, groups); **tenant-scoped** keys are required for tenant tools such as `api_keys_list` and `numbers_list`.
+Every tool except `docs_search` takes an extra argument, **`whatsappNumberId`**: the number to act on, from `numbers_list`. With an OAuth token or a workspace key, number-scoped tools (messages, conversations, groups, templates, webhooks, calls, Chatwoot…) **need it** — the server sends it to the API as the `x-whatsapp-number-id` header. With a number key it is ignored: the key already names its number. Account-level tools (`api_keys_list`, `billing_checkout`, `branding_*`, `workspace_*`, phone lines…) need an OAuth token or a workspace key; a number key gets `403`.
 
 ### With an account key
 
@@ -67,15 +92,27 @@ An [account key](/api/key-types#account-keys) (`ps_account_…`, created in **Pr
 
 ## Self-hosted
 
-The server is published as `@pilot-status/mcp-server` on npm and can be run locally:
+The server is published as `@pilot-status/mcp-server` on npm (command `pilot-status-mcp`, Node.js 20 or later). It speaks **streamable HTTP only** — there is no stdio mode — and listens on `http://localhost:8787/mcp` (`PORT` and `HOST` change it):
 
 ```bash
-npx @pilot-status/mcp-server
+PILOT_STATUS_API_KEY=ps_your_key_here npx -y @pilot-status/mcp-server
 ```
 
-Supply your `ps_*` API key via the `x-api-key` header (HTTP mode) or environment configuration, depending on your MCP client. A self-hosted server also reads `PILOT_STATUS_API_KEY` from its environment and, for an account key, `PILOT_STATUS_WORKSPACE_ID`. That variable applies only to the key set in `PILOT_STATUS_API_KEY`, never to a key a connection sends in its own `x-api-key` header: send `x-workspace-id` with that one instead.
+Then point your client at the local URL, as in [Connect your client](#connect-your-client):
+
+```json
+{
+  "mcpServers": {
+    "pilot-status": { "type": "http", "url": "http://localhost:8787/mcp" }
+  }
+}
+```
+
+The key can come from the process (`PILOT_STATUS_API_KEY`) or from each request's `x-api-key` header, which wins over the variable. It calls `https://pilotstatus.com.br` (`PILOT_STATUS_API_URL` changes it) and serves the same 148 tools as the hosted connector; Code Mode (`/code`) is not available self-hosted. A self-hosted server also reads `PILOT_STATUS_API_KEY` from its environment and, for an account key, `PILOT_STATUS_WORKSPACE_ID`. That variable applies only to the key set in `PILOT_STATUS_API_KEY`, never to a key a connection sends in its own `x-api-key` header: send `x-workspace-id` with that one instead.
 
 ## Available tools (148)
+
+One line per tool, with its required arguments and who may call it: [MCP tool reference](/integrations/mcp-tools).
 
 | Area | Tools |
 | --- | --- |
@@ -135,6 +172,10 @@ Notes:
   - The in-app AI agent does not offer archive or transfer.
 - `workspaces_*` take an **account key** only (`ps_account_…`, created in Profile → API, sent as `x-api-key`): an OAuth/connector token, a workspace key or a number key gets `403 ACCOUNT_KEY_REQUIRED`. `workspaces_list` lists the workspaces the key's user is an active member of, with their role; `workspaces_create` creates one owned by that user and returns its primary workspace key **once** (`409 WORKSPACE_LIMIT_REACHED` at the user's ceiling); its optional `shareCard: true` links the new workspace to the user's reserve card, and absent or `false` leaves it not shared. `workspaces_shared_card_link` and `workspaces_shared_card_unlink` (argument `workspaceId`) call `PUT` and `DELETE /v1/workspaces/{workspaceId}/shared-card`: they need the user to be OWNER of that workspace, change who pays its renewals and ask for confirmation. `workspaces_api_keys_list` (masked), `workspaces_api_keys_create` (a named `ps_workspace_` key, returned once; `409 WORKSPACE_KEY_LIMIT_REACHED`) and `workspaces_api_keys_revoke` (`409 PRIMARY_KEY_NOT_REVOCABLE` for the primary key) need the user's live role ADMIN or OWNER in that workspace, otherwise `403 WORKSPACE_MEMBERSHIP_REQUIRED` or `PERMISSION_DENIED`. The in-app AI agent does not offer them. They need no `x-workspace-id`, and neither does `docs_search`; every other tool used with an account key does (see [With an account key](#with-an-account-key)). See [Create workspaces](/api/workspaces).
 - `docs_search` takes a `query` — a question, keywords or an error code, in Portuguese or English — and an optional `limit` (3–5, default 5), and returns `{ query, results, source }`: the 3–5 most relevant pages of this documentation, each with `title`, `url` and `description` (not the page content). It reads the public docs index (`llms.txt` and its pt-BR sub-index; the Playground pages are left out), calls no `/v1` endpoint and needs no permission, key scope or `whatsappNumberId`, so any role can use it and the in-app agent runs it without asking for confirmation. `source` is `live`, or `fallback` when the index could not be fetched and a built-in copy answered; the index is cached for 6 hours. Use it when the user asks how to do something on Pilot Status, or when another tool returns an error code — search the code (e.g. `MEDIA_TRANSCODE_FAILED` leads to [Log Error Codes](/api/messages/log-error-codes)).
+- `templates_delete` takes an optional `force_local_delete`: when Meta refuses the deletion (`409 META_TEMPLATE_DELETE_REFUSED`, nothing deleted), it deletes only the Pilot Status copy and leaves the template on Meta. Use it only after the user saw that 409 and asked for a local-only delete.
+- Three tools refuse to run without the boolean **`confirm: true`** (no token, one call): `flows_publish` (publishing a Flow cannot be undone; otherwise `400 FLOW_PUBLISH_REQUIRES_CONFIRMATION`), `flows_endpoint_key_rotate` when the number already has a key registered at Meta (replacing it breaks every `data_exchange` Flow of the number; otherwise `400 FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION`) and `subscription_extra_numbers_add` when the purchase converts a FREE plan to On Demand. Send it only after the user said yes.
+- Member management needs an **OAuth token** — there is no user behind a `ps_` key, so a key gets `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`: `workspace_members_invite` and `workspace_members_resend` (ADMIN or OWNER; an ADMIN can assign only AGENT or ANALYST), `workspace_members_set_numbers` (ADMIN or OWNER), `workspace_members_update` and `workspace_members_remove` (OWNER only). `workspace_members_list` (ADMIN or OWNER) also works with a workspace key. Nobody becomes OWNER through these tools: that is `workspace_transfer_ownership`.
+- `billing_checkout` is account-level: it needs the workspace OWNER and an **Entire account** grant (a per-number OAuth grant cannot use it).
 - Token-based routes (remote-pairing public endpoints, embed session minting) are excluded from the tool list because they use a different auth flow.
 
 ## Secrets and API keys over OAuth
@@ -209,8 +250,10 @@ Some tools change things that cannot be undone. They run in **two calls**, and t
 
 ## Common errors
 
-- `401` — missing or invalid API key.
-- `403` — tenant-scoped key on a number-scoped tool (or vice versa), or a tool outside a per-number grant.
+- `401` — missing or invalid API key, or an expired OAuth session: the client is asked to log in again ([Connect your client](#connect-your-client)).
+- `403` — a number key on an account-level tool, a tool outside a per-number grant, or a role that may not call the tool. With an OAuth token or a workspace key, a number-scoped tool called without `whatsappNumberId` is also refused.
+- `WORKSPACE_ID_REQUIRED` — an account key without `x-workspace-id` ([With an account key](#with-an-account-key)).
+- `503 SHUTTING_DOWN` — the replica that took the request is restarting; retry it.
 - `400` — invalid tool arguments (validated against the underlying API schema).
 - `400 MCP_AUDIO_URL_REQUIRED` — `messages_send` got a data URI (base64) for `mediaType` `audio`/`voice`, or a `data:audio/*` media. Send the audio as a public http(s) URL. The message is bilingual (`English | Português`) and nothing was sent.
 
