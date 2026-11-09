@@ -10,7 +10,9 @@ mode: "wide"
 List every WhatsApp number in your account, or fetch the full detail of one number — including health and, for Meta numbers, live data from the Meta Graph.
 
 <Note>
-  Use a **tenant-scoped** API key to manage numbers across your account. A number-scoped key can also call these endpoints. Authenticate with the `x-api-key: ps_...` header.
+  **`GET /v1/numbers` requires an account-wide credential** — a workspace (tenant-scoped) key, or an OAuth token granted the whole workspace. A number-scoped key, or an OAuth token granted only some numbers, gets `403` with `code: "NUMBER_SCOPE_NOT_ALLOWED"`. `GET /v1/numbers/{id}` also accepts a number-scoped key. Authenticate with the `x-api-key: ps_...` header.
+
+  With an OAuth / MCP token or an account key (`ps_account_`), both routes need the `numbers:read` permission, which every workspace role holds; a user who is no longer an active member gets `403 WORKSPACE_MEMBERSHIP_REQUIRED`.
 </Note>
 
 ## GET /v1/numbers — List all numbers
@@ -18,7 +20,7 @@ List every WhatsApp number in your account, or fetch the full detail of one numb
 Lists all WhatsApp instances for the API key's **tenant** as a JSON array.
 
 - Does **not** return session credentials.
-- Each number exposes its flat connection `state` and an `isFullyConnected` flag.
+- Each number exposes its flat connection `state` and an `isFullyConnected` flag. An unofficial (QR) number is **one item per number**, however many connections it has: `state` is `OPEN` when every connection is open, `PARTIAL` when only some are, `DISCONNECTED` when none is, and `SHADOWBAN` (with a `reason` string) when Meta is refusing sends over the web connection — `isFullyConnected` is `true` only for `OPEN`. A Meta item reads `OPEN` or `DISCONNECTED` from `health.sendable`.
 - The list does **not** force a mass refresh of connection state — use `GET /v1/numbers/{id}/status` per number when you need a live check.
 - Each item's `apiKeys` entries include only `name`, `keyPrefix`, and `keyLast4` (no API key `id`).
 - Meta (Cloud API) items also carry a `coexistence` block — see [Coexistence](#coexistence-—-and-why-platformtype-does-not-answer-it) below.
@@ -37,7 +39,9 @@ Returns the flat `state`/`isFullyConnected`, a `health` block (see [The `health`
   Add `?refresh=1` to force a live Meta Graph fetch and persist the snapshot. By default the response is cached (last `meta` snapshot).
 </ParamField>
 
-Secrets (access tokens, app secret, provider config) are **never** returned. Returns `404` if the id is not in the caller's tenant.
+Secrets (access tokens, app secret, provider config) are **never** returned. Returns `404` (`{ "error": "Number not found" }`) if the id is not in the caller's tenant.
+
+The detail also carries the number's configuration — `piiMode`, `piiRetentionDays` and the `settings` block, described in [Number settings](/api/numbers/settings) — and `historyImport` (below). On an unofficial number its `state` is `OPEN` as soon as **one** connection is up (there is no `PARTIAL` here), `DISCONNECTED` otherwise, and `SHADOWBAN` as in the list.
 
 ```bash
 # 1) list to get the id

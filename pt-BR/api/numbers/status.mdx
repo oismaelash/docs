@@ -39,7 +39,7 @@ Resposta:
 | `state` | Significado |
 | --- | --- |
 | `OPEN` | Conectado ao WhatsApp. |
-| `CLOSE` | Não conectado — gere um novo QR com `GET /v1/numbers/{id}/connect`. Um pareamento ainda em andamento também aparece como `CLOSE`; só uma conexão concluída vira `OPEN`. |
+| `CLOSE` | Não conectado — gere um novo QR com `GET /v1/numbers/{id}/connect`. Um pareamento ainda em andamento também aparece como `CLOSE`; só uma conexão concluída vira `OPEN`. O provedor também pode informar um valor próprio diferente de `OPEN` (por exemplo `CONNECTING`), repassado como veio — trate qualquer coisa diferente de `OPEN` como não conectado. |
 | `PENDING` | Número Meta aguardando o usuário final concluir o diálogo do Embedded Signup aberto por `POST /v1/numbers/remote-pairing`. Traz `expiresAt`. Continue o polling. |
 | `EXPIRED` | A janela desse cadastro fechou sem conclusão. Traz `expiresAt`. **Terminal** — pare o polling e gere um novo link de pareamento. |
 
@@ -93,12 +93,30 @@ Todo `200` traz `stale`, mais **exatamente um** dos dois carimbos de tempo:
 
 `stale: true` vem sempre com `state: "OPEN"`. O valor lembrado só é devolvido quando o estado guardado já era `OPEN`; para um número que não estava `OPEN`, um provedor que não responde gera um `503` (veja abaixo).
 
-**Números Meta (API oficial da Cloud)** respondem `{ "id": "…", "state": "OPEN", "stale": false }` e **não** trazem nenhum dos dois carimbos — eles são gerenciados remotamente, nada é consultado para eles, então não há leitura a datar.
+**Números Meta (API oficial da Cloud)** **não** trazem nenhum dos dois carimbos — eles são gerenciados remotamente, nada é consultado para eles, então não há leitura a datar. No lugar deles, trazem o veredito de envio:
+
+```json
+{
+  "id": "num_01HZX...",
+  "state": "OPEN",
+  "stale": false,
+  "sendable": true,
+  "health": {
+    "status": "HEALTHY",
+    "code": null,
+    "reason": null,
+    "qualityRating": "GREEN",
+    "metaStatus": "CONNECTED"
+  }
+}
+```
+
+`sendable` e `health` são lidos da mesma linha de saúde do [`GET /v1/numbers/{id}`](/pt-BR/api/numbers/list); um número sem linha de saúde responde `sendable: true` e `health.status: "HEALTHY"`.
 
 <Warning>
-  **Num número Meta este endpoint não é checagem de saúde.** Uma vez que o número exista com um phone id da Meta, o `state` aqui é **sempre `OPEN`** — ele não consulta a saúde do número em momento nenhum. Um número que a Meta pôs em `RESTRICTED`, ou cuja qualidade caiu para `RED`, continua respondendo `OPEN` aqui enquanto `GET /v1/numbers` e `GET /v1/numbers/{id}` respondem `DISCONNECTED` para o mesmo número no mesmo instante.
+  **Num número Meta este endpoint não é checagem de saúde.** Uma vez que o número exista com um phone id da Meta, o `state` aqui é **sempre `OPEN`** — a saúde não o altera. Um número que a Meta pôs em `RESTRICTED`, ou cuja qualidade caiu para `RED`, continua respondendo `state: "OPEN"` aqui enquanto `GET /v1/numbers` e `GET /v1/numbers/{id}` respondem `DISCONNECTED` para o mesmo número no mesmo instante. A mesma resposta informa isso, em `sendable: false` e `health.code` — leia esses campos, não o `state`.
 
-  Ou seja: `/status` num número Meta responde exatamente uma pergunta: *este número existe e já passou da janela de signup?* (`PENDING` → `EXPIRED` → `OPEN`). Para saber se estamos a enviar no número de todo, leia `health.sendable` em [`GET /v1/numbers/{id}`](/pt-BR/api/numbers/list) — é desse campo que o `state` das outras duas rotas é derivado. Ele é o **nosso** veredito sobre o número, não a resposta da Meta sobre o próximo envio; as ressalvas estão nesse campo.
+  Ou seja: `/status` num número Meta responde exatamente uma pergunta: *este número existe e já passou da janela de signup?* (`PENDING` → `EXPIRED` → `OPEN`). Para saber se estamos enviando pelo número, leia `sendable` aqui, ou `health.sendable` em [`GET /v1/numbers/{id}`](/pt-BR/api/numbers/list) — é desse campo que o `state` das outras duas rotas é derivado. Ele é o **nosso** veredito sobre o número, não a resposta da Meta sobre o próximo envio; as ressalvas estão nesse campo.
 </Warning>
 
 <Note>

@@ -39,7 +39,7 @@ Response:
 | `state` | Meaning |
 | --- | --- |
 | `OPEN` | Connected to WhatsApp. |
-| `CLOSE` | Not connected — generate a new QR with `GET /v1/numbers/{id}/connect`. A pairing still in progress also reads as `CLOSE`; only a completed connection flips to `OPEN`. |
+| `CLOSE` | Not connected — generate a new QR with `GET /v1/numbers/{id}/connect`. A pairing still in progress also reads as `CLOSE`; only a completed connection flips to `OPEN`. The provider can also report its own non-`OPEN` value (for example `CONNECTING`), passed through as is — treat anything other than `OPEN` as not connected. |
 | `PENDING` | Meta number waiting for the end user to finish the Embedded Signup dialog opened by `POST /v1/numbers/remote-pairing`. Carries `expiresAt`. Keep polling. |
 | `EXPIRED` | That signup window closed without completion. Carries `expiresAt`. **Terminal** — stop polling and create a new pairing link. |
 
@@ -93,12 +93,30 @@ Every `200` carries `stale`, plus **exactly one** of the two timestamps:
 
 `stale: true` always comes with `state: "OPEN"`. The remembered value is only served when the stored state was already `OPEN`; for a number that was not `OPEN`, a provider that does not answer produces a `503` instead (see below).
 
-**Meta (official Cloud API) numbers** answer `{ "id": "…", "state": "OPEN", "stale": false }` and carry **neither** timestamp — they are remote-managed, nothing is probed for them, so there is no reading to date.
+**Meta (official Cloud API) numbers** carry **neither** timestamp — they are remote-managed, nothing is probed for them, so there is no reading to date. Instead they carry the sending verdict:
+
+```json
+{
+  "id": "num_01HZX...",
+  "state": "OPEN",
+  "stale": false,
+  "sendable": true,
+  "health": {
+    "status": "HEALTHY",
+    "code": null,
+    "reason": null,
+    "qualityRating": "GREEN",
+    "metaStatus": "CONNECTED"
+  }
+}
+```
+
+`sendable` and `health` are read from the same health row as [`GET /v1/numbers/{id}`](/api/numbers/list#the-health-block); a number with no health row answers `sendable: true` and `health.status: "HEALTHY"`.
 
 <Warning>
-  **On a Meta number this endpoint is not a health check.** Once the number exists with a Meta phone id, `state` here is **always `OPEN`** — it does not consult the number's health at all. A number Meta has `RESTRICTED`, or whose quality dropped to `RED`, still answers `OPEN` here while `GET /v1/numbers` and `GET /v1/numbers/{id}` answer `DISCONNECTED` for the same number at the same instant.
+  **On a Meta number this endpoint is not a health check.** Once the number exists with a Meta phone id, `state` here is **always `OPEN`** — the health does not change it. A number Meta has `RESTRICTED`, or whose quality dropped to `RED`, still answers `state: "OPEN"` here while `GET /v1/numbers` and `GET /v1/numbers/{id}` answer `DISCONNECTED` for the same number at the same instant. The same response does report it, in `sendable: false` and `health.code` — read those, not `state`.
 
-  So `/status` on a Meta number answers exactly one question: *does this number exist and is it past the signup window?* (`PENDING` → `EXPIRED` → `OPEN`). For whether we are currently sending on the number at all, read `health.sendable` from [`GET /v1/numbers/{id}`](/api/numbers/list#the-health-block) — that is the field the `state` on the other two routes is derived from. It is **our** verdict about the number, not Meta's answer about the next send; the caveats are on that field.
+  So `/status` on a Meta number answers exactly one question: *does this number exist and is it past the signup window?* (`PENDING` → `EXPIRED` → `OPEN`). For whether we are currently sending on the number at all, read `sendable` here, or `health.sendable` from [`GET /v1/numbers/{id}`](/api/numbers/list#the-health-block) — that is the field the `state` on the other two routes is derived from. It is **our** verdict about the number, not Meta's answer about the next send; the caveats are on that field.
 </Warning>
 
 <Note>
