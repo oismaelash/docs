@@ -28,7 +28,9 @@ Este é o **único** endpoint de envio. Ele suporta três modos de nível superi
 ## Headers
 
 - `Content-Type: application/json`
-- `x-api-key: ps_...` (ou `x-api-key-id: <api_key_id>`) — uma chave **com escopo de número**
+- `x-api-key: ps_...` (ou `x-api-key-id: <api_key_id>`) — uma chave **com escopo de número**, ou uma chave da conta que indique o número de envio no header [`x-whatsapp-number-id`](/pt-BR/api/authentication) (sem ele: `403 TENANT_SCOPE_NOT_ALLOWED`)
+
+**Tokens OAuth / MCP e chaves de conta** (`ps_account_`) também precisam da permissão `messages:send` (papéis `AGENT`, `ADMIN`, `OWNER`); o papel `ANALYST` recebe `403 PERMISSION_DENIED`. Uma chave `ps_` clássica não é afetada por papéis.
 
 <ParamField header="Idempotency-Key" type="string">
   **Opcional.** Torna a nova tentativa segura: durante **24 horas**, uma segunda requisição com a mesma chave e o mesmo corpo devolve a primeira resposta aceita em vez de enviar a mensagem de novo. Qualquer string de até **255 caracteres** sem caracteres de controle; longa demais ou com caractere de controle → **400 `IDEMPOTENCY_KEY_INVALID`**. Ausente, o endpoint se comporta exatamente como antes. Veja [Idempotência](#idempotência).
@@ -37,7 +39,7 @@ Este é o **único** endpoint de envio. Ele suporta três modos de nível superi
 ## Destino (exatamente um)
 
 <ParamField body="destinationNumber" type="string">
-  Telefone de destino em **E.164** com um `+` inicial (ex.: `+5511999999999`).
+  Telefone de destino em **E.164** — só dígitos, `+` inicial opcional, no mínimo 10 dígitos (ex.: `+5511999999999`) — **ou** o Business-Scoped User ID do contato (BSUID, ex.: `BR.13491208655302741918`), o `userId` devolvido por [`GET /v1/conversations`](/pt-BR/api/conversations).
 </ParamField>
 
 <ParamField body="groupId" type="string">
@@ -45,7 +47,11 @@ Este é o **único** endpoint de envio. Ele suporta três modos de nível superi
 </ParamField>
 
 <ParamField body="newsletterId" type="string">
-  JID do canal do WhatsApp terminando em `@newsletter`.
+  JID do canal do WhatsApp terminando em `@newsletter`. Não disponível em números Meta Cloud API: `400 NOT_SUPPORTED_FOR_META`.
+</ParamField>
+
+<ParamField body="replyToMessageId" type="string">
+  Envia a mensagem como **resposta** citando uma mensagem anterior. Aceita o `id` interno, o `correlationId` ou o id de mensagem do provedor (wamid) de uma mensagem deste número; um valor que não casa com nada é repassado ao provedor como veio. Não é permitido com `newsletterId`.
 </ParamField>
 
 ## Campos de modo
@@ -81,6 +87,10 @@ Este é o **único** endpoint de envio. Ele suporta três modos de nível superi
   Um envio de texto livre (`text`) com ele retorna `400` ("mediaFilename is only supported for direct media sends and templates with a document header"), assim como qualquer `mediaType` diferente de `document`. Num template cujo cabeçalho é `IMAGE`, `VIDEO`, `TEXT` ou inexistente, retorna `422` `MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`, com `details.templateName` e `details.headerType` — o nome não teria onde entrar, então é recusado em vez de descartado.
 </ParamField>
 
+<ParamField body="caption" type="string">
+  Legenda de um **envio de mídia direta** (1–1024 caracteres), para `image`, `video` e `document`. Com `audio` ou `sticker` é recusada com `400`; com `voice` não é recusada, mas não envie — ela é descartada em números não oficiais.
+</ParamField>
+
 ### Envio de mídia direta
 
 Envie mídia por conta própria fornecendo `media` \+ `mediaType` **sem** `templateId` e **sem** `text`. Nesse modo, `buttons`, `header`, `footer` e `variables` **não são permitidos**; um `caption` opcional é suportado para `image`, `video` e `document`, mas **não** para `audio`, `voice` ou `sticker`.
@@ -92,11 +102,11 @@ Envie mídia por conta própria fornecendo `media` \+ `mediaType` **sem** `templ
 ## Agendamento e janela de entrega
 
 <ParamField body="deliverAt" type="string">
-  Data e hora ISO 8601 para agendar o envio.
+  Data e hora ISO 8601 para agendar o envio. Um valor sem sufixo de fuso horário é lido como UTC.
 </ParamField>
 
 <ParamField body="deliverUntil" type="string">
-  Prazo ISO 8601 para a entrega. Se expirar, a mensagem falha (veja [Códigos de erro de log](/pt-BR/api/messages/log-error-codes)).
+  Prazo ISO 8601 para a entrega. Se expirar, a mensagem falha (veja [Códigos de erro de log](/pt-BR/api/messages/log-error-codes)). Um prazo já no passado é recusado com `400 DELIVER_UNTIL_IN_PAST`; um prazo igual ou anterior a `deliverAt`, com `400 DELIVER_UNTIL_NOT_AFTER_DELIVER_AT`.
 </ParamField>
 
 ## Confirmação de leitura e digitando
@@ -126,7 +136,7 @@ Use quando um agente automático responde e uma pessoa ainda precisa encontrar a
 ## Outros campos
 
 <ParamField body="labels" type="string[]">
-  Marque o destino com Labels (escopo do tenant). Processados de forma assíncrona. Com a chave de API `retentionDays = 0`, as Labels são criadas, mas a vinculação com o telefone/grupo pode não ser persistida (PII).
+  Marque o destino com Labels (escopo do tenant) — até **50** nomes, cada um com 1–200 caracteres. Processados de forma assíncrona. Com a chave de API `retentionDays = 0`, as Labels são criadas, mas a vinculação com o telefone/grupo pode não ser persistida (PII).
 </ParamField>
 
 <ParamField body="marketingOptions" type="object">
@@ -158,6 +168,14 @@ Use quando um agente automático responde e uma pessoa ainda precisa encontrar a
   Lista interativa de seleção única para um envio de texto livre. Requer `text`; exclusiva com `templateId`, `buttons`, `header` e mídia direta (`footer` é permitido). Veja [Listas](#listas) abaixo.
 </ParamField>
 
+<ParamField body="carousel" type="object">
+  Carrossel de sessão (2–10 cards deslizáveis) para um envio de texto livre. Requer `text`; exclusivo com `templateId`, `list`, `buttons`, `header` e mídia direta. Em números Meta, só dentro da janela de atendimento de 24 horas. Veja [Carrossel](/pt-BR/api/messages/send-interactive#carrossel).
+</ParamField>
+
+<ParamField body="flow" type="object">
+  Botão de WhatsApp Flow dinâmico para um envio de texto livre — **só em números Meta Cloud API** (`422 FLOW_REQUIRES_META_NUMBER` nos demais), com a janela de 24 horas aberta (`422 FLOW_WINDOW_CLOSED`). Requer `text`; exclusivo com `templateId`, `list`, `carousel`, `buttons`, `header` e mídia direta. O `flow_token` é gerado pelo Pilot Status — um corpo que traga um é recusado com `422 FLOW_TOKEN_NOT_ACCEPTED`. Veja [Flows dinâmicos](/pt-BR/guides/send-flow-dynamic).
+</ParamField>
+
 ### Restrições de texto livre
 
 - `media` e `mediaType` não podem ser usados com `text` (texto livre).
@@ -171,9 +189,11 @@ Use quando um agente automático responde e uma pessoa ainda precisa encontrar a
 | `type` | Campo extra | Comportamento |
 | --- | --- | --- |
 | `reply` | `id` (string) | Resposta rápida. O toque chega como webhook de entrada normal cujo `content` é o rótulo do botão. O `id` volta como `buttonId` em números não oficiais quando o WhatsApp o informa, e como `interactive.button_reply.id` em números oficiais. |
-| `url` | `url` (https) | Abre um link. |
-| `call` | `phoneNumber` (E.164) | Liga para o número. |
-| `copy` | `copyCode` (string) | Copia um código para a área de transferência. |
+| `url` | `url` (https) | Abre um link. **No máximo um** por envio de texto livre (`400 BUTTONS_MULTIPLE_URL`). |
+| `call` | `phoneNumber` (E.164) | Liga para o número. **Só em envios de template** — num envio de texto livre é recusado com `400 BUTTON_PHONE_NUMBER_TEMPLATE_ONLY`. |
+| `copy` | `copyCode` (string) | Copia um código para a área de transferência. **Só em envios de template** — num envio de texto livre é recusado com `400 BUTTON_COPY_CODE_TEMPLATE_ONLY`. |
+
+O vocabulário de template é aceito como alias de cada `type` — `QUICK_REPLY`, `URL`, `PHONE_NUMBER`, `COPY_CODE` — e `text` como alias de `displayText`.
 
 ```json
 {
@@ -367,7 +387,8 @@ No exemplo **Template com cabeçalho de documento \+ nome do arquivo**, o templa
   "correlationId": "corr_123",
   "status": "QUEUED",
   "createdAt": "2026-02-24T15:00:00.000Z",
-  "origin": "My WhatsApp"
+  "origin": "My WhatsApp",
+  "sourceNumber": "5511888888888"
 }
 ```
 
@@ -381,6 +402,22 @@ No exemplo **Template com cabeçalho de documento \+ nome do arquivo**, o templa
 
 <ResponseField name="status" type="string">
   Sempre `QUEUED` na aceitação.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string">
+  Quando a mensagem foi aceita (ISO 8601, UTC).
+</ResponseField>
+
+<ResponseField name="origin" type="string">
+  O **nome do número/instância de envio** (o nome de exibição, quando houver). Não é a mesma coisa que a tag de trilho `origin` de [`GET /v1/messages`](/pt-BR/api/messages/list).
+</ResponseField>
+
+<ResponseField name="sourceNumber" type="string | null">
+  Os dígitos do número de envio, quando resolvidos.
+</ResponseField>
+
+<ResponseField name="flowToken" type="string">
+  Só num envio que leva um WhatsApp Flow (um bloco `flow`, ou um template com botão de Flow): o token que o Pilot Status gerou para ele, que volta com a resposta em `flow.response_received` e em `GET /v1/flows/{id}/responses`. **Ausente** em todos os outros envios.
 </ResponseField>
 
 Uma resposta reproduzida de uma requisição anterior com a mesma `Idempotency-Key` traz o header de resposta **`Idempotent-Replayed: true`**, com o mesmo status e o mesmo corpo da original — o `id` é o da mensagem que já estava na fila. Veja [Idempotência](#idempotência).
@@ -425,12 +462,15 @@ Derive a chave de algo estável do seu lado que identifique a mensagem, para que
 | --- | --- |
 | `400` | Corpo que não é JSON válido, inclusive vazio (`code: INVALID_BODY` — veja [Corpo JSON malformado](/pt-BR/api/overview#corpo-json-malformado); a `Idempotency-Key` não é reservada, então reenvie o corpo corrigido com a mesma chave) |
 | `400` | Payload inválido (ex.: telefone fora do E.164, campos obrigatórios ausentes, `MISSING_TEMPLATE_VARIABLES` / `INVALID_TEMPLATE_VARIABLE_VALUE` nomeando a chave, ou texto livre não suportado pelo provedor: `code: FREE_FORM_NOT_SUPPORTED`), ou, num número oficial, template não aprovado na Meta: `code: META_TEMPLATE_NOT_APPROVED`, ou uma `Idempotency-Key` com mais de 255 caracteres ou com caractere de controle: `code: IDEMPOTENCY_KEY_INVALID` (`details.maxLength`: `255`), ou `mediaFilename` num envio de texto livre (`text`) ou com `mediaType` diferente de `document` |
-| `401` | Header de chave de API ausente/inválido (`x-api-key` / `x-api-key-id`) |
-| `403` | Uma chave com escopo de tenant usada em um endpoint com escopo de número |
-| `404` | Template não encontrado ou sem uma versão aprovada |
+| `400` | `Validation error` com `details` (`fieldErrors` / `formErrors` do zod) — as recusas do schema: dois modos ou dois destinos ao mesmo tempo, `mediaType` ausente num envio de mídia direta, `caption` com `audio`/`sticker`, `voice`/`audio`/`sticker` como mídia de template, `list`/`carousel`/`flow` combinado com algo que ele exclui, `media` em base64 acima do limite. Campos desconhecidos no corpo são **ignorados**, não recusados |
+| `400` | `INVALID_MARK_READ` — `markRead` presente mas não booleano. `DELIVER_UNTIL_IN_PAST` / `DELIVER_UNTIL_NOT_AFTER_DELIVER_AT` — veja [Agendamento](#agendamento-e-janela-de-entrega). `NOT_SUPPORTED_FOR_META` — `newsletterId` num número Meta. `BUTTON_COPY_CODE_TEMPLATE_ONLY` / `BUTTON_PHONE_NUMBER_TEMPLATE_ONLY` / `BUTTONS_MULTIPLE_URL` — recusas de botão em texto livre |
+| `401` | Credencial ausente/inválida (`{"error": "Invalid API key"}`) |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` — chave da conta sem `x-whatsapp-number-id`. `PERMISSION_DENIED` — token OAuth/MCP ou chave de conta cujo papel não tem `messages:send` |
+| `404` | `TEMPLATE_NOT_FOUND` — nenhum template com esse id ou nome neste número (`details.templateId` repete o que você enviou). `NUMBER_NOT_FOUND` — o número da chave foi excluído ou reconectado; gere uma chave para o número atual |
 | `409` | Uma requisição com a mesma `Idempotency-Key` e o mesmo corpo ainda está em andamento (`code: IDEMPOTENCY_KEY_IN_USE`) — tente de novo com a mesma chave daqui a pouco. Ou a `Idempotency-Key` já foi usada com um corpo diferente nas últimas 24 horas (`code: IDEMPOTENCY_KEY_REUSED`) — use uma chave nova |
-| `422` | Cobrança do tenant suspensa (`code: BILLING_SUSPENDED`) — inadimplência, ou saldo WALLET / de extras não pago; regularize seus créditos ou cartão para retomar os envios. Ou `mediaFilename` num template cujo cabeçalho aprovado não é `DOCUMENT` (`code: MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`, `details.templateName`, `details.headerType`) |
-| `429` | Limite de taxa |
+| `409` | `NUMBER_BLOCKED` — o número não pode enviar agora (`reason` e `observedAt` no corpo). `LINKED_WHATSAPP_INSTANCE_NOT_FOUND` — a instância apontada pela chave foi removida |
+| `422` | Cobrança do tenant suspensa (`code: BILLING_SUSPENDED`, com `reason`) — inadimplência, ou saldo WALLET / de extras não pago; regularize seus créditos ou cartão para retomar os envios. Ou `mediaFilename` num template cujo cabeçalho aprovado não é `DOCUMENT` (`code: MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`, `details.templateName`, `details.headerType`). Ou um template cujos botões não podem ser enviados (`TEMPLATE_BUTTON_NOT_SUPPORTED`), um Flow num número que não é Meta (`FLOW_REQUIRES_META_NUMBER`) e as demais recusas de Flow, lista e carrossel (`FLOW_TOKEN_NOT_ACCEPTED`, `FLOW_WINDOW_CLOSED`, `FLOW_NOT_SENDABLE`, `FLOW_PAYLOAD_NOT_ALLOWED`, `SERVICE_WINDOW_CLOSED`, …) |
+| `429` | **Cota de mensagens do plano**, não limite de requisições: `{"error": "Rate limit exceeded", "reason": "Plan limit reached (<N> messages)"}`, ou `"reason": "No active subscription"`. Não há header `Retry-After` — compre mais mensagens ou troque de plano; tentar de novo não resolve |
 | `503` | Uma `Idempotency-Key` foi enviada e o armazenamento de idempotência está indisponível (`code: IDEMPOTENCY_UNAVAILABLE`) — nada foi enviado; tente de novo com a mesma chave |
 
 Falhas de entrega assíncronas (ex.: `META_OUTSIDE_24H_WINDOW`, `META_TEMPLATE_PAUSED`, `WHATSAPP_NOT_EXIST`) aparecem como `errorCode` em [`GET /v1/messages/{id}`](/pt-BR/api/messages/status) e [`GET /v1/messages`](/pt-BR/api/messages/list), nos Logs, e via webhook `message.failed` em números não oficiais — veja [Códigos de erro de log](/pt-BR/api/messages/log-error-codes).

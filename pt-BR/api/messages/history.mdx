@@ -12,7 +12,9 @@ Recupere **todo o histórico de mensagens armazenado** (conversas diretas e em g
 `GET https://pilotstatus.com.br/v1/messages/history`
 
 <Note>
-  Requer uma chave de API **com escopo de número** (`ps_*`) no cabeçalho `x-api-key`. Chaves com escopo de tenant retornam `403`. Você também pode identificar a chave com `x-api-key-id: <api_key_id>`.
+  Atua sobre **um número**: use uma API key **com escopo de número** (`ps_*`) no cabeçalho `x-api-key` (ou `x-api-key-id`), ou uma chave da conta que indique o número no header [`x-whatsapp-number-id`](/pt-BR/api/authentication). Uma chave da conta sem esse header recebe `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+  **Tokens OAuth / MCP e chaves de conta** (`ps_account_`) também precisam da permissão `chat:read` (papéis `AGENT`, `ADMIN`, `OWNER`); o papel `ANALYST` é recusado com `403 PERMISSION_DENIED`. Uma chave `ps_` clássica não é afetada por papéis.
 
   **Todos os provedores suportados:** este endpoint funciona tanto para números **não oficiais (Pilot Status web)** quanto para números oficiais da **Meta Cloud API**.
 </Note>
@@ -102,7 +104,7 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
       "id": "cm_01HZX...",
       "conversationId": "conv_01HZX...",
       "direction": "INBOUND",
-      "providerKind": "PILOT_STATUS",
+      "providerKind": "META",
       "externalMessageId": "wamid.HBg...",
       "status": "DELIVERED",
       "messageType": "text",
@@ -110,13 +112,15 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
       "text": "Olá, ainda está disponível?",
       "participantName": "Ana",
       "participantPhone": "+5511988887777",
+      "participantUserId": null,
       "repliedToExternalId": null,
       "media": null,
       "sentAt": null,
       "deliveredAt": "2026-06-27T10:00:01.000Z",
       "readAt": null,
       "providerTimestamp": "2026-06-27T10:00:00.000Z",
-      "createdAt": "2026-06-27T10:00:00.500Z"
+      "createdAt": "2026-06-27T10:00:00.500Z",
+      "referral": null
     }
   ],
   "total": 1,
@@ -133,7 +137,7 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
       "id": "cm_01HZX...",
       "conversationId": "conv_01HZX...",
       "direction": "INBOUND",
-      "providerKind": "PILOT_STATUS",
+      "providerKind": "META",
       "externalMessageId": "wamid.HBg...",
       "status": "DELIVERED",
       "messageType": "text",
@@ -141,6 +145,7 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
       "text": null,
       "participantName": null,
       "participantPhone": null,
+      "participantUserId": null,
       "repliedToExternalId": null,
       "media": null,
       "redacted": true,
@@ -148,7 +153,8 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
       "deliveredAt": "2026-06-27T10:00:01.000Z",
       "readAt": null,
       "providerTimestamp": "2026-06-27T10:00:00.000Z",
-      "createdAt": "2026-06-27T10:00:00.500Z"
+      "createdAt": "2026-06-27T10:00:00.500Z",
+      "referral": null
     }
   ],
   "total": 1,
@@ -176,7 +182,7 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
 </ResponseField>
 
 <ResponseField name="providerKind" type="string" required>
-  Provedor que processou a mensagem (`PILOT_STATUS`, `META`, …).
+  Motor do número que processou a mensagem: `META` em números oficiais; `EVO_GO` ou `EVO_V2` em números não oficiais (Pilot Status web). Diferente de `media.provider`, este campo traz a tag interna do motor.
 </ResponseField>
 
 <ResponseField name="externalMessageId" type="string | null">
@@ -184,11 +190,11 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
 </ResponseField>
 
 <ResponseField name="status" type="string" required>
-  Status da mensagem (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `FAILED`, …).
+  Status da mensagem (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED`, `FAILED`, `CANCELED`). Mensagens recebidas costumam vir `DELIVERED` ou `READ`.
 </ResponseField>
 
 <ResponseField name="messageType" type="string" required>
-  `text`, `image`, `audio`, `video`, `document`, `location`, `contacts`, `sticker` ou `reaction`.
+  `text`, `image`, `audio`, `video`, `document`, `sticker`, `location`, `contacts`, `interactive`, `reaction`, `button`, `template` ou `unknown`.
 </ResponseField>
 
 <ResponseField name="origin" type="string | null">
@@ -204,7 +210,11 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
 </ResponseField>
 
 <ResponseField name="participantPhone" type="string | null">
-  Contraparte/remetente no formato E.164 quando disponível.
+  Telefone da contraparte/remetente quando disponível (num grupo, o membro que escreveu).
+</ResponseField>
+
+<ResponseField name="participantUserId" type="string | null">
+  Business-Scoped User ID (BSUID) da Meta da contraparte/remetente, quando a Meta enviou um.
 </ResponseField>
 
 <ResponseField name="repliedToExternalId" type="string | null">
@@ -214,15 +224,11 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
 <ResponseField name="media" type="object | null">
   Descritor de mídia `{ provider, id, url, mimeType, fileName }` quando a mensagem carrega mídia; `null` caso contrário.
 
-  - `media.provider` — o provedor que entregou a mídia — `"META"` para números da Meta Cloud API, ou uma tag interna de provedor para números não oficiais.
-  - `media.id` — ID de mídia da **Meta**. Definido em números `META` — passe-o para `GET /v1/media/{mediaId}` para baixar os bytes; `null` para números não oficiais.
-  - `media.url` — URL de download direto quando disponível. Mídia recebida da **META** é espelhada no S3 (portanto mensagens META geralmente carregam tanto `id` **quanto** `url`); o provedor não oficial fornece seu próprio link. Melhor esforço — pode ser `null`.
+  - `media.provider` — `"META"` em números da Meta Cloud API, `"WEB"` em números não oficiais (Pilot Status web).
+  - `media.id` — ID de mídia da **Meta**. Definido em mídia recebida `META` — passe-o para [`GET /v1/media/{mediaId}`](/pt-BR/api/media-download) para baixar os bytes; `null` em `WEB`.
+  - `media.url` — URL de download direto quando disponível. Mídia recebida da **META** é espelhada no armazenamento do Pilot Status (portanto mensagens META geralmente carregam tanto `id` **quanto** `url`); números web fornecem o próprio link. Melhor esforço — pode ser `null`.
   - `media.mimeType` — Tipo MIME da mídia quando conhecido (pode ser `null`).
   - `media.fileName` — Nome do arquivo de mídia quando conhecido (pode ser `null`).
-</ResponseField>
-
-<ResponseField name="redacted" type="boolean">
-  `true` quando a linha fica fora da janela de retenção de PII do número (ou o número está em `RELAY_ONLY`). Linhas redigidas mantêm seu `id`, `providerTimestamp` e os metadados de entrega, mas `text`, `media`, `participantName` e `participantPhone` são `null`.
 </ResponseField>
 
 <ResponseField name="sentAt" type="string | null">
@@ -238,16 +244,28 @@ curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:
 </ResponseField>
 
 <ResponseField name="providerTimestamp" type="string" required>
-  ISO 8601 — timestamp do provedor para a mensagem (chave de ordenação).
+  ISO 8601 — timestamp do provedor para a mensagem.
 </ResponseField>
 
 <ResponseField name="createdAt" type="string" required>
   ISO 8601 — quando o registro foi criado no Pilot Status.
 </ResponseField>
 
+<ResponseField name="referral" type="object | null">
+  Origem de anúncio Click-to-WhatsApp da mensagem, quando ela veio de um anúncio (números oficiais) — o mesmo objeto descrito em [`GET /v1/referrals`](/pt-BR/api/referrals). `null` caso contrário.
+</ResponseField>
+
+<ResponseField name="redacted" type="boolean">
+  Presente (`true`) só quando a linha fica fora da janela de retenção de PII do número (ou o número está em `RELAY_ONLY`). Linhas redigidas mantêm `id`, timestamps e metadados de entrega, mas `text`, `media`, `participantName`, `participantPhone` e `participantUserId` são `null`.
+</ResponseField>
+
 ## Erros comuns
 
 - `400 INVALID_DATE_RANGE` — `startDate` ou `endDate` não é uma string ISO 8601 válida, ou `startDate > endDate`.
-- `400 NUMBER_NOT_FOUND` — a chave de API não está vinculada a um número de WhatsApp.
-- `401` — cabeçalho `x-api-key` ausente ou inválido.
-- `403` — chave com escopo de tenant utilizada (é necessária uma chave com escopo de número).
+- `400 INVALID_PAGINATION` — `page × pageSize` acima de `10000`; restrinja as datas em vez de paginar mais.
+- `400 NUMBER_NOT_FOUND` — a credencial não indica nenhum número de WhatsApp.
+- `401` — credencial ausente ou inválida (`{"error": "Invalid API key"}`).
+- `403 TENANT_SCOPE_NOT_ALLOWED` — chave da conta sem `x-whatsapp-number-id`.
+- `403 PERMISSION_DENIED` — token OAuth/MCP ou chave de conta cujo papel não tem `chat:read` (`ANALYST`).
+
+Teste no Playground: [Histórico de mensagens](/pt-BR/playground/conversations/message-history).

@@ -11,37 +11,49 @@ Retrieve the inbound messages that count as unread for the connected number. Unr
 `GET https://pilotstatus.com.br/v1/messages/unread`
 
 <Note>
-  Requires a **number-scoped** API key (`ps_*`) in the `x-api-key` header. Tenant-scoped keys return `403`.
+  Acts on **one number**: use a **number-scoped** API key (`ps_*`) in the `x-api-key` header (or `x-api-key-id`), or an account-wide key that names the number in the [`x-whatsapp-number-id`](/api/authentication) header. An account-wide key without that header gets `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+  **OAuth / MCP tokens and account keys** (`ps_account_`) also need the `chat:read` permission (roles `AGENT`, `ADMIN`, `OWNER`); the `ANALYST` role is refused with `403 PERMISSION_DENIED`. A classic `ps_` key is not affected by roles.
 </Note>
 
-## Query parameters
+To get only the **counts**, for one or several numbers in one call, use [`GET /v1/messages/unread/counts`](#counts-per-number).
 
-<ParamField query="page" default="1" type="integer">
-  Page number (≥ 1).
-</ParamField>
+## Query parameters
 
 <ParamField query="pageSize" default="30" type="integer">
   Results per page (1–100).
 </ParamField>
 
-There is no date-range filter on this endpoint; it returns all currently unread inbound messages.
+<ParamField query="cursor" type="string">
+  Keyset cursor: the `nextCursor` of the previous response, unchanged. The way to page past the first pages. Cannot be combined with `page > 1` or `offset` (`400 INVALID_PAGINATION`); a value that is not a cursor returned by this endpoint is `400 INVALID_CURSOR`.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Page number (≥ 1). `page × pageSize` may not exceed `10000`.
+</ParamField>
+
+<ParamField query="offset" type="integer">
+  Rows to skip (≥ 0), instead of `page`. `offset + pageSize` may not exceed `10000`.
+</ParamField>
+
+There is no date-range filter on this endpoint. Messages come newest first (`providerTimestamp`, then `id`), and each unread conversation contributes its latest `unreadCount` inbound messages — at most **100** per conversation.
 
 ## PII mode effect
 
-The response depends on the **PII mode** configured for the number (set in the dashboard, on the API Keys page's Privacy & retention panel or in the number's settings). This endpoint uses **redact-and-show**: it does **not** apply a hard retention date filter — message envelopes are still returned, but `content`, `from`, `media`, and `fromName`/sender are nulled and `redacted: true` is set for rows the PII policy covers.
+The response depends on the **PII mode** configured for the number (set in the dashboard, on the API Keys page's Privacy & retention panel or in the number's settings). This endpoint uses **redact-and-show**: rows are not hidden — a row the PII policy covers keeps its envelope, has `text`, `media`, the participant fields, `from`, `fromName`, `userId` and `username` set to `null`, and carries `redacted: true`.
 
 | PII mode | Effect |
 | --- | --- |
-| `STORE_INDEFINITE` (default) | All unread messages returned in full, `redacted: false`. |
-| `STORE_X_DAYS` | Envelopes are still returned, but rows **outside** the retention window are redacted (`content`/`from`/`media`/sender nulled, `redacted: true`); rows inside the window are returned in full. |
-| `RELAY_ONLY` | Redact-and-show applies to **all** rows (`redacted: true`) and the response adds a `notice: "PII_RELAY_ONLY"` field. In practice `RELAY_ONLY` numbers store nothing, so the list is usually **empty** (`messages: []`, `total: 0`). |
+| `STORE_INDEFINITE` (default) | All unread messages returned in full. |
+| `STORE_X_DAYS` | Rows **outside** the retention window are redacted; rows inside it are returned in full. |
+| `RELAY_ONLY` | Every row is redacted and the response adds `"notice": "PII_RELAY_ONLY"`. `total` still reports the conversations' counters. |
 
 ## Example
 
 <CodeGroup>
 
 ```bash cURL
-curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
+curl "https://pilotstatus.com.br/v1/messages/unread?pageSize=30" \
   -H "x-api-key: ps_your_key_here"
 ```
 
@@ -51,115 +63,124 @@ curl "https://pilotstatus.com.br/v1/messages/unread?page=1&pageSize=30" \
     {
       "id": "cmm04obm46zz0qv4ycjp8x6r2",
       "conversationId": "conv_abc123",
-      "conversationUnreadCount": 3,
       "direction": "INBOUND",
-      "type": "text",
-      "content": "Hi, I need help with my order.",
+      "providerKind": "META",
+      "externalMessageId": "wamid.HBgLNTUxMTk5OTk5OTk5",
+      "status": "DELIVERED",
+      "messageType": "text",
+      "origin": null,
+      "text": "Hi, I need help with my order.",
+      "participantName": "John Doe",
+      "participantPhone": "5511999999999",
+      "participantUserId": null,
+      "repliedToExternalId": null,
+      "media": null,
+      "sentAt": null,
+      "deliveredAt": null,
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T10:15:00.000Z",
+      "createdAt": "2026-06-27T10:15:00.300Z",
+      "referral": null,
       "from": "+5511999999999",
       "fromName": "John Doe",
-      "redacted": false,
-      "readAt": null,
-      "createdAt": "2026-06-27T10:15:00.000Z"
-    },
-    {
-      "id": "cmm04xyzabcde1234567890ab",
-      "conversationId": "conv_abc123",
-      "conversationUnreadCount": 3,
-      "direction": "INBOUND",
-      "type": "image",
-      "content": null,
-      "media": {
-        "provider": "META",
-        "id": "845849791681505",
-        "url": "https://media.pilotstatus.com.br/abc123.jpg",
-        "mimeType": "image/jpeg",
-        "fileName": null
-      },
-      "from": "+5511999999999",
-      "fromName": "John Doe",
-      "redacted": false,
-      "readAt": null,
-      "createdAt": "2026-06-27T10:16:00.000Z"
+      "userId": null,
+      "username": null,
+      "conversationUnreadCount": 3
     }
   ],
   "total": 12,
   "page": 1,
   "pageSize": 30,
-  "totalPages": 1
-}
-```
-
-```json RELAY_ONLY (200)
-{
-  "messages": [],
-  "total": 0,
-  "page": 1,
-  "pageSize": 30,
-  "totalPages": 0,
-  "notice": "PII_RELAY_ONLY"
+  "totalPages": 1,
+  "nextCursor": null
 }
 ```
 
 </CodeGroup>
 
+`total` is the **sum of `unreadCount`** over the number's unread conversations, so it can be larger than the rows you can page through (each conversation contributes at most 100). `nextCursor` is set when the page came back full; pass it as `cursor` to get the next page, and stop when it is `null`.
+
 ## Message object fields
 
-<ResponseField name="id" type="string" required>
-  Pilot Status internal message ID.
-</ResponseField>
+Each item has the fields of a [`GET /v1/messages/history`](/api/messages/history#message-object-fields) item (`id`, `conversationId`, `direction` — always `INBOUND` here —, `providerKind`, `externalMessageId`, `status`, `messageType`, `origin`, `text`, `participantName`, `participantPhone`, `participantUserId`, `repliedToExternalId`, `media`, `sentAt`, `deliveredAt`, `readAt`, `providerTimestamp`, `createdAt`, `referral`, `redacted`), plus:
 
-<ResponseField name="conversationId" type="string" required>
-  ID of the parent conversation.
-</ResponseField>
-
-<ResponseField name="conversationUnreadCount" type="integer" required>
-  Total unread message count for that conversation.
-</ResponseField>
-
-<ResponseField name="direction" type="string" required>
-  Always `"INBOUND"` for this endpoint.
-</ResponseField>
-
-<ResponseField name="type" type="string" required>
-  `text`, `image`, `audio`, `video`, `document`, `location`, `contacts`, `sticker`, or `reaction`.
-</ResponseField>
-
-<ResponseField name="content" type="string | null">
-  Message text or caption when available.
-</ResponseField>
-
-<ResponseField name="from" type="string" required>
-  Sender in E.164 format.
+<ResponseField name="from" type="string | null">
+  The contact in E.164 with a leading `+`, taken from the conversation (falls back to `participantPhone`). `null` when redacted or when the contact has no phone (username-only contact).
 </ResponseField>
 
 <ResponseField name="fromName" type="string | null">
-  Sender display name (resolved from the conversation) when available.
+  Contact display name, from the conversation when known.
 </ResponseField>
 
-<ResponseField name="media" type="object | null">
-  Media descriptor `{ provider, id, url, mimeType, fileName }` when the message carries media; `null` for text.
-
-  - `media.provider` — the delivering provider — `"META"` for Meta Cloud API numbers, or an internal provider tag for unofficial numbers.
-  - `media.id` — **Meta** media id. Set on `META` numbers — pass it to `GET /v1/media/{mediaId}` to download the bytes; `null` for unofficial numbers.
-  - `media.url` — Direct download URL when available. **META** inbound media is mirrored to S3 (so META messages usually carry both `id` **and** `url`); the unofficial provider provides its own link. Best-effort — may be `null`.
-  - `media.mimeType` — Media MIME type when known (may be `null`).
-  - `media.fileName` — Media file name when known (may be `null`).
+<ResponseField name="userId" type="string | null">
+  The contact's Meta Business-Scoped User ID (BSUID), when known — usable as `destinationNumber` on [`POST /v1/messages/send`](/api/messages/send).
 </ResponseField>
 
-<ResponseField name="redacted" type="boolean">
-  `true` when `content`, `media`, and the sender fields were nulled by the number's PII policy (see [PII mode effect](#pii-mode-effect)); `false` (or absent) when the row is returned in full.
+<ResponseField name="username" type="string | null">
+  The contact's WhatsApp username, when known.
 </ResponseField>
 
-<ResponseField name="readAt" type="null" required>
-  Always `null` — per-message `readAt` is not maintained for inbound messages; unread state is tracked at the conversation level via `conversationUnreadCount`.
+<ResponseField name="conversationUnreadCount" type="integer" required>
+  Unread count of that conversation.
 </ResponseField>
 
-<ResponseField name="createdAt" type="string" required>
-  ISO 8601 — when the message was received.
-</ResponseField>
+`readAt` is in practice always `null`: per-message `readAt` is not maintained for inbound messages; unread state lives on the conversation (`conversationUnreadCount`).
 
 ## Common errors
 
-- `400 NUMBER_NOT_FOUND` — the API key is not bound to a WhatsApp number.
-- `401` — missing or invalid `x-api-key` header.
-- `403` — tenant-scoped key used (number-scoped key required).
+- `400 INVALID_PAGINATION` — `page × pageSize` or `offset + pageSize` above `10000`, a negative or non-integer `offset`, or `cursor` combined with `page > 1` / `offset`.
+- `400 INVALID_CURSOR` — `cursor` is not a value this endpoint returned.
+- `400 NUMBER_NOT_FOUND` — the credential names no WhatsApp number.
+- `401` — missing or invalid credential (`{"error": "Invalid API key"}`).
+- `403 TENANT_SCOPE_NOT_ALLOWED` — an account-wide key without `x-whatsapp-number-id`.
+- `403 PERMISSION_DENIED` — OAuth/MCP token or account key whose role lacks `chat:read` (`ANALYST`).
+
+Try it in the Playground: [Unread messages](/playground/conversations/unread-messages).
+
+## Counts per number
+
+```text
+GET https://pilotstatus.com.br/v1/messages/unread/counts
+```
+
+The unread **count** of each number in one call — no message content. A number's `total` is exactly the `total` that `GET /v1/messages/unread` returns for it.
+
+<ParamField query="whatsappNumberIds" type="string">
+  Optional. Comma-separated (or repeated) `WhatsAppNumber` ids, at most **100**. Omitted: every number the credential reaches.
+</ParamField>
+
+Which numbers the credential reaches:
+
+- a **number-scoped** key, or an account-wide key with `x-whatsapp-number-id` — that number only;
+- an **OAuth / MCP token restricted to some numbers**, or an account key of a member restricted to some numbers — those numbers;
+- an **account-wide** key (workspace key, full-workspace token) without the header — every number of the workspace.
+
+Unlike the list, this endpoint does **not** refuse an account-wide key. It needs the same `chat:read` permission on OAuth / MCP tokens and account keys.
+
+```bash
+curl "https://pilotstatus.com.br/v1/messages/unread/counts" \
+  -H "x-api-key: ps_workspace_your_key_here"
+```
+
+```json Response (200)
+{
+  "byNumber": [
+    { "whatsappNumberId": "cmnum_01", "number": "5511999999999", "displayName": "Support", "total": 12 },
+    { "whatsappNumberId": "cmnum_02", "number": "5511888888888", "displayName": null, "total": 0 }
+  ],
+  "total": 12
+}
+```
+
+Numbers you named come back in the order you named them; otherwise oldest number first. Counters are not PII, so a `RELAY_ONLY` number reports its count too.
+
+| Status | `code` | When |
+| --- | --- | --- |
+| `400` | `TOO_MANY_NUMBERS` | More than 100 ids in `whatsappNumberIds`. |
+| `400` | `NUMBER_REQUIRED` | A per-number OAuth grant with no number to read. |
+| `400` | `NUMBER_NOT_FOUND` | The credential names no WhatsApp number. |
+| `403` | `NUMBER_NOT_IN_GRANT` | A named number is outside what the credential reaches. |
+| `403` | `PERMISSION_DENIED` | OAuth/MCP token or account key whose role lacks `chat:read`. |
+| `404` | `NUMBER_NOT_FOUND` | A named number is not a number of this workspace; `whatsappNumberIds` in the body lists which. |
+
+These refusals carry `{ "error": "<English> | <Português>", "code": "…" }`. Try it in the Playground: [Unread counts per number](/playground/conversations/unread-counts).

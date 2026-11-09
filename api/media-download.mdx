@@ -4,7 +4,7 @@ description: "Download inbound media received via Meta Cloud API as base64."
 mode: "wide"
 ---
 
-When receiving inbound messages with media via Meta Cloud API webhooks, the payload includes a `mediaId`. This endpoint downloads the actual media file as base64.
+When receiving inbound messages with media via Meta Cloud API webhooks, the payload includes a `mediaId`. This endpoint downloads the actual media file and returns it as base64 and as a re-hosted URL.
 
 You can also obtain the `mediaId` from the `media.id` field of inbound messages returned by `GET /v1/messages/unread`, `GET /v1/messages/group`, and `GET /v1/messages/history` — on **Meta** numbers `media.id` is the value to pass here.
 
@@ -18,12 +18,12 @@ You can also obtain the `mediaId` from the `media.id` field of inbound messages 
 
 ## Auth
 
-- `x-api-key: <key>` (or `x-api-key-id: <api_key_id>`)
+A **number-scoped** key in `x-api-key` (or `x-api-key-id`), or an account-wide key that names a number in the [`x-whatsapp-number-id`](/api/authentication) header — without it, `403 TENANT_SCOPE_NOT_ALLOWED`. **OAuth / MCP tokens and account keys** (`ps_account_`) also need the `chat:read` permission (`403 PERMISSION_DENIED` for the `ANALYST` role).
 
 ## Query parameters
 
 <ParamField query="phoneNumberId" type="string" required>
-  The Meta Phone Number ID that received the message. Same value as `phoneNumberId` in the webhook payload.
+  The Meta Phone Number ID that received the message. Same value as `phoneNumberId` in the webhook payload. It must belong to a number of your workspace (`404 NUMBER_NOT_FOUND` otherwise).
 </ParamField>
 
 ## Example
@@ -37,10 +37,11 @@ curl "https://pilotstatus.com.br/v1/media/abc123?phoneNumberId=123456789012345" 
 
 ```json Response (200)
 {
+  "url": "https://media.pilotstatus.com.br/public/tenants/_ephemeral/…/v1-media/3f2a.jpg",
   "base64": "data:image/jpeg;base64,/9j/4AAQ...",
   "mimeType": "image/jpeg",
   "fileName": "photo.jpg",
-  "mediaId": "abc123_media_id"
+  "mediaId": "abc123"
 }
 ```
 
@@ -48,8 +49,12 @@ curl "https://pilotstatus.com.br/v1/media/abc123?phoneNumberId=123456789012345" 
 
 ## Response fields
 
-<ResponseField name="base64" type="string" required>
-  Complete data URI (`data:<mimeType>;base64,<data>`) ready for embedding (`<img src="...">`) or decoding.
+<ResponseField name="url" type="string | null">
+  A copy of the file re-hosted on Pilot Status storage — download it like any URL. `null` if the re-host failed (then use `base64`).
+</ResponseField>
+
+<ResponseField name="base64" type="string | null">
+  Complete data URI (`data:<mimeType>;base64,<data>`) ready for embedding or decoding. `null` for a file larger than **16 MiB** — then `base64Omitted` explains why and `url` is the way to get it.
 </ResponseField>
 
 <ResponseField name="mimeType" type="string" required>
@@ -64,19 +69,32 @@ curl "https://pilotstatus.com.br/v1/media/abc123?phoneNumberId=123456789012345" 
   The requested media ID.
 </ResponseField>
 
+<ResponseField name="base64Omitted" type="object">
+  Present only when the file is too large to inline: `{ "reason": "MEDIA_TOO_LARGE_FOR_INLINE", "byteLength": <size>, "maxBytes": 16777216 }`.
+</ResponseField>
+
 ## Errors
 
-- `400` — missing `phoneNumberId` or number has no `metaAccessToken`
-- `401` — invalid or missing API key
-- `403` — operation not allowed for this key (e.g., a tenant-scoped key on a number-scoped endpoint)
-- `404` — media not found on Meta or number not accessible
-- `500` — download failed
+| Status | `code` | When |
+| --- | --- | --- |
+| `400` | `MISSING_PHONE_NUMBER_ID` | The `phoneNumberId` query parameter is missing. |
+| `400` | `META_TOKEN_MISSING` | The number has no Meta access token (not an official number). |
+| `401` | — | Missing or invalid credential (`{"error": "Invalid API key"}`). |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | An account-wide key without `x-whatsapp-number-id`. |
+| `403` | `PERMISSION_DENIED` | OAuth/MCP token or account key whose role lacks `chat:read`. |
+| `403` | `NUMBER_NOT_IN_GRANT` | A token restricted to some numbers, and `phoneNumberId` is not one of them. |
+| `404` | `NUMBER_NOT_FOUND` | No number of your workspace has that `phoneNumberId`. |
+| `404` | `MEDIA_NOT_FOUND` | Meta does not know the media id, or it expired. |
+| `500` | `MEDIA_DOWNLOAD_FAILED` | The download from Meta failed. |
+| `502` | `MEDIA_TOO_LARGE_AND_REHOST_FAILED` | The file is above 16 MiB and could not be re-hosted either (`byteLength`, `maxBytes` in the body). |
+
+Try it in the Playground: [Download media](/playground/media/download-media-meta).
 
 ## Notes
 
 1. The WhatsApp number referenced by `phoneNumberId` must have a valid `metaAccessToken` configured in Pilot Status.
 2. Media downloads must happen before the Meta-signed URL expires (typically a few minutes after the webhook is received).
-3. The `base64` field is a complete data URI ready for direct use.
+3. The `base64` field is a complete data URI ready for direct use — up to 16 MiB; above that, use `url`.
 4. For stickers, the MIME type is typically `image/webp`.
 5. For audio, Meta may return `audio/ogg` (voice messages) or `audio/mp4`.
 

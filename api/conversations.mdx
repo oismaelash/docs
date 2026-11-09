@@ -4,14 +4,16 @@ description: "List conversations for the connected number, ordered by the most r
 mode: "wide"
 ---
 
-List conversations for the connected number, ordered by the most recent message activity.
+List conversations for the connected number, ordered by the most recent message activity (`lastMessageAt` descending; conversations without one last).
 
 ## Endpoint
 
 `GET https://pilotstatus.com.br/v1/conversations`
 
 <Note>
-  Requires a **number-scoped** API key (`ps_*`) in the `x-api-key` header. Tenant-scoped keys return `403`.
+  Acts on **one number**: use a **number-scoped** API key (`ps_*`) in the `x-api-key` header (or `x-api-key-id`), or an account-wide key that names the number in the [`x-whatsapp-number-id`](/api/authentication) header. An account-wide key without that header gets `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+  **OAuth / MCP tokens and account keys** (`ps_account_`) also need the `chat:read` permission (roles `AGENT`, `ADMIN`, `OWNER`); the `ANALYST` role is refused with `403 PERMISSION_DENIED`. A classic `ps_` key is not affected by roles.
 </Note>
 
 ## Query parameters
@@ -41,8 +43,8 @@ The response depends on the **PII mode** configured for the number — changed i
 | PII mode | Effect |
 | --- | --- |
 | `STORE_INDEFINITE` (default) | All conversations returned (subject to date filters). |
-| `STORE_X_DAYS` | Conversations are **still returned** within the requested date range — the list is **not** truncated. However, message, peer, and preview data older than the retention window (`now − piiRetentionDays`) is **redacted** (nulled) on the returned rows. |
-| `RELAY_ONLY` | Conversations **are** returned (not an empty list), but the peer and last-message preview are **redacted** (nulled). The response includes a `notice: "PII_RELAY_ONLY"` field and `total > 0`. |
+| `STORE_X_DAYS` | Conversations are returned in full — retention is applied **per message** on the message endpoints, not to the conversation row, so its peer and `lastMessagePreview` stay. |
+| `RELAY_ONLY` | Conversations **are** returned (not an empty list), but every row is **redacted** (`redacted: true`, peer identity and last-message preview `null`). The response includes a `notice: "PII_RELAY_ONLY"` field. |
 
 ## Example
 
@@ -58,21 +60,39 @@ curl "https://pilotstatus.com.br/v1/conversations?startDate=2026-06-01T00:00:00Z
   "conversations": [
     {
       "id": "conv_abc123",
+      "whatsappNumberId": "cmnum_01",
       "from": "+5511999999999",
-      "fromName": "John Doe",
       "type": "DIRECT",
-      "lastMessageAt": "2026-06-27T10:15:00.000Z",
+      "fromName": "John Doe",
+      "peerLid": null,
+      "userId": "BR.13491208655302741918",
+      "username": null,
+      "profilePicUrl": null,
+      "lastMessagePreview": "Thanks!",
+      "lastDirection": "INBOUND",
       "unreadCount": 2,
-      "createdAt": "2026-06-01T09:00:00.000Z"
+      "lastMessageAt": "2026-06-27T10:15:00.000Z",
+      "lastInboundAt": "2026-06-27T10:15:00.000Z",
+      "createdAt": "2026-06-01T09:00:00.000Z",
+      "updatedAt": "2026-06-27T10:15:00.200Z"
     },
     {
       "id": "conv_def456",
+      "whatsappNumberId": "cmnum_01",
       "from": null,
-      "fromName": "Team Chat",
       "type": "GROUP",
-      "lastMessageAt": "2026-06-27T09:45:00.000Z",
+      "fromName": "Team Chat",
+      "peerLid": null,
+      "userId": null,
+      "username": null,
+      "profilePicUrl": null,
+      "lastMessagePreview": "See you at 10am",
+      "lastDirection": "OUTBOUND",
       "unreadCount": 0,
-      "createdAt": "2026-06-10T14:00:00.000Z"
+      "lastMessageAt": "2026-06-27T09:45:00.000Z",
+      "lastInboundAt": "2026-06-27T09:40:00.000Z",
+      "createdAt": "2026-06-10T14:00:00.000Z",
+      "updatedAt": "2026-06-27T09:45:00.100Z"
     }
   ],
   "total": 45,
@@ -87,21 +107,22 @@ curl "https://pilotstatus.com.br/v1/conversations?startDate=2026-06-01T00:00:00Z
   "conversations": [
     {
       "id": "conv_abc123",
+      "whatsappNumberId": "cmnum_01",
       "from": null,
-      "fromName": null,
       "type": "DIRECT",
-      "lastMessageAt": "2026-06-27T10:15:00.000Z",
-      "unreadCount": 2,
-      "createdAt": "2026-06-01T09:00:00.000Z"
-    },
-    {
-      "id": "conv_def456",
-      "from": null,
       "fromName": null,
-      "type": "GROUP",
-      "lastMessageAt": "2026-06-27T09:45:00.000Z",
-      "unreadCount": 0,
-      "createdAt": "2026-06-10T14:00:00.000Z"
+      "peerLid": null,
+      "userId": null,
+      "username": null,
+      "profilePicUrl": null,
+      "lastMessagePreview": null,
+      "lastDirection": "INBOUND",
+      "unreadCount": 2,
+      "lastMessageAt": "2026-06-27T10:15:00.000Z",
+      "lastInboundAt": "2026-06-27T10:15:00.000Z",
+      "createdAt": "2026-06-01T09:00:00.000Z",
+      "updatedAt": "2026-06-27T10:15:00.200Z",
+      "redacted": true
     }
   ],
   "total": 45,
@@ -120,33 +141,77 @@ curl "https://pilotstatus.com.br/v1/conversations?startDate=2026-06-01T00:00:00Z
   Pilot Status conversation ID.
 </ResponseField>
 
+<ResponseField name="whatsappNumberId" type="string" required>
+  The number the conversation belongs to.
+</ResponseField>
+
 <ResponseField name="type" type="string" required>
   `"DIRECT"`, `"GROUP"` or `"NEWSLETTER"`.
 </ResponseField>
 
 <ResponseField name="from" type="string | null">
-  Sender phone in E.164 (with `+`) for individuals; `null` for groups/newsletters and lid-only peers.
+  Contact phone in E.164 (with `+`) for individuals; `null` for groups/newsletters, for contacts with no phone (lid-only or username-only) and when redacted.
 </ResponseField>
 
 <ResponseField name="fromName" type="string | null">
-  Contact or group display name when available (resolved from the conversation).
+  Contact or group display name when available.
 </ResponseField>
 
-<ResponseField name="lastMessageAt" type="string" required>
-  ISO 8601 — timestamp of the last message activity.
+<ResponseField name="peerLid" type="string | null">
+  WhatsApp LID of the contact, when known.
+</ResponseField>
+
+<ResponseField name="userId" type="string | null">
+  Meta Business-Scoped User ID (BSUID) — the durable key of a Meta contact. Present even when `from` is `null` (a contact who uses a username), and accepted as `destinationNumber` on [`POST /v1/messages/send`](/api/messages/send).
+</ResponseField>
+
+<ResponseField name="username" type="string | null">
+  The contact's WhatsApp username, when known.
+</ResponseField>
+
+<ResponseField name="profilePicUrl" type="string | null">
+  Profile picture URL, when known.
+</ResponseField>
+
+<ResponseField name="lastMessagePreview" type="string | null">
+  Short preview of the last message.
+</ResponseField>
+
+<ResponseField name="lastDirection" type="string | null">
+  `INBOUND` or `OUTBOUND` — direction of the last message.
 </ResponseField>
 
 <ResponseField name="unreadCount" type="integer" required>
-  Number of inbound messages not yet read.
+  Unread inbound messages in the conversation — the counter behind [`GET /v1/messages/unread`](/api/messages/unread).
+</ResponseField>
+
+<ResponseField name="lastMessageAt" type="string | null">
+  ISO 8601 — last message activity. Conversations without it sort last.
+</ResponseField>
+
+<ResponseField name="lastInboundAt" type="string | null">
+  ISO 8601 — last message received from the contact (what the 24-hour service window counts from).
 </ResponseField>
 
 <ResponseField name="createdAt" type="string" required>
   ISO 8601 — when the conversation was first created.
 </ResponseField>
 
+<ResponseField name="updatedAt" type="string" required>
+  ISO 8601 — last update of the conversation record.
+</ResponseField>
+
+<ResponseField name="redacted" type="boolean">
+  Present (`true`) only on a redacted conversation: `from`, `fromName`, `peerLid`, `userId`, `username`, `profilePicUrl` and `lastMessagePreview` are `null`.
+</ResponseField>
+
 ## Common errors
 
 - `400 INVALID_DATE_RANGE` — `startDate` or `endDate` is not a valid ISO 8601 string, or `startDate > endDate`.
-- `400 NUMBER_NOT_FOUND` — the API key is not bound to a WhatsApp number.
-- `401` — missing or invalid `x-api-key` header.
-- `403` — tenant-scoped key used (number-scoped key required).
+- `400 INVALID_PAGINATION` — `page × pageSize` above `10000`.
+- `400 NUMBER_NOT_FOUND` — the credential names no WhatsApp number.
+- `401` — missing or invalid credential (`{"error": "Invalid API key"}`).
+- `403 TENANT_SCOPE_NOT_ALLOWED` — an account-wide key without `x-whatsapp-number-id`.
+- `403 PERMISSION_DENIED` — OAuth/MCP token or account key whose role lacks `chat:read` (`ANALYST`).
+
+Try it in the Playground: [List conversations](/playground/conversations/list-conversations).
