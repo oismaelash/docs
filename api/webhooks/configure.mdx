@@ -26,6 +26,13 @@ For payloads and the full event list, see the [event reference](/api/webhooks/ev
 | `DELETE` | `/v1/webhooks/{id}` | Permanently delete the webhook. |
 | `GET` | `/v1/webhooks/{id}/logs` | Recent delivery attempts (`limit` 1–50, `event` filter). |
 | `POST` | `/v1/webhooks/{id}/rotate-secret` | Mint a new signing secret and return it, once. The old one stops verifying immediately. |
+| `POST` | `/v1/webhooks/{id}/reactivate` | Resume delivery to a destination that was [paused automatically](#automatic-pause-and-reactivate). |
+
+All of them can be tried in the **Playground → [Webhooks](/playground/webhooks/list-webhooks)**.
+
+<Note>
+  **Who can call them.** A classic `ps_` key (workspace or number) is limited by its scope only. With an [account key](/api/key-types#account-keys) (plus `x-workspace-id`) or an OAuth/MCP token, the user behind it must be an **Owner or Admin** — `webhooks:read` for the reads, `webhooks:manage` for the rest — otherwise **403 `PERMISSION_DENIED`**.
+</Note>
 
 ## Number scoping
 
@@ -34,6 +41,53 @@ A webhook belongs to a single WhatsApp number.
 - With a **number-scoped** key the number comes from the key itself; a `whatsappNumberId` in the body must match it (else **400 `NUMBER_MISMATCH`**).
 - With a **tenant-scoped** key, pass the target number via the `whatsappNumberId` body field or the `x-whatsapp-number-id` header — omitting both returns **400 `NUMBER_REQUIRED`**; a number outside your tenant returns **404 `NUMBER_NOT_FOUND`**.
 - `GET /v1/webhooks` lists only the webhooks visible to the key's scope (a number-scoped key sees only its own number's webhooks). A webhook outside the key's scope returns **404 `WEBHOOK_NOT_FOUND`**.
+- An OAuth/MCP token granted only some numbers must send `x-whatsapp-number-id` on every one of these endpoints — otherwise **400 `NUMBER_REQUIRED`**.
+
+## The webhook object
+
+`GET /v1/webhooks` returns an array of these, and `GET /v1/webhooks/{id}` one of them:
+
+```json
+{
+  "id": "wh_01HZX...",
+  "tenantId": "tenant_01HZX...",
+  "name": "n8n",
+  "url": "https://hooks.acme.com/whatsapp",
+  "environment": "LIVE",
+  "deliveryTimeoutMs": null,
+  "active": true,
+  "events": ["message.received", "message.delivered"],
+  "createdAt": "2026-06-01T11:59:00.000Z",
+  "updatedAt": "2026-06-01T12:00:00.000Z",
+  "hasSecret": true,
+  "lastTriggered": "2026-06-28T09:59:00.000Z",
+  "whatsappInstanceIds": [],
+  "whatsappNumberIds": ["num_01HZX..."],
+  "circuitOpen": false,
+  "circuitOpenedAt": null,
+  "circuitSuccessPct": null,
+  "heldCount": 0,
+  "droppedCount": 0
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `name` | Display name, up to 100 characters. Blank or absent → the URL's hostname. |
+| `url` | `http` or `https`. |
+| `active` | `false` = deactivated by you: nothing is delivered. |
+| `events` | The subscriptions. Empty = nothing is delivered (see [Event gating](#event-gating)). |
+| `deliveryTimeoutMs` | Per-webhook delivery deadline in ms, or `null` for the 10-second default. Set only by Pilot Status staff (see below). |
+| `hasSecret` | Whether deliveries are signed. The secret itself is never returned by a read. |
+| `lastTriggered` | When the last delivery attempt happened, or `null`. |
+| `whatsappNumberIds` | The number the webhook is subscribed to. |
+| `circuitOpen`, `circuitOpenedAt`, `circuitSuccessPct`, `heldCount`, `droppedCount` | The [automatic pause](#automatic-pause-and-reactivate) status. |
+
+`POST` answers the stored row (`id` to `updatedAt`) plus `hasSecret` and `secret`; `PATCH` answers the stored row only — no `hasSecret`, no pause status, no number ids. Read them back with `GET`.
+
+<Note>
+  **`deliveryTimeoutMs` is reserved to Pilot Status staff.** Sending the field on `POST` or `PATCH` — even as `null` — with any other credential returns **403 `DELIVERY_TIMEOUT_STAFF_ONLY`** (`"deliveryTimeoutMs can only be set by Pilot Status platform staff; remove the field from the request. | deliveryTimeoutMs só pode ser definido pela equipe da Pilot Status; remova o campo do pedido."`), and nothing is created or changed. Classic `ps_` keys are never staff. If your endpoint needs more than 10 seconds, ask support.
+</Note>
 
 ## Examples
 
@@ -102,8 +156,14 @@ The codes that show up most often:
   `response` when you need to know why.
 </Note>
 
-A failed attempt is retried with exponential backoff before it is given up on, so a single
-`FAILED` row does not mean the event was lost — look for a later `SUCCESS` on the same event.
+Each event gets **3 attempts in total**: the first right away, then retries about 5 and 10
+seconds later. Your endpoint has **10 seconds** to answer with a `2xx`; anything else counts as a
+failed attempt. So a single `FAILED` row does not mean the event was lost — look for a later
+`SUCCESS` on the same event.
+
+`limit` goes from 1 to 50 (default 50): a larger value is clamped to 50, and a value that is not
+a positive number falls back to 50. Each row also carries `whatsappNumberId`, `messageId` and
+`correlationId` when the event had them.
 
 ## Event gating
 
@@ -125,11 +185,21 @@ A failed attempt is retried with exponential backoff before it is given up on, s
 | `whatsappNumberId` on `PATCH` (the number cannot be changed after creation — delete and recreate) | **400 `NUMBER_RESCOPE_NOT_SUPPORTED`** |
 | `POST` / `PATCH` body that is not valid JSON, empty included — nothing is created or changed | **400 `INVALID_BODY`** — `"The request body is not valid JSON \| O corpo da requisição não é um JSON válido"` |
 | `POST` / `PATCH` body that is valid JSON but not an object (`null`, a string, a number) | **400 `INVALID_BODY`** — `"The request body must be a JSON object \| O corpo da requisição deve ser um objeto JSON"` |
+| A field of the wrong type, an array as the body, a `url` that is not a URL, a `name` over 100 characters | **400** `{ "error": "Validation error", "details": { … } }` — no `code`; `details.fieldErrors` names the field |
+| `url` with a scheme other than `http`/`https`, `localhost`, a loopback or private IP, or a host without a dot | **400 `INVALID_WEBHOOK_URL`** — `"URL de webhook recusada: <reason>"` |
+| `deliveryTimeoutMs` sent by anyone who is not Pilot Status staff | **403 `DELIVERY_TIMEOUT_STAFF_ONLY`** |
+| Account key or OAuth/MCP user who is not Owner or Admin | **403 `PERMISSION_DENIED`** |
 | Number outside your tenant | **404 `NUMBER_NOT_FOUND`** |
 | Webhook not visible to the key's scope | **404 `WEBHOOK_NOT_FOUND`** |
+| Same `url` already on this number (`POST`, or a `PATCH` that changes the URL) | **409 `WEBHOOK_DUPLICATE`** |
+| The workspace already has 50 webhooks (`POST`) | **409 `WEBHOOK_LIMIT_REACHED`** |
+
+Unknown body fields are ignored, not refused. The messages of `INVALID_WEBHOOK_URL`, `WEBHOOK_DUPLICATE` and `WEBHOOK_LIMIT_REACHED` are in Portuguese only — branch on `code`.
 
 <Note>
-  **The signing `secret` is returned only at birth**: in the `201` of `POST /v1/webhooks` and in the response of `POST /v1/webhooks/{id}/rotate-secret`. No read (`GET`, the list, `PATCH`) returns it — they carry `hasSecret` instead. Lost it? [Rotate it](#rotate-—-or-mint-one-for-an-older-webhook). With an OAuth/MCP token the same roles get the secret (`webhooks:manage`, Admin or Owner), and every creation and rotation is recorded in the audit log ([details](/integrations/mcp-server#secrets-and-api-keys-over-oauth)).
+  **The signing `secret` is returned only at birth**: in the `201` of `POST /v1/webhooks` and in the response of `POST /v1/webhooks/{id}/rotate-secret`. No other response returns it — `GET` and the list carry `hasSecret` instead, `PATCH` neither. Lost it? [Rotate it](#rotate-—-or-mint-one-for-an-older-webhook). With an OAuth/MCP token the same roles get the secret (`webhooks:manage`, Admin or Owner), and every creation and rotation is recorded in the audit log ([details](/integrations/mcp-server#secrets-and-api-keys-over-oauth)).
+
+  If that audit record cannot be written: on **creation** the webhook is still created, but `secret` comes back `null` together with `"secretWithheld": true`, `secretWithheldReason` and `"secretWithheldCode": "OAUTH_SECRET_AUDIT_UNAVAILABLE"` — call `rotate-secret` to get one; a **rotation** is refused with **500 `OAUTH_SECRET_AUDIT_UNAVAILABLE`** and the old secret stays valid.
 </Note>
 
 ## How many webhooks per number
@@ -256,6 +326,37 @@ When it is present, `Idempotency-Key` is **stable per event**: a retry, a backof
 
   So a Meta number's conversation traffic is **not** covered by this header today. Dedupe those on Meta's own ids instead — and read the wamid warning in the [event reference](/api/webhooks/events#meta-cloud-api-events-native-envelope) before keying on the wamid alone.
 </Warning>
+
+## Automatic pause and `reactivate`
+
+When a destination keeps failing — a success rate **at or below 20% over its last 50 deliveries**, after at least 20 — Pilot Status **pauses delivery to it** (`circuitOpen: true`). This is not `active: false`: you did not switch anything off, and the account Owner is alerted.
+
+While it is paused:
+
+- new events are **held** (`heldCount`) for up to **48 hours**, at most **20,000** per webhook; beyond that they are lost and counted in `droppedCount`;
+- **one delivery every 5 minutes** goes through as a probe. When it succeeds, the pause ends on its own and the held events go out again over the following hour.
+
+To end it at once, fix your endpoint and call:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/webhooks/wh_abc/reactivate" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+```json
+{
+  "ok": true,
+  "released": 12,
+  "stillHeld": 0,
+  "circuitOpen": false,
+  "circuitOpenedAt": null,
+  "circuitSuccessPct": null,
+  "heldCount": 0,
+  "droppedCount": 0
+}
+```
+
+It releases up to 1,000 held events, spaced 200 ms apart (`released`); the rest (`stillHeld`) go out on the hourly cycle. It is idempotent — on a webhook that is already delivering it answers `200` with `released: 0` — and it does not turn on a webhook you deactivated with `active: false`. No body; permission `webhooks:manage`.
 
 ## Dashboard
 
