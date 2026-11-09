@@ -7,17 +7,34 @@ mode: "wide"
 Os canais do WhatsApp usam identificadores terminados em `@newsletter`. O Pilot Status oferece **listagem opcional** desses canais (id e nome, quando conhecido) para a **mesma instância do WhatsApp** vinculada à sua API key, assim como `POST /v1/messages/send`.
 
 <Warning>
-  Canais/newsletters **não são suportados para números da Meta Cloud API**.
+  Canais/newsletters **não são suportados para números da Meta Cloud API**: `GET /v1/newsletters` responde `400 NOT_SUPPORTED_FOR_META`.
 </Warning>
 
 ## API Pública
 
 `GET https://pilotstatus.com.br/v1/newsletters`
 
-- **200** com `{ "newsletters": [ { "id": "…@newsletter", "name": "…" } ] }`.
-- Mesmas regras de **instância** e sessão **conectada** (`OPEN`) que `GET /v1/groups`; se não estiver conectada, **409** com `WHATSAPP_INSTANCE_NOT_CONNECTED`.
-- Se a key não tiver uma instância vinculada, **200** com um array `newsletters` vazio.
-- Quando a **listagem de canais** não está habilitada para o seu workspace, a API ainda retorna **200** com um array **vazio** (não é um erro).
+- **200** com `{ "newsletters": [ { "id": "…@newsletter", "name": "…" } ] }`. `name` pode ser `null`.
+- A sessão precisa estar **conectada** (`OPEN`); caso contrário, **409** com `WHATSAPP_INSTANCE_NOT_CONNECTED`.
+- Quando o número não tem sessão de WhatsApp por trás, **200** com um array `newsletters` vazio.
+- A lista fica **em cache por até 1 hora**.
+
+### Autenticação
+
+Uma **chave de número** (`ps_number_`) atua sobre o próprio número. Uma **chave de workspace** (`ps_workspace_`), uma **chave de conta** (`ps_account_`, com `x-workspace-id`) ou um **token OAuth** precisa indicar o número em `x-whatsapp-number-id`; sem ele, a resposta é `403 TENANT_SCOPE_NOT_ALLOWED`. Com chave de conta ou token OAuth, o papel do usuário precisa incluir `chat:read` (**AGENT**, **ADMIN** ou **OWNER**); caso contrário, `403 PERMISSION_DENIED`. Veja [Autenticação](/pt-BR/api/authentication).
+
+### Erros
+
+| Status | `code` | Quando |
+| --- | --- | --- |
+| `400` | `NOT_SUPPORTED_FOR_META` | O número é da Meta Cloud API. |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Credencial de workspace/conta sem `x-whatsapp-number-id`. |
+| `403` | `PERMISSION_DENIED` | Chave de conta / usuário OAuth cujo papel não tem `chat:read`. |
+| `409` | `WHATSAPP_INSTANCE_NOT_CONNECTED` | A sessão não está `OPEN`. |
+| `409` | `LINKED_WHATSAPP_INSTANCE_NOT_FOUND` | A instância vinculada à chave não existe mais. |
+| status do provedor | `WHATSAPP_UPSTREAM_ERROR` | O provedor de WhatsApp recusou a chamada; `details: { status, body }` traz a resposta dele. |
+| `502` | `WHATSAPP_INVALID_JSON` | O provedor respondeu com JSON inválido. |
+| `503` | `WHATSAPP_SESSION_KEY_MISSING` | A chave de sessão do número não está configurada. |
 
 ## Exemplo
 
@@ -25,7 +42,7 @@ Os canais do WhatsApp usam identificadores terminados em `@newsletter`. O Pilot 
 
 ```bash cURL
 curl "https://pilotstatus.com.br/v1/newsletters" \
-  -H "x-api-key: ps_your_key_here"
+  -H "x-api-key: ps_number_your_key"
 ```
 
 ```json Response (200)
