@@ -23,8 +23,8 @@ Check whether one or more phone numbers are registered on WhatsApp, using the co
 
 ## Required headers
 
-- `x-api-key: <your_number_scoped_key>` — must be a **number-scoped** key (`ps_*`). Tenant-scoped keys return `403`.
-- Alternatively, an **OAuth / tenant token** together with the `x-whatsapp-number-id: <numberId>` header (as used by the MCP server) selects the number to check against.
+- `x-api-key: <your_number_scoped_key>` — a **number-scoped** key (`ps_*`), or an account-wide key together with the `x-whatsapp-number-id: <numberId>` header, which selects the number to check against. An account-wide key without that header gets `403 TENANT_SCOPE_NOT_ALLOWED`.
+- **OAuth / MCP tokens and account keys** (`ps_account_`) also need the `contacts:read` permission (roles `AGENT`, `ADMIN`, `OWNER`); the `ANALYST` role gets `403 PERMISSION_DENIED`.
 
 ## Request body
 
@@ -38,7 +38,7 @@ Send **either** a list or a single number:
   A single number — treated as `numbers: [number]`.
 </ParamField>
 
-An empty/invalid body (no numbers, more than 20, wrong types) returns **`400 VALIDATION_ERROR`**.
+An empty/invalid body (no numbers, more than 20, wrong types, none of the inputs a phone number) returns **`400 VALIDATION_ERROR`** — so does a body that is not valid JSON. If both are sent, `numbers` wins and `number` is ignored. Inputs that do not look like a phone number are dropped from the results.
 
 ```json
 { "numbers": ["+5511955554444", "5511888888888"] }
@@ -108,8 +108,13 @@ curl -X POST "https://pilotstatus.com.br/v1/numbers/check" \
 
 - `400 VALIDATION_ERROR` — missing/invalid body (no numbers, more than 20, or wrong types).
 - `400 NOT_SUPPORTED_FOR_META` — the number is a Meta Cloud API number (no existence lookup on Meta).
+- `400 NUMBER_NOT_FOUND` — the credential resolves to no WhatsApp number with a connected instance.
 - `409 WHATSAPP_INSTANCE_NOT_CONNECTED` — the session is not `OPEN`.
-- `503 EVOLUTION_API_KEY_MISSING` — the unofficial provider's session key is not configured for the instance.
-- `401` — missing or invalid `x-api-key` header.
-- `403` — tenant-scoped key used (number-scoped key required).
-- Upstream provider failures surface as `WHATSAPP_UPSTREAM_ERROR` / `WHATSAPP_INVALID_JSON` (same envelope as the group endpoints).
+- `409 LINKED_WHATSAPP_INSTANCE_NOT_FOUND` — the instance the key points at was removed.
+- `503 WHATSAPP_SESSION_KEY_MISSING` — the unofficial provider's session key is not configured for the instance.
+- `401` — missing or invalid credential (`{"error": "Invalid API key"}`).
+- `403 TENANT_SCOPE_NOT_ALLOWED` — an account-wide key without `x-whatsapp-number-id`.
+- `403 PERMISSION_DENIED` — OAuth/MCP token or account key whose role lacks `contacts:read`.
+- Upstream provider failures surface as `WHATSAPP_UPSTREAM_ERROR` (with the provider's status, `details.status` and `details.body`) / `502 WHATSAPP_INVALID_JSON` (same envelope as the group endpoints).
+
+Try it in the Playground: [Check numbers on WhatsApp](/playground/numbers/check-numbers).

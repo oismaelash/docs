@@ -19,21 +19,23 @@ Lista os logs de mensagens — **enviadas e recebidas** — do número de WhatsA
 
 ## Cabeçalhos
 
-- `x-api-key: ps_...` (ou `x-api-key-id: <api_key_id>`) — uma chave com **escopo de número**. Chaves com escopo de tenant recebem `403`.
+- `x-api-key: ps_...` (ou `x-api-key-id: <api_key_id>`) — uma chave com **escopo de número**, ou uma chave da conta que indique o número no header [`x-whatsapp-number-id`](/pt-BR/api/authentication). Uma chave da conta sem esse header recebe `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+**Tokens OAuth / MCP e chaves de conta** (`ps_account_`) também precisam da permissão `logs:read:content` (papéis `AGENT`, `ADMIN`, `OWNER`) — as linhas trazem o corpo da mensagem, então o papel `ANALYST` recebe `403 PERMISSION_DENIED`. Uma chave `ps_` clássica não é afetada por papéis.
 
 ## Parâmetros de query
 
 | Parâmetro | Tipo | Padrão | Descrição |
 | --- | --- | --- | --- |
 | `page` | integer | `1` | Número da página (começa em 1). |
-| `pageSize` | integer | `20` | Linhas por página (máx. `100`). |
-| `status` | string (CSV) | — | Filtra por status de entrega: `QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED`, `FAILED`, `CANCELED`. Aceita lista separada por vírgula (ex.: `status=FAILED,CANCELED`). Status de entrega só existem para mensagens enviadas, então este filtro **implica somente saídas** (outbound). |
-| `direction` | string | — | `in` (recebidas) ou `out` (enviadas). `out` deixa de fora as linhas de saída que não tiveram requisição de envio — veja o aviso em [Linhas de saída sem requisição de envio](#linhas-de-saída-sem-requisição-de-envio). |
+| `pageSize` | integer | `30` | Linhas por página (máx. `100`). `page × pageSize` não pode passar de `10000` — além disso, restrinja com `startDate`/`endDate` (`400 INVALID_PAGINATION`). |
+| `status` | string (CSV) | — | Filtra por status de entrega: `QUEUED`, `SENT`, `DELIVERED`, `READ`, `FAILED`, `CANCELED` (sem diferenciar maiúsculas). Aceita lista separada por vírgula (ex.: `status=FAILED,CANCELED`). Qualquer outro valor — inclusive `PLAYED`, embora as linhas possam trazê-lo — é recusado com `400 INVALID_STATUS`. Status de entrega só existem para mensagens enviadas, então este filtro **implica somente saídas** (outbound). |
+| `direction` | string | — | `in` (recebidas) ou `out` (enviadas); qualquer outro valor dá `400 INVALID_DIRECTION`. `out` deixa de fora as linhas de saída que não tiveram requisição de envio — veja o aviso em [Linhas de saída sem requisição de envio](#linhas-de-saída-sem-requisição-de-envio). |
 | `startDate` | string | — | Limite inferior em ISO 8601 sobre `createdAt` (ex.: `2026-02-01T00:00:00.000Z`). |
 | `endDate` | string | — | Limite superior em ISO 8601 sobre `createdAt`. Não pode ser anterior a `startDate`. |
 | `search` | string | — | Um número de telefone em **qualquer** formato (`+5511999999999`, `5511999999999`, `11 99999-9999`, …) ou o nome de um template. |
-| `templateId` | string | — | **Id ou nome** do template — retorna apenas mensagens enviadas com esse template. |
-| `window` | string | — | `open` ou `closed` — o estado da janela de atendimento de 24h **registrado no momento do envio** (veja a nota abaixo). |
+| `templateId` | string | — | **Id ou nome** do template — retorna apenas mensagens enviadas com esse template (só saídas, como `status`). |
+| `window` | string | — | `open` ou `closed` — o estado da janela de atendimento de 24h **registrado no momento do envio** (veja a nota abaixo); qualquer outro valor dá `400 INVALID_WINDOW`. Só saídas. |
 
 <Note>
   **Janela de atendimento de 24h:** o WhatsApp abre uma janela de atendimento de 24 horas sempre que um contato manda mensagem para você. `serviceWindowOpenAtSend` registra o estado dessa janela no momento em que cada mensagem enviada foi aceita: `true` significa que foi uma resposta dentro de uma janela aberta e foi enviada imediatamente; `false` significa que foi um envio "frio" fora da janela — ritmado pelo motor anti-bloqueio em números web do Pilot Status, e exigindo um template aprovado em números Meta Cloud API; `null` significa que a janela não foi computada (linhas recebidas, destinos de grupo/canal). Filtre com `window=open` / `window=closed`.
@@ -92,13 +94,13 @@ curl "https://pilotstatus.com.br/v1/messages?status=FAILED&direction=out&startDa
       "to": "+5511888888888",
       "content": "Obrigado! Até amanhã.",
       "template": null,
-      "status": null,
+      "status": "DELIVERED",
       "errorCode": null,
       "errorMessage": null,
       "origin": null,
       "serviceWindowOpenAtSend": null,
       "createdAt": "2026-02-24T15:03:40.000Z",
-      "sentAt": null,
+      "sentAt": "2026-02-24T15:03:39.000Z",
       "deliveredAt": null,
       "readAt": null,
       "externalMessageId": "wamid.HBgLNTUxMTg4ODg4ODg4"
@@ -121,15 +123,16 @@ curl "https://pilotstatus.com.br/v1/messages?status=FAILED&direction=out&startDa
 | `from` / `to` | Telefones de remetente e destinatário. |
 | `content` | Texto da mensagem. `null` quando redigido pelo modo de retenção de PII do número. |
 | `template` | Nome do template em envios de template; caso contrário, `null`. |
-| `status` | Status de entrega das mensagens enviadas (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED`, `FAILED`, `CANCELED`) — veja [Status da Mensagem](/pt-BR/api/messages/status). `null` em linhas recebidas. |
+| `status` | Status de entrega das mensagens enviadas (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED`, `FAILED`, `CANCELED`) — veja [Status da Mensagem](/pt-BR/api/messages/status). Em linhas recebidas é o status armazenado da mensagem recebida (em geral `DELIVERED` ou `READ`), nunca `null`. |
 | `errorCode` / `errorMessage` | Preenchidos em envios `FAILED` — veja [Códigos de Erro do Log](/pt-BR/api/messages/log-error-codes). [`GET /v1/messages/{messageId}`](/pt-BR/api/messages/status) devolve o mesmo `errorCode` para a mesma mensagem. |
 | `origin` | Por qual trilho o envio saiu. Conjunto completo de valores abaixo. |
 | `serviceWindowOpenAtSend` | `true`, `false` ou `null` — o estado da janela de atendimento de 24h registrado no momento do envio (veja a nota acima). |
 | `createdAt` / `sentAt` / `deliveredAt` / `readAt` | Timestamps do ciclo de vida (ISO 8601). |
 | `externalMessageId` | ID de mensagem do WhatsApp do provedor (wamid). |
+| `redacted` | Presente (`true`) só em linhas redigidas pelo modo de retenção de PII do número — veja abaixo. |
 
 <Note>
-  **Retenção:** as linhas respeitam o **modo de retenção de PII** do número. Em números `RELAY_ONLY`, as linhas retornam redigidas (`content: null`).
+  **Retenção:** as linhas respeitam o **modo de retenção de PII** do número. Nenhuma linha é escondida: uma linha redigida (`RELAY_ONLY`, ou mais antiga que a janela de `STORE_X_DAYS`) mantém o envelope (ids, status, timestamps) com `content` e o número do contato (`to` nos envios, `from` nas recebidas) em `null`, e traz `redacted: true`. Num número `RELAY_ONLY` a resposta também traz `"notice": "PII_RELAY_ONLY"`.
 </Note>
 
 
@@ -209,5 +212,11 @@ Linhas `LAYER`, e linhas `CHATWOOT` de inbox nativa, só são registradas a part
 | Status | Significado |
 | --- | --- |
 | `400` | `INVALID_DATE_RANGE` — `startDate`/`endDate` malformados, ou `endDate` anterior a `startDate` |
-| `401` | Cabeçalho de chave de API ausente/inválido (`x-api-key` / `x-api-key-id`) |
-| `403` | Chave com escopo de tenant usada em endpoint com escopo de número |
+| `400` | `INVALID_STATUS` / `INVALID_DIRECTION` / `INVALID_WINDOW` — valor de filtro fora do conjunto aceito |
+| `400` | `INVALID_PAGINATION` — `page × pageSize` acima de `10000` |
+| `400` | `NUMBER_NOT_FOUND` — a credencial não indica nenhum número de WhatsApp |
+| `401` | Credencial ausente/inválida (`{"error": "Invalid API key"}`) |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` — chave da conta sem `x-whatsapp-number-id` |
+| `403` | `PERMISSION_DENIED` — token OAuth/MCP ou chave de conta cujo papel não tem `logs:read:content` (`ANALYST`) |
+
+Teste no Playground: [Listar mensagens](/pt-BR/playground/messages/list-messages).
