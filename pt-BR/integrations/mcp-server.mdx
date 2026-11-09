@@ -1,7 +1,7 @@
 ---
 title: "Servidor MCP"
 sidebarTitle: "Servidor MCP"
-description: "Conecte agentes de IA ao WhatsApp através do servidor MCP hospedado da Pilot Status: autenticação OAuth ou x-api-key, 148 ferramentas sobre a API pública /v1, concessões por número."
+description: "Conecte Claude, ChatGPT, Cursor, VS Code e outros agentes de IA ao WhatsApp através do servidor MCP hospedado da Pilot Status: autenticação OAuth ou x-api-key, 148 ferramentas sobre a API pública /v1, concessões por número."
 mode: "wide"
 ---
 
@@ -35,15 +35,40 @@ Qualquer cliente MCP que suporte conectores OAuth personalizados pode conectar d
 Comece por aqui: o `/mcp` é o padrão, e o seu cliente mostra cada chamada para você aprovar. Para agentes que montam relatórios, percorrem muitos itens ou rodam com contexto apertado, use **`https://mcp.pilotstatus.com.br/code`** no lugar do `/mcp` (não junto com ele): o agente recebe 2 ferramentas (`describe` e `execute`) em vez de 148 e escreve um script TypeScript que chama `await ps.<ferramenta>(args)`. Mesmas credenciais. [Modo de código do MCP](/pt-BR/integrations/mcp-code-mode)
 </Tip>
 
+## Conectar o seu cliente
+
+Há duas formas de entrar, qualquer que seja o cliente: **OAuth** (o cliente abre uma página de login e consentimento da Pilot Status; nenhuma chave é copiada) ou uma **chave de API** no header `x-api-key`. Troque `/mcp` por `/code` em qualquer URL abaixo para usar o [modo de código](/pt-BR/integrations/mcp-code-mode).
+
+| Cliente | Como |
+| --- | --- |
+| **claude.ai** e **Claude Desktop** | Configurações → Conectores → **Adicionar conector personalizado**, URL `https://mcp.pilotstatus.com.br/mcp`, sem client id nem secret. Conecte, entre na Pilot Status e escolha o acesso na tela de consentimento. Os conectores adicionados no claude.ai também aparecem no Claude Desktop. |
+| **Claude Code** | OAuth: `claude mcp add --transport http pilot-status https://mcp.pilotstatus.com.br/mcp`, depois rode `/mcp` no Claude Code e escolha **Authenticate**. Chave de API: acrescente `--header "x-api-key: ps_sua_chave_aqui"` ao mesmo comando. |
+| **ChatGPT** | Onde o seu plano permite conectores personalizados (modo desenvolvedor), crie um conector com a URL `https://mcp.pilotstatus.com.br/mcp` e autenticação **OAuth**. O ChatGPT se registra sozinho, então deixe client id e secret em branco. |
+| **Cursor** | Chave de API em `~/.cursor/mcp.json` (ou `.cursor/mcp.json` no projeto): `{ "mcpServers": { "pilot-status": { "url": "https://mcp.pilotstatus.com.br/mcp", "headers": { "x-api-key": "ps_sua_chave_aqui" } } } }`. O OAuth não funciona no Cursor: o retorno do login dele é um endereço `cursor://`, e o servidor de autorização da Pilot Status só aceita retornos `https://` e `http://localhost`. |
+| **VS Code** (modo agente do Copilot) | Chave de API em `.vscode/mcp.json`: `{ "servers": { "pilot-status": { "type": "http", "url": "https://mcp.pilotstatus.com.br/mcp", "headers": { "x-api-key": "ps_sua_chave_aqui" } } } }`. |
+| **Qualquer outro cliente MCP** | Streamable HTTP na URL acima. Um cliente com OAuth, registro dinâmico de cliente e retorno `https://` ou `http://localhost` conecta sem configuração; senão, envie `x-api-key`. |
+
+Qual chave enviar em `x-api-key`: uma **chave de número** (`ps_number_…`) age em um número; uma **chave de workspace** (`ps_workspace_…`) age no workspace inteiro, então passe `whatsappNumberId` nas ferramentas de número; uma **chave de conta** (`ps_account_…`) também precisa de `x-workspace-id` ([abaixo](#com-uma-chave-de-conta)). [Tipos de chave de API](/pt-BR/api/key-types)
+
+### O que o login OAuth faz
+
+- **Qual workspace.** A conexão age no workspace que está **selecionado na sua sessão da Pilot Status** no momento da autorização. A tela de consentimento não pergunta o workspace: troque de workspace no painel antes e depois conecte. Para dois workspaces, adicione duas conexões.
+- **O que ela alcança.** Na tela de consentimento você escolhe **Toda a conta** (só proprietário ou administrador do workspace) ou **números específicos** (qualquer papel, limitado aos números a que você mesmo tem acesso). Uma concessão por número restringe todas as ferramentas a esses números e bloqueia ferramentas da conta, como `billing_checkout`, `api_keys_*` e `numbers_create`. O consentimento é pedido em **toda** autorização, mesmo com sessão ativa.
+- **O seu papel continua valendo.** O token nunca faz mais do que o seu papel no workspace permite, e as ferramentas exclusivas do proprietário conferem o papel de novo a cada chamada.
+- **Duração.** O token de acesso dura 1 hora e o cliente o renova sozinho; o token de renovação dura 30 dias e é trocado a cada uso. Depois de 30 dias sem uso, ou de uma transferência de posse, conecte de novo.
+- **Revogar.** Remova o conector no seu cliente. Chaves e segredos que o aplicativo já obteve continuam válidos: veja [Segredos e chaves de API por OAuth](#segredos-e-chaves-de-api-por-oauth).
+
+Para quem desenvolve clientes: o servidor MCP publica `/.well-known/oauth-protected-resource` (RFC 9728) e responde a uma requisição sem credencial com `401` e um desafio `WWW-Authenticate`. O servidor de autorização, `https://pilotstatus.com.br`, publica `/.well-known/oauth-authorization-server`: registro dinâmico de cliente em `/api/oauth/register` (clientes públicos, `token_endpoint_auth_method: none`), código de autorização só com **PKCE S256** e tokens de renovação. As URIs de redirecionamento precisam ser `https://`, ou `http://` em `localhost` / `127.0.0.1`. O transporte não guarda sessão: o JSON-RPC vai num `POST`; `GET` e `DELETE` respondem `405`.
+
 ## Autenticação
 
 | Método | Como |
 | --- | --- |
-| OAuth 2.1 | `Authorization: Bearer <token>` — tratado automaticamente pelo conector Claude hospedado |
+| OAuth 2.1 | `Authorization: Bearer <token>` — tratado pelo cliente depois do login ([Conectar o seu cliente](#conectar-o-seu-cliente)) |
 | Chave de API | header `x-api-key` com uma chave `ps_*` |
 | Chave de conta | header `x-api-key` com uma chave `ps_account_*`, mais `x-workspace-id` indicando o workspace em que agir |
 
-Use uma chave **com escopo de número** para ferramentas que operam em um número específico (mensagens, conversas, grupos); chaves **com escopo de tenant** são necessárias para ferramentas de tenant como `api_keys_list` e `numbers_list`.
+Toda ferramenta, exceto a `docs_search`, recebe um argumento a mais, **`whatsappNumberId`**: o número em que agir, obtido em `numbers_list`. Com um token OAuth ou uma chave de workspace, as ferramentas de número (mensagens, conversas, grupos, templates, webhooks, chamadas, Chatwoot…) **precisam dele** — o servidor o envia à API no header `x-whatsapp-number-id`. Com uma chave de número ele é ignorado: a chave já indica o número. As ferramentas da conta (`api_keys_list`, `billing_checkout`, `branding_*`, `workspace_*`, linhas telefônicas…) precisam de um token OAuth ou de uma chave de workspace; uma chave de número recebe `403`.
 
 ### Com uma chave de conta
 
@@ -67,15 +92,27 @@ Uma [chave de conta](/pt-BR/api/key-types#chaves-de-conta) (`ps_account_…`, cr
 
 ## Auto-hospedado
 
-O servidor é publicado como `@pilot-status/mcp-server` no npm e pode ser executado localmente:
+O servidor é publicado como `@pilot-status/mcp-server` no npm (comando `pilot-status-mcp`, Node.js 20 ou mais recente). Ele fala **só streamable HTTP** — não há modo stdio — e escuta em `http://localhost:8787/mcp` (`PORT` e `HOST` mudam isso):
 
 ```bash
-npx @pilot-status/mcp-server
+PILOT_STATUS_API_KEY=ps_sua_chave_aqui npx -y @pilot-status/mcp-server
 ```
 
-Forneça sua chave de API `ps_*` através do header `x-api-key` (modo HTTP) ou por configuração de ambiente, dependendo do seu cliente MCP. Um servidor auto-hospedado também lê `PILOT_STATUS_API_KEY` do ambiente e, para uma chave de conta, `PILOT_STATUS_WORKSPACE_ID`. Essa variável vale só para a chave definida em `PILOT_STATUS_API_KEY`, nunca para uma chave que a conexão envia no próprio header `x-api-key`: com essa, envie `x-workspace-id`.
+Depois aponte o seu cliente para a URL local, como em [Conectar o seu cliente](#conectar-o-seu-cliente):
+
+```json
+{
+  "mcpServers": {
+    "pilot-status": { "type": "http", "url": "http://localhost:8787/mcp" }
+  }
+}
+```
+
+A chave pode vir do processo (`PILOT_STATUS_API_KEY`) ou do header `x-api-key` de cada requisição, que prevalece sobre a variável. Ele chama `https://pilotstatus.com.br` (`PILOT_STATUS_API_URL` muda isso) e serve as mesmas 148 ferramentas do conector hospedado; o modo de código (`/code`) não está disponível auto-hospedado. Um servidor auto-hospedado também lê `PILOT_STATUS_API_KEY` do ambiente e, para uma chave de conta, `PILOT_STATUS_WORKSPACE_ID`. Essa variável vale só para a chave definida em `PILOT_STATUS_API_KEY`, nunca para uma chave que a conexão envia no próprio header `x-api-key`: com essa, envie `x-workspace-id`.
 
 ## Ferramentas disponíveis (148)
+
+Uma linha por ferramenta, com os argumentos obrigatórios e quem pode chamá-la: [Referência de ferramentas MCP](/pt-BR/integrations/mcp-tools).
 
 | Área | Ferramentas |
 | --- | --- |
@@ -135,6 +172,10 @@ Notas:
   - O agente de IA do painel não oferece arquivar nem transferir.
 - As ferramentas `workspaces_*` aceitam **só chave de conta** (`ps_account_…`, criada em Perfil → API, enviada no `x-api-key`): um token OAuth/de conector, uma chave de workspace ou de número recebe `403 ACCOUNT_KEY_REQUIRED`. `workspaces_list` lista os workspaces em que o usuário da chave é membro ativo, com o papel dele; `workspaces_create` cria um workspace do qual esse usuário é dono e devolve a chave principal **uma vez** (`409 WORKSPACE_LIMIT_REACHED` no teto do usuário); o argumento opcional `shareCard: true` vincula o novo workspace ao cartão de reserva do usuário, e ausente ou `false` o deixa sem compartilhar. `workspaces_shared_card_link` e `workspaces_shared_card_unlink` (argumento `workspaceId`) chamam o `PUT` e o `DELETE /v1/workspaces/{workspaceId}/shared-card`: exigem que o usuário seja OWNER daquele workspace, mudam quem paga as renovações dele e pedem confirmação. `workspaces_api_keys_list` (mascaradas), `workspaces_api_keys_create` (uma chave `ps_workspace_` com nome, devolvida uma vez; `409 WORKSPACE_KEY_LIMIT_REACHED`) e `workspaces_api_keys_revoke` (`409 PRIMARY_KEY_NOT_REVOCABLE` para a chave principal) exigem que o papel atual do usuário naquele workspace seja ADMIN ou OWNER; senão, `403 WORKSPACE_MEMBERSHIP_REQUIRED` ou `PERMISSION_DENIED`. O agente de IA do app não as oferece. Elas dispensam o `x-workspace-id`, assim como a `docs_search`; todas as outras ferramentas usadas com chave de conta exigem (veja [Com uma chave de conta](#com-uma-chave-de-conta)). Veja [Criar workspaces](/pt-BR/api/workspaces).
 - `docs_search` recebe uma `query` — uma pergunta, palavras-chave ou um código de erro, em português ou inglês — e um `limit` opcional (3–5, padrão 5), e devolve `{ query, results, source }`: as 3–5 páginas mais relevantes desta documentação, cada uma com `title`, `url` e `description` (não o conteúdo da página). Ela lê o índice público da documentação (`llms.txt` e o sub-índice em pt-BR; as páginas do Playground ficam de fora), não chama nenhum endpoint `/v1` e não exige permissão, escopo de chave nem `whatsappNumberId` — por isso qualquer papel pode usá-la, e o agente do app a executa sem pedir confirmação. `source` é `live`, ou `fallback` quando o índice não pôde ser baixado e uma cópia embutida respondeu; o índice fica em cache por 6 horas. Use-a quando o usuário perguntar como fazer algo na Pilot Status, ou quando outra ferramenta devolver um código de erro — busque o código (ex.: `MEDIA_TRANSCODE_FAILED` leva a [Códigos de Erro do Log](/pt-BR/api/messages/log-error-codes)).
+- `templates_delete` aceita um `force_local_delete` opcional: quando a Meta recusa a exclusão (`409 META_TEMPLATE_DELETE_REFUSED`, nada apagado), ele apaga só a cópia da Pilot Status e deixa o template na Meta. Use só depois que o usuário viu esse 409 e pediu a exclusão apenas local.
+- Três ferramentas se recusam a rodar sem o booleano **`confirm: true`** (sem token, numa chamada só): `flows_publish` (publicar um Flow não tem volta; sem ele, `400 FLOW_PUBLISH_REQUIRES_CONFIRMATION`), `flows_endpoint_key_rotate` quando o número já tem uma chave registrada na Meta (substituí-la quebra todos os Flows `data_exchange` do número; sem ele, `400 FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION`) e `subscription_extra_numbers_add` quando a compra converte um plano FREE em On Demand. Envie só depois que o usuário disser sim.
+- A gestão de membros exige um **token OAuth** — não há usuário por trás de uma chave `ps_`, então a chave recebe `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`: `workspace_members_invite` e `workspace_members_resend` (ADMIN ou OWNER; um ADMIN só atribui AGENT ou ANALYST), `workspace_members_set_numbers` (ADMIN ou OWNER), `workspace_members_update` e `workspace_members_remove` (só OWNER). A `workspace_members_list` (ADMIN ou OWNER) também funciona com chave de workspace. Ninguém vira OWNER por essas ferramentas: isso é a `workspace_transfer_ownership`.
+- `billing_checkout` é da conta: exige o OWNER do workspace e uma concessão de **Toda a conta** (uma concessão OAuth por número não a usa).
 - Rotas baseadas em token (endpoints públicos de remote-pairing, emissão de sessão de embed) são excluídas da lista de ferramentas porque usam um fluxo de autenticação diferente.
 
 ## Segredos e chaves de API por OAuth
@@ -209,8 +250,10 @@ Algumas ferramentas mudam coisas que não têm volta. Elas rodam em **duas chama
 
 ## Erros comuns
 
-- `401` — chave de API ausente ou inválida.
-- `403` — chave com escopo de tenant em uma ferramenta com escopo de número (ou vice-versa), ou uma ferramenta fora de uma concessão por número.
+- `401` — chave de API ausente ou inválida, ou sessão OAuth expirada: o cliente pede um novo login ([Conectar o seu cliente](#conectar-o-seu-cliente)).
+- `403` — chave de número numa ferramenta da conta, ferramenta fora de uma concessão por número, ou papel que não pode chamar a ferramenta. Com um token OAuth ou uma chave de workspace, uma ferramenta de número chamada sem `whatsappNumberId` também é recusada.
+- `WORKSPACE_ID_REQUIRED` — chave de conta sem `x-workspace-id` ([Com uma chave de conta](#com-uma-chave-de-conta)).
+- `503 SHUTTING_DOWN` — a réplica que recebeu a requisição está reiniciando; tente de novo.
 - `400` — argumentos de ferramenta inválidos (validados contra o schema da API subjacente).
 - `400 MCP_AUDIO_URL_REQUIRED` — o `messages_send` recebeu um data URI (base64) com `mediaType` `audio`/`voice`, ou uma mídia `data:audio/*`. Envie o áudio como URL http(s) pública. A mensagem é bilíngue (`English | Português`) e nada foi enviado.
 
