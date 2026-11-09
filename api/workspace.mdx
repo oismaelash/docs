@@ -1,11 +1,11 @@
 ---
 title: "Workspace API — Members, Roles and Invitations"
 sidebarTitle: "Workspace"
-description: "Read your workspace, list members, invite, resend, change roles, choose which numbers a member sees and remove — over /v1/workspace. Includes why writes require a user on the wire — an OAuth token or an account key — and never a workspace key."
+description: "Read, rename and configure your workspace, transfer its ownership or archive it, list members, invite, resend, change roles, choose which numbers a member sees and remove — over /v1/workspace. Includes why writes require a user on the wire — an OAuth token or an account key — and never a workspace key."
 mode: "wide"
 ---
 
-Seven endpoints under `/v1/workspace` mirror what the dashboard does with members and invitations. Members are unlimited on every plan.
+Twelve endpoints under `/v1/workspace` mirror what the dashboard does with the workspace itself (name, settings, ownership, archive) and with members and invitations. Members are unlimited on every plan.
 
 ## Which credential works where
 
@@ -14,6 +14,11 @@ This is the part to read before anything else.
 | Endpoint | Workspace / number key (`x-api-key`) | Account key (`ps_account_`) | OAuth token |
 |---|:---:|:---:|:---:|
 | `GET /v1/workspace` | ✅ | ✅ | ✅ |
+| `PATCH /v1/workspace` | ✅ ¹ | ✅ ² | ✅ ² |
+| `GET /v1/workspace/settings` | ✅ ¹ | ✅ | ✅ |
+| `PATCH /v1/workspace/settings` | ✅ ¹ | ✅ ² | ✅ ² |
+| `POST /v1/workspace/transfer-ownership` | ❌ | ✅ ³ | ✅ ³ |
+| `POST /v1/workspace/archive` | ❌ | ✅ ³ | ✅ ³ |
 | `GET /v1/workspace/members` | ✅ | ✅ | ✅ |
 | `POST /v1/workspace/members` | ❌ | ✅ | ✅ |
 | `POST /v1/workspace/members/{id}/resend` | ❌ | ✅ | ✅ |
@@ -21,13 +26,19 @@ This is the part to read before anything else.
 | `PATCH /v1/workspace/members/{id}/numbers` | ❌ | ✅ | ✅ |
 | `DELETE /v1/workspace/members/{id}` | ❌ | ✅ | ✅ |
 
+¹ Tenant-scoped key only. The name and the settings belong to the whole account, so a number-scoped key gets `403 NUMBER_SCOPE_NOT_ALLOWED`.
+² The user must be `ADMIN` or `OWNER` (`workspace:settings:update`); below that, `403 PERMISSION_DENIED`.
+³ The user must be the `OWNER`; anyone else gets `403 PERMISSION_DENIED`.
+
 <Warning>
 **Writes require a user on the wire, on purpose.** A workspace or number key has no user behind it — the key belongs to the workspace, not to a person. If inviting were allowed with a tenant-scoped key, then whoever holds *any* key of the workspace could invite themselves an Admin, and the key would become a path to taking over the account. Such a key gets **403 `MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`**.
 </Warning>
 
 An OAuth token and an [account key](/api/key-types#account-keys) (with `x-workspace-id`) both carry a user, and act with that user's **current role** in the workspace: the same rules as in the dashboard apply.
 
-Transferring ownership and archiving a workspace have **no API at all**. They are the only actions that change who pays the bill, and no machine credential reaches them.
+Transferring ownership and archiving are the two actions that change who pays the bill or lock everyone out, so they take the **OWNER on the wire**: an OAuth/MCP token or an account key whose user is the owner. **No machine credential reaches them** — any workspace or number `ps_` key gets **403 `MACHINE_CREDENTIAL_CANNOT_MANAGE_WORKSPACE`**. Neither has an MCP tool yet.
+
+Every endpoint on this page answers with `Cache-Control: no-store`. A user behind a token who is no longer an active member gets `403 WORKSPACE_MEMBERSHIP_REQUIRED`. Errors carry a bilingual `error` (`English | Português`) and a `code`; a body that is not a JSON object is `400 INVALID_BODY`, and a key the endpoint does not accept is `400 UNKNOWN_FIELDS` with the offending keys in `unknownFields`.
 
 ## Read the workspace
 
@@ -49,6 +60,78 @@ curl https://api.pilotstatus.com.br/v1/workspace \
 `seatLimit` is always `null`: members are **unlimited on every plan**. The field stays in the response for compatibility with existing integrations and SDKs.
 
 `seatsUsed` is **informational only** — it counts active members and pending invitations that have not expired, and never blocks anything.
+
+## Rename the workspace
+
+```bash
+curl -X PATCH https://api.pilotstatus.com.br/v1/workspace \
+  -H "x-api-key: ps_..." \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Holdings"}'
+```
+
+```json
+{ "id": "tn_...", "name": "Acme Holdings" }
+```
+
+`name` is trimmed and must be **1 to 60 characters**, otherwise `400 INVALID_NAME`. The name is a label: it does not need to be unique, and the workspace `id` never changes. Works with a tenant-scoped key, or with a user who is `ADMIN` or `OWNER`. MCP tool: `workspace_update`.
+
+## Workspace settings
+
+### Read
+
+```bash
+curl https://api.pilotstatus.com.br/v1/workspace/settings \
+  -H "x-api-key: ps_..."
+```
+
+```json
+{
+  "settings": {
+    "mainCurrency": "BRL",
+    "mainTimezone": "America/Sao_Paulo",
+    "mainLanguage": "pt",
+    "billingMode": "SUBSCRIPTION",
+    "currencyLocked": false
+  },
+  "phoneLinePrice": { "currency": "BRL", "price": 49.9 }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `mainCurrency` | The currency the whole account is charged in |
+| `mainTimezone` | IANA time zone of the workspace |
+| `mainLanguage` | `pt`, `en` or `es` |
+| `billingMode` | `SUBSCRIPTION` or `WALLET`. Set by the platform |
+| `currencyLocked` | `true` once the wallet has had its first movement — from then on the currency can no longer change |
+| `phoneLinePrice` | What one **new** phone line costs this workspace per month, in its currency |
+
+Any role reads it, `ANALYST` included, as does a tenant-scoped key. MCP tool: `workspace_settings_get`.
+
+### Update
+
+```bash
+curl -X PATCH https://api.pilotstatus.com.br/v1/workspace/settings \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"mainTimezone":"America/Manaus","mainLanguage":"en"}'
+```
+
+A partial update that accepts **only** `mainTimezone` and `mainLanguage` — send at least one. The response is `{ "settings": { ... } }`, in the same shape as the read. Same credentials as renaming: a tenant-scoped key, or a user who is `ADMIN` or `OWNER`. MCP tool: `workspace_settings_update`.
+
+Unlike the dashboard, an invalid value is never skipped silently:
+
+| Status | `code` | What happened |
+|---|---|---|
+| `400` | `NO_FIELDS` | Neither `mainTimezone` nor `mainLanguage` was sent |
+| `400` | `INVALID_TIMEZONE` | `mainTimezone` is not an IANA zone; `field` names it |
+| `400` | `INVALID_LANGUAGE` | `mainLanguage` is not `pt`, `en` or `es`; `field` names it and `accepted` lists the values |
+| `400` | `CURRENCY_NOT_HERE` | `mainCurrency` was sent. The **owner** changes the currency in the dashboard's billing settings, and it locks after the wallet's first movement |
+| `400` | `BILLING_MODE_NOT_HERE` | `billingMode` was sent. It is set by the platform |
+| `400` | `UNKNOWN_FIELDS` | Any other key; `unknownFields` names them |
+
+Nothing is written when any of these is returned.
 
 ## List members
 
@@ -188,3 +271,66 @@ curl -X DELETE "https://api.pilotstatus.com.br/v1/workspace/members/mb_...?apiKe
 There is no default. An integrator must not take down production integrations by omission.
 
 Revoking is never a delete: the record survives so message and call history keeps pointing somewhere real.
+
+## Transfer ownership
+
+```bash
+curl -X POST https://api.pilotstatus.com.br/v1/workspace/transfer-ownership \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"new-owner@acme.com"}'
+```
+
+```json
+{ "transferred": true, "newOwnerId": "usr_...", "yourNewRole": "ADMIN" }
+```
+
+Makes an active member the new **owner**. `email` is matched against the members' e-mails without regard to case. The target must have **accepted** the invitation — a pending invitation does not qualify.
+
+<Warning>
+**What changes the moment it returns:**
+
+- **You become `ADMIN`** (`yourNewRole`). Everything only the owner could do — moving money, archiving, transferring again — is now the new owner's.
+- **The OAuth refresh tokens of both users are revoked.** An MCP connection keeps working until its access token expires, then has to consent again.
+- **Responsibility for the bill moves to the new owner.**
+</Warning>
+
+Only the **owner** can call it, with an OAuth/MCP token or an account key. A workspace or number `ps_` key gets `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_WORKSPACE`; anyone else, `403 PERMISSION_DENIED`. There is no MCP tool for it yet.
+
+| Status | `code` | What happened |
+|---|---|---|
+| `400` | `MISSING_EMAIL` | `email` is missing or blank |
+| `400` | `NOT_A_MEMBER` | No member of this workspace has that e-mail |
+| `400` | `TARGET_NOT_ACTIVE` | The person has not accepted the invitation yet |
+| `409` | `ALREADY_OWNER` | The person is already the owner |
+| `409` | `NOT_OWNER` | The caller is no longer the owner |
+| `409` | `NO_OWNER` | The workspace has no owner |
+| `409` | `OWNERSHIP_CHANGED` | Ownership changed during the call. Re-read the members and try again |
+| `409` | `WOULD_ORPHAN_WORKSPACE` | The change would leave the workspace without an owner |
+
+## Archive the workspace
+
+<Warning>
+**Archiving locks everyone out — you included, and the call that does it.** The token you used stops working on its very next request, every `ps_` key of the workspace stops authenticating, and embedded chat sessions are revoked. **There is no unarchive endpoint:** reverting it requires contacting support.
+</Warning>
+
+```bash
+curl -X POST https://api.pilotstatus.com.br/v1/workspace/archive \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"confirmName":"Acme Holdings"}'
+```
+
+```json
+{ "archived": true, "archivedAt": "2026-11-08T12:00:00.000Z" }
+```
+
+`confirmName` must be the workspace's current name, **exactly** — trimmed, and case-sensitive. Read it with `GET /v1/workspace`. A wrong or missing name is `400 CONFIRMATION_MISMATCH` with `field: "confirmName"`, and the response never echoes the real name.
+
+Only the **owner** can call it, with an OAuth/MCP token or an account key. A workspace or number `ps_` key gets `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_WORKSPACE`; anyone else, `403 PERMISSION_DENIED`. There is no MCP tool for it yet.
+
+| Status | `code` | What happened |
+|---|---|---|
+| `400` | `CONFIRMATION_MISMATCH` | `confirmName` is missing or does not match the name |
+| `404` | `NOT_FOUND` | The workspace no longer exists |
+| `409` | `ALREADY_ARCHIVED` | The workspace is already archived |
