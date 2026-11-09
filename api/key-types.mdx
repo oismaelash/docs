@@ -39,7 +39,7 @@ A workspace has two kinds of workspace key:
 
 - **The raw key is shown once**, when it is created or regenerated. Store it right away.
 - **Your existing tenant-scoped key is the workspace's primary key.**
-- **A named key minted by a member is revoked when that member leaves the workspace.**
+- **A named key minted by a member is not orphaned when that member leaves:** removing them stops with `409 MEMBER_HAS_API_KEYS` until the Owner chooses to revoke the key or keep it ([details](/api/workspace#removing-a-member-who-created-api-keys)).
 - Through the API, an account key lists, creates and revokes workspace keys with [`/v1/workspaces/{id}/api-keys`](/api/workspaces#workspace-keys), and rotates the primary key with `POST /v1/api-keys/regenerate`.
 
 ## Account keys
@@ -85,6 +85,19 @@ curl "https://pilotstatus.com.br/v1/numbers" \
 <Warning>
   **An account key is the most powerful credential you can hold.** It reaches every workspace you belong to, with your role in each. Keep it on your server only, never in a browser or an app, and revoke it in **Profile → API** if it leaks.
 </Warning>
+
+## What each credential can call
+
+OAuth access tokens — issued to MCP connectors and OAuth apps, sent as `Authorization: Bearer` — are the fourth kind of credential. Like an account key they carry a user, and act with that user's current role.
+
+| | Number key | Workspace key | Account key + `x-workspace-id` | OAuth token |
+| --- | --- | --- | --- | --- |
+| Per-number endpoints (send, status, templates…) | Its own number | Any number, named in `x-whatsapp-number-id` | Any number you can see, named in `x-whatsapp-number-id` | Same as an account key; a token consented for specific numbers reaches only those |
+| Workspace-wide endpoints (`/v1/numbers`, `/v1/api-keys`, `/v1/branding`, `/v1/workspace`…) | ❌ `403 NUMBER_SCOPE_NOT_ALLOWED` | ✅ | ✅, unless you are restricted to some numbers (`403 NUMBER_SCOPE_NOT_ALLOWED`) | ✅ whole-workspace consent only (`403 NUMBER_SCOPE_NOT_ALLOWED` otherwise) |
+| Member writes, archive, ownership transfer | ❌ | ❌ `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_*` | ✅ by role | ✅ by role |
+| `/v1/workspaces*` (create workspaces, named workspace keys) | ❌ | ❌ | ✅ | ❌ `403 ACCOUNT_KEY_REQUIRED` |
+| Reveal, regenerate or rotate `ps_` keys (`/v1/api-keys*`) | Rotate its own key | ✅ | By role: listing and rotating the primary need **Owner**; regenerating a number's key needs **Admin** | **Owner only**, checked live on every call and recorded in an audit log — anyone else gets `403 OAUTH_SECRET_REQUIRES_OWNER` |
+| Role check | None — the key's scope is its authority | None — the key's scope is its authority | Your live role (`403 PERMISSION_DENIED`) | Your live role (`403 PERMISSION_DENIED`) |
 
 ## Which key to use
 

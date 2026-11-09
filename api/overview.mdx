@@ -17,10 +17,10 @@ https://pilotstatus.com.br/v1
 
 ## Authentication
 
-Every request requires an API key sent in the `x-api-key` header (or `x-api-key-id` with the key ID). Keys use the `ps_` prefix.
+Every request requires an API key sent in the `x-api-key` header (or `x-api-key-id` with the key ID). Keys use the `ps_` prefix. MCP connectors and OAuth apps authenticate instead with an OAuth access token in `Authorization: Bearer` — see [Key types](/api/key-types#what-each-credential-can-call).
 
 <Warning>
-  The API does **not** use `Authorization: Bearer` tokens. Always authenticate with the `x-api-key: ps_...` header (or `x-api-key-id`).
+  Never send a `ps_` key as `Authorization: Bearer`: a Bearer value is read as an OAuth access token, so a key sent there is refused with `401` (`Invalid or expired access token`). `Authorization: Bearer` is only for the OAuth access tokens Pilot Status issues to MCP connectors and OAuth apps. When `x-api-key` or `x-api-key-id` is present, the Bearer header is ignored.
 </Warning>
 
 ```bash
@@ -74,10 +74,10 @@ See [API Authentication](/api/authentication) and [Key types](/api/key-types) fo
 | Status | Meaning |
 | --- | --- |
 | `400` | Invalid payload (e.g., phone not in E.164, missing required fields) |
-| `401` | Missing or invalid `x-api-key` / `x-api-key-id` header |
+| `401` | Missing or invalid credential (`x-api-key`, `x-api-key-id` or OAuth `Authorization: Bearer`). The body carries only `error` — e.g. `Invalid API key` — and no `code` |
 | `403` | Valid key, but operation blocked (e.g., wrong key scope) |
-| `404` | Resource not found within the key's scope |
-| `429` | Rate limit exceeded |
+| `404` | Resource not found within the key's scope — or `ROUTE_NOT_FOUND`, the endpoint does not exist ([below](#unknown-endpoint)) |
+| `429` | Rate limit exceeded, on the endpoints that document a limit |
 
 ## Malformed JSON body
 
@@ -96,6 +96,20 @@ A request body that is **not valid JSON** — truncated (`{"quantity": 3`), with
 - Authentication and permission run first: a bad key still answers `401`/`403`, not `400`.
 
 Branch on `code`, not on the message. Before this check, a malformed body answered `500` on some routes and was silently read as `{}` on others.
+
+## Unknown endpoint
+
+A path under `/v1` that matches no endpoint answers `404` with JSON — any method, no authentication needed:
+
+```json
+{
+  "error": "Not found",
+  "code": "ROUTE_NOT_FOUND",
+  "message": "No such endpoint: POST /v1/..."
+}
+```
+
+`message` names the method and path that were called. If you get `ROUTE_NOT_FOUND`, check the URL against this reference before anything else. An existing path called with a method it does not support answers `405` with an empty body.
 
 ## Warnings (WhatsApp / anti-spam)
 

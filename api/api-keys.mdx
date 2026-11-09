@@ -33,7 +33,7 @@ A tenant-scoped key on a per-number action endpoint gets **403 `TENANT_SCOPE_NOT
 
 ## GET /v1/api-keys — List keys (tenant-scoped only)
 
-A number-scoped key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. With an account key (`x-workspace-id`), it requires the **Owner** role, since it returns keys in plaintext; regenerating a number's key (`POST`) requires **Owner or Admin**. With an OAuth/MCP token, both require the **Owner** role, checked on every call, and each one is recorded in the audit log ([details](/integrations/mcp-server#secrets-and-api-keys-over-oauth)); any other role gets **403 `OAUTH_SECRET_REQUIRES_OWNER`**. Workspace keys are not listed here. Returns a **lean flat array — one item per number** — with `numberId`, `number`, `displayName`, `keyId`, `keyLast4`, plus the real usable value (`key`, `revealable: true`). Legacy keys come back with `key: null` and `revealable: false` — regenerate that number to obtain a usable value.
+A number-scoped key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. With an account key (`x-workspace-id`), it requires the **Owner** role, since it returns keys in plaintext; regenerating a number's key (`POST`) requires **Owner or Admin**. With an OAuth/MCP token, both require the **Owner** role, checked on every call, and each one is recorded in the audit log ([details](/integrations/mcp-server#secrets-and-api-keys-over-oauth)); any other role gets **403 `OAUTH_SECRET_REQUIRES_OWNER`**. If that audit record cannot be written, nothing is revealed or rotated and the answer is **500 `OAUTH_SECRET_AUDIT_UNAVAILABLE`** — retry. An OAuth token consented for specific numbers only gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. Workspace keys are not listed here. Returns a **lean flat array — one item per number** — with `numberId`, `number`, `displayName`, `keyId`, `keyLast4`, plus the real usable value (`key`, `revealable: true`). Legacy keys come back with `key: null` and `revealable: false` — regenerate that number to obtain a usable value.
 
 <Note>
   **One entry per number — the most recently created key.** A number can hold more than one key, and the listing now collapses them to the newest one instead of returning a row per key. The older keys are **not** revoked: they keep authenticating, they just stop being listed. Keys with no number attached are still listed individually.
@@ -53,7 +53,7 @@ curl "https://pilotstatus.com.br/v1/api-keys" \
 
 ## POST /v1/api-keys — Regenerate one number's key (tenant-scoped only)
 
-Send the target number in `whatsappNumberId`: its previous default key is **rotated/invalidated** and the new raw `key` is returned **once**. There is no "create another key" — each number has exactly one default key. Unknown number → **404 `NUMBER_NOT_FOUND`**. A body that is not valid JSON → **400 `INVALID_BODY`**, and no key is rotated ([Malformed JSON body](/api/overview#malformed-json-body)).
+Send the target number in `whatsappNumberId`: its previous default key is **rotated/invalidated** and the new raw `key` is returned **once**. There is no "create another key" — each number has exactly one default key. Unknown number → **404 `NUMBER_NOT_FOUND`**. A missing or empty `whatsappNumberId` → **400** `{ "error": "Validation error", "details": … }`. It accepts the number's id or its instance id from `GET /v1/numbers`. The response is `200`. A body that is not valid JSON → **400 `INVALID_BODY`**, and no key is rotated ([Malformed JSON body](/api/overview#malformed-json-body)).
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/api-keys" \
@@ -66,9 +66,9 @@ curl -X POST "https://pilotstatus.com.br/v1/api-keys" \
 {
   "numberId": "wn_1",
   "keyId": "k_new",
-  "keyPrefix": "ps_",
+  "keyPrefix": "ps_number_",
   "keyLast4": "wxyz",
-  "key": "ps_...newreal...",
+  "key": "ps_number_...newreal...",
   "createdAt": "2026-06-28T15:00:00.000Z"
 }
 ```
@@ -79,15 +79,34 @@ curl -X POST "https://pilotstatus.com.br/v1/api-keys" \
 
 ## POST /v1/api-keys/regenerate — Rotate the caller's own key
 
-Rotates the **calling key's own scope** key (works for both scopes): the current key is invalidated and the new raw key is returned **once** in the response.
+Rotates the **calling key's own scope** key (works for both scopes): the current key is invalidated and the new raw key is returned **once** in the response, with status `201`.
+
+- **With a number key**, it rotates that number's default key.
 
 - **With a workspace key** (primary or named), it rotates the workspace's **primary** key. Named keys are not touched: a named key that calls it keeps working.
 - **With an account key and `x-workspace-id`**, it rotates that workspace's primary key. Requires the **Owner** role.
+- **With an OAuth/MCP token** consented for the whole workspace, it rotates the primary key too — only while the user is the **Owner**, checked on every call and recorded in the audit log (`403 OAUTH_SECRET_REQUIRES_OWNER` otherwise; `500 OAUTH_SECRET_AUDIT_UNAVAILABLE` if the record cannot be written, and nothing is rotated).
+- **A token consented for specific numbers, or an account key of a member restricted to some numbers**, gets **403 `NUMBERS_GRANT_NOT_ALLOWED`**.
 
 ```bash
 curl -X POST "https://pilotstatus.com.br/v1/api-keys/regenerate" \
   -H "x-api-key: ps_current_key"
 ```
+
+```json Response (201)
+{
+  "id": "k_new",
+  "name": "Tenant API Key",
+  "key": "ps_workspace_...newreal...",
+  "keyPrefix": "ps_workspace_",
+  "keyLast4": "wxyz",
+  "scope": "tenant",
+  "whatsappNumberId": null,
+  "createdAt": "2026-06-28T15:00:00.000Z"
+}
+```
+
+With a number key, `name` is `"Default API Key"`, `keyPrefix` is `"ps_number_"`, `scope` is `"number"` and `whatsappNumberId` names the number.
 
 ## Privacy & data retention
 
