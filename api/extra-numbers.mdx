@@ -19,6 +19,8 @@ Billing runs off a **prepaid wallet**: credits first, saved card for whatever th
   Number-scoped keys get **403** — use a [workspace key](/api/key-types#workspace-keys) (dashboard **Workspace keys**), or an account key with `x-workspace-id`.
 </Note>
 
+**Role**, with an account key or an OAuth/MCP token: the preview (`GET`) needs **Owner or Admin**; buying, scheduling a reduction and cancelling it (`POST`, `DELETE`, `DELETE …/schedule`) are **Owner** actions. A lower role gets **403 `PERMISSION_DENIED`**. A workspace key has no user, so no role applies.
+
 ## Charged at the first connection
 
 An **extra number** is a WhatsApp number past the capacity your workspace has paid for: the plan's allowance, plus the extra numbers you bought, plus any that were granted to you. It is charged when the number **first connects** — on every plan, and whichever way it was connected: the dashboard, the API, the MCP server, a remote pairing link or Meta Embedded Signup.
@@ -93,7 +95,7 @@ curl "https://pilotstatus.com.br/v1/subscription/extra-numbers?quantity=1" \
   -H "x-api-key: ps_your_tenant_scoped_key"
 ```
 
-Returns the cost and whether buying converts the plan. `proratedTotal` is what you are charged **now**; `monthlyTotalBRL` is what recurs every cycle after that:
+Returns the cost and whether buying converts the plan. `quantity` defaults to `1`; it is rounded down to an integer, and a value that is not a positive number is treated as `1` (the preview never answers `400`). `proratedTotal` is what you are charged **now**; `monthlyTotalBRL` is what recurs every cycle after that:
 
 ```json
 {
@@ -137,6 +139,8 @@ Behaviour:
 
 - **Free → On Demand conversion.** If you are on the **Free** plan, buying an extra number moves you to On Demand: your current (formerly free, 200-message-limited) number becomes a **paid, unlimited** number **and** the new number is billed too. So buying 1 extra while Free bills you for **2** numbers. Because this changes what you pay, the `POST` returns **409 `CONFIRMATION_REQUIRED`** (with the preview) unless you send `confirm: true`.
 - **A malformed body is refused, not defaulted.** A body that is not valid JSON — e.g. a truncated `{"quantity": 3` — returns **`400 INVALID_BODY`** before any preview, charge or plan change: nothing is billed. Only an **empty** body (no bytes at all) means `quantity = 1`. See [Malformed JSON body](/api/overview#malformed-json-body).
+- **`quantity` must be an integer ≥ 1.** Anything else (`0`, `1.5`, `"2"`) returns `400` with `{ "error": "quantity deve ser um inteiro >= 1" }` — a Portuguese-only message with **no `code`**. Nothing is charged.
+- **Unused capacity is refused.** If the workspace already has at least `quantity` slots — paid or included in the plan — with no number connected, the purchase returns **409 `UNUSED_CAPACITY_AVAILABLE`** (`{ unusedSlots, freePlanSlots, requested, maxNumbers, currentNumberCount }`) and nothing is charged. Connect a number in the slot you already have instead: paid capacity bills every month whether or not a number uses it.
 - **Already On Demand / paid.** Buying increments your number count; messages stay unlimited.
 - **Payment.** The prorated cost is charged **on the spot**: from your **prepaid wallet** first, then any remainder from your saved card (dashboard **Plans → Cartão**, or `POST /v1/billing/checkout` with `add_card`). A successful purchase answers `{ "success": true, "charged": true, … }` — `creditsUsed` and `cardCharged` show how the charge was split, and `paidExtraNumbers` already includes the new slot, so you can create the number with `POST /v1/numbers` right away. **This route never returns a checkout link** (there is no `checkoutUrl`, and `charged` is never `false`): with neither enough credits nor a saved card it returns **`402 INSUFFICIENT_FUNDS`** — nothing is charged, and any credits it had started to use are put back. Top up or save a card, then retry.
 - **The monthly recurrence comes out of the wallet**, not a separate subscription. Each cycle, `paidExtraNumbers × unit price` is debited from your credits, falling back to your saved card. Top the wallet up in the dashboard or through the API, by card or Pix ([Wallet and card via API](/api/wallet-and-card)) — so you can run On Demand on Pix credits and never save a card.
@@ -148,6 +152,21 @@ Behaviour:
 <Note>
   To lower your paid capacity, see the scheduled-reduction section below.
 </Note>
+
+### Idempotency-Key
+
+Send an `Idempotency-Key` header on `POST /v1/subscription/extra-numbers` so that a retry after a timeout does not buy twice. **Without it, every `POST` is a new purchase.**
+
+- **Same key, same body, within 24 hours:** you get the **original** result back — the same body, no second charge, no second slot.
+- **Same key, a different `quantity`:** a different purchase. The body is part of the key.
+- **Same key on a retry whose prorated amount changed** (the amount moves with the time left in the cycle): **409 `IDEMPOTENCY_KEY_REUSED`**. The original charge may have gone through — check your purchases before retrying, and use a new key only if you really want another number.
+- **Same key while the first request is still running:** **409 `IDEMPOTENCY_KEY_IN_USE`**. Wait a few seconds and repeat with the **same** key.
+- Up to 255 characters, no control characters, otherwise **400 `IDEMPOTENCY_KEY_INVALID`**. A blank value counts as absent.
+- After 24 hours the same key is a **new** purchase.
+
+<Warning>
+  **Two requests sent at the same time with the same key are not deduplicated by us.** Both can debit the wallet; only the card part is collapsed into one payment. Send one request and retry only after it has failed or timed out.
+</Warning>
 
 ## When the payment does not go through
 
@@ -225,13 +244,14 @@ curl -X DELETE "https://pilotstatus.com.br/v1/subscription/extra-numbers" \
 Behaviour:
 
 - **Scheduled, not immediate.** This cycle keeps the current capacity (no refund); the reduction applies at the next rollover, when future months bill less.
-- **Editable.** Calling again overwrites the scheduled target. Cancel it with `DELETE …/schedule` (below).
+- **Repeated calls accumulate.** Each call subtracts `quantity` from the target already scheduled (or from the current paid count when nothing is scheduled), never below `0`. Two calls with `quantity: 1` schedule a reduction of 2. If the result is not below the current paid count (for example, nothing is paid), the call cancels any pending schedule instead. Cancel it with `DELETE …/schedule` (below).
 - **Cannot drop below connected numbers.** If the target would leave your limit under the numbers you still have connected, it returns **409 `NUMBER_LIMIT_EXCEEDED`** (`{ currentNumberCount, maxNumbers }`) — delete a number first.
 - **Not available on Pay As You Go.** Returns **409 `NOT_APPLICABLE_FOR_PLAN`**. There is no paid capacity to give back: Pay As You Go bills the numbers you have, and the next cycle already charges only the numbers that have connected and were not deleted. To pay less, delete the number — scheduling nothing is required.
-- **`quantity`** defaults to `1` and is clamped so you never go below `0` paid extras. Number-scoped keys get **403**.
+- **`quantity`** defaults to `1` and must be an integer ≥ 1 (otherwise `400`, same body as on `POST`). The target is clamped so you never go below `0` paid extras. Number-scoped keys get **403**.
+- **No subscription.** A workspace without a subscription gets **404 `NO_SUBSCRIPTION`**.
 - **Malformed body.** A body that is not valid JSON returns **`400 INVALID_BODY`** and nothing is scheduled. An empty body still means `quantity = 1`.
 
-Response — `paidExtraNumbers` stays at the current (this-cycle) value; `scheduledPaidExtraNumbers` is the target that takes effect next cycle:
+Response — `paidExtraNumbers` and `maxNumbers` stay at the current (this-cycle) values; `scheduledPaidExtraNumbers` is the target that takes effect at `scheduledReductionEffectiveAt`, the end of the current cycle. Nothing is charged or refunded, so the money fields are `0`:
 
 ```json
 {
@@ -239,9 +259,17 @@ Response — `paidExtraNumbers` stays at the current (this-cycle) value; `schedu
   "charged": true,
   "plan": "ON_DEMAND",
   "paidExtraNumbers": 5,
+  "proratedTotal": 0,
+  "currency": "BRL",
+  "creditsUsed": 0,
+  "cardCharged": 0,
+  "grantedExtraNumbers": 0,
+  "baseMaxNumbers": 1,
+  "maxNumbers": 6,
+  "currentNumberCount": 4,
   "scheduledPaidExtraNumbers": 4,
-  "scheduledReductionEffectiveAt": "2026-08-01T00:00:00.000Z",
-  "maxNumbers": 5
+  "scheduledReductionEffectiveAt": "2026-12-01T00:00:00.000Z",
+  "monthlyTotalBRL": 0
 }
 ```
 
@@ -252,6 +280,28 @@ Cancels a pending reduction so the next cycle keeps your current paid capacity. 
 ```bash
 curl -X DELETE "https://pilotstatus.com.br/v1/subscription/extra-numbers/schedule" \
   -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+It takes no body. The response has the same shape as the reduction's, with `scheduledPaidExtraNumbers` and `scheduledReductionEffectiveAt` back to `null`. A workspace without a subscription gets **404 `NO_SUBSCRIPTION`**.
+
+```json
+{
+  "success": true,
+  "charged": true,
+  "plan": "ON_DEMAND",
+  "paidExtraNumbers": 5,
+  "proratedTotal": 0,
+  "currency": "BRL",
+  "creditsUsed": 0,
+  "cardCharged": 0,
+  "grantedExtraNumbers": 0,
+  "baseMaxNumbers": 1,
+  "maxNumbers": 6,
+  "currentNumberCount": 4,
+  "scheduledPaidExtraNumbers": null,
+  "scheduledReductionEffectiveAt": null,
+  "monthlyTotalBRL": 0
+}
 ```
 
 ## POST /v1/billing/checkout — Wallet top-up / add a card

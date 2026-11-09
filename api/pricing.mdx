@@ -11,7 +11,7 @@ The published **Meta / WhatsApp Business Platform** per-message rate for a singl
 `GET https://pilotstatus.com.br/v1/meta/pricing`
 
 <Note>
-  Requires any valid API key (`ps_*`) in the `x-api-key` header. Both number-scoped and tenant-scoped keys work — pricing is global reference data, not tied to a number.
+  Any valid credential works: a number key (`ps_number_`), a workspace key (`ps_workspace_`), an account key (`ps_account_`, with `x-workspace-id`) or an OAuth token. No number header and no workspace role is required — pricing is global reference data, not tied to a number.
 </Note>
 
 ## Query parameters
@@ -24,12 +24,14 @@ The published **Meta / WhatsApp Business Platform** per-message rate for a singl
   ISO 4217 currency code (`USD`, `BRL`, `EUR`, `GBP`, `INR`…).
 </ParamField>
 
+`market` and `currency` are case-insensitive (upper-cased before the lookup), and so is `category` (lower-cased).
+
 <ParamField query="category" type="string">
   `marketing`, `utility`, `authentication`, `service` or `authentication_international`. Required together with `market` and `currency`.
 </ParamField>
 
 <ParamField query="tiers" type="boolean">
-  `true` / `1` → also return `volumeTiers` (Meta charges a lower price per message as monthly volume grows).
+  `true`, `1` or `yes` → also return `volumeTiers` (Meta charges a lower price per message as monthly volume grows).
 </ParamField>
 
 ## Modes
@@ -67,7 +69,9 @@ curl "https://pilotstatus.com.br/v1/meta/pricing" \
   "marketName": "Brazil",
   "currency": "BRL",
   "category": "authentication",
-  "pricePerMessage": 0.035
+  "pricePerMessage": 0.035,
+  "fetchedAt": "2026-11-02T06:00:12.000Z",
+  "source": "whatsappbusiness.com"
 }
 ```
 
@@ -82,7 +86,9 @@ curl "https://pilotstatus.com.br/v1/meta/pricing" \
     { "from": 0,        "to": 500000,  "pricePerMessage": 0.035 },
     { "from": 500001,   "to": 3000000, "pricePerMessage": 0.0333 },
     { "from": 20000001, "to": null,    "pricePerMessage": 0.0263 }
-  ]
+  ],
+  "fetchedAt": "2026-11-02T06:00:12.000Z",
+  "source": "whatsappbusiness.com"
 }
 ```
 
@@ -101,17 +107,21 @@ curl "https://pilotstatus.com.br/v1/meta/pricing" \
 ## Response fields
 
 <ResponseField name="market" type="string">Market code echoed back.</ResponseField>
-<ResponseField name="marketName" type="string">Human-readable market name.</ResponseField>
+<ResponseField name="marketName" type="string | null">Human-readable market name (`null` when the market has no name on file).</ResponseField>
 <ResponseField name="currency" type="string">ISO 4217 currency echoed back.</ResponseField>
 <ResponseField name="category" type="string">The requested category.</ResponseField>
 <ResponseField name="pricePerMessage" type="number">
   List price per delivered message in the requested currency.
 
-  ⚠️ It answers `0` for Service **until 2026-09-30** and stops doing so after that — see the warning below. Read it; do not hard-code which categories are free.
+  ⚠️ Since **2026-10-01** `service` answers the market's **Utility** rate, never `0` — see the warning below. When the market has no Utility rate, `service` gets `404 PRICE_NOT_FOUND` instead of a misleading `0`. Read the value; do not hard-code which categories are free.
 </ResponseField>
 <ResponseField name="volumeTiers" type="array">
   Only when `tiers=1`. Each `{ from, to, pricePerMessage }` — the price drops as monthly volume grows; `to` is `null` on the unbounded top tier. Empty for categories without volume tiering (Marketing / Service).
 </ResponseField>
+<ResponseField name="fetchedAt" type="string">ISO 8601 of when the published card this price came from was last read. Always present. Not an effective date.</ResponseField>
+<ResponseField name="source" type="string">Where the price came from: `whatsappbusiness.com` (the weekly refreshed table) or `developers.facebook.com` (the 2026-10-01 card Meta published, used for a market/currency until the weekly sync has refreshed it).</ResponseField>
+
+In metadata mode the response is `{ markets: [{ code, name }], currencies: [...], categories: [...], source }`, with `markets` sorted by name and `source` always `whatsappbusiness.com`.
 
 ## Message categories
 
@@ -121,13 +131,13 @@ curl "https://pilotstatus.com.br/v1/meta/pricing" \
 | `utility` | Transactional / user-triggered updates (order, payment, delivery). |
 | `authentication` | One-time passwords and identity verification. |
 | `authentication_international` | Authentication to certain international destinations (its own rate). |
-| `service` | Replies within the 24h customer service window. **Free (`0`) until 2026-09-30** — see the warning below. |
+| `service` | Replies within the 24h customer service window. Was free (`0`) until 2026-09-30; **since 2026-10-01 priced at the Utility rate** — see the warning below. |
 
 <Note>
   Meta only changes prices on the 1st day of each quarter (≈1 month notice), so this rate card is refreshed on a schedule. Treat the values as indicative and confirm against Meta's official rate cards for exact billing.
 </Note>
 
-## ⚠️ From 1 October 2026, Service stops being free
+## ⚠️ Since 1 October 2026, Service is no longer free
 
 Meta changes its billing on that date, and it is the most consequential change on this page:
 
@@ -140,7 +150,7 @@ Meta changes its billing on that date, and it is the most consequential change o
 
 ⚠️ **With no payment method on file at Meta, delivery stops past the 1,000.** Not silent degradation: the messages stop going out.
 
-⇒ **What this means for anyone reading this route:** `pricePerMessage` for `service` answers `0` today and will stop answering `0`. An integration that treats "service is always free" as a constant will start undercounting cost. Read the value instead of assuming it — that is what it is returned for.
+⇒ **What this means for anyone reading this route:** `pricePerMessage` for `service` no longer answers `0`: it returns the market's Utility rate (the list price beyond the 1,000 free per number). An integration that treats "service is always free" as a constant undercounts cost. Read the value instead of assuming it — that is what it is returned for.
 
 📌 **For the exact amount billed on one specific message**, do not reconstruct it from this card: read `metaPricing` on [`GET /v1/messages/{messageId}`](/api/messages/status), or the `pricing` block on that message's delivery status in your webhook. `pricing.type` separates `free_customer_service` (inside the allowance) from `regular` (billed), and it is Meta's own verdict.
 
@@ -149,7 +159,7 @@ Meta changes its billing on that date, and it is the most consequential change o
 <Warning>
   **The response carries no `effectiveFrom` / `effectiveTo`.** There is no field telling you which quarter a price belongs to or when it stops applying, so you cannot tell from this response alone whether you are holding the current table.
 
-  The reason is upstream: the published rate card we mirror (`whatsappbusiness.com`) states the prices, not the dates they took effect. Emitting an `effectiveFrom` would mean inventing one.
+  The reason is upstream: the published rate cards we mirror (`whatsappbusiness.com`, `developers.facebook.com`) state the prices, not the dates they took effect. Emitting an `effectiveFrom` would mean inventing one.
 </Warning>
 
 Until that is exposed, pin the moment yourself: **record the date you read each price** alongside the value, and re-read the card early in each quarter (Meta changes prices only on the 1st of a quarter). If you need the exact figure Meta billed for a specific message, do not reconstruct it from this table at all — read `pricing.category` and `pricing.type` straight off that message's delivery status in the [Meta native webhook envelope](/api/webhooks/events#statuses-—-this-is-where-the-billed-category-is). That is Meta's own verdict for that message, including whether it was charged.
@@ -163,7 +173,7 @@ Until that is exposed, pin the moment yourself: **record the date you read each 
     "currency": "BRL",
     "category": "authentication",
     "pricePerMessage": 0.035,
-    "fetchedAt": "2026-09-15T11:24:55.000Z",
+    "fetchedAt": "2026-11-02T06:00:12.000Z",
     "source": "whatsappbusiness.com"
   }
   ```
@@ -173,5 +183,6 @@ Until that is exposed, pin the moment yourself: **record the date you read each 
 
 - `400 MARKET_CURRENCY_CATEGORY_REQUIRED` — provide `market`, `currency` and `category` together (or none, for metadata).
 - `400 INVALID_CATEGORY` — the `category` value is not one of the five valid categories.
-- `401` — missing or invalid `x-api-key` header.
-- `404 PRICE_NOT_FOUND` — no published rate for that market + currency + category.
+- `400 WORKSPACE_ID_REQUIRED` — account key (`ps_account_`) without the `x-workspace-id` header.
+- `401` — missing or invalid credential.
+- `404 PRICE_NOT_FOUND` — no published rate for that market + currency + category (including `service` in a market without a Utility rate).

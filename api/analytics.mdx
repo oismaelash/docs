@@ -1,62 +1,137 @@
 ---
 title: "GET /v1/analytics/dashboard — Analytics"
-description: "Retrieve dashboard KPIs and daily message series, scoped to the API key's number."
+description: "Retrieve the send KPIs, daily series, status breakdown, top templates and top origins of one WhatsApp number."
 mode: "wide"
 ---
 
-This endpoint returns the same data shown in the dashboard (KPIs and daily series), already scoped to the API key's number.
+This endpoint returns the same aggregates the dashboard's Analytics screen shows (KPIs, daily series, status breakdown, top templates and top origins) for **one WhatsApp number**.
 
 ## Endpoint
 
 `GET https://pilotstatus.com.br/v1/analytics/dashboard`
 
+<Note>
+  Acts on **one number**: use a **number key** (`ps_number_`), or a **workspace key** (`ps_workspace_`), an **account key** (`ps_account_`, with `x-workspace-id`) or an OAuth token that names the number in the [`x-whatsapp-number-id`](/api/authentication) header. A workspace-wide credential without that header gets `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+  Every workspace role (OWNER, ADMIN, AGENT, ANALYST) holds the `analytics:read` permission, so OAuth tokens and account keys are not refused by role — but the user behind them must still be an active member of the workspace.
+</Note>
+
 ## Query parameters
 
 <ParamField query="period" default="30d" type="string">
-  Reporting window. One of `7d`, `30d` (default), or `90d`.
+  Reporting window: `7d`, `30d` or `90d`. Any other value is **silently treated as `30d`** (no error). The window starts at the current time of day, N−1 days ago.
 </ParamField>
 
-<ParamField query="tz" type="string">
-  Optional IANA timezone, e.g. `America/Sao_Paulo`. `timezone` is accepted as an alias of `tz`.
+<ParamField query="timezone" default="UTC" type="string">
+  IANA timezone used to bucket the daily series, e.g. `America/Sao_Paulo`. `tz` is accepted as an alias; when both are sent, `timezone` wins. The value is echoed back in the response.
 </ParamField>
 
 ## Example
 
 <CodeGroup>
 
-```bash cURL (x-api-key)
-curl "https://pilotstatus.com.br/v1/analytics/dashboard?tz=America/Sao_Paulo" \
-  -H "x-api-key: ps_your_key_here"
-```
-
-```bash cURL (x-api-key-id)
-curl "https://pilotstatus.com.br/v1/analytics/dashboard?tz=America/Sao_Paulo" \
-  -H "x-api-key-id: ck_xxx"
+```bash cURL
+curl "https://pilotstatus.com.br/v1/analytics/dashboard?period=7d&timezone=America/Sao_Paulo" \
+  -H "x-api-key: ps_number_your_key_here"
 ```
 
 ```json Response (200)
 {
+  "period": "7d",
+  "timezone": "America/Sao_Paulo",
   "totalSent": 120,
+  "totalDelivered": 115,
+  "totalRead": 45,
   "totalFailed": 3,
-  "sentPercentChange": 0,
-  "failedPercentChange": 0,
-  "failureRate": 2.44,
-  "dailyMessages": [
-    { "date": "2026-02-24", "count": 10 },
-    { "date": "2026-02-25", "count": 40 }
+  "totalQueued": 2,
+  "deliveryRate": 95.83,
+  "readRate": 39.13,
+  "failureRate": 2.5,
+  "responseRate": 39.13,
+  "avgDeliveryTime": 1.84,
+  "avgReadTime": 412.5,
+  "messagesOverTime": [
+    { "date": "2026-11-03", "total": 15, "queued": 0, "sent": 15, "delivered": 14, "read": 6, "failed": 1 },
+    { "date": "2026-11-04", "total": 22, "queued": 0, "sent": 22, "delivered": 21, "read": 8, "failed": 1 },
+    { "date": "2026-11-05", "total": 18, "queued": 0, "sent": 18, "delivered": 18, "read": 7, "failed": 0 },
+    { "date": "2026-11-06", "total": 20, "queued": 0, "sent": 20, "delivered": 19, "read": 9, "failed": 1 },
+    { "date": "2026-11-07", "total": 12, "queued": 0, "sent": 12, "delivered": 12, "read": 5, "failed": 0 },
+    { "date": "2026-11-08", "total": 14, "queued": 0, "sent": 14, "delivered": 14, "read": 4, "failed": 0 },
+    { "date": "2026-11-09", "total": 19, "queued": 2, "sent": 19, "delivered": 17, "read": 6, "failed": 0 }
   ],
   "statusDistribution": {
-    "queued": 10.0,
-    "sent": 80.0,
-    "failed": 2.5,
-    "read": 7.5
-  }
+    "queued": 2,
+    "delivered": 115,
+    "read": 45,
+    "failed": 3
+  },
+  "statusPercentages": {
+    "queued": 1.67,
+    "delivered": 95.83,
+    "read": 37.5,
+    "failed": 2.5
+  },
+  "totalReceived": 87,
+  "topTemplates": [
+    {
+      "templateVersionId": "cmh1a2b3c4d5e6f7g8h9",
+      "templateId": "cmh1a2b3c4d5e6f7g8h9",
+      "templateName": "order_update",
+      "version": null,
+      "count": 64
+    }
+  ],
+  "topOrigins": [
+    {
+      "origin": "API",
+      "count": 95
+    },
+    {
+      "origin": "CHAT",
+      "count": 20
+    }
+  ]
 }
 ```
 
 </CodeGroup>
 
-## Common errors
+## Response fields
 
-- `401` — missing/invalid API key header (`x-api-key`/`x-api-key-id`).
-- `403` — a tenant-scoped key was used on this number-scoped endpoint (`code: "TENANT_SCOPE_NOT_ALLOWED"`).
+All totals count the number's **outbound** messages created in the window (sent through the API, the dashboard chat, templates, etc.); `totalReceived` is the only inbound figure. Rates and percentages are numbers from 0 to 100, rounded to 2 decimals, and `0` when the denominator is 0.
+
+| Field | Meaning |
+| --- | --- |
+| `period` | The window actually used (`7d`, `30d` or `90d`). |
+| `timezone` | The timezone requested (default `UTC`). |
+| `totalSent` | Every message dispatched in the window: `totalDelivered + totalFailed + totalQueued`. |
+| `totalDelivered` | Messages whose status is `SENT`, `DELIVERED` or `READ`. |
+| `totalRead` | Messages whose status is `READ`. |
+| `totalFailed` | Messages whose status is `FAILED`. |
+| `totalQueued` | Messages still `QUEUED`. |
+| `deliveryRate` | `totalDelivered / totalSent`. |
+| `readRate` | `totalRead / totalDelivered`. |
+| `failureRate` | `totalFailed / totalSent`. |
+| `responseRate` | Same value as `readRate`. |
+| `avgDeliveryTime` | Average seconds from creation to `sentAt` (time to dispatch). |
+| `avgReadTime` | Average seconds from `sentAt` to `readAt`, over messages that were read. |
+| `messagesOverTime` | One entry per calendar day of the window in `timezone` (7, 30 or 90 entries, oldest first, days without traffic as zeros): `date` (`YYYY-MM-DD`), `total`, `queued`, `sent` (all dispatched that day), `delivered` (`SENT`/`DELIVERED`/`READ`), `read`, `failed`. |
+| `statusDistribution` | Counts: `queued`, `delivered` (includes read), `read`, `failed`. |
+| `statusPercentages` | The same four as a percentage of `totalSent`. `delivered` includes `read`, so they do not add up to 100. |
+| `totalReceived` | Inbound messages received by the number in the window. |
+| `topTemplates` | Up to 5 templates by delivered sends: `templateVersionId` (the template id, or its name for older sends), `templateId` (or `null`), `templateName`, `version` (always `null`), `count`. |
+| `topOrigins` | Delivered sends grouped by origin, highest first: `API`, `CHAT`, `DASHBOARD`, `CHATWOOT`, `SYSTEM`, or `APP` (sent from the phone, with no Pilot Status request). |
+
+Results are cached for up to 60 seconds per number, period and timezone, so a message sent a moment ago may take up to a minute to show up.
+
+## Errors
+
+| Status | Code | Cause |
+| --- | --- | --- |
+| `400` | `WORKSPACE_ID_REQUIRED` | Account key (`ps_account_`) without the `x-workspace-id` header. |
+| `401` | — | Missing or invalid credential. |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | A workspace-wide credential was used without `x-whatsapp-number-id`. |
+| `403` | `NUMBER_NOT_IN_GRANT` | OAuth token or account key restricted to other numbers. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | The user behind the token or account key is not an active member of the workspace. |
+| `404` | `NUMBER_NOT_FOUND` | `x-whatsapp-number-id` does not name a number of this workspace. |
+| `409` | — | The credential is not linked to a WhatsApp number (`{"error": "API key is not linked to a WhatsApp number"}`). |

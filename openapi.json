@@ -2865,7 +2865,7 @@
     "/v1/subscription/extra-numbers": {
       "get": {
         "summary": "Preview buying an extra number (On Demand)",
-        "description": "Computes the cost of buying N extra number(s) without charging. Requires a TENANT-scoped key (403 for a number key). For Free-plan tenants it flags the On Demand conversion: the free number becomes paid/unlimited and the new one too (you pay per number/mo). On Demand = unlimited messages on every number.\n\n**Requires a tenant-scoped key.**",
+        "description": "Computes the cost of buying N extra number(s) without charging. Requires a TENANT-scoped key (403 for a number key). For Free-plan tenants it flags the On Demand conversion: the free number becomes paid/unlimited and the new one too (you pay per number/mo). On Demand = unlimited messages on every number.\n\nRole with an account key or OAuth token: **Owner or Admin** (`billing:read`).\n\n**Requires a tenant-scoped key.**",
         "tags": [
           "Subscription"
         ],
@@ -2875,11 +2875,13 @@
             "name": "quantity",
             "in": "query",
             "required": false,
-            "description": "How many numbers to buy (default 1).",
+            "description": "How many numbers to price (default 1). Rounded down to an integer; a value that is not a positive number is treated as 1 (no 400).",
             "schema": {
-              "type": "number"
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
             },
-            "example": "1"
+            "example": 1
           }
         ],
         "responses": {
@@ -2913,27 +2915,6 @@
               }
             }
           },
-          "400": {
-            "description": "Invalid payload or parameters",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Validation error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
             "content": {
@@ -2956,7 +2937,7 @@
             }
           },
           "403": {
-            "description": "Number-scoped key used on a tenant-only endpoint",
+            "description": "Number-scoped key or token limited to some numbers (`NUMBER_SCOPE_NOT_ALLOWED`), the user's role is below Admin (`PERMISSION_DENIED`), or an account key outside its workspaces (`WORKSPACE_MEMBERSHIP_REQUIRED`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2971,29 +2952,8 @@
                   }
                 },
                 "example": {
-                  "error": "Number-scoped keys cannot call tenant endpoints",
+                  "error": "This endpoint requires a tenant-scoped API key",
                   "code": "NUMBER_SCOPE_NOT_ALLOWED"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Too many requests"
                 }
               }
             }
@@ -3002,7 +2962,7 @@
       },
       "post": {
         "summary": "Buy an extra number (On Demand)",
-        "description": "Buys N extra number(s). Requires a TENANT-scoped key. A Free tenant is converted to On Demand (bills the converted free number + the new one) — requires confirm:true, otherwise returns 409 CONFIRMATION_REQUIRED with the preview. The prorated cost is charged immediately — wallet credits first, the remainder on the saved card (Plans → Cartão). It never returns a checkout link: with neither enough credits nor a saved card it returns 402 INSUFFICIENT_FUNDS and charges nothing; a declined card is 402 PAYMENT_FAILED; a processor failure is 502 PAYMENT_PROVIDER_ERROR. Real side effect: it charges. Stripe only.\n\n**Requires a tenant-scoped key.**",
+        "description": "Buys N extra number(s). Requires a TENANT-scoped key. A Free tenant is converted to On Demand (bills the converted free number + the new one) — requires confirm:true, otherwise returns 409 CONFIRMATION_REQUIRED with the preview. The prorated cost is charged immediately — wallet credits first, the remainder on the saved card (Plans → Cartão). It never returns a checkout link: with neither enough credits nor a saved card it returns 402 INSUFFICIENT_FUNDS and charges nothing; a declined card is 402 PAYMENT_FAILED; a processor failure is 502 PAYMENT_PROVIDER_ERROR. Real side effect: it charges. Stripe only.\n\nRole with an account key or OAuth token: **Owner** (`billing:manage`).\n\n**Requires a tenant-scoped key.**",
         "tags": [
           "Subscription"
         ],
@@ -3015,14 +2975,15 @@
                 "type": "object",
                 "properties": {
                   "quantity": {
-                    "type": "number",
+                    "type": "integer",
                     "description": "How many numbers to buy (default 1).",
-                    "example": "1"
+                    "example": 1,
+                    "minimum": 1
                   },
                   "confirm": {
                     "type": "boolean",
                     "description": "Required (true) when the purchase converts the plan (Free → On Demand).",
-                    "example": "true"
+                    "example": true
                   }
                 }
               }
@@ -3049,7 +3010,7 @@
             }
           },
           "400": {
-            "description": "Invalid payload or parameters — or `INVALID_BODY` when the body is not valid JSON: nothing is charged or scheduled. An empty body still means `quantity = 1`",
+            "description": "`quantity` is not an integer ≥ 1 (body without `code`, message in Portuguese), `INVALID_BODY` when the body is not valid JSON, or `IDEMPOTENCY_KEY_INVALID`. Nothing is charged. An empty body still means `quantity = 1`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3064,10 +3025,10 @@
                   }
                 },
                 "examples": {
-                  "validation": {
-                    "summary": "Validation error",
+                  "invalidQuantity": {
+                    "summary": "Invalid quantity",
                     "value": {
-                      "error": "Validation error"
+                      "error": "quantity deve ser um inteiro >= 1"
                     }
                   },
                   "invalidBody": {
@@ -3075,6 +3036,15 @@
                     "value": {
                       "error": "The request body is not valid JSON | O corpo da requisição não é um JSON válido",
                       "code": "INVALID_BODY"
+                    }
+                  },
+                  "invalidIdempotencyKey": {
+                    "summary": "Idempotency-Key too long",
+                    "value": {
+                      "error": "Idempotency-Key deve ter no máximo 255 caracteres.",
+                      "code": "IDEMPOTENCY_KEY_INVALID",
+                      "maxLength": 255,
+                      "length": 300
                     }
                   }
                 }
@@ -3167,7 +3137,7 @@
             }
           },
           "403": {
-            "description": "Number-scoped key used on a tenant-only endpoint",
+            "description": "Number-scoped key or token limited to some numbers (`NUMBER_SCOPE_NOT_ALLOWED`), the user's role is below Owner (`PERMISSION_DENIED`), or an account key outside its workspaces (`WORKSPACE_MEMBERSHIP_REQUIRED`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3182,48 +3152,14 @@
                   }
                 },
                 "example": {
-                  "error": "Number-scoped keys cannot call tenant endpoints",
+                  "error": "This endpoint requires a tenant-scoped API key",
                   "code": "NUMBER_SCOPE_NOT_ALLOWED"
                 }
               }
             }
           },
           "409": {
-            "description": "The purchase converts the Free plan to On Demand, which changes what you pay — resend with `confirm: true`. The full preview is included.",
-            "content": {
-              "application/json": {
-                "example": {
-                  "error": "Confirmation required: buying an extra number converts the Free plan to On Demand (every number becomes billable). Resend with confirm:true.",
-                  "code": "CONFIRMATION_REQUIRED",
-                  "preview": {
-                    "plan": "FREE",
-                    "requiresConversion": true,
-                    "explanation": {
-                      "pt": "Sua conta passa para o plano On Demand: mensagens ilimitadas e R$ 29,90/mês por número conectado. No On Demand todo número é pago — o número que você já usa deixa de ser gratuito. Com o novo, são 2 números a R$ 29,90: R$ 59,80/mês.",
-                      "en": "Your account moves to the On Demand plan: unlimited messages and R$ 29.90/month per connected number. On On Demand every number is paid — the number you already use stops being free. With the new one, that is 2 numbers at R$ 29.90: R$ 59.80/month."
-                    },
-                    "currentNumbers": 1,
-                    "requested": 1,
-                    "billedQuantity": 2,
-                    "currency": "BRL",
-                    "unitPriceMonthly": 29.9,
-                    "proratedUnitPrice": 14.95,
-                    "proratedTotal": 29.9,
-                    "remainingDays": 15,
-                    "totalDaysInCycle": 30,
-                    "walletBalance": 0,
-                    "hasSavedCard": false,
-                    "fundingSource": "none",
-                    "canFund": false,
-                    "unitPriceBRL": 29.9,
-                    "monthlyTotalBRL": 59.8
-                  }
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Rate limit exceeded",
+            "description": "`CONFIRMATION_REQUIRED`: the purchase converts the Free plan to On Demand — resend with `confirm: true` (the full `preview` is included). `UNUSED_CAPACITY_AVAILABLE`: the workspace already has enough paid or plan slots with no number connected — connect a number there instead of buying another. `IDEMPOTENCY_KEY_REUSED`: the key was used for a charge of a different amount (the prorated amount moves with the clock) — check your purchases before retrying. `IDEMPOTENCY_KEY_IN_USE`: a request with this key is still running — retry with the SAME key. `error` is a human-readable message in Portuguese; branch on `code`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3237,8 +3173,67 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Too many requests"
+                "examples": {
+                  "confirmationRequired": {
+                    "summary": "CONFIRMATION_REQUIRED",
+                    "value": {
+                      "error": "Confirmação necessária: comprar um número extra converte o plano Grátis em On Demand (todos os números passam a ser cobrados). Reenvie com confirm:true.",
+                      "code": "CONFIRMATION_REQUIRED",
+                      "preview": {
+                        "plan": "FREE",
+                        "requiresConversion": true,
+                        "explanation": {
+                          "pt": "Sua conta passa para o plano On Demand: mensagens ilimitadas e R$ 29,90/mês por número conectado. No On Demand todo número é pago — o número que você já usa deixa de ser gratuito. Com o novo, são 2 números a R$ 29,90: R$ 59,80/mês.",
+                          "en": "Your account moves to the On Demand plan: unlimited messages and R$ 29.90/month per connected number. On On Demand every number is paid — the number you already use stops being free. With the new one, that is 2 numbers at R$ 29.90: R$ 59.80/month."
+                        },
+                        "currentNumbers": 1,
+                        "requested": 1,
+                        "billedQuantity": 2,
+                        "currency": "BRL",
+                        "unitPriceMonthly": 29.9,
+                        "proratedUnitPrice": 14.95,
+                        "proratedTotal": 29.9,
+                        "remainingDays": 15,
+                        "totalDaysInCycle": 30,
+                        "walletBalance": 0,
+                        "hasSavedCard": false,
+                        "fundingSource": "none",
+                        "canFund": false,
+                        "unitPriceBRL": 29.9,
+                        "monthlyTotalBRL": 59.8
+                      }
+                    }
+                  },
+                  "unusedCapacity": {
+                    "summary": "UNUSED_CAPACITY_AVAILABLE",
+                    "value": {
+                      "error": "Você já tem 1 número(s) extra(s) já pago(s) e sem número conectado — conecte um número nessa vaga em vez de comprar outra. Comprar agora passaria a cobrar duas vezes todo mês.",
+                      "code": "UNUSED_CAPACITY_AVAILABLE",
+                      "unusedSlots": 1,
+                      "freePlanSlots": 0,
+                      "requested": 1,
+                      "maxNumbers": 3,
+                      "currentNumberCount": 2
+                    }
+                  },
+                  "idempotencyKeyReused": {
+                    "summary": "IDEMPOTENCY_KEY_REUSED",
+                    "value": {
+                      "error": "Esta Idempotency-Key já foi usada em uma cobrança com valor diferente — o valor prorata muda com o tempo restante do ciclo. A cobrança original pode ter sido concluída: confira suas compras antes de tentar de novo e, se quiser mesmo comprar outro número, use uma Idempotency-Key nova.",
+                      "code": "IDEMPOTENCY_KEY_REUSED",
+                      "proratedTotal": 14.95,
+                      "currency": "BRL"
+                    }
+                  },
+                  "idempotencyKeyInUse": {
+                    "summary": "IDEMPOTENCY_KEY_IN_USE",
+                    "value": {
+                      "error": "Já existe uma requisição em andamento com esta Idempotency-Key. Aguarde alguns segundos e repita a chamada com a MESMA chave.",
+                      "code": "IDEMPOTENCY_KEY_IN_USE",
+                      "proratedTotal": 14.95,
+                      "currency": "BRL"
+                    }
+                  }
                 }
               }
             }
@@ -3278,11 +3273,24 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Optional. Deduplicates a retry: the same key with the same body within 24 hours returns the ORIGINAL result (same body, no second charge, no second slot). Omit it and every POST is a new purchase. Up to 255 characters, no control characters (otherwise `400 IDEMPOTENCY_KEY_INVALID`); a blank value counts as absent. It does not protect two requests sent at the same time, and the same key with a different `quantity` is a different purchase.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            },
+            "example": "order-8231-extra-number"
+          }
+        ]
       },
       "delete": {
         "summary": "Remove an extra number (On Demand)",
-        "description": "Schedules a reduction of N paid extra-number slot(s) for the NEXT cycle — the inverse of POST. Requires a TENANT-scoped key. NO refund for the current cycle; the lower amount is billed from the next rollover. Deleting or purging a number does NOT reduce paid capacity — this is the only way to. Returns 409 NUMBER_LIMIT_EXCEEDED if the reduction would drop the limit below currently connected numbers, and 409 NOT_APPLICABLE_FOR_PLAN on Pay As You Go, which has no paid capacity to reduce: its renewal bills every number that has ever connected and was not deleted, disconnected ones included. On Pay As You Go, delete the number to pay less — disconnecting does not stop the charge.\n\n**Requires a tenant-scoped key.**",
+        "description": "Schedules a reduction of N paid extra-number slot(s) for the NEXT cycle — the inverse of POST. Repeated calls ACCUMULATE: each one subtracts `quantity` from the target already scheduled (or from the current paid count when nothing is scheduled), clamped at 0. A target that is not below the current paid count cancels the schedule instead. Requires a TENANT-scoped key. NO refund for the current cycle; the lower amount is billed from the next rollover. Deleting or purging a number does NOT reduce paid capacity — this is the only way to. Returns 409 NUMBER_LIMIT_EXCEEDED if the reduction would drop the limit below currently connected numbers, and 409 NOT_APPLICABLE_FOR_PLAN on Pay As You Go, which has no paid capacity to reduce: its renewal bills every number that has ever connected and was not deleted, disconnected ones included. On Pay As You Go, delete the number to pay less — disconnecting does not stop the charge.\n\nRole with an account key or OAuth token: **Owner** (`billing:manage`).\n\n**Requires a tenant-scoped key.**",
         "tags": [
           "Subscription"
         ],
@@ -3295,9 +3303,10 @@
                 "type": "object",
                 "properties": {
                   "quantity": {
-                    "type": "number",
-                    "description": "How many extra number slots to release (default 1).",
-                    "example": "1"
+                    "type": "integer",
+                    "description": "How many paid slots to remove from the scheduled target (default 1). Repeated calls accumulate: each one subtracts from the target already scheduled, never below 0.",
+                    "example": 1,
+                    "minimum": 1
                   }
                 }
               }
@@ -3306,22 +3315,31 @@
         },
         "responses": {
           "200": {
-            "description": "Removed 1 slot",
+            "description": "Scheduled. `paidExtraNumbers` and `maxNumbers` stay at this cycle's values; `scheduledPaidExtraNumbers` is the target from `scheduledReductionEffectiveAt` (end of the current cycle). `charged` is always `true` and the money fields are `0`: nothing is charged or refunded.",
             "content": {
               "application/json": {
                 "example": {
                   "success": true,
                   "charged": true,
                   "plan": "ON_DEMAND",
-                  "paidExtraNumbers": 1,
-                  "maxNumbers": 1,
-                  "proratedTotal": 0
+                  "paidExtraNumbers": 5,
+                  "proratedTotal": 0,
+                  "currency": "BRL",
+                  "creditsUsed": 0,
+                  "cardCharged": 0,
+                  "grantedExtraNumbers": 0,
+                  "baseMaxNumbers": 1,
+                  "maxNumbers": 6,
+                  "currentNumberCount": 4,
+                  "scheduledPaidExtraNumbers": 4,
+                  "scheduledReductionEffectiveAt": "2026-12-01T00:00:00.000Z",
+                  "monthlyTotalBRL": 0
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid payload or parameters — or `INVALID_BODY` when the body is not valid JSON: nothing is charged or scheduled. An empty body still means `quantity = 1`",
+            "description": "`quantity` is not an integer ≥ 1 (body without `code`, message in Portuguese), or `INVALID_BODY` when the body is not valid JSON: nothing is scheduled. An empty body still means `quantity = 1`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3336,8 +3354,8 @@
                   }
                 },
                 "examples": {
-                  "validation": {
-                    "summary": "Validation error",
+                  "invalidQuantity": {
+                    "summary": "Invalid quantity",
                     "value": {
                       "error": "quantity deve ser um inteiro >= 1"
                     }
@@ -3375,7 +3393,7 @@
             }
           },
           "403": {
-            "description": "Number-scoped key used on a tenant-only endpoint",
+            "description": "Number-scoped key or token limited to some numbers (`NUMBER_SCOPE_NOT_ALLOWED`), the user's role is below Owner (`PERMISSION_DENIED`), or an account key outside its workspaces (`WORKSPACE_MEMBERSHIP_REQUIRED`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3390,8 +3408,30 @@
                   }
                 },
                 "example": {
-                  "error": "Number-scoped keys cannot call tenant endpoints",
+                  "error": "This endpoint requires a tenant-scoped API key",
                   "code": "NUMBER_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`NO_SUBSCRIPTION` — the workspace has no subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "No subscription found",
+                  "code": "NO_SUBSCRIPTION"
                 }
               }
             }
@@ -3426,17 +3466,66 @@
                     }
                   }
                 },
+                "examples": {
+                  "numberLimitExceeded": {
+                    "summary": "NUMBER_LIMIT_EXCEEDED",
+                    "value": {
+                      "error": "Você tem 2 número(s) conectado(s); reduzir para 0 extra(s) deixaria o limite em 1. Desconecte números antes de reduzir a capacidade.",
+                      "code": "NUMBER_LIMIT_EXCEEDED",
+                      "currentNumberCount": 2,
+                      "maxNumbers": 1
+                    }
+                  },
+                  "notApplicableForPlan": {
+                    "summary": "NOT_APPLICABLE_FOR_PLAN",
+                    "value": {
+                      "error": "Pay As You Go has no paid capacity to give back, so there is nothing to schedule: each renewal bills every number that has been connected and has not been deleted. To pay less, delete the number — disconnecting it is not enough, a disconnected number is still billed. | No plano Pay As You Go não há capacidade paga a devolver, então não há o que agendar: cada renovação cobra todo número que já foi conectado e não foi excluído. Para pagar menos, exclua o número — desconectar não basta, um número desconectado continua sendo cobrado.",
+                      "code": "NOT_APPLICABLE_FOR_PLAN",
+                      "plan": "PAY_AS_YOU_GO"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/subscription/extra-numbers/schedule": {
+      "delete": {
+        "summary": "Cancel the scheduled extra-number reduction",
+        "description": "Cancels a paid-capacity reduction scheduled with `DELETE /v1/subscription/extra-numbers`: the next cycle keeps the current paid capacity — and its charge. No-op when nothing is scheduled (still `200`). No body. Returns the resulting capacity, with `scheduledPaidExtraNumbers: null`. Nothing is charged.\n\nRole with an account key or OAuth token: **Owner** (`billing:manage`).\n\n**Requires a tenant-scoped key.**",
+        "tags": [
+          "Subscription"
+        ],
+        "operationId": "delete_subscription_extra-numbers_schedule",
+        "responses": {
+          "200": {
+            "description": "Schedule cancelled (or nothing was scheduled)",
+            "content": {
+              "application/json": {
                 "example": {
-                  "error": "Você tem 2 número(s) conectado(s); remover 2 deixaria o limite em 0. Desconecte números antes de remover slots pagos.",
-                  "code": "NUMBER_LIMIT_EXCEEDED",
-                  "currentNumberCount": 2,
-                  "maxNumbers": 0
+                  "success": true,
+                  "charged": true,
+                  "plan": "ON_DEMAND",
+                  "paidExtraNumbers": 5,
+                  "proratedTotal": 0,
+                  "currency": "BRL",
+                  "creditsUsed": 0,
+                  "cardCharged": 0,
+                  "grantedExtraNumbers": 0,
+                  "baseMaxNumbers": 1,
+                  "maxNumbers": 6,
+                  "currentNumberCount": 4,
+                  "scheduledPaidExtraNumbers": null,
+                  "scheduledReductionEffectiveAt": null,
+                  "monthlyTotalBRL": 0
                 }
               }
             }
           },
-          "429": {
-            "description": "Rate limit exceeded",
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
             "content": {
               "application/json": {
                 "schema": {
@@ -3451,7 +3540,51 @@
                   }
                 },
                 "example": {
-                  "error": "Too many requests"
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Number-scoped key or token limited to some numbers (`NUMBER_SCOPE_NOT_ALLOWED`), the user's role is below Owner (`PERMISSION_DENIED`), or an account key outside its workspaces (`WORKSPACE_MEMBERSHIP_REQUIRED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This endpoint requires a tenant-scoped API key",
+                  "code": "NUMBER_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`NO_SUBSCRIPTION` — the workspace has no subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "No subscription found",
+                  "code": "NO_SUBSCRIPTION"
                 }
               }
             }
@@ -3462,7 +3595,7 @@
     "/v1/billing/checkout": {
       "post": {
         "summary": "Wallet top-up (card or Pix) / add a card",
-        "description": "Tops up the pre-paid wallet or saves a card — nothing is charged until a person pays. purpose:\"wallet_topup\" (requires amount > 0, in the account currency) with method \"card\" (default) returns a hosted Stripe `url`; with method \"pix\" (BRL only) returns `orderId` and `pix { transactionId, copyPaste, qrCode, expiresAt }` — the Pix expires in 1 hour. Follow the order with `GET /v1/billing/topups/{orderId}`. purpose:\"add_card\" returns a hosted page to save a card on the workspace, which then backs the wallet on every charge. Account-level action: requires a TENANT-scoped key (403 NUMBER_SCOPE_NOT_ALLOWED for a number key); Owner only with an account key or OAuth token.\n\n**Requires a tenant-scoped key** — a workspace key, or an account key with `x-workspace-id`.\n\nErrors are bilingual (`English | Português`) since 2026-10-29: `INVALID_PURPOSE`, `INVALID_AMOUNT`, `NO_BILLING_EMAIL` (400) and `CHECKOUT_FAILED` (500) used to be English only. Codes and statuses did not change — branch on `code`.",
+        "description": "Tops up the pre-paid wallet or saves a card — nothing is charged until a person pays. purpose:\"wallet_topup\" (requires amount > 0, in the account currency) with method \"card\" (default) returns a hosted Stripe `url`; with method \"pix\" (BRL only) returns `orderId` and `pix { transactionId, copyPaste, qrCode, expiresAt }` — the Pix expires in 1 hour. Follow the order with `GET /v1/billing/topups/{orderId}`. purpose:\"add_card\" returns a hosted page to save a card on the workspace, which then backs the wallet on every charge. Account-level action: requires a TENANT-scoped key (403 NUMBER_SCOPE_NOT_ALLOWED for a number key); Owner only with an account key or OAuth token. Other body fields are ignored (not refused).\n\n**Requires a tenant-scoped key** — a workspace key, or an account key with `x-workspace-id`.\n\nErrors are bilingual (`English | Português`) since 2026-10-29: `INVALID_PURPOSE`, `INVALID_AMOUNT`, `NO_BILLING_EMAIL` (400) and `CHECKOUT_FAILED` (500) used to be English only. Codes and statuses did not change — branch on `code`.",
         "tags": [
           "Billing"
         ],
@@ -3477,12 +3610,16 @@
                   "purpose": {
                     "type": "string",
                     "description": "What the checkout page is for.",
-                    "example": "wallet_topup"
+                    "example": "wallet_topup",
+                    "enum": [
+                      "wallet_topup",
+                      "add_card"
+                    ]
                   },
                   "amount": {
-                    "type": "string",
-                    "description": "Amount to credit to the wallet, in the account currency (required for wallet_topup).",
-                    "example": "50"
+                    "type": "number",
+                    "description": "Amount to credit to the wallet, in the workspace's currency (required for `wallet_topup`): a positive number. Missing, zero, negative or not a number → `400 INVALID_AMOUNT`.",
+                    "example": 50
                   },
                   "successUrl": {
                     "type": "string",
@@ -3557,7 +3694,7 @@
             }
           },
           "400": {
-            "description": "Invalid payload or parameters — or `INVALID_BODY` when the body is not valid JSON",
+            "description": "`INVALID_BODY` (not valid JSON), `INVALID_PURPOSE`, `INVALID_AMOUNT`, `INVALID_METHOD`, `FIELD_NOT_APPLICABLE`, `PIX_NOT_ELIGIBLE` or `NO_BILLING_EMAIL` (card rails only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3572,35 +3709,50 @@
                   }
                 },
                 "examples": {
-                  "validation": {
-                    "summary": "Validation error",
-                    "value": {
-                      "error": "Validation error"
-                    }
-                  },
                   "invalidBody": {
-                    "summary": "Body is not valid JSON",
+                    "summary": "INVALID_BODY",
                     "value": {
                       "error": "The request body is not valid JSON | O corpo da requisição não é um JSON válido",
                       "code": "INVALID_BODY"
                     }
                   },
                   "invalidPurpose": {
-                    "summary": "Unknown purpose",
+                    "summary": "INVALID_PURPOSE",
                     "value": {
                       "error": "purpose must be 'wallet_topup' or 'add_card'. | purpose deve ser 'wallet_topup' ou 'add_card'.",
                       "code": "INVALID_PURPOSE"
                     }
                   },
                   "invalidAmount": {
-                    "summary": "Amount not positive",
+                    "summary": "INVALID_AMOUNT",
                     "value": {
                       "error": "amount must be a positive number. | amount deve ser um número positivo.",
                       "code": "INVALID_AMOUNT"
                     }
                   },
+                  "invalidMethod": {
+                    "summary": "INVALID_METHOD",
+                    "value": {
+                      "error": "method must be 'card' or 'pix'. | method deve ser 'card' ou 'pix'.",
+                      "code": "INVALID_METHOD"
+                    }
+                  },
+                  "fieldNotApplicable": {
+                    "summary": "FIELD_NOT_APPLICABLE",
+                    "value": {
+                      "error": "successUrl and cancelUrl apply only to card checkouts; a Pix has no redirect. | successUrl e cancelUrl valem apenas para checkout com cartão; o Pix não tem redirecionamento.",
+                      "code": "FIELD_NOT_APPLICABLE"
+                    }
+                  },
+                  "pixNotEligible": {
+                    "summary": "PIX_NOT_ELIGIBLE",
+                    "value": {
+                      "error": "Pix is available only for BRL workspaces (this one bills in USD). | Pix está disponível apenas para workspaces em BRL (este cobra em USD).",
+                      "code": "PIX_NOT_ELIGIBLE"
+                    }
+                  },
                   "noBillingEmail": {
-                    "summary": "No billing e-mail (card)",
+                    "summary": "NO_BILLING_EMAIL",
                     "value": {
                       "error": "This workspace has no billing e-mail on file. | Este workspace não tem e-mail de cobrança cadastrado.",
                       "code": "NO_BILLING_EMAIL"
@@ -3632,7 +3784,7 @@
             }
           },
           "403": {
-            "description": "Number-scoped key used on a tenant-only endpoint",
+            "description": "Number-scoped key or token limited to some numbers (`NUMBER_SCOPE_NOT_ALLOWED`), the user's role is below Owner (`PERMISSION_DENIED`), or an account key outside its workspaces (`WORKSPACE_MEMBERSHIP_REQUIRED`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3647,29 +3799,8 @@
                   }
                 },
                 "example": {
-                  "error": "Number-scoped keys cannot call tenant endpoints",
+                  "error": "This endpoint requires a tenant-scoped API key",
                   "code": "NUMBER_SCOPE_NOT_ALLOWED"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Too many requests"
                 }
               }
             }
@@ -14836,7 +14967,7 @@
     "/v1/analytics/dashboard": {
       "get": {
         "summary": "Analytics dashboard",
-        "description": "Returns aggregated send metrics for the linked number (chart-ready series). Accepts period (7d|30d|90d, default 30d) and timezone (or tz, default UTC). 409 if the key is not linked to a number. Requires a number-scoped key.\n\n**Requires a number-scoped key.**",
+        "description": "Returns the send aggregates of ONE WhatsApp number — the same data as the dashboard's Analytics screen: totals, rates, a daily series (one entry per calendar day in `timezone`), status counts and percentages, inbound count, top 5 templates and sends by origin.\n\nAll totals count the number's OUTBOUND messages created in the window; `totalSent` = `totalDelivered` (SENT/DELIVERED/READ) + `totalFailed` + `totalQueued`. Rates are 0–100 with 2 decimals. Results are cached for up to 60 s per number/period/timezone.\n\n`period` outside `7d`/`30d`/`90d` is silently treated as `30d` (no 400). `timezone` (alias `tz`; `timezone` wins when both are sent) defaults to `UTC` and is echoed back.\n\n**Acts on one number.** Use a number key (`ps_number_`), or a workspace key / account key (`ps_account_` + `x-workspace-id`) / OAuth token with the `x-whatsapp-number-id` header; without it a workspace-wide credential gets 403 `TENANT_SCOPE_NOT_ALLOWED`. Every workspace role holds `analytics:read`. 409 when the credential is not linked to a number.",
         "tags": [
           "Analytics"
         ],
@@ -14846,10 +14977,15 @@
             "name": "period",
             "in": "query",
             "required": false,
-            "description": "Time window (default 30d).",
+            "description": "Time window: `7d`, `30d` (default) or `90d`. Any other value falls back to `30d`.",
             "schema": {
               "type": "string",
-              "description": "(\"7d\" | \"30d\" | \"90d\")"
+              "enum": [
+                "7d",
+                "30d",
+                "90d"
+              ],
+              "default": "30d"
             },
             "example": "30d"
           },
@@ -14857,34 +14993,128 @@
             "name": "timezone",
             "in": "query",
             "required": false,
-            "description": "Timezone (alias: tz; default UTC).",
+            "description": "IANA timezone for the daily buckets (alias: `tz`; default `UTC`).",
             "schema": {
               "type": "string",
-              "description": "(string (IANA tz))"
+              "default": "UTC"
             },
             "example": "America/Sao_Paulo"
           }
         ],
         "responses": {
           "200": {
-            "description": "Dashboard",
+            "description": "Dashboard aggregates",
             "content": {
               "application/json": {
                 "example": {
-                  "period": "30d",
-                  "totals": {
-                    "sent": 1280,
-                    "delivered": 1240,
-                    "read": 980,
-                    "failed": 12
-                  },
-                  "series": [
+                  "period": "7d",
+                  "timezone": "America/Sao_Paulo",
+                  "totalSent": 120,
+                  "totalDelivered": 115,
+                  "totalRead": 45,
+                  "totalFailed": 3,
+                  "totalQueued": 2,
+                  "deliveryRate": 95.83,
+                  "readRate": 39.13,
+                  "failureRate": 2.5,
+                  "responseRate": 39.13,
+                  "avgDeliveryTime": 1.84,
+                  "avgReadTime": 412.5,
+                  "messagesOverTime": [
                     {
-                      "date": "2026-06-19",
-                      "sent": 42,
-                      "delivered": 41,
-                      "read": 33,
+                      "date": "2026-11-03",
+                      "total": 15,
+                      "queued": 0,
+                      "sent": 15,
+                      "delivered": 14,
+                      "read": 6,
+                      "failed": 1
+                    },
+                    {
+                      "date": "2026-11-04",
+                      "total": 22,
+                      "queued": 0,
+                      "sent": 22,
+                      "delivered": 21,
+                      "read": 8,
+                      "failed": 1
+                    },
+                    {
+                      "date": "2026-11-05",
+                      "total": 18,
+                      "queued": 0,
+                      "sent": 18,
+                      "delivered": 18,
+                      "read": 7,
                       "failed": 0
+                    },
+                    {
+                      "date": "2026-11-06",
+                      "total": 20,
+                      "queued": 0,
+                      "sent": 20,
+                      "delivered": 19,
+                      "read": 9,
+                      "failed": 1
+                    },
+                    {
+                      "date": "2026-11-07",
+                      "total": 12,
+                      "queued": 0,
+                      "sent": 12,
+                      "delivered": 12,
+                      "read": 5,
+                      "failed": 0
+                    },
+                    {
+                      "date": "2026-11-08",
+                      "total": 14,
+                      "queued": 0,
+                      "sent": 14,
+                      "delivered": 14,
+                      "read": 4,
+                      "failed": 0
+                    },
+                    {
+                      "date": "2026-11-09",
+                      "total": 19,
+                      "queued": 2,
+                      "sent": 19,
+                      "delivered": 17,
+                      "read": 6,
+                      "failed": 0
+                    }
+                  ],
+                  "statusDistribution": {
+                    "queued": 2,
+                    "delivered": 115,
+                    "read": 45,
+                    "failed": 3
+                  },
+                  "statusPercentages": {
+                    "queued": 1.67,
+                    "delivered": 95.83,
+                    "read": 37.5,
+                    "failed": 2.5
+                  },
+                  "totalReceived": 87,
+                  "topTemplates": [
+                    {
+                      "templateVersionId": "cmh1a2b3c4d5e6f7g8h9",
+                      "templateId": "cmh1a2b3c4d5e6f7g8h9",
+                      "templateName": "order_update",
+                      "version": null,
+                      "count": 64
+                    }
+                  ],
+                  "topOrigins": [
+                    {
+                      "origin": "API",
+                      "count": 95
+                    },
+                    {
+                      "origin": "CHAT",
+                      "count": 20
                     }
                   ]
                 }
@@ -14892,7 +15122,7 @@
             }
           },
           "400": {
-            "description": "Invalid payload or parameters",
+            "description": "Account key without `x-workspace-id`",
             "content": {
               "application/json": {
                 "schema": {
@@ -14907,13 +15137,14 @@
                   }
                 },
                 "example": {
-                  "error": "Validation error"
+                  "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                  "code": "WORKSPACE_ID_REQUIRED"
                 }
               }
             }
           },
           "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Missing or invalid credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -14928,13 +15159,13 @@
                   }
                 },
                 "example": {
-                  "error": "Unauthorized"
+                  "error": "Invalid API key"
                 }
               }
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint",
+            "description": "Workspace-wide credential without `x-whatsapp-number-id`, number outside an OAuth/account-key grant, or user no longer an active member",
             "content": {
               "application/json": {
                 "schema": {
@@ -14949,8 +15180,74 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
+                },
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "summary": "TENANT_SCOPE_NOT_ALLOWED",
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "NUMBER_NOT_IN_GRANT": {
+                    "summary": "NUMBER_NOT_IN_GRANT",
+                    "value": {
+                      "error": "This token is not granted access to that number",
+                      "code": "NUMBER_NOT_IN_GRANT"
+                    }
+                  },
+                  "WORKSPACE_MEMBERSHIP_REQUIRED": {
+                    "summary": "WORKSPACE_MEMBERSHIP_REQUIRED",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-whatsapp-number-id` does not name a number of this workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "x-whatsapp-number-id does not name a WhatsApp number of this account | x-whatsapp-number-id não indica um número de WhatsApp desta conta",
+                  "code": "NUMBER_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The credential is not linked to a WhatsApp number",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "API key is not linked to a WhatsApp number"
                 }
               }
             }
@@ -23322,7 +23619,7 @@
     "/v1/meta/pricing": {
       "get": {
         "summary": "Message rate",
-        "description": "Published Meta / WhatsApp Business Platform per-message rate for a single market + currency + category. Global reference data - NOT the tenant's real billing. Call with no params for metadata (available markets, currencies, categories). Provide market + currency + category for the flat price; add tiers=true for volume tiers. Any valid API key works.",
+        "description": "Published Meta / WhatsApp Business Platform per-message rate for a single market + currency + category. Global reference data - NOT the tenant's real billing. Call with no params for metadata (available markets, currencies, categories). Provide market + currency + category for the flat price; add tiers=true for volume tiers. `market`/`currency`/`category` are case-insensitive.\n\nSince 2026-10-01 `service` is priced at the market's utility rate (never 0); a market with no utility rate answers 404 `PRICE_NOT_FOUND` for `service`. Every price carries `fetchedAt` (when the published card was last read — not an effective date) and `source` (`whatsappbusiness.com`, or `developers.facebook.com` for the 2026-10-01 card until the weekly sync refreshes that market/currency).\n\nAny valid credential works (number, workspace or account key, or OAuth token); no number header and no workspace role is required.",
         "tags": [
           "Pricing"
         ],
@@ -23332,7 +23629,7 @@
             "name": "market",
             "in": "query",
             "required": false,
-            "description": "Market code. Codes: AR Argentina, BR Brazil, CL Chile, CO Colombia, EG Egypt, FR France, DE Germany, HK Hong Kong, HU Hungary, IN India, ID Indonesia, IL Israel, IT Italy, MY Malaysia, MX Mexico, NL Netherlands, NG Nigeria, NAM North America, PK Pakistan, PE Peru, PL Poland, QA Qatar, RO Romania, RU Russia, SA Saudi Arabia, SG Singapore, ZA South Africa, ES Spain, TR Turkey, AE United Arab Emirates, GB United Kingdom, GLO Other, AFR Rest of Africa, APAC Rest of Asia Pacific, CEEU Rest of Central & Eastern Europe, LATAM Rest of Latin America, MDE Rest of Middle East, WEU Rest of Western Europe.",
+            "description": "Market code. Codes: AR Argentina, BR Brazil, CL Chile, CO Colombia, EG Egypt, FR France, DE Germany, HK Hong Kong, HU Hungary, IN India, ID Indonesia, IL Israel, IT Italy, MY Malaysia, MX Mexico, NL Netherlands, NG Nigeria, NAM North America, PK Pakistan, PE Peru, PL Poland, QA Qatar, RO Romania, RU Russia, SA Saudi Arabia, SG Singapore, ZA South Africa, ES Spain, TR Turkey, AE United Arab Emirates, GB United Kingdom, GLO Other, AFR Rest of Africa, APAC Rest of Asia Pacific, CEEU Rest of Central & Eastern Europe, LATAM Rest of Latin America, MDE Rest of Middle East, WEU Rest of Western Europe, BD Bangladesh, IQ Iraq, KZ Kazakhstan, KW Kuwait, MA Morocco, NP Nepal, OM Oman, LK Sri Lanka, UA Ukraine.",
             "schema": {
               "type": "string",
               "enum": [
@@ -23373,7 +23670,16 @@
                 "CEEU",
                 "LATAM",
                 "MDE",
-                "WEU"
+                "WEU",
+                "BD",
+                "IQ",
+                "KZ",
+                "KW",
+                "MA",
+                "NP",
+                "OM",
+                "LK",
+                "UA"
               ]
             },
             "example": "BR"
@@ -23427,7 +23733,7 @@
             "name": "tiers",
             "in": "query",
             "required": false,
-            "description": "Include the volume tiers (cheaper price at higher monthly volume) in the response.",
+            "description": "Include the volume tiers (cheaper price at higher monthly volume) in the response. Accepts `true`, `1` or `yes`.",
             "schema": {
               "type": "boolean"
             },
@@ -23608,13 +23914,13 @@
             }
           },
           "400": {
-            "description": "MARKET_CURRENCY_CATEGORY_REQUIRED (partial params) or INVALID_CATEGORY."
+            "description": "MARKET_CURRENCY_CATEGORY_REQUIRED (partial params), INVALID_CATEGORY, or WORKSPACE_ID_REQUIRED (account key without x-workspace-id)."
           },
           "401": {
-            "description": "Missing or invalid x-api-key header."
+            "description": "Missing or invalid credential."
           },
           "404": {
-            "description": "PRICE_NOT_FOUND - no published rate for that market+currency+category."
+            "description": "PRICE_NOT_FOUND - no published rate for that market+currency+category (including service in a market without a utility rate)."
           }
         }
       }
@@ -25445,7 +25751,7 @@
     "/v1/referrals": {
       "get": {
         "summary": "List ad referrals (CTWA)",
-        "description": "Lists the linked number's inbound messages that arrived from a Click-to-WhatsApp ad or post, newest first. In practice only official API (Meta) numbers carry an ad origin: the `referral` block is a Cloud API webhook field.\n\nMeta sends the origin on the **first message of the conversation only** and never repeats it, so each item here amounts to one conversation that started from that ad.\n\n`referral.sourceId` is Meta's **ad (or post) id**, exposed as an opaque grouping key. There is no campaign or adset name here and that is not an omission: reading the ad object (`GET /{ad_id}?fields=id,name,adset{id,name},campaign{id,name}`) requires the `ads_read` permission on the advertiser's ad account, and the WhatsApp system-user token behind a connected number carries only `whatsapp_business_management` and `whatsapp_business_messaging`. To resolve names, call the Meta Marketing API yourself with a token authorised on that ad account, using this `sourceId`.\n\nPrivacy (PII): on a redacted row the ad identity survives (`sourceId`, `sourceType`) while `ctwaClid`, `headline` and `body` come back null and `redacted: true` is set — an ad id identifies a creative, never a person, so attribution keeps working on a RELAY_ONLY number instead of returning nothing.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.\n\nThe `referral` object also carries the RESOLVED names of the ad — `adName`, `adsetId`, `adsetName`, `campaignId`, `campaignName` — plus `namesResolvedAt`.\n\n⚠️ Those six come back **null** unless the advertiser has shared that ad account with the Pilot Status business portfolio as a partner. A null name is a SUPPORTED state, not an error: the conversation is still counted and `sourceId` is still returned.\n\nNo endpoint resolves a name on demand — resolution happens asynchronously, off the request path, so querying never triggers a Marketing API call and a null can become a name minutes later with nothing done on your side. `namesResolvedAt` is what makes that observable: null means \"not resolved yet\", while a timestamp with null names means \"we asked and Meta returned nothing\" (deleted ad, or sharing not granted).",
+        "description": "Lists the linked number's inbound messages that arrived from a Click-to-WhatsApp ad or post, newest first. In practice only official API (Meta) numbers carry an ad origin: the `referral` block is a Cloud API webhook field.\n\nMeta sends the origin on the **first message of the conversation only** and never repeats it, so each item here amounts to one conversation that started from that ad.\n\n`referral.sourceId` is Meta's **ad (or post) id** and stays the grouping key even when the names below are present — a campaign can be renamed in Meta at any time.\n\nPrivacy (PII): on a redacted row (STORE_X_DAYS past retention, or every row of a RELAY_ONLY number, which also gets `notice: \"PII_RELAY_ONLY\"`) the ad identity survives (`sourceId`, `sourceType` and the resolved names) while everything from the ad payload (`sourceUrl`, `headline`, `body`, `mediaType`, `imageUrl`, `videoUrl`, `thumbnailUrl`, `ctwaClid`) and the message's `text`, `participant*` and `media` come back null, with `redacted: true` — an ad id identifies a creative, never a person, so attribution keeps working on a RELAY_ONLY number instead of returning nothing.\n\n**Acts on one number.** Use a number key (`ps_number_`), or a workspace key / account key (`ps_account_` + `x-workspace-id`) / OAuth token with the `x-whatsapp-number-id` header; without it a workspace-wide credential gets 403 `TENANT_SCOPE_NOT_ALLOWED`. OAuth tokens and account keys need `chat:read` (OWNER, ADMIN, AGENT — the ANALYST role gets 403 `PERMISSION_DENIED`).\n\nThe `referral` object also carries the RESOLVED names of the ad — `adName`, `adsetId`, `adsetName`, `campaignId`, `campaignName` — plus `namesResolvedAt`.\n\n⚠️ Those six come back **null** unless the advertiser has shared that ad account with the Pilot Status business portfolio as a partner. A null name is a SUPPORTED state, not an error: the conversation is still counted and `sourceId` is still returned.\n\nNo endpoint resolves a name on demand — resolution happens asynchronously, off the request path, so querying never triggers a Marketing API call and a null can become a name minutes later with nothing done on your side. `namesResolvedAt` is what makes that observable: null means \"not resolved yet\", while a timestamp with null names means \"we asked and Meta returned nothing\" (deleted ad, or sharing not granted).",
         "tags": [
           "Conversations"
         ],
@@ -25499,7 +25805,7 @@
             "name": "page",
             "in": "query",
             "required": false,
-            "description": "Page (default 1).",
+            "description": "Page (default 1). Missing or non-numeric falls back to 1; `page × pageSize` may not exceed 10000 (400 `INVALID_PAGINATION`).",
             "schema": {
               "type": "string",
               "description": "(integer (≥1))"
@@ -25510,7 +25816,7 @@
             "name": "pageSize",
             "in": "query",
             "required": false,
-            "description": "Items per page (default 30, max 100).",
+            "description": "Items per page (default 30, max 100; larger values are clamped to 100).",
             "schema": {
               "type": "string",
               "description": "(integer (1–100))"
@@ -25531,9 +25837,20 @@
                       "direction": "INBOUND",
                       "providerKind": "META",
                       "externalMessageId": "wamid.HBgNNTU0Mj...",
+                      "status": "DELIVERED",
                       "messageType": "text",
+                      "origin": null,
                       "text": "Oi, vi o anúncio",
+                      "participantName": "Maria",
+                      "participantPhone": "5511999999999",
+                      "participantUserId": null,
+                      "repliedToExternalId": null,
+                      "media": null,
+                      "sentAt": null,
+                      "deliveredAt": null,
+                      "readAt": null,
                       "providerTimestamp": "2026-08-16T12:00:00.000Z",
+                      "createdAt": "2026-08-16T12:00:01.000Z",
                       "referral": {
                         "sourceId": "120249828053880703",
                         "sourceType": "ad",
@@ -25559,9 +25876,20 @@
                       "direction": "INBOUND",
                       "providerKind": "META",
                       "externalMessageId": "wamid.HBgNNTU0Mj...2",
+                      "status": "DELIVERED",
                       "messageType": "text",
+                      "origin": null,
                       "text": "quero saber o preço",
+                      "participantName": "Maria",
+                      "participantPhone": "5511999999999",
+                      "participantUserId": null,
+                      "repliedToExternalId": null,
+                      "media": null,
+                      "sentAt": null,
+                      "deliveredAt": null,
+                      "readAt": null,
                       "providerTimestamp": "2026-08-16T12:00:00.000Z",
+                      "createdAt": "2026-08-16T12:00:01.000Z",
                       "referral": {
                         "sourceId": "120249828075420703",
                         "sourceType": "ad",
@@ -25591,18 +25919,7 @@
             }
           },
           "400": {
-            "description": "Invalid source type",
-            "content": {
-              "application/json": {
-                "example": {
-                  "error": "sourceType must be \"ad\" or \"post\"",
-                  "code": "INVALID_SOURCE_TYPE"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Invalid query (`INVALID_SOURCE_TYPE`, `INVALID_DATE_RANGE`, `INVALID_PAGINATION`), credential not bound to a number (`NUMBER_NOT_FOUND`), or account key without `x-workspace-id` (`WORKSPACE_ID_REQUIRED`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -25617,13 +25934,72 @@
                   }
                 },
                 "example": {
-                  "error": "Unauthorized"
+                  "error": "sourceType must be \"ad\" or \"post\"",
+                  "code": "INVALID_SOURCE_TYPE"
+                },
+                "examples": {
+                  "INVALID_SOURCE_TYPE": {
+                    "summary": "INVALID_SOURCE_TYPE",
+                    "value": {
+                      "error": "sourceType must be \"ad\" or \"post\"",
+                      "code": "INVALID_SOURCE_TYPE"
+                    }
+                  },
+                  "INVALID_DATE_RANGE": {
+                    "summary": "INVALID_DATE_RANGE",
+                    "value": {
+                      "error": "startDate must be before or equal to endDate",
+                      "code": "INVALID_DATE_RANGE"
+                    }
+                  },
+                  "INVALID_PAGINATION": {
+                    "summary": "INVALID_PAGINATION",
+                    "value": {
+                      "error": "Pagination too deep: page * pageSize must not exceed 10000. Narrow the result set with startDate/endDate instead of paging further.",
+                      "code": "INVALID_PAGINATION"
+                    }
+                  },
+                  "NUMBER_NOT_FOUND": {
+                    "summary": "NUMBER_NOT_FOUND",
+                    "value": {
+                      "error": "This API key is not bound to a WhatsApp number",
+                      "code": "NUMBER_NOT_FOUND"
+                    }
+                  },
+                  "WORKSPACE_ID_REQUIRED": {
+                    "summary": "WORKSPACE_ID_REQUIRED",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Invalid API key"
                 }
               }
             }
           },
           "403": {
-            "description": "Account-wide credential without `x-whatsapp-number-id`, or an OAuth token whose workspace role lacks `chat:read`",
+            "description": "Workspace-wide credential without `x-whatsapp-number-id`, OAuth token / account key whose role lacks `chat:read`, or user no longer an active member",
             "content": {
               "application/json": {
                 "schema": {
@@ -25640,6 +26016,51 @@
                 "example": {
                   "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
+                },
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "summary": "TENANT_SCOPE_NOT_ALLOWED",
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "summary": "PERMISSION_DENIED",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (chat:read).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "WORKSPACE_MEMBERSHIP_REQUIRED": {
+                    "summary": "WORKSPACE_MEMBERSHIP_REQUIRED",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-whatsapp-number-id` does not name a number of this workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "x-whatsapp-number-id does not name a WhatsApp number of this account | x-whatsapp-number-id não indica um número de WhatsApp desta conta",
+                  "code": "NUMBER_NOT_FOUND"
                 }
               }
             }
@@ -25650,7 +26071,7 @@
     "/v1/referrals/summary": {
       "get": {
         "summary": "Ad referral summary (CTWA)",
-        "description": "Groups the linked number's Click-to-WhatsApp traffic by ad/post, ordered by conversation count desc. `conversations` counts DISTINCT conversations and `messages` counts messages — two messages in the same conversation are 1 conversation and 2 messages.\n\n`lastSourceUrl` and `lastHeadline` come from the newest message for that ad: the copy can be edited, and the useful one is the last Meta sent.\n\nThe list is capped at 200 ads; when it overflows, `truncated` is `true` and a `notice` says so — narrow the window with startDate/endDate.\n\n`referral.sourceId` is Meta's **ad (or post) id**, exposed as an opaque grouping key. There is no campaign or adset name here and that is not an omission: reading the ad object (`GET /{ad_id}?fields=id,name,adset{id,name},campaign{id,name}`) requires the `ads_read` permission on the advertiser's ad account, and the WhatsApp system-user token behind a connected number carries only `whatsapp_business_management` and `whatsapp_business_messaging`. To resolve names, call the Meta Marketing API yourself with a token authorised on that ad account, using this `sourceId`.\n\nPrivacy (PII): the COUNTS stay correct on a RELAY_ONLY number (they come from the ad identity, which is not personal data); only `lastSourceUrl` and `lastHeadline` come back null, with `piiNotice: \"PII_RELAY_ONLY\"`.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.\n\nThe `referral` object also carries the RESOLVED names of the ad — `adName`, `adsetId`, `adsetName`, `campaignId`, `campaignName` — plus `namesResolvedAt`.\n\n⚠️ Those six come back **null** unless the advertiser has shared that ad account with the Pilot Status business portfolio as a partner. A null name is a SUPPORTED state, not an error: the conversation is still counted and `sourceId` is still returned.\n\nNo endpoint resolves a name on demand — resolution happens asynchronously, off the request path, so querying never triggers a Marketing API call and a null can become a name minutes later with nothing done on your side. `namesResolvedAt` is what makes that observable: null means \"not resolved yet\", while a timestamp with null names means \"we asked and Meta returned nothing\" (deleted ad, or sharing not granted).",
+        "description": "Groups the linked number's Click-to-WhatsApp traffic by ad/post, ordered by conversation count desc. `conversations` counts DISTINCT conversations and `messages` counts messages — two messages in the same conversation are 1 conversation and 2 messages.\n\n`lastSourceUrl` and `lastHeadline` come from the newest message for that ad: the copy can be edited, and the useful one is the last Meta sent.\n\nThe list is capped at 200 ads; when it overflows, `truncated` is `true` and a `notice` says so — narrow the window with startDate/endDate.\n\n`referral.sourceId` is Meta's **ad (or post) id** and stays the grouping key even when the names below are present — a campaign can be renamed in Meta at any time.\n\nPrivacy (PII): the COUNTS stay correct on a RELAY_ONLY number (they come from the ad identity, which is not personal data); only `lastSourceUrl` and `lastHeadline` come back null, with `piiNotice: \"PII_RELAY_ONLY\"`.\n\n**Acts on one number.** Use a number key (`ps_number_`), or a workspace key / account key (`ps_account_` + `x-workspace-id`) / OAuth token with the `x-whatsapp-number-id` header; without it a workspace-wide credential gets 403 `TENANT_SCOPE_NOT_ALLOWED`. OAuth tokens and account keys need `chat:read` (OWNER, ADMIN, AGENT — the ANALYST role gets 403 `PERMISSION_DENIED`).\n\nThe `referral` object also carries the RESOLVED names of the ad — `adName`, `adsetId`, `adsetName`, `campaignId`, `campaignName` — plus `namesResolvedAt`.\n\n⚠️ Those six come back **null** unless the advertiser has shared that ad account with the Pilot Status business portfolio as a partner. A null name is a SUPPORTED state, not an error: the conversation is still counted and `sourceId` is still returned.\n\nNo endpoint resolves a name on demand — resolution happens asynchronously, off the request path, so querying never triggers a Marketing API call and a null can become a name minutes later with nothing done on your side. `namesResolvedAt` is what makes that observable: null means \"not resolved yet\", while a timestamp with null names means \"we asked and Meta returned nothing\" (deleted ad, or sharing not granted).",
         "tags": [
           "Conversations"
         ],
@@ -25727,18 +26148,7 @@
             }
           },
           "400": {
-            "description": "Invalid date range",
-            "content": {
-              "application/json": {
-                "example": {
-                  "error": "startDate must be before or equal to endDate",
-                  "code": "INVALID_DATE_RANGE"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "description": "Invalid date range (`INVALID_DATE_RANGE`), credential not bound to a number (`NUMBER_NOT_FOUND`), or account key without `x-workspace-id` (`WORKSPACE_ID_REQUIRED`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -25753,13 +26163,58 @@
                   }
                 },
                 "example": {
-                  "error": "Unauthorized"
+                  "error": "startDate must be before or equal to endDate",
+                  "code": "INVALID_DATE_RANGE"
+                },
+                "examples": {
+                  "INVALID_DATE_RANGE": {
+                    "summary": "INVALID_DATE_RANGE",
+                    "value": {
+                      "error": "startDate must be before or equal to endDate",
+                      "code": "INVALID_DATE_RANGE"
+                    }
+                  },
+                  "NUMBER_NOT_FOUND": {
+                    "summary": "NUMBER_NOT_FOUND",
+                    "value": {
+                      "error": "This API key is not bound to a WhatsApp number",
+                      "code": "NUMBER_NOT_FOUND"
+                    }
+                  },
+                  "WORKSPACE_ID_REQUIRED": {
+                    "summary": "WORKSPACE_ID_REQUIRED",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Invalid API key"
                 }
               }
             }
           },
           "403": {
-            "description": "Account-wide credential without `x-whatsapp-number-id`, or an OAuth token whose workspace role lacks `chat:read`",
+            "description": "Workspace-wide credential without `x-whatsapp-number-id`, OAuth token / account key whose role lacks `chat:read`, or user no longer an active member",
             "content": {
               "application/json": {
                 "schema": {
@@ -25776,6 +26231,51 @@
                 "example": {
                   "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
+                },
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "summary": "TENANT_SCOPE_NOT_ALLOWED",
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "summary": "PERMISSION_DENIED",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (chat:read).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "WORKSPACE_MEMBERSHIP_REQUIRED": {
+                    "summary": "WORKSPACE_MEMBERSHIP_REQUIRED",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-whatsapp-number-id` does not name a number of this workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "x-whatsapp-number-id does not name a WhatsApp number of this account | x-whatsapp-number-id não indica um número de WhatsApp desta conta",
+                  "code": "NUMBER_NOT_FOUND"
                 }
               }
             }
@@ -28405,7 +28905,7 @@
     "/v1/phone-lines/available": {
       "get": {
         "summary": "Search available numbers",
-        "description": "Lists the Brazilian landline numbers that can be bought right now in one area code (DDD). It is the first step of a purchase: the `number` of each result is exactly what `POST /v1/phone-lines` takes.\n\n- **A search is not a reservation.** A listed number can be bought by someone else before your purchase reaches it; it then comes back in the purchase results as `NUMBER_UNAVAILABLE`.\n- **Every search reaches our carrier** and draws on a request budget shared by the whole platform. Search once, show the list and reuse it — do not poll this endpoint. When the budget is exhausted it answers `503 SUPPLIER_UNAVAILABLE`.\n- Identity verification is **not** required to search — only to buy.\n\nPermissions: with an OAuth / MCP token, only the workspace **Owner** may search (`phone_lines:purchase`, the same permission as buying) — `403 PERMISSION_DENIED` otherwise. A classic `ps_` tenant key has no user and no role: its authority is its scope.\n\nEvery `/v1/phone-lines` endpoint takes a **tenant-scoped** key only: a line belongs to the workspace, not to a WhatsApp number, so a number-scoped key (or a per-number OAuth grant) gets `403 NUMBER_SCOPE_NOT_ALLOWED` before any role is looked at. A `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` is sent with `Cache-Control: no-store`.\n\n**Requires a tenant-scoped key.**",
+        "description": "Lists the Brazilian landline numbers that can be bought right now in one area code (DDD). It is the first step of a purchase: the `number` of each result is exactly what `POST /v1/phone-lines` takes.\n\n- **A search is not a reservation.** A listed number can be bought by someone else before your purchase reaches it; it then comes back in the purchase results as `NUMBER_UNAVAILABLE`.\n- **The list can be a few minutes old.** The carrier's answer for each area code is cached and shared by every workspace: a list less than a minute old is served without asking the carrier, and an older one (up to about 2 hours) is served at once — or after a short wait for the carrier — while it is refreshed in the background. Numbers already held by a Pilot Status line are always left out.\n- **Searches that do reach the carrier draw on a request budget shared by the whole platform.** Search once, show the list and reuse it — do not poll this endpoint. When the carrier cannot answer and no recent list is cached, it answers `503 SUPPLIER_UNAVAILABLE`.\n- Identity verification is **not** required to search — only to buy.\n\nPermissions: with an OAuth / MCP token, only the workspace **Owner** may search (`phone_lines:purchase`, the same permission as buying) — `403 PERMISSION_DENIED` otherwise. A classic `ps_` tenant key has no user and no role: its authority is its scope.\n\nEvery `/v1/phone-lines` endpoint takes a **tenant-scoped** key only: a line belongs to the workspace, not to a WhatsApp number, so a number-scoped key (or a per-number OAuth grant) gets `403 NUMBER_SCOPE_NOT_ALLOWED` before any role is looked at. A `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` is sent with `Cache-Control: no-store`.\n\n**Requires a tenant-scoped key.**",
         "tags": [
           "Phone Lines"
         ],
@@ -28438,7 +28938,7 @@
                     },
                     "totalAvailable": {
                       "type": "integer",
-                      "description": "How many numbers the carrier reports as available in this area code. Do not assume it equals the length of `numbers`.",
+                      "description": "How many numbers the carrier reports as available in this area code. Do not assume it equals the length of `numbers` — numbers already held by a Pilot Status line are removed from `numbers` without changing this count, and both come from a list that may be a few minutes old.",
                       "example": 2
                     },
                     "numbers": {
@@ -28649,7 +29149,7 @@
             }
           },
           "503": {
-            "description": "The carrier could not answer, or the request budget shared by the whole platform ran out (`SUPPLIER_UNAVAILABLE`). Retry in a few minutes.",
+            "description": "The carrier could not answer, or the request budget shared by the whole platform ran out, and no recent list of this area code was cached (`SUPPLIER_UNAVAILABLE`). Retry in a few minutes.",
             "content": {
               "application/json": {
                 "schema": {
@@ -31290,7 +31790,7 @@
             }
           },
           "503": {
-            "description": "`SUPPLIER_UNAVAILABLE`: a contact code could not be queued for sending. The key is freed — try again in a few minutes.",
+            "description": "`SUPPLIER_UNAVAILABLE`: a contact code could not be queued for sending. The key is freed — try again in a few minutes. `IDEMPOTENCY_UNAVAILABLE`: the `Idempotency-Key` could not be checked (its store is unreachable or too slow); nothing was started and no code was sent — wait `Retry-After` seconds and retry with the same key.",
             "content": {
               "application/json": {
                 "schema": {
@@ -31304,9 +31804,29 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Phone lines are temporarily unavailable. Try again in a few minutes. | As linhas estão temporariamente indisponíveis. Tente de novo em alguns minutos.",
-                  "code": "SUPPLIER_UNAVAILABLE"
+                "examples": {
+                  "supplierUnavailable": {
+                    "summary": "A contact code could not be queued",
+                    "value": {
+                      "error": "Phone lines are temporarily unavailable. Try again in a few minutes. | As linhas estão temporariamente indisponíveis. Tente de novo em alguns minutos.",
+                      "code": "SUPPLIER_UNAVAILABLE"
+                    }
+                  },
+                  "idempotencyUnavailable": {
+                    "summary": "Idempotency check unavailable",
+                    "value": {
+                      "error": "The idempotency check is temporarily unavailable; nothing was started and no code was sent. Retry with the same Idempotency-Key. | A verificação de idempotência está indisponível no momento; nada foi iniciado e nenhum código foi enviado. Tente de novo com a mesma Idempotency-Key.",
+                      "code": "IDEMPOTENCY_UNAVAILABLE"
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Only with `IDEMPOTENCY_UNAVAILABLE`: seconds to wait before retrying with the same key.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -33765,6 +34285,12 @@
                 }
               },
               "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/ogg": {
                 "schema": {
                   "type": "string",
                   "format": "binary"
@@ -37009,14 +37535,17 @@
                   "unknownFields": {
                     "summary": "A field was sent",
                     "value": {
-                      "error": "This endpoint takes no body fields | Este endpoint não aceita campos no corpo",
-                      "code": "UNKNOWN_FIELDS"
+                      "error": "Unknown field(s): sourceWorkspaceId. Accepted: (none). | Campo(s) desconhecido(s): sourceWorkspaceId. Aceitos: (nenhum).",
+                      "code": "UNKNOWN_FIELDS",
+                      "unknownFields": [
+                        "sourceWorkspaceId"
+                      ]
                     }
                   },
                   "selfSource": {
                     "summary": "Workspace is the source",
                     "value": {
-                      "error": "A workspace cannot use its own card as a shared card | Um workspace não pode usar o próprio cartão como cartão compartilhado",
+                      "error": "This workspace holds your reserve card; it cannot share its own card with itself | Este workspace é o do seu cartão de reserva; ele não pode compartilhar o próprio cartão consigo mesmo",
                       "code": "SELF_SOURCE"
                     }
                   }
@@ -37107,12 +37636,33 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Unexpected failure (body without `code`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Internal server error"
+                }
+              }
+            }
           }
         }
       },
       "delete": {
         "summary": "Unlink the shared card",
-        "description": "Unlinks the reserve card from `{workspaceId}`: from then on your card no longer pays that customer's renewals, and a failed renewal suspends only that workspace. No body. Owner of `{workspaceId}` only. Idempotent: not linked → `200` with `changed: false`. On a change, the workspace's History records **Backup card unlinked** (no e-mail).\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
+        "description": "Unlinks the reserve card from `{workspaceId}`: from then on your card no longer pays that customer's renewals, and a failed renewal suspends only that workspace. Takes no body (a body sent is not read). Owner of `{workspaceId}` only. Idempotent: not linked → `200` with `changed: false`. On a change, the workspace's History records **Backup card unlinked** (no e-mail).\n\n**Requires an account key** (`ps_account_`, created in Profile → API). Workspace keys, number keys and OAuth/MCP tokens get `403 ACCOUNT_KEY_REQUIRED`. Sent with `Cache-Control: no-store`.",
         "tags": [
           "Workspace"
         ],
@@ -37186,33 +37736,6 @@
               }
             }
           },
-          "400": {
-            "description": "`UNKNOWN_FIELDS` — the endpoint takes no body",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "examples": {
-                  "unknownFields": {
-                    "summary": "A field was sent",
-                    "value": {
-                      "error": "This endpoint takes no body fields | Este endpoint não aceita campos no corpo",
-                      "code": "UNKNOWN_FIELDS"
-                    }
-                  }
-                }
-              }
-            }
-          },
           "401": {
             "description": "Missing, invalid or revoked API key",
             "content": {
@@ -37279,6 +37802,27 @@
                       "code": "NO_SHARED_OWNER"
                     }
                   }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected failure (body without `code`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Internal server error"
                 }
               }
             }
@@ -37401,6 +37945,28 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Unexpected failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Failed to read top-up order | Falha ao ler o pedido de recarga",
+                  "code": "TOPUP_READ_FAILED"
+                }
+              }
+            }
           }
         }
       }
@@ -37447,7 +38013,7 @@
             }
           },
           "400": {
-            "description": "`INVALID_BODY` or `UNKNOWN_FIELDS`",
+            "description": "`INVALID_BODY` (not a JSON object) or `UNKNOWN_FIELDS` (the endpoint takes no field)",
             "content": {
               "application/json": {
                 "schema": {
@@ -37461,9 +38027,26 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Unknown field(s): customerId. Accepted: (none). | Campo(s) desconhecido(s): customerId. Aceitos: (nenhum).",
-                  "code": "UNKNOWN_FIELDS"
+                "examples": {
+                  "unknownFields": {
+                    "summary": "UNKNOWN_FIELDS",
+                    "value": {
+                      "error": "Unknown field(s): customerId. Accepted: (none). | Campo(s) desconhecido(s): customerId. Aceitos: (nenhum).",
+                      "code": "UNKNOWN_FIELDS",
+                      "details": {
+                        "unknownFields": [
+                          "customerId"
+                        ]
+                      }
+                    }
+                  },
+                  "invalidBody": {
+                    "summary": "INVALID_BODY",
+                    "value": {
+                      "error": "Send a JSON object. | Envie um objeto JSON.",
+                      "code": "INVALID_BODY"
+                    }
+                  }
                 }
               }
             }
@@ -37507,6 +38090,28 @@
                 "example": {
                   "error": "This endpoint requires a tenant-scoped API key",
                   "code": "NUMBER_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Could not process the billing request. | Não foi possível processar a solicitação de cobrança.",
+                  "code": "BILLING_REQUEST_FAILED"
                 }
               }
             }
@@ -37671,6 +38276,28 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Unexpected failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Could not process the billing request. | Não foi possível processar a solicitação de cobrança.",
+                  "code": "BILLING_REQUEST_FAILED"
+                }
+              }
+            }
           }
         }
       }
@@ -37787,9 +38414,68 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "amount must be a positive number. | amount deve ser um número positivo.",
-                  "code": "INVALID_AMOUNT"
+                "examples": {
+                  "invalidAmount": {
+                    "summary": "INVALID_AMOUNT",
+                    "value": {
+                      "error": "amount must be a positive number. | amount deve ser um número positivo.",
+                      "code": "INVALID_AMOUNT"
+                    }
+                  },
+                  "invalidPurpose": {
+                    "summary": "INVALID_PURPOSE",
+                    "value": {
+                      "error": "purpose must be 'wallet_topup'. | purpose deve ser 'wallet_topup'.",
+                      "code": "INVALID_PURPOSE"
+                    }
+                  },
+                  "unknownFields": {
+                    "summary": "UNKNOWN_FIELDS",
+                    "value": {
+                      "error": "Unknown field(s): currency. Accepted: purpose, amount, saveCard. | Campo(s) desconhecido(s): currency. Aceitos: purpose, amount, saveCard.",
+                      "code": "UNKNOWN_FIELDS",
+                      "details": {
+                        "unknownFields": [
+                          "currency"
+                        ]
+                      }
+                    }
+                  },
+                  "invalidFieldType": {
+                    "summary": "INVALID_FIELD_TYPE",
+                    "value": {
+                      "error": "\"saveCard\" must be true or false. | \"saveCard\" deve ser true ou false.",
+                      "code": "INVALID_FIELD_TYPE",
+                      "details": {
+                        "field": "saveCard",
+                        "expected": "boolean"
+                      }
+                    }
+                  },
+                  "amountTooSmall": {
+                    "summary": "AMOUNT_TOO_SMALL",
+                    "value": {
+                      "error": "amount is below the minimum card charge. | amount está abaixo do valor mínimo para cobrança no cartão.",
+                      "code": "AMOUNT_TOO_SMALL"
+                    }
+                  },
+                  "idempotencyKeyInvalid": {
+                    "summary": "IDEMPOTENCY_KEY_INVALID",
+                    "value": {
+                      "error": "Idempotency-Key must have at most 255 characters and no control characters. | Idempotency-Key deve ter no máximo 255 caracteres e nenhum caractere de controle.",
+                      "code": "IDEMPOTENCY_KEY_INVALID",
+                      "details": {
+                        "maxLength": 255
+                      }
+                    }
+                  },
+                  "invalidBody": {
+                    "summary": "INVALID_BODY",
+                    "value": {
+                      "error": "Send a JSON object. | Envie um objeto JSON.",
+                      "code": "INVALID_BODY"
+                    }
+                  }
                 }
               }
             }
@@ -37855,6 +38541,28 @@
                 "example": {
                   "error": "This Idempotency-Key was already used with different parameters. Use a new key. | Esta Idempotency-Key já foi usada com outros parâmetros. Use uma nova chave.",
                   "code": "IDEMPOTENCY_KEY_REUSED"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Could not process the billing request. | Não foi possível processar a solicitação de cobrança.",
+                  "code": "BILLING_REQUEST_FAILED"
                 }
               }
             }
@@ -38063,6 +38771,28 @@
                 "example": {
                   "error": "Payment intent not found for this workspace. | Payment intent não encontrado neste workspace.",
                   "code": "PAYMENT_INTENT_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Could not process the billing request. | Não foi possível processar a solicitação de cobrança.",
+                  "code": "BILLING_REQUEST_FAILED"
                 }
               }
             }
