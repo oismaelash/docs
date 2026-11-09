@@ -12,8 +12,26 @@ Templates define reusable message content. Create and manage them in the dashboa
 </Frame>
 
 <Note>
-  All requests use the `x-api-key: ps_...` header (or `x-api-key-id`). Base URL: `https://pilotstatus.com.br/v1`.
+  Base URL: `https://pilotstatus.com.br/v1`. Every `/v1/templates` endpoint acts on **one WhatsApp number**, taken from the credential — see [Authentication and permissions](#authentication-and-permissions).
 </Note>
+
+## Authentication and permissions
+
+Every `/v1/templates*` endpoint acts on a single WhatsApp number, and that number always comes from the credential, never from the request body:
+
+- **Number key** (`ps_number_`, in `x-api-key`, or `x-api-key-id`): its own number.
+- **Workspace key** (`ps_workspace_`), **account key** (`ps_account_` with `x-workspace-id`) or **OAuth/MCP token**: name the number in the `x-whatsapp-number-id` header (its id or instance id from `GET /v1/numbers`). Without the header the call gets `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+Number and workspace keys carry no user, so no role check applies to them. Account keys and OAuth tokens act with the user's **current role** in the workspace:
+
+| Endpoints | Permission | Roles |
+| --- | --- | --- |
+| `GET /v1/templates`, `GET /v1/templates/{id}`, `GET /v1/templates/{id}/insights` | `templates:read` | `OWNER`, `ADMIN`, `AGENT`, `ANALYST` |
+| `POST /v1/templates`, `PUT /v1/templates/{id}`, `DELETE /v1/templates/{id}`, `POST /v1/templates/{id}/submit`, `POST /v1/templates/sync` | `templates:manage` | `OWNER`, `ADMIN` |
+
+- A role without the permission gets `403 PERMISSION_DENIED`.
+- An OAuth token granted only some numbers gets `403 NUMBER_NOT_IN_GRANT`, or `404 TEMPLATE_NOT_FOUND`, for a template outside those numbers.
+- `{id}` in every path is the template **id** (the `id` returned by `GET /v1/templates`). The template name is not looked up: a name in its place gets `404 TEMPLATE_NOT_FOUND`.
 
 ## Category
 
@@ -182,11 +200,51 @@ curl -X POST https://pilotstatus.com.br/v1/templates \
 
 - `body` may be an **object** (recommended), a **JSON string**, or **plain text** (body-only templates).
 - Edit with `PUT /v1/templates/{id}` (same shape; see [Edit](#edit)); remove with `DELETE /v1/templates/{id}` — for a Meta template this also asks Meta to delete it, and the response depends on Meta's answer (see [Delete](#delete)).
-- `GET /v1/templates` / `GET /v1/templates/{id}` return `source` (`META` | `PILOT_STATUS`), `metaStatus` (`APPROVED` | `PENDING` | `REJECTED` | `DISABLED` | `null`), `metaLanguage`, and `sendable` — on a Meta number only `META` templates with `metaStatus: "APPROVED"` are sendable.
+- `GET /v1/templates` returns a plain array (no pagination) of every template the key's number can use; `GET /v1/templates/{id}` returns one. Each item has `id`, `name`, `category`, `body` (the stored template as a JSON **string**), `variables` (every key to supply on send), `source` (`META` | `PILOT_STATUS`), `metaStatus` (Meta's status as Meta reports it — for example `APPROVED`, `PENDING`, `REJECTED`, `PAUSED`, `DISABLED` — or `null`), `metaLanguage`, and `sendable` — on a Meta number only `META` templates with `metaStatus: "APPROVED"` are sendable; on a non-Meta number only `PILOT_STATUS` templates are.
+
+### Create fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `name` | string, **required** | Normalized before validation: lower-cased, accents removed, any run of other characters becomes `_`. Then it must match `[a-z0-9_]`, up to 100 characters. Unique per number (per WABA on a Meta number). |
+| `category` | `MARKETING` \| `UTILITY` \| `OTP` | Default `UTILITY`. |
+| `language` | string | Meta language code. Default `pt_BR`. |
+| `body` | object \| string, **required** | See above. |
+| `examples` | object | One sample value per variable — see **Variables & examples** above. |
+| `variables`, `whatsappNumberId`, `metaWabaId` | — | Accepted and **ignored**: the variables are derived from `body`, and the number comes from the key. |
+
+Any other top-level field is refused — see `TEMPLATE_UNKNOWN_FIELDS` below. Header, footer, buttons and carousel go **inside** `body`.
+
+### Create errors
+
+| HTTP | `code` | When |
+| --- | --- | --- |
+| `400` | `INVALID_BODY` | The request body is not valid JSON. |
+| `400` | `TEMPLATE_UNKNOWN_FIELDS` | A top-level field outside the list above (typically `buttons`, `header` or `footer` next to `body` instead of inside it). Nothing is created. `error` is in Portuguese, `errorEn` in English, and `details.unknownFields` lists the fields. |
+| `400` | — | `{ "error": "Validation error", "details": { ... } }`: a field failed validation (name, category, language, limits of the body); `details` has the messages per field. |
+| `400` | `TEMPLATE_EXAMPLES_REQUIRED` | A variable has no sample value in `examples`; `details.missing` lists them. |
+| `400` | `TEMPLATE_WEB_BUTTON_NOT_SUPPORTED` | The key's non-Meta number cannot send one of the buttons. `error` in Portuguese, `errorEn` in English. |
+| `400` | `META_TEMPLATE_SUBMIT_FAILED` | Meta refused the template; `error` has the reason. Nothing is saved. |
+| `404` | — | The key's number no longer exists (`error` only). |
+| `409` | — | A template with that name already exists for this number. `error` only, in Portuguese. |
+| `422` | `TEMPLATE_MEDIA_UPLOAD_FAILED` | The `header.base64` media could not be decoded or re-hosted. |
 
 ## Edit
 
-`PUT /v1/templates/{id}` takes the same body as create. On a Meta number the new version is re-submitted to Meta for approval and comes back with `metaStatus: "PENDING"`.
+`PUT /v1/templates/{id}` replaces the template's content. Only `body` (required, same shapes as create) and `examples` are applied; `name`, `category`, `language`, `variables`, `whatsappNumberId` and `metaWabaId` are accepted and **ignored** — the name, category and language of a template cannot be changed. Any other top-level field gets `400 TEMPLATE_UNKNOWN_FIELDS`, as on create. On a Meta number the new version is re-submitted to Meta for approval and comes back with `metaStatus: "PENDING"`.
+
+```json Response 200
+{
+  "id": "tpl_01HZX...",
+  "name": "promo_cupom",
+  "category": "MARKETING",
+  "body": "{\"body\":{\"text\":\"Oi {{nome}}!\"}}",
+  "variables": ["nome"],
+  "metaStatus": "PENDING"
+}
+```
+
+`metaStatus` is left out when the template has none (a template of a non-Meta number). Other errors: `404 TEMPLATE_NOT_FOUND`, `400 INVALID_BODY`, `400` `Validation error`, `400 TEMPLATE_EXAMPLES_REQUIRED`, `400 TEMPLATE_WEB_BUTTON_NOT_SUPPORTED` (also for a `FLOW` button, which this endpoint cannot author), `400 TEMPLATE_LIST_NOT_SUPPORTED_BY_META` (a list button on a template already on Meta; the English half is in `errorEN`), `422 TEMPLATE_MEDIA_UPLOAD_FAILED`, and `400` with only `error` when Meta refuses the re-submission for another reason.
 
 Meta decides whether a template can be edited. Its published rule is that an approved template can be edited at most once every 24 hours and 10 times every 30 days, but in practice Meta may still refuse. When Meta refuses because of the template's current state (Graph code `100`, subcode `2388003`: "Message templates can only be edited if they have been rejected."), the API returns `409`:
 
@@ -227,7 +285,7 @@ curl -X POST "https://pilotstatus.com.br/v1/templates/tpl_01HZX.../submit" \
 - **The number comes from the key.** It must be a Meta Cloud API number with a WhatsApp Business Account; any other number gets `422 TEMPLATE_REQUIRES_META_NUMBER`. The body is empty: any field, `whatsappNumberId` included, gets `400 UNKNOWN_FIELDS`.
 - **The template must be reachable through the key's number**, as in `GET /v1/templates/{id}`; otherwise `404 TEMPLATE_NOT_FOUND`.
 - **Meta reviews asynchronously.** The answer usually says `PENDING`; read the result later with `GET /v1/templates/{id}`, or refresh the whole catalogue with [`POST /v1/templates/sync`](#sync-from-meta).
-- **Errors** are bilingual (`English | Português`) with a `code`: the checks in [Checked before submitting to Meta](#checked-before-submitting-to-meta) (`400`, e.g. `TEMPLATE_URL_BLOCKED`, `TEMPLATE_BUTTON_INVALID`), `400 META_API_ERROR` when Meta refuses the submission, and `409 TEMPLATE_NOT_EDITABLE` when Meta no longer accepts changes to the template in its current state.
+- **Errors** are bilingual (`English | Português`) with a `code`: the checks in [Checked before submitting to Meta](#checked-before-submitting-to-meta) (`400`, e.g. `TEMPLATE_URL_BLOCKED`, `TEMPLATE_BUTTON_INVALID`), `400 META_API_ERROR` when Meta refuses the submission (with Meta's code in `meta_code`), `409 TEMPLATE_NOT_EDITABLE` when Meta no longer accepts changes to the template in its current state, `409 TEMPLATE_ALREADY_SUBMITTED`, and `400 INVALID_BODY` when the body is not a JSON object.
 - Permission `templates:manage`, the same as the dashboard. MCP tool: `templates_submit`.
 
 ## Sync from Meta
@@ -244,7 +302,8 @@ curl -X POST "https://pilotstatus.com.br/v1/templates/sync" \
 ```
 
 - Same number rule as submit: a Meta Cloud API number with a WhatsApp Business Account (`422 TEMPLATE_REQUIRES_META_NUMBER` otherwise), empty body (`400 UNKNOWN_FIELDS`).
-- **One sync per number at a time**, shared with the dashboard. While one runs, another call gets `429 TEMPLATE_SYNC_IN_PROGRESS` with a `Retry-After` header (up to 120 seconds). Wait instead of retrying in a loop.
+- **One sync per number at a time**, shared with the dashboard. While one runs, another call gets `429 TEMPLATE_SYNC_IN_PROGRESS` with `Retry-After: 120` (the lock lasts at most 120 seconds and is released as soon as the running sync ends). Wait instead of retrying in a loop.
+- Meta errors are mapped as in submit (`400 META_API_ERROR` with `meta_code`, `422 TEMPLATE_REQUIRES_META_NUMBER`).
 - Permission `templates:manage`. MCP tool: `templates_sync`.
 
 ## Delete
@@ -254,11 +313,25 @@ curl -X POST "https://pilotstatus.com.br/v1/templates/sync" \
 | Outcome | HTTP | Body | Local row |
 | --- | --- | --- | --- |
 | Removed on both sides | `200` | `{ "deleted": true, "id": "tmpl_123" }` | removed |
-| Meta **refused** the deletion | `409` | bilingual message naming the template and the reason | **kept** |
+| Meta **refused** the deletion | `409` | `META_TEMPLATE_DELETE_REFUSED` — see below | **kept** |
 | Template genuinely absent on Meta (real 404) | `200` | `{ "deleted": true, "id": "tmpl_123" }` | removed |
 
 - A `200 { "deleted": true, "id" }` is the only response that means the template is really gone — removed on Meta **and** locally.
-- A `409` means **nothing was removed**: Meta rejected the deletion (e.g. the system token lacks permission on the WABA), so the template still exists on Meta and its name **stays reserved**. The local row is kept, and the message names the template and the reason. Fix the underlying permission and retry.
+- A `409` means **nothing was removed**: Meta rejected the deletion (e.g. the system token lacks permission on the WABA), or no number of your workspace on that WABA has a Meta token, so Meta could not be asked. The template still exists on Meta and its name **stays reserved**. The local row is kept. Fix the underlying permission and retry.
+- A template with no WhatsApp Business Account (a template of a non-Meta number) is only deleted locally.
+
+```json Response 409
+{
+  "error": "Template \"promo\" was NOT deleted: Meta refused the deletion. Reason: … It still exists on your WABA, consuming quota and keeping the name reserved (re-creating a template with the same name will fail). Fix the token's permission on that WABA and try again, or delete the template in Meta Business Manager.",
+  "errorPT": "O template \"promo\" NÃO foi excluído: a Meta recusou a exclusão. Motivo: … ",
+  "code": "META_TEMPLATE_DELETE_REFUSED",
+  "template_name": "promo",
+  "can_force_local_delete": true
+}
+```
+
+- Unlike the other errors of this page, `error` is English only and the Portuguese text is in `errorPT`.
+- **`?force_local=true`** is the deliberate way out for a row you cannot delete on Meta (typically a WABA with no connected number left): when Meta refuses, or cannot be asked, the local row is deleted anyway and you get `200 { "deleted": true, "id" }`. The template **stays on Meta**, and the next [sync](#sync-from-meta) of a number on that WABA brings it back. Use it only after a `409`.
 - If Meta reports the template does not exist (a genuine 404 / "template does not exist"), the stale local row is removed and you still get `200 { "deleted": true, "id" }`.
 
 ### Preview a delete (`dry_run`)
@@ -279,17 +352,19 @@ curl -X POST "https://pilotstatus.com.br/v1/templates/sync" \
 }
 ```
 
-- `action` is `DELETE_ON_META_AND_LOCAL` for a template on Meta, or `DELETE_LOCAL_ONLY` for one that never reached Meta (`waba` and `via_number` are then `null`).
+- Works for every template, on any kind of number. `action` is `DELETE_ON_META_AND_LOCAL` for a template linked to a WhatsApp Business Account, or `DELETE_LOCAL_ONLY` for one that is not (a template of a non-Meta number; `waba` and `via_number` are then `null`, and `warnings` only says the removal is irreversible).
+- Only the exact value `true` previews; any other value of `dry_run` performs the real delete.
 - **Meta deletes by name**: every language version of that name on the WABA goes, not only the one you named.
-- `via_number` is the number whose Meta token performs the deletion. `null` on a Meta template means no number of your workspace on that WABA has a token: the delete would be refused with `409`.
+- `via_number` is the number whose Meta token performs the deletion. `null` on a Meta template means no number of your workspace on that WABA has a token: the delete would be refused with `409 META_TEMPLATE_DELETE_REFUSED`, and `warnings` gets a third line saying so.
+- `warnings` are in English.
 - The MCP tool `templates_delete` always shows this preview first and asks for confirmation — see [MCP server](/integrations/mcp-server#confirmation-for-destructive-tools).
 
 ## Insights
 
-`GET /v1/templates/{id}/insights` returns Meta's numbers for a template: how many messages were sent, delivered and read, the read rate, button clicks and a day-by-day series. `{id}` is the template id or name, as in `GET /v1/templates/{id}`.
+`GET /v1/templates/{id}/insights` returns Meta's numbers for a template: how many messages were sent, delivered and read, the read rate, button clicks and a day-by-day series. `{id}` is the template id, as in `GET /v1/templates/{id}`.
 
 ```bash curl
-curl "https://pilotstatus.com.br/v1/templates/boas_vindas/insights?days=7" \
+curl "https://pilotstatus.com.br/v1/templates/tpl_01HZX.../insights?days=7" \
   -H "x-api-key: ps_your_token_here"
 ```
 
