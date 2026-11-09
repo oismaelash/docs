@@ -10,12 +10,28 @@ mode: "wide"
 URL base: `https://pilotstatus.com.br/v1` Cabeçalhos: `Content-Type: application/json`, `x-api-key: <your_api_key>` (ou `x-api-key-id`).
 
 <Note>
-  As chamadas funcionam em **dois provedores**: números **Meta Cloud API** e números **não oficiais (Pilot Status web)** (conectados por QR). Qualquer outro provedor retorna `400 FEATURE_NOT_SUPPORTED`. Todos os endpoints exigem uma chave **com escopo de número**. Veja a [visão geral](/pt-BR/api/calls/overview).
+  As chamadas funcionam em **dois provedores**: números **Meta Cloud API** e números **não oficiais (Pilot Status web)** (conectados por QR). Qualquer outro provedor retorna `400 FEATURE_NOT_SUPPORTED`. Veja a [visão geral](/pt-BR/api/calls/overview).
 </Note>
 
 <Warning>
   **Meta exige SDP.** No provedor Meta a mídia flui pelo navegador via WebRTC — você fornece uma oferta SDP ao iniciar e uma resposta SDP ao atender. **O provedor não oficial não usa SDP:** a mídia é tratada no **servidor**, então `sdpOffer`/`sdpAnswer` permanecem `null` e não há modelo de permissão BIC nem superfície de configurações de chamada.
 </Warning>
+
+## Autenticação
+
+Todo endpoint `/v1/calls*` atua sobre **um número de WhatsApp**:
+
+- uma **chave de número** (`ps_number_`) atua sobre o próprio número;
+- uma **chave de workspace** (`ps_workspace_`), uma **chave de conta** (`ps_account_`, com `x-workspace-id`) ou um **token OAuth** precisa indicar o número no cabeçalho `x-whatsapp-number-id` — sem ele, a resposta é `403 TENANT_SCOPE_NOT_ALLOWED`. Veja [Autenticação](/pt-BR/api/authentication).
+
+Com chave de conta ou token OAuth, o papel do usuário no workspace é conferido a cada requisição:
+
+| Endpoints | Permissão | Papéis permitidos |
+| --- | --- | --- |
+| `GET`·`PUT /v1/calls/settings` | `calls:settings:manage` | ADMIN, OWNER |
+| Todos os outros endpoints `/v1/calls*` | `calls:handle` | AGENT, ADMIN, OWNER |
+
+Qualquer outro papel recebe `403 PERMISSION_DENIED`. Um token OAuth com acesso concedido só a alguns números recebe `403 NUMBER_NOT_IN_GRANT` para uma chamada de outro número.
 
 ## Endpoints
 
@@ -37,7 +53,7 @@ Os provedores marcados são os que suportam cada endpoint. Chamar um endpoint em
 | `POST` | `/v1/calls/{callId}/play` | **Somente não oficial** | Reproduz um arquivo de áudio na chamada (mídia no servidor); `hangupAfterPlay` opcional. |
 | `POST` | `/v1/calls/{callId}/realtime-session` | **Somente não oficial** | Abre uma sessão WebSocket full-duplex de áudio PCM16. |
 
-`{callId}` aceita **ou** o id de chamada do Pilot Status (`call_...`) **ou** o id de chamada da Meta (`wacid...`).
+`{callId}` aceita **ou** o id de chamada do Pilot Status (o `id` do objeto de chamada) **ou** o id do provedor (`externalCallId` — `wacid.…` da Meta, o CallID no não oficial).
 
 ## 1. Iniciar uma chamada (BIC)
 
@@ -66,12 +82,16 @@ curl -X POST "https://pilotstatus.com.br/v1/calls" \
 
 ```json
 HTTP 201
-{ "id": "call_01HZX...", "externalCallId": "wacid.ABGG...", "status": "INITIATED" }
+{ "id": "cmc1x2y3z0000abcd1234efgh", "externalCallId": "wacid.ABGG...", "status": "INITIATED" }
 ```
 
 - **Meta:** `sdp` é a **oferta** RFC 8866 produzida pelo SEU cliente WebRTC. O SDP do lado da empresa deve usar `a=setup:active`. Sem permissão, a Meta retorna 138006 → o endpoint expõe `code: "META_CALL_PERMISSION_REQUIRED"`.
 - **não oficial:** não envie `sdp` — a mídia é tratada no servidor. Não há modelo de permissão BIC.
-- `bizOpaqueCallbackData` (opcional, Meta) é devolvido no webhook de encerramento.
+- `to` é um telefone E.164 (`+` opcional) ou um BSUID da Meta.
+- `bizOpaqueCallbackData` (opcional, até 512 caracteres) fica gravado na chamada e é devolvido no webhook de encerramento.
+- `sdp` tem no máximo 128 KB. `sdpType` aceita apenas `"offer"` (o padrão).
+- `externalCallId` é `null` se o provedor ainda não devolveu um id de chamada.
+- A chamada é registrada antes de o provedor ser acionado: se o provedor recusar, ela fica na lista com `status: "FAILED"`, `errorCode` e `errorMessage`.
 
 ## 2. Atender uma chamada recebida (UIC)
 
@@ -92,7 +112,7 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../accept" \
 ```
 
 ```bash Não oficial (sem SDP)
-curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../accept" \
+curl -X POST "https://pilotstatus.com.br/v1/calls/cmc1x2y3z0000abcd1234efgh/accept" \
   -H "x-api-key: ps_your_key_here"
 ```
 
@@ -104,7 +124,7 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../reject" -H "x-ap
 curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x-api-key: ps_your_key_here"
 ```
 
-`accept`/`pre-accept`/`reject`/`terminate` respondem `{ "success": true, "id": "call_...", "status": "..." }`. O `pre-accept` (**somente Meta**) é opcional (resposta SDP antecipada para reduzir cortes); a chamada só conecta no `accept`.
+`accept`/`pre-accept`/`reject`/`terminate` respondem `{ "success": true, "id": "…", "status": "…" }` — `ACCEPTED` após `accept`, `REJECTED` após `reject`, `COMPLETED` após `terminate`; o `pre-accept` mantém o status atual. `sdpType` aceita apenas `"answer"` (o padrão). O `pre-accept` (**somente Meta**) é opcional (resposta SDP antecipada para reduzir cortes); a chamada só conecta no `accept`.
 
 ## 3. Habilitar chamadas e configurações (somente Meta)
 
@@ -126,9 +146,12 @@ curl -X PUT "https://pilotstatus.com.br/v1/calls/settings" \
 
 - O `PUT` é **parcial**: envie apenas `status`, `call_icon_visibility`, `callback_permission_status`, `call_hours`, `voicemail` (o objeto `sip` é rejeitado).
 - Um `call_hours` enviado **substitui** o objeto armazenado por completo (semântica da Meta).
-- Números com um limite de mensagens **abaixo de 2.000/dia ainda não podem habilitar chamadas** (erro 138015 da Meta → o Pilot Status marca o número como `PENDING_TIER` e re-tenta conforme o tier sobe).
-- Habilitar também exige que a WABA tenha o **campo de webhook `calls` subscrito** (ou SIP configurado); sem isso a Meta retorna **138018** e o Pilot Status marca o número como `PENDING_WEBHOOK`. Subscreva o campo `calls` na WABA (ou configure SIP) e tente de novo.
+- Números com um limite de mensagens **abaixo de 2.000/dia ainda não podem habilitar chamadas** (erro 138015 da Meta, devolvido como `META_CALLING_TIER_TOO_LOW` → o Pilot Status marca o número como `PENDING_TIER` e re-tenta conforme o tier sobe).
+- Habilitar também exige que a WABA tenha o **campo de webhook `calls` subscrito** (ou SIP configurado); sem isso a Meta retorna **138018** (`META_CALLING_PREREQUISITES_MISSING`) e o Pilot Status marca o número como `PENDING_WEBHOOK`. Subscreva o campo `calls` na WABA (ou configure SIP) e tente de novo.
 - Você também pode disparar pelo painel — o botão **Habilitar chamada** nos **detalhes Meta** do número (página Números) responde `ENABLED`, `PENDING_TIER` ou `PENDING_WEBHOOK`.
+- Valores: `status`, `callback_permission_status`, `call_hours.status` e `voicemail.status` aceitam `ENABLED` | `DISABLED`; `call_icon_visibility` aceita `DEFAULT` | `DISABLE_ALL`. `call_hours` também pode trazer `timezone_id`, `weekly_operating_hours` (`day_of_week`, `open_time`, `close_time`) e `holiday_schedule` (`date`, `start_time`, `end_time`).
+- Pelo menos um campo é obrigatório. Qualquer campo fora da lista acima (inclusive `sip`) é rejeitado com `400 Validation error`.
+- O `GET` retorna `{ "calling": { ... } }` (o objeto como a Meta o expõe); o `PUT` retorna `{ "success": true }`.
 - Credenciais SIP nunca são solicitadas nem retornadas.
 
 ## 4. Permissão de chamada (somente Meta, obrigatória antes de uma BIC)
@@ -160,6 +183,10 @@ Resposta da verificação:
 }
 ```
 
+- `to` é obrigatório nos dois endpoints (`400 MISSING_TO` na verificação). No pedido, aceita um telefone E.164 ou um BSUID da Meta.
+- `text` (opcional, de 1 a 1024 caracteres) é o motivo exibido ao usuário.
+- O endpoint de pedido responde `201` com `{ "messageId": "wamid.…" }`.
+
 A resposta do usuário chega como o evento de webhook **`call.permission_updated`** (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`). A Meta limita a taxa de solicitações de permissão (erro 138009) e o volume de BIC (100 chamadas/24h por número — erro 138012).
 
 ## 5. Reproduzir áudio na chamada (somente não oficial)
@@ -167,11 +194,18 @@ A resposta do usuário chega como o evento de webhook **`call.permission_updated
 Nos números não oficiais a mídia é tratada no servidor, então você pode instruir o backend a **baixar um arquivo de áudio e reproduzi-lo** na chamada ativa. O backend busca a URL através de um guard de SSRF.
 
 ```bash
-curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../play" \
+curl -X POST "https://pilotstatus.com.br/v1/calls/cmc1x2y3z0000abcd1234efgh/play" \
   -H "Content-Type: application/json" \
   -H "x-api-key: ps_your_key_here" \
-  -d '{ "url": "https://example.com/audio.ogg" }'
+  -d '{ "mediaUrl": "https://example.com/greeting.mp3", "hangupAfterPlay": true }'
 ```
+
+```json
+{ "success": true, "id": "cmc1x2y3z0000abcd1234efgh", "status": "ACCEPTED" }
+```
+
+- `mediaUrl` (**obrigatório**) — URL http(s) pública (até 2048 caracteres) de um arquivo `.mp3`, `.wav` ou `.opus`. O backend baixa o arquivo antes: até **20 MiB**, timeout de 30 segundos, no máximo 3 redirecionamentos. Uma URL que resolve para endereço privado/interno retorna `400 CALL_MEDIA_URL_BLOCKED`; um arquivo maior, `400 CALL_MEDIA_TOO_LARGE`; qualquer outra falha de download, `400 CALL_MEDIA_DOWNLOAD_FAILED`.
+- `hangupAfterPlay` (opcional) — encerra a chamada automaticamente quando a reprodução termina. `POST /v1/calls` \+ `play` com `hangupAfterPlay: true` forma um bot completo de "ligar, falar, desligar" sem timer no cliente.
 
 <Warning>
   Endpoint **somente não oficial** — em um número Meta retorna `400 FEATURE_NOT_SUPPORTED`.
@@ -182,13 +216,19 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../play" \
 Abre uma sessão WebSocket **full-duplex de áudio PCM16** para transmitir áudio de/para a chamada ao vivo.
 
 ```bash
-curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../realtime-session" \
-  -H "x-api-key: ps_your_key_here"
+curl -X POST "https://pilotstatus.com.br/v1/calls/cmc1x2y3z0000abcd1234efgh/realtime-session" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "mode": "talk" }'
 ```
 
 ```json
-{ "wsUrl": "wss://<host-de-mídia-dedicado>/...", "token": "...", "expiresIn": 120 }
+{ "wsUrl": "wss://<host-de-mídia-dedicado>/call/media/realtime/ws/...?token=...", "token": "d3f4...", "expiresInSeconds": 120 }
 ```
+
+- `mode` (**obrigatório**) — `"talk"` envia o seu áudio e recebe o do outro lado; `"listen"` só recebe.
+- O socket transporta quadros de áudio binários PCM16 little-endian brutos (WebSocket simples, não WebRTC).
+- Se o provedor não devolver sessão, o endpoint responde `502 CALL_REALTIME_SESSION_UNAVAILABLE`.
 
 <Note>
   A `wsUrl` retornada aponta para um **host de mídia dedicado** — conecte-se **diretamente** a ela (não é feito proxy). O token é de **uso único** com TTL de ~2 minutos. A camada HTTP não faz upgrade de WebSocket. Endpoint **somente não oficial** (Meta → `400 FEATURE_NOT_SUPPORTED`).
@@ -198,7 +238,7 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../realtime-session
 
 ```json
 {
-  "id": "call_01HZX...",
+  "id": "cmc1x2y3z0000abcd1234efgh",
   "externalCallId": "wacid.ABGG...",
   "direction": "INBOUND",
   "status": "COMPLETED",
@@ -221,6 +261,9 @@ curl -X POST "https://pilotstatus.com.br/v1/calls/call_01HZX.../realtime-session
 - `direction`: `INBOUND` (UIC) | `OUTBOUND` (BIC).
 - Os SDPs (`sdpOffer`/`sdpAnswer`) aparecem apenas com `?includeSdp=1` em `GET /v1/calls/{callId}` — nunca na listagem. No provedor não oficial permanecem `null` (mídia no servidor).
 - `durationSeconds` é definido apenas quando a chamada foi atendida.
+- `externalCallId` é `null` enquanto o provedor não atribuiu um id de chamada.
+- Quando as configurações de privacidade do número ocultam a chamada (números somente repasse, ou chamadas mais antigas que a janela de retenção), `peerNumber`, `fromNumber` e os SDPs vêm `null` e o objeto traz `"redacted": true`.
+- `GET /v1/calls` retorna `{ "calls": [ ... ] }`. Para paginar, passe o `createdAt` da última chamada como `before`. `limit` fora de 1–100 retorna `400 INVALID_LIMIT`; um `before` que não é data retorna `400 INVALID_BEFORE`.
 
 ## Webhooks
 
@@ -240,12 +283,40 @@ O evento `call.permission_updated` é **exclusivo da Meta** — números não of
 
 ## Erros comuns
 
-- `400 FEATURE_NOT_SUPPORTED` — o número da chave não suporta o endpoint (ex.: um provedor não suportado, ou um endpoint exclusivo de um provedor chamado no outro).
-- `409 WHATSAPP_INSTANCE_NOT_CONNECTED` — número não oficial não conectado.
-- `400 NUMBER_NOT_FOUND` — a chave não está vinculada a um número.
-- `400 INVALID_BODY` — o corpo não é JSON válido (corpo vazio continua sendo lido como `{}`). Veja [Corpo JSON malformado](/pt-BR/api/overview#corpo-json-malformado).
-- `400` — validação do corpo, `INVALID_LIMIT`, `INVALID_BEFORE`, `MISSING_TO`.
-- `401` — `x-api-key` / `x-api-key-id` ausente/inválido.
-- `403` — chave com escopo de tenant (os endpoints de chamadas têm escopo de número).
-- `404 CALL_NOT_FOUND` — o callId/wacid não pertence ao número da chave.
-- Erros de chamada da Meta são encaminhados com um `code` mapeado — ex.: `META_CALL_PERMISSION_REQUIRED` (138006), limite de solicitação de permissão (138009), limite de BIC de 100 chamadas/24h (138012), chamadas não habilitadas (138000), tier de mensagens muito baixo para habilitar (138015 → `PENDING_TIER`), pré-requisitos de chamada não atendidos — subscreva o campo de webhook `calls` ou configure SIP (138018 → `PENDING_WEBHOOK`), `META_CALLING_PAYMENT_REQUIRED` (131044 — a WABA não tem método de pagamento; chamadas iniciadas pela empresa são cobradas pela Meta, adicione um cartão em Configurações de pagamento do WhatsApp Manager).
+Erros de validação respondem `400` com `{ "error": "Validation error", "details": { "formErrors": [...], "fieldErrors": { ... } } }` (sem `code`).
+
+| Status | `code` | Quando |
+| --- | --- | --- |
+| `400` | `FEATURE_NOT_SUPPORTED` | O número não suporta o endpoint (endpoint exclusivo da Meta em número não oficial ou vice-versa, ou um provedor que não é META nem não oficial). |
+| `400` | `NUMBER_NOT_FOUND` | A credencial não está vinculada a um número. |
+| `400` | `INVALID_BODY` | O corpo não é JSON válido (corpo vazio é lido como `{}`). Veja [Corpo JSON malformado](/pt-BR/api/overview#corpo-json-malformado). |
+| `400` | `INVALID_LIMIT`, `INVALID_BEFORE` | `limit` / `before` inválidos em `GET /v1/calls`. |
+| `400` | `MISSING_TO` | `GET /v1/calls/permissions` sem `to`. |
+| `400` | `CALL_MEDIA_URL_BLOCKED`, `CALL_MEDIA_TOO_LARGE`, `CALL_MEDIA_DOWNLOAD_FAILED` | O `play` não conseguiu baixar a `mediaUrl`. |
+| `401` | — | Credencial ausente ou inválida. |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Credencial de workspace/conta sem `x-whatsapp-number-id`. |
+| `403` | `PERMISSION_DENIED` | Chave de conta / usuário OAuth cujo papel não tem `calls:handle` (ou `calls:settings:manage` nas configurações). |
+| `403` | `NUMBER_NOT_IN_GRANT` | Token OAuth sem acesso ao número da chamada. |
+| `404` | `CALL_NOT_FOUND` | O `callId` não pertence ao número da credencial. |
+| `409` | `WHATSAPP_INSTANCE_NOT_CONNECTED` | O número não oficial não está conectado. |
+| `409` | `LINKED_WHATSAPP_INSTANCE_NOT_FOUND` | A instância vinculada à chave não existe mais. |
+| `502` | `WHATSAPP_INVALID_JSON` | O provedor respondeu com JSON inválido. |
+| `502` | `CALL_REALTIME_SESSION_UNAVAILABLE` | `realtime-session`: o provedor não devolveu sessão. |
+| `503` | `WHATSAPP_SESSION_KEY_MISSING` | A chave de sessão do número não está configurada. |
+| status do provedor | código mapeado | O provedor recusou a chamada; `details: { status, body }` traz a resposta dele. Números não oficiais usam `WHATSAPP_UPSTREAM_ERROR`. |
+
+Os erros de chamada da Meta são encaminhados com um `code` mapeado:
+
+| Código Meta | `code` |
+| --- | --- |
+| 131044 | `META_CALLING_PAYMENT_REQUIRED` — a WABA não tem método de pagamento; chamadas iniciadas pela empresa são cobradas pela Meta, adicione um cartão em Configurações de pagamento do WhatsApp Manager. |
+| 138000 | `META_CALLING_NOT_ENABLED` |
+| 138002 | `META_CALL_CONCURRENT_LIMIT` |
+| 138006 | `META_CALL_PERMISSION_REQUIRED` |
+| 138009 | `META_CALL_PERMISSION_REQUEST_LIMIT` |
+| 138012 | `META_CALL_LIMIT_REACHED` (100 chamadas/24h por número) |
+| 138013 | `META_CALLING_NOT_AVAILABLE_REGION` |
+| 138014 | `META_CALLING_DISABLED_QUALITY` |
+| 138015 | `META_CALLING_TIER_TOO_LOW` (tier de mensagens abaixo de 2.000/dia; o painel mostra `PENDING_TIER`) |
+| 138018 | `META_CALLING_PREREQUISITES_MISSING` (subscreva o campo de webhook `calls` ou configure SIP; o painel mostra `PENDING_WEBHOOK`) |
+| 138019–138023 | `META_CALL_MEDIA_FAILED` |
