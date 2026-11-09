@@ -203,6 +203,50 @@ Quem decide se um template pode ser editado é a Meta. A regra publicada por ela
 - **O que fazer:** crie um novo template com a alteração (`POST /v1/templates`, com outro nome). Se o que você queria mudar é o documento do cabeçalho, mantenha o template e envie o documento como parâmetro no momento do envio — o `media` por envio do `POST /v1/messages/send` ([Mídia com templates](/pt-BR/guides/media-messages#mídia-com-templates)).
 - A ferramenta MCP `templates_update` passa por esta mesma rota e retorna o mesmo `409`.
 
+## Enviar para a Meta
+
+`POST /v1/templates/{id}/submit` envia um template para aprovação da Meta — o **Enviar para a Meta** do painel. Use para um template que nunca foi para a Meta (`source: "PILOT_STATUS"`), por exemplo um criado antes de o número ter conta do WhatsApp Business, ou para reenviar um rejeitado.
+
+```bash curl
+curl -X POST "https://pilotstatus.com.br/v1/templates/tpl_01HZX.../submit" \
+  -H "x-api-key: ps_seu_token_aqui"
+```
+
+```json Resposta 200
+{
+  "id": "tpl_01HZX...",
+  "name": "order_update",
+  "source": "META",
+  "metaStatus": "PENDING",
+  "metaLanguage": "pt_BR",
+  "sendable": false,
+  "metaTemplateId": "1234567890123456"
+}
+```
+
+- **O número vem da chave.** Ele precisa ser um número da Meta Cloud API com conta do WhatsApp Business; qualquer outro recebe `422 TEMPLATE_REQUIRES_META_NUMBER`. O corpo é vazio: qualquer campo, inclusive `whatsappNumberId`, recebe `400 UNKNOWN_FIELDS`.
+- **O template precisa ser alcançável pelo número da chave**, como no `GET /v1/templates/{id}`; senão `404 TEMPLATE_NOT_FOUND`.
+- **A Meta analisa de forma assíncrona.** A resposta normalmente diz `PENDING`; leia o resultado depois com `GET /v1/templates/{id}` ou atualize o catálogo inteiro com [`POST /v1/templates/sync`](#sincronizar-com-a-meta).
+- **Erros** são bilíngues (`English | Português`) e têm `code`: as checagens de [Verificado antes de enviar à Meta](#verificado-antes-de-enviar-à-meta) (`400`, ex.: `TEMPLATE_URL_BLOCKED`, `TEMPLATE_BUTTON_INVALID`), `400 META_API_ERROR` quando a Meta recusa o envio e `409 TEMPLATE_NOT_EDITABLE` quando a Meta não aceita mais mudanças no template no estado atual.
+- Permissão `templates:manage`, a mesma do painel. Ferramenta MCP: `templates_submit`.
+
+## Sincronizar com a Meta
+
+`POST /v1/templates/sync` traz da Meta todos os templates da conta do WhatsApp Business da chave — o **Sincronizar com a Meta** do painel. Os templates que a Pilot Status ainda não tem são criados; os demais recebem o status, a categoria e o conteúdo atuais da Meta (por exemplo, um template `PENDING` que a Meta já aprovou).
+
+```bash curl
+curl -X POST "https://pilotstatus.com.br/v1/templates/sync" \
+  -H "x-api-key: ps_seu_token_aqui"
+```
+
+```json Resposta 200
+{ "created": 2, "updated": 5 }
+```
+
+- Mesma regra de número do envio: número da Meta Cloud API com conta do WhatsApp Business (senão `422 TEMPLATE_REQUIRES_META_NUMBER`), corpo vazio (`400 UNKNOWN_FIELDS`).
+- **Uma sincronia por número de cada vez**, compartilhada com o painel. Enquanto uma roda, outra chamada recebe `429 TEMPLATE_SYNC_IN_PROGRESS` com o cabeçalho `Retry-After` (até 120 segundos). Espere em vez de repetir em laço.
+- Permissão `templates:manage`. Ferramenta MCP: `templates_sync`.
+
 ## Excluir
 
 `DELETE /v1/templates/{id}` **não retorna mais sucesso sempre.** Para um template Meta a exclusão é encaminhada à Meta, e o resultado depende do que a Meta faz:
@@ -216,6 +260,30 @@ Quem decide se um template pode ser editado é a Meta. A regra publicada por ela
 - Um `200 { "deleted": true, "id" }` é a única resposta que significa que o template realmente sumiu — removido na Meta **e** localmente.
 - Um `409` significa que **nada foi removido**: a Meta rejeitou a exclusão (ex.: o system token não tem permissão na WABA), então o template ainda existe na Meta e o nome dele **continua reservado**. O registro local é mantido, e a mensagem nomeia o template e o motivo. Corrija a permissão e tente de novo.
 - Se a Meta informar que o template não existe (um 404 de verdade / "template does not exist"), o registro local obsoleto é removido e você ainda recebe `200 { "deleted": true, "id" }`.
+
+### Prévia da exclusão (`dry_run`)
+
+`DELETE /v1/templates/{id}?dry_run=true` **não apaga nada** e diz o que a exclusão faria. Mesma permissão e escopo da exclusão.
+
+```json Resposta 200
+{
+  "dry_run": true,
+  "action": "DELETE_ON_META_AND_LOCAL",
+  "template": { "id": "tpl_01HZX...", "name": "promo", "category": "MARKETING", "source": "META", "meta_status": "APPROVED", "meta_language": "pt_BR", "meta_template_id": "1234567890123456" },
+  "waba": { "id": "1581714517011340", "name": "Acme" },
+  "via_number": { "id": "wn_01HZX...", "number": "+5511999990000", "display_name": "Acme" },
+  "warnings": [
+    "Irreversible: the template is deleted on Meta and in Pilot Status. Meta does not let the same name be reused for about 30 days.",
+    "Meta deletes by name: every language version of \"promo\" on this WABA is deleted on Meta, not only this one."
+  ]
+}
+```
+
+- `action` é `DELETE_ON_META_AND_LOCAL` para um template que está na Meta, ou `DELETE_LOCAL_ONLY` para um que nunca chegou à Meta (`waba` e `via_number` vêm `null`).
+- **A Meta apaga pelo nome**: todas as versões de idioma desse nome na WABA são apagadas, não só a que você indicou.
+- `via_number` é o número cujo token da Meta executa a exclusão. `null` num template da Meta significa que nenhum número do seu workspace nessa WABA tem token: a exclusão seria recusada com `409`.
+- `warnings` vem em inglês.
+- A ferramenta MCP `templates_delete` sempre mostra esta prévia antes e pede confirmação — veja [Servidor MCP](/pt-BR/integrations/mcp-server#confirmação-para-ferramentas-destrutivas).
 
 ## Insights
 

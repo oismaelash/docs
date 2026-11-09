@@ -6627,7 +6627,7 @@
       },
       "delete": {
         "summary": "Remover template",
-        "description": "Remove o template pelo id (ou nome) no escopo do número vinculado. Para templates Meta, também remove o template da Meta (WABA). 404 TEMPLATE_NOT_FOUND se não existir ou não pertencer ao número. Retorna { deleted: true, id }. Requer key escopada a número. Efeito real e irreversível.\n\n**Requer uma chave com escopo de número.**",
+        "description": "Remove o template pelo id (ou nome) no escopo do número vinculado. Para templates Meta, também remove o template da Meta (WABA). 404 TEMPLATE_NOT_FOUND se não existir ou não pertencer ao número. Retorna { deleted: true, id }. Requer key escopada a número. Efeito real e irreversível.\n\nA Meta apaga templates **pelo nome**: todas as versões de idioma desse nome na WABA são apagadas na Meta. Chame antes com `?dry_run=true` para ver o que será apagado; a ferramenta MCP `templates_delete` sempre faz isso e pede confirmação.\n\n**Requer uma chave com escopo de número.**",
         "tags": [
           "Templates"
         ],
@@ -6642,6 +6642,17 @@
               "type": "string"
             },
             "example": "boas_vindas"
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "required": false,
+            "description": "`true` não apaga nada e devolve uma prévia do que a exclusão faria: `action` (`DELETE_ON_META_AND_LOCAL` ou `DELETE_LOCAL_ONLY`), o `template`, a `waba`, o número cujo token da Meta executa a exclusão (`via_number`, `null` quando nenhum tem token — a exclusão seria recusada) e `warnings`. Mesma permissão e escopo da exclusão.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
           }
         ],
         "responses": {
@@ -7223,6 +7234,335 @@
                 "example": {
                   "error": "Meta is unavailable right now. Try again in a few minutes. | A Meta está indisponível no momento. Tente novamente em alguns minutos.",
                   "code": "META_UNAVAILABLE"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/templates/{id}/submit": {
+      "post": {
+        "summary": "Enviar template para a Meta",
+        "description": "Envia o template para aprovação da Meta — o **Enviar para a Meta** do painel. Use para um template que nunca foi para a Meta (`source: \"PILOT_STATUS\"`) ou para reenviar um rejeitado. O alvo é o número de WhatsApp da chave, que precisa ser um número da Meta Cloud API com conta do WhatsApp Business (senão `422 TEMPLATE_REQUIRES_META_NUMBER`). O corpo é vazio: o número vem da chave, e qualquer campo — inclusive `whatsappNumberId` — é recusado com `400 UNKNOWN_FIELDS`.\n\nRetorna o template (agora `source: \"META\"`, normalmente `metaStatus: \"PENDING\"`) e o `metaTemplateId`. A Meta analisa de forma assíncrona: leia o status depois com `GET /v1/templates/{id}` ou atualize com `POST /v1/templates/sync`. Permissão `templates:manage` (a mesma do painel).\n\n**Requer uma chave com escopo de número.**",
+        "tags": [
+          "Templates"
+        ],
+        "operationId": "post_templates_id_submit",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Id do template.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "tpl_01HZX..."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enviado",
+            "content": {
+              "application/json": {
+                "example": {
+                  "id": "tpl_01HZX...",
+                  "name": "order_update",
+                  "category": "UTILITY",
+                  "body": "{\"body\":{\"text\":\"Pedido {{order}} enviado\"}}",
+                  "variables": [
+                    "order"
+                  ],
+                  "source": "META",
+                  "metaStatus": "PENDING",
+                  "metaLanguage": "pt_BR",
+                  "sendable": false,
+                  "metaTemplateId": "1234567890123456"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Campo desconhecido, ou a validação local/da Meta recusou o template (`TEMPLATE_URL_BLOCKED`, `TEMPLATE_BUTTON_INVALID`, `META_API_ERROR`…)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Meta rejected the request: … | A Meta recusou a requisição: …",
+                  "code": "META_API_ERROR"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Chave com escopo de tenant usada em endpoint com escopo de número",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template não encontrado pelo número da chave",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Template not found | Template não encontrado",
+                  "code": "TEMPLATE_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A Meta não permite editar este template no estado atual, ou ele já foi enviado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Meta does not allow editing this template in its current state … | A Meta não permite editar este template no estado atual …",
+                  "code": "TEMPLATE_NOT_EDITABLE"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "O número da chave não é um número da Meta Cloud API com WABA",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This key's WhatsApp number is not a Meta Cloud API number … | O número de WhatsApp desta chave não é um número da Meta Cloud API …",
+                  "code": "TEMPLATE_REQUIRES_META_NUMBER"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Limite de taxa excedido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/templates/sync": {
+      "post": {
+        "summary": "Sincronizar templates da Meta",
+        "description": "Traz da Meta todos os templates da conta do WhatsApp Business da chave — o **Sincronizar com a Meta** do painel —, criando os que o Pilot Status não tem e atualizando status, categoria e conteúdo dos demais (por exemplo, um template `PENDING` que a Meta já aprovou). O corpo é vazio; qualquer campo é recusado com `400 UNKNOWN_FIELDS`.\n\nUma sincronia por número de cada vez, compartilhada com o painel: enquanto uma roda, outra chamada recebe `429 TEMPLATE_SYNC_IN_PROGRESS` com o cabeçalho `Retry-After` (até 120 segundos). Permissão `templates:manage`.\n\n**Requer uma chave com escopo de número.**",
+        "tags": [
+          "Templates"
+        ],
+        "operationId": "post_templates_sync",
+        "responses": {
+          "200": {
+            "description": "Sincronizado",
+            "content": {
+              "application/json": {
+                "example": {
+                  "created": 2,
+                  "updated": 5
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Campo desconhecido, ou a Meta recusou a chamada (`META_API_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unknown field(s): whatsappNumberId. This endpoint accepts only: . | Campo(s) desconhecido(s): whatsappNumberId. Este endpoint aceita apenas: .",
+                  "code": "UNKNOWN_FIELDS"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Chave com escopo de tenant usada em endpoint com escopo de número",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "O número da chave não é um número da Meta Cloud API com WABA",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This key's WhatsApp number is not a Meta Cloud API number … | O número de WhatsApp desta chave não é um número da Meta Cloud API …",
+                  "code": "TEMPLATE_REQUIRES_META_NUMBER"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Já há uma sincronia deste número em andamento (veja `Retry-After`), ou limite de taxa",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "A template sync is already running for this key's number. … | Já existe uma sincronia de templates em andamento para o número desta chave. …",
+                  "code": "TEMPLATE_SYNC_IN_PROGRESS"
                 }
               }
             }
