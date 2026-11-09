@@ -90,7 +90,7 @@ Supply your `ps_*` API key via the `x-api-key` header (HTTP mode) or environment
 | Groups | `groups_list`, `groups_create`, `group_info`, `group_participants_add`, `group_participants_remove`, `group_participants_promote`, `group_participants_demote`, `group_invite`, `group_pin` |
 | Channels | `newsletters_list` |
 | Numbers | `numbers_list`, `numbers_get`, `numbers_create`, `numbers_status`, `numbers_connect`, `numbers_delete`, `numbers_restore`, `numbers_purge`, `numbers_pay`, `numbers_remote_pairing`, `numbers_check`, `numbers_settings_update` |
-| Templates | `templates_list`, `templates_get`, `templates_insights`, `templates_create`, `templates_update`, `templates_delete` |
+| Templates | `templates_list`, `templates_get`, `templates_insights`, `templates_create`, `templates_update`, `templates_submit`, `templates_sync`, `templates_delete` |
 | Flows | `flows_list`, `flows_create`, `flows_update`, `flows_json_upload`, `flows_publish`, `flows_deprecate`, `flows_delete`, `flows_responses_list`, `flows_endpoint_key_get`, `flows_endpoint_key_rotate` |
 | Voice calls | Meta and web: `call_initiate`, `calls_list`, `call_get`, `call_accept`, `call_reject`, `call_terminate`; Meta only: `call_settings_get`, `call_settings_update`, `call_enable`, `call_permission_get`, `call_permission_request`; Web (unofficial) only: `call_play`, `call_realtime_session` |
 | Account | `api_keys_list`, `api_keys_regenerate_number`, `subscription_extra_numbers_get`, `subscription_extra_numbers_add`, `subscription_extra_numbers_remove`, `subscription_extra_numbers_cancel_scheduled`, `billing_checkout`, `billing_topups_get`, `branding_get`, `branding_upsert`, `analytics_dashboard`, `media_get` |
@@ -107,6 +107,8 @@ Notes:
 - `templates_create`/`templates_update` require the `examples` object (one real sample per variable; missing → `400 TEMPLATE_EXAMPLES_REQUIRED`) and accept media headers by **URL only** — base64 is REST-only.
 - `templates_insights` (read-only) returns Meta's analytics for one template via `GET /v1/templates/{id}/insights`: args `id` and optional `days` (`7`, `30` or `90`; default `30`). It returns sent/delivered/read `totals`, `readRate` (`null` when nothing was delivered), button `clicks` and a `daily` series, plus the template's name, status, category, language and `qualityScore`. Only Meta templates have insights: a non-Meta template fails with `409 TEMPLATE_NOT_ON_META`, and WhatsApp Business App / coexistence accounts fail with `422 TEMPLATE_INSIGHTS_UNAVAILABLE_SMB` (Meta provides no insights there — do not retry). The first call may enable template insights on the WABA at Meta. Number-scoped API key required.
 - `templates_update` returns `409 TEMPLATE_NOT_EDITABLE` when Meta does not allow editing the template in its current state (only rejected templates can be edited); the stored template is left unchanged. Create a new template with the change, or send the document at send time. [Edit](/api/templates#edit)
+- `templates_submit` submits a template to Meta for approval (`POST /v1/templates/{id}/submit`, arg `id`) and `templates_sync` pulls the WABA's catalogue from Meta (`POST /v1/templates/sync`, no args, returns `{ created, updated }`; `429 TEMPLATE_SYNC_IN_PROGRESS` while another sync of the number runs). Both need a Meta Cloud API number (`422 TEMPLATE_REQUIRES_META_NUMBER` otherwise) and a number-scoped credential. [Submit to Meta](/api/templates#submit-to-meta)
+- `templates_delete` is destructive and asks for confirmation with a token: see [Confirmation for destructive tools](#confirmation-for-destructive-tools). Meta deletes by name, so every language version of that name on the WABA goes.
 - `messages_send` supports the three send modes: `templateId`, `text`, or direct media (`media` \+ `mediaType`; use `mediaType: "voice"` for a voice note on any number — `"audio"` arrives as an audio file on official numbers and as a voice note on unofficial ones).
 - `messages_send` with `mediaType: "audio"` or `"voice"` takes `media` **only as a public http(s) URL** to a real audio file. A base64 data URI for audio or voice — or any `data:audio/*` media, whatever the `mediaType` — is refused with `400 MCP_AUDIO_URL_REQUIRED` before anything is sent: no message is created. Image and document data URIs are still accepted, for a file the user actually attached. The rule is MCP-only — it applies to `/mcp`, [Code Mode](/integrations/mcp-code-mode) and the in-app AI agent; the [REST API](/api/messages/send) still accepts audio as a data URI. It exists because models invent base64 audio: those bytes are not a playable file and the send failed later with [`MEDIA_TRANSCODE_FAILED`](/api/messages/log-error-codes#media-preparation-on-official-numbers).
 - `messages_send` takes `markRead: false` to reply on an official (Meta) number without the typing indicator and without marking the conversation read — for an agent whose replies a person should still find unread. The number-wide default is `markReadOnSend` on `numbers_settings_update` / `numbers_create`. `messages_typing` on a Meta number marks the conversation read, so such an agent must not call it. [Read receipt and typing](/api/messages/send#read-receipt-and-typing)
@@ -129,6 +131,34 @@ Notes:
 - `workspaces_*` take an **account key** only (`ps_account_…`, created in Profile → API, sent as `x-api-key`): an OAuth/connector token, a workspace key or a number key gets `403 ACCOUNT_KEY_REQUIRED`. `workspaces_list` lists the workspaces the key's user is an active member of, with their role; `workspaces_create` creates one owned by that user and returns its primary workspace key **once** (`409 WORKSPACE_LIMIT_REACHED` at the user's ceiling); its optional `shareCard: true` links the new workspace to the user's reserve card, and absent or `false` leaves it not shared. `workspaces_shared_card_link` and `workspaces_shared_card_unlink` (argument `workspaceId`) call `PUT` and `DELETE /v1/workspaces/{workspaceId}/shared-card`: they need the user to be OWNER of that workspace, change who pays its renewals and ask for confirmation. `workspaces_api_keys_list` (masked), `workspaces_api_keys_create` (a named `ps_workspace_` key, returned once; `409 WORKSPACE_KEY_LIMIT_REACHED`) and `workspaces_api_keys_revoke` (`409 PRIMARY_KEY_NOT_REVOCABLE` for the primary key) need the user's live role ADMIN or OWNER in that workspace, otherwise `403 WORKSPACE_MEMBERSHIP_REQUIRED` or `PERMISSION_DENIED`. The in-app AI agent does not offer them. They need no `x-workspace-id`, and neither does `docs_search`; every other tool used with an account key does (see [With an account key](#with-an-account-key)). See [Create workspaces](/api/workspaces).
 - `docs_search` takes a `query` — a question, keywords or an error code, in Portuguese or English — and an optional `limit` (3–5, default 5), and returns `{ query, results, source }`: the 3–5 most relevant pages of this documentation, each with `title`, `url` and `description` (not the page content). It reads the public docs index (`llms.txt` and its pt-BR sub-index; the Playground pages are left out), calls no `/v1` endpoint and needs no permission, key scope or `whatsappNumberId`, so any role can use it and the in-app agent runs it without asking for confirmation. `source` is `live`, or `fallback` when the index could not be fetched and a built-in copy answered; the index is cached for 6 hours. Use it when the user asks how to do something on Pilot Status, or when another tool returns an error code — search the code (e.g. `MEDIA_TRANSCODE_FAILED` leads to [Log Error Codes](/api/messages/log-error-codes)).
 - Token-based routes (remote-pairing public endpoints, embed session minting) are excluded from the tool list because they use a different auth flow.
+
+## Confirmation for destructive tools
+
+Some tools change things that cannot be undone. They run in **two calls**, and the second one needs a token from the first:
+
+1. **Call the tool without `confirm_token`.** Nothing changes. The answer is `status: "CONFIRMATION_REQUIRED"`, a `preview` of exactly what would happen and a `confirm_token` valid for **5 minutes**.
+2. **Show the preview to the person and wait for an explicit yes.** Then call the tool again with the **same arguments** plus `confirm_token`. Only this call runs the action.
+
+```json First call: preview, nothing deleted
+{
+  "status": "CONFIRMATION_REQUIRED",
+  "preview": {
+    "dry_run": true,
+    "action": "DELETE_ON_META_AND_LOCAL",
+    "template": { "id": "tpl_01HZX...", "name": "promo", "meta_language": "pt_BR", "meta_status": "APPROVED" },
+    "waba": { "id": "1581714517011340", "name": "Acme" },
+    "via_number": { "id": "wn_01HZX...", "number": "+5511999990000" }
+  },
+  "confirm_token": "pct1.eyJ0Ijo...",
+  "expires_at": "2026-11-10T14:05:00.000Z",
+  "next_step": "Nothing was changed. Show this preview to the user. …"
+}
+```
+
+- The token is single-use and bound to the tool, its arguments and your connection (credential, workspace and number). Another tool, other arguments, another key or another number cannot use it.
+- Refusals: `CONFIRM_TOKEN_EXPIRED` (ask for a new preview), `CONFIRM_TOKEN_MISMATCH` (repeat the exact arguments of the preview), `CONFIRM_TOKEN_USED` (it already ran — do not repeat it), `CONFIRM_TOKEN_INVALID` (get a new preview).
+- Tools with confirmation today: `templates_delete`. The REST API needs no token: call `DELETE /v1/templates/{id}?dry_run=true` to get the same preview.
+- In [Code Mode](/integrations/mcp-code-mode) the same two calls apply. In the in-app AI agent the preview runs on its own and the agent asks you to confirm the second call.
 
 ## Example tool call
 
