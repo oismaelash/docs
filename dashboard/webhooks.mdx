@@ -1,0 +1,138 @@
+---
+title: "Webhooks screen in the Pilot Status dashboard"
+sidebarTitle: "Webhooks"
+description: "The /webhooks screen: create, edit, deactivate and delete webhooks per number, read the signing secret (shown ONCE after you create a webhook, recoverable only by generating a new one in Edit webhook), inspect delivery logs, replay failed deliveries and resume a paused destination."
+mode: "wide"
+---
+
+The **Webhooks** screen is where you point a WhatsApp number's events at your own HTTPS endpoint and watch what was delivered. It is the dashboard twin of the [webhooks API](/api/webhooks/configure); the payloads themselves are in the [event reference](/api/webhooks/events).
+
+## How to get here
+
+Sidebar → **Webhooks**, or go straight to `/webhooks` (keyboard shortcut **W** in the command palette). `/webhooks?new=1` opens the **New Webhook** modal directly.
+
+**Who sees it:** **Owner** and **Admin**. Both reading the list and every change on it (create, edit, activate/deactivate, delete, generate a new secret, replay, resume delivery) require the webhook permissions, which only those two roles have. Agents and Analysts do not get the menu entry.
+
+<Note>
+  The screen works on the number selected in the header. Webhooks belong to **one number** each, so the list, the events offered and the delivery logs are always those of the header's number. Switch the number in the header to see another number's webhooks.
+</Note>
+
+## What you see
+
+- **Header actions** — **New Webhook** always; with a webhook selected, also **Edit webhook**, **Deactivate** / **Activate** and **Delete**. **New Webhook** is disabled while the shared test number is selected (_"Test number: select one of your numbers to create a webhook."_).
+- **Stat cards** — with no webhook selected: **Total Webhooks**, **Active**, **Inactive**. With a webhook selected they switch to that webhook's deliveries: **Total Events**, **Success**, **Failed**.
+- **Two help cards** — a link to the **Docs** (events and payloads) and a pointer to [WebhookGuru](https://webhookguru.online/) for testing and debugging an endpoint.
+- **Webhook selector** (_Select webhook..._) and, once one is selected, the **delivery log** with its filters.
+
+If the list fails to load you see **"Could not load your webhooks"** with **Try again** — this does **not** mean you have none, so do not create a new one in response. When the number is not yet approved for production, the message says so instead; webhooks on your other numbers keep working.
+
+## Create a webhook — "New Webhook" modal
+
+| Field | Notes |
+| --- | --- |
+| **Name** (optional) | A label for you, e.g. _Main WhatsApp_. |
+| **URL** \* | Your HTTPS endpoint. Required. |
+| **Events** | The events this webhook receives. **Select all** / **All events** subscribes to everything the number's provider can emit. The list depends on the number's provider (WhatsApp Web numbers and Meta Cloud API numbers emit different events). |
+
+The modal also shows two notices:
+
+- **Read status** (`message.read`) only fires when the contact who received the message has read receipts enabled in WhatsApp.
+- **"All events" (`*`) does not include "Lead received (Meta Ads)"**: it carries personal data and is sent only if you tick that event explicitly.
+
+Some events are marked _"This event is only available on accounts with an active paid plan."_
+
+Click **Create Webhook**. A number can have more than one webhook; the only refusals are the exact same URL twice on the same number and the workspace-wide cap — the error tells you which. See [How many webhooks per number](/api/webhooks/configure#how-many-webhooks-per-number).
+
+### The signing secret — shown once
+
+Right after creation the **Signing secret** dialog opens with the secret in clear.
+
+<Warning>
+  **The signing secret is shown once.** _"Shown once. Store it now — no read returns it again."_ Copy it with **Copy** before you click **Got it**. Neither the dashboard, the API nor Pilot Status support can show it to you again — it is not stored anywhere you can read it back.
+
+  **Lost it?** Open the webhook → **Edit webhook** → **Generate a new secret**. That mints a new secret and shows it once, in the same dialog.
+</Warning>
+
+Every delivery carries the `x-pilot-status-signature` header: the hex-encoded **HMAC-SHA256 of the raw request body**, keyed with this secret. How to verify it in your receiver: [Verify the signature](/api/webhooks/configure#verify-the-signature).
+
+## Edit a webhook — "Edit Webhook" modal
+
+Select the webhook and click **Edit webhook**. You change **Name**, **URL** and **Events** with the same fields as above, then **Save**.
+
+At the top of the modal, the **Signing secret** block shows the webhook's signing state:
+
+- **Deliveries signed** — the webhook has a secret.
+- **Unsigned** — the webhook predates signing (created before 2026-09-15); its deliveries go out without `x-pilot-status-signature`. Generating a secret turns signing on.
+
+**Generate a new secret** asks for confirmation first:
+
+<Warning>
+  Generating a new secret invalidates the current one **immediately** — there is no overlap window. Deliveries start signing with the new secret and the old one stops verifying the moment you confirm. Update your receiver right away (or accept both secrets for a minute) to avoid rejecting real deliveries.
+</Warning>
+
+The new secret then appears once in the **Signing secret** dialog, exactly like after creation.
+
+## Activate, deactivate, delete
+
+- **Deactivate** keeps the webhook and stops delivering to it; **Activate** turns it back on. This is your choice — different from a paused destination (below).
+- **Delete** opens **Delete Webhook** (_"Are you sure you want to delete the webhook …"_). Deleting is permanent: the subscription is gone, and a webhook created again gets a new secret.
+
+## Delivery logs
+
+Pick a webhook in the selector to see its deliveries, newest first. Columns: **Timestamp**, **Event**, **Status** (`SUCCESS` / `FAILED`), **HTTP Code**, **Duration**.
+
+Filters:
+
+- **Status** — **All**, **Success**, **Failed**.
+- **Filter by event** — only the events this webhook subscribes to.
+- **From** / **To** — date and time pickers, with **Today (full day)** and **Yesterday (full day)** shortcuts (they set 00:00 to 23:59 of that day).
+- **Clear filters** resets everything.
+
+The table loads 50 deliveries at a time and loads more as you scroll; new deliveries appear on their own while you watch. The footer reads _"Showing X of Y events"_.
+
+### Event Details modal
+
+Click a row to open **Event Details**: **Event**, **Status**, **HTTP Code**, **Timestamp**, **Duration**, **Webhook**, the **Payload** that was sent (with **Copy**) and, when your endpoint answered with a body, the **Response**.
+
+**Replay** — on a `FAILED` delivery, the modal shows **Replay**. It re-sends the stored payload to the webhook's current URL as a new delivery, which appears as a new row in the log.
+
+## When delivery is paused
+
+If your endpoint refuses almost everything (success rate at or below 20% over the last 50 deliveries, after at least 20), Pilot Status **pauses delivery to that destination** to stop hammering it. This is not the same as **Deactivate** — you did not switch anything off.
+
+What you see:
+
+- With the webhook selected, an amber banner **"Delivery paused for this destination"**: it says the success rate, how many events are **held for resend** and how many were lost.
+- With another webhook selected, a banner **"N destination(s) with delivery paused"** listing them — click it to jump to the first.
+
+**Resume delivery** is the only way out: there is no automatic retry probe. Fix your endpoint, then click it. Held events (kept up to 48 hours) are resent at once — the toast says _"Delivery resumed — N event(s) being resent now"_.
+
+### Where the pause alert goes
+
+The account **Owner** is alerted the moment delivery is paused, by **e-mail always** and by **WhatsApp** only if the Owner has a verified phone on the account, with reminders after 1, 6 and 24 hours while it stays paused. The link in the alert opens `/webhooks?webhook=<id>`, which switches the header to that webhook's number and scrolls to the banner. If the link belongs to another workspace, you see _"We could not find this webhook in this workspace."_
+
+When the Owner has no WhatsApp on file, the screen shows **"Paused-destination alerts go out by e-mail only"** — click it to add the number under **Profile → Information**.
+
+## Deep links
+
+| URL | Opens |
+| --- | --- |
+| `/webhooks?new=1` | The **New Webhook** modal. |
+| `/webhooks?edit=<webhookId>` | The **Edit Webhook** modal for that webhook. |
+| `/webhooks?webhook=<webhookId>` | The webhook selected, on its number, with the paused banner in view (the link used by pause alerts). |
+
+## Do it via API / MCP
+
+| Dashboard action | API | MCP tool |
+| --- | --- | --- |
+| List webhooks | [`GET /v1/webhooks`](/api/webhooks/configure#endpoints) | `webhooks_list` |
+| See one webhook | `GET /v1/webhooks/{id}` | `webhook_get` |
+| New Webhook | `POST /v1/webhooks` (the `201` carries the `secret` once) | `webhooks_create` |
+| Edit / Activate / Deactivate | `PATCH /v1/webhooks/{id}` (`name`, `url`, `events`, `active`) | `webhooks_update` |
+| Delete | `DELETE /v1/webhooks/{id}` | `webhooks_delete` |
+| Delivery logs | [`GET /v1/webhooks/{id}/logs`](/api/webhooks/configure#reading-delivery-logs) | `webhook_events` |
+| Generate a new secret | [`POST /v1/webhooks/{id}/rotate-secret`](/api/webhooks/configure#verify-the-signature) | — (API or dashboard) |
+| Resume delivery | `POST /v1/webhooks/{id}/reactivate` | — (API or dashboard) |
+| Replay a failed delivery | — | **Dashboard only** |
+
+Related: [Webhook event reference](/api/webhooks/events) · [Configure webhooks](/api/webhooks/configure) · [Workspace webhooks](/api/workspace-webhooks) (workspace-level events, configured under **Workspace API keys**).
