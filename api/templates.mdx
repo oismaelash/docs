@@ -203,6 +203,50 @@ Meta decides whether a template can be edited. Its published rule is that an app
 - **What to do:** create a new template with the change (`POST /v1/templates`, under a new name). If what you wanted to change is the header document, keep the template and send the document as a runtime parameter at send time — the per-send `media` of `POST /v1/messages/send` ([Media with templates](/guides/media-messages#media-with-templates)).
 - The MCP tool `templates_update` goes through this same route and returns the same `409`.
 
+## Submit to Meta
+
+`POST /v1/templates/{id}/submit` submits a template to Meta for approval — the dashboard's **Submit to Meta**. Use it for a template that was never sent to Meta (`source: "PILOT_STATUS"`), for example one created before the number had a WhatsApp Business Account, or to re-submit a rejected one.
+
+```bash curl
+curl -X POST "https://pilotstatus.com.br/v1/templates/tpl_01HZX.../submit" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+```json Response 200
+{
+  "id": "tpl_01HZX...",
+  "name": "order_update",
+  "source": "META",
+  "metaStatus": "PENDING",
+  "metaLanguage": "pt_BR",
+  "sendable": false,
+  "metaTemplateId": "1234567890123456"
+}
+```
+
+- **The number comes from the key.** It must be a Meta Cloud API number with a WhatsApp Business Account; any other number gets `422 TEMPLATE_REQUIRES_META_NUMBER`. The body is empty: any field, `whatsappNumberId` included, gets `400 UNKNOWN_FIELDS`.
+- **The template must be reachable through the key's number**, as in `GET /v1/templates/{id}`; otherwise `404 TEMPLATE_NOT_FOUND`.
+- **Meta reviews asynchronously.** The answer usually says `PENDING`; read the result later with `GET /v1/templates/{id}`, or refresh the whole catalogue with [`POST /v1/templates/sync`](#sync-from-meta).
+- **Errors** are bilingual (`English | Português`) with a `code`: the checks in [Checked before submitting to Meta](#checked-before-submitting-to-meta) (`400`, e.g. `TEMPLATE_URL_BLOCKED`, `TEMPLATE_BUTTON_INVALID`), `400 META_API_ERROR` when Meta refuses the submission, and `409 TEMPLATE_NOT_EDITABLE` when Meta no longer accepts changes to the template in its current state.
+- Permission `templates:manage`, the same as the dashboard. MCP tool: `templates_submit`.
+
+## Sync from Meta
+
+`POST /v1/templates/sync` pulls every template of the key's WhatsApp Business Account from Meta — the dashboard's **Sync from Meta**. Templates Pilot Status does not have yet are created; the others get Meta's current status, category and content (for example a `PENDING` template that Meta has since approved).
+
+```bash curl
+curl -X POST "https://pilotstatus.com.br/v1/templates/sync" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+```json Response 200
+{ "created": 2, "updated": 5 }
+```
+
+- Same number rule as submit: a Meta Cloud API number with a WhatsApp Business Account (`422 TEMPLATE_REQUIRES_META_NUMBER` otherwise), empty body (`400 UNKNOWN_FIELDS`).
+- **One sync per number at a time**, shared with the dashboard. While one runs, another call gets `429 TEMPLATE_SYNC_IN_PROGRESS` with a `Retry-After` header (up to 120 seconds). Wait instead of retrying in a loop.
+- Permission `templates:manage`. MCP tool: `templates_sync`.
+
 ## Delete
 
 `DELETE /v1/templates/{id}` **no longer always returns success.** For a Meta template the deletion is forwarded to Meta, and the outcome depends on what Meta does:
@@ -216,6 +260,29 @@ Meta decides whether a template can be edited. Its published rule is that an app
 - A `200 { "deleted": true, "id" }` is the only response that means the template is really gone — removed on Meta **and** locally.
 - A `409` means **nothing was removed**: Meta rejected the deletion (e.g. the system token lacks permission on the WABA), so the template still exists on Meta and its name **stays reserved**. The local row is kept, and the message names the template and the reason. Fix the underlying permission and retry.
 - If Meta reports the template does not exist (a genuine 404 / "template does not exist"), the stale local row is removed and you still get `200 { "deleted": true, "id" }`.
+
+### Preview a delete (`dry_run`)
+
+`DELETE /v1/templates/{id}?dry_run=true` deletes **nothing** and tells you what the delete would do. Same permission and scoping as the delete itself.
+
+```json Response 200
+{
+  "dry_run": true,
+  "action": "DELETE_ON_META_AND_LOCAL",
+  "template": { "id": "tpl_01HZX...", "name": "promo", "category": "MARKETING", "source": "META", "meta_status": "APPROVED", "meta_language": "pt_BR", "meta_template_id": "1234567890123456" },
+  "waba": { "id": "1581714517011340", "name": "Acme" },
+  "via_number": { "id": "wn_01HZX...", "number": "+5511999990000", "display_name": "Acme" },
+  "warnings": [
+    "Irreversible: the template is deleted on Meta and in Pilot Status. Meta does not let the same name be reused for about 30 days.",
+    "Meta deletes by name: every language version of \"promo\" on this WABA is deleted on Meta, not only this one."
+  ]
+}
+```
+
+- `action` is `DELETE_ON_META_AND_LOCAL` for a template on Meta, or `DELETE_LOCAL_ONLY` for one that never reached Meta (`waba` and `via_number` are then `null`).
+- **Meta deletes by name**: every language version of that name on the WABA goes, not only the one you named.
+- `via_number` is the number whose Meta token performs the deletion. `null` on a Meta template means no number of your workspace on that WABA has a token: the delete would be refused with `409`.
+- The MCP tool `templates_delete` always shows this preview first and asks for confirmation — see [MCP server](/integrations/mcp-server#confirmation-for-destructive-tools).
 
 ## Insights
 
