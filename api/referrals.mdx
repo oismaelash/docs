@@ -16,15 +16,16 @@ aggregated per ad.
 `GET https://pilotstatus.com.br/v1/referrals/summary`
 
 <Note>
-  Both act on **one number**: use a **number-scoped** API key (`ps_*`) in the `x-api-key` header,
-  or an account-wide key that names the number in the
-  [`x-whatsapp-number-id`](/api/authentication) header. An account-wide key without that header
-  gets `403 TENANT_SCOPE_NOT_ALLOWED`.
+  Both act on **one number**: use a **number key** (`ps_number_`) in the `x-api-key` header, or a
+  **workspace key** (`ps_workspace_`), an **account key** (`ps_account_`, with `x-workspace-id`) or
+  an OAuth token that names the number in the [`x-whatsapp-number-id`](/api/authentication)
+  header. A workspace-wide credential without that header gets `403 TENANT_SCOPE_NOT_ALLOWED`.
 </Note>
 
-**OAuth / MCP tokens** also need the `chat:read` permission in the workspace: the referrals are
-read from the number's stored chat, so the **ANALYST** role is refused with
-`403 PERMISSION_DENIED`. A classic `ps_` key is not affected by roles.
+**OAuth / MCP tokens and account keys** (`ps_account_`) also need the `chat:read` permission in
+the workspace: the referrals are read from the number's stored chat, so the **ANALYST** role is
+refused with `403 PERMISSION_DENIED` (OWNER, ADMIN and AGENT pass). Number and workspace keys
+have no user behind them and are not affected by roles.
 
 In practice only official API (Meta) numbers carry an ad origin — the referral block is a
 WhatsApp Cloud API webhook field, so a number connected by QR code never has one.
@@ -116,12 +117,16 @@ row in `GET /v1/referrals` amounts to *one conversation that started from that a
 </ParamField>
 
 <ParamField query="page" default="1" type="integer">
-  Page number (≥ 1).
+  Page number (≥ 1). A missing or non-numeric value falls back to `1`.
 </ParamField>
 
 <ParamField query="pageSize" default="30" type="integer">
-  Results per page (1–100).
+  Results per page (1–100). Values above 100 are clamped to 100; a missing or non-numeric value
+  falls back to `30`. `page × pageSize` may not exceed 10,000 (`400 INVALID_PAGINATION`).
 </ParamField>
+
+Each item of `referrals` is the inbound message in the same shape as
+[`GET /v1/messages/history`](/api/messages/history) rows, with the `referral` object below.
 
 ### The `referral` object
 
@@ -160,9 +165,20 @@ curl "https://pilotstatus.com.br/v1/referrals?sourceType=ad&startDate=2026-08-01
       "direction": "INBOUND",
       "providerKind": "META",
       "externalMessageId": "wamid.HBgNNTU0Mj...",
+      "status": "DELIVERED",
       "messageType": "text",
+      "origin": null,
       "text": "Oi, vi o anúncio",
+      "participantName": "Maria",
+      "participantPhone": "5511999999999",
+      "participantUserId": null,
+      "repliedToExternalId": null,
+      "media": null,
+      "sentAt": null,
+      "deliveredAt": null,
+      "readAt": null,
       "providerTimestamp": "2026-08-16T12:00:00.000Z",
+      "createdAt": "2026-08-16T12:00:01.000Z",
       "referral": {
         "sourceId": "120249828053880703",
         "sourceType": "ad",
@@ -282,7 +298,7 @@ and the headline/body are content.
 | PII mode | Effect |
 | --- | --- |
 | `STORE_INDEFINITE` (default) | Everything returned. |
-| `STORE_X_DAYS` | Rows older than the retention window keep `sourceId` and `sourceType`; `ctwaClid`, `headline` and `body` are nulled and `redacted: true` is set. |
+| `STORE_X_DAYS` | Rows older than the retention window keep `sourceId`, `sourceType` and the resolved names (`adName` … `namesResolvedAt`); everything that comes from the ad payload (`sourceUrl`, `headline`, `body`, `mediaType`, `imageUrl`, `videoUrl`, `thumbnailUrl`, `ctwaClid`) is nulled, as are the message's `text`, `participant*` and `media`, and `redacted: true` is set on both the row and its `referral`. |
 | `RELAY_ONLY` | Same split on every row, plus `notice: "PII_RELAY_ONLY"`. In the summary the **counts stay correct** — only `lastSourceUrl` and `lastHeadline` come back null, with `piiNotice: "PII_RELAY_ONLY"`. |
 
 That split is why ad attribution still works on a RELAY_ONLY number instead of returning
@@ -295,8 +311,10 @@ nothing.
 | `400` | `INVALID_SOURCE_TYPE` | `sourceType` was not `ad` or `post`. |
 | `400` | `INVALID_DATE_RANGE` | Malformed date, or `startDate` after `endDate`. |
 | `400` | `INVALID_PAGINATION` | `page × pageSize` past the depth limit. Narrow the date range instead. |
-| `400` | `NUMBER_NOT_FOUND` | The key is not bound to a WhatsApp number. |
-| `401` | — | Missing or invalid `x-api-key`. |
+| `400` | `NUMBER_NOT_FOUND` | The credential is not bound to a WhatsApp number. |
+| `400` | `WORKSPACE_ID_REQUIRED` | Account key (`ps_account_`) without the `x-workspace-id` header. |
+| `401` | — | Missing or invalid credential. |
 | `403` | `TENANT_SCOPE_NOT_ALLOWED` | An account-wide credential was used without `x-whatsapp-number-id`. |
-| `403` | `PERMISSION_DENIED` | OAuth/MCP token whose workspace role has no `chat:read` (ANALYST). |
+| `403` | `PERMISSION_DENIED` | OAuth/MCP token or account key whose workspace role has no `chat:read` (ANALYST). |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | The user behind the token or account key is not an active member of the workspace. |
 | `404` | `NUMBER_NOT_FOUND` | `x-whatsapp-number-id` does not name a number of this account. |

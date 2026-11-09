@@ -16,15 +16,17 @@ outro agregado por anúncio.
 `GET https://pilotstatus.com.br/v1/referrals/summary`
 
 <Note>
-  Os dois atuam sobre **um número**: use uma API key **escopada a número** (`ps_*`) no header
-  `x-api-key`, ou uma chave da conta que indique o número no header
-  [`x-whatsapp-number-id`](/pt-BR/api/authentication). Uma chave da conta sem esse header recebe
-  `403 TENANT_SCOPE_NOT_ALLOWED`.
+  Os dois atuam sobre **um número**: use uma **chave de número** (`ps_number_`) no header
+  `x-api-key`, ou uma **chave de workspace** (`ps_workspace_`), uma **chave de conta**
+  (`ps_account_`, com `x-workspace-id`) ou um token OAuth que indique o número no header
+  [`x-whatsapp-number-id`](/pt-BR/api/authentication). Uma credencial do workspace inteiro sem esse
+  header recebe `403 TENANT_SCOPE_NOT_ALLOWED`.
 </Note>
 
-**Tokens OAuth / MCP** também precisam da permissão `chat:read` no workspace: as referrals são
-lidas do chat armazenado do número, então o papel **ANALYST** é recusado com
-`403 PERMISSION_DENIED`. Uma chave `ps_` clássica não é afetada por papéis.
+**Tokens OAuth / MCP e chaves de conta** (`ps_account_`) também precisam da permissão
+`chat:read` no workspace: as referrals são lidas do chat armazenado do número, então o papel
+**ANALYST** é recusado com `403 PERMISSION_DENIED` (OWNER, ADMIN e AGENT passam). Chaves de número
+e de workspace não têm usuário por trás e não são afetadas por papéis.
 
 Na prática só números da API oficial (Meta) têm origem de anúncio — o bloco de origem é um campo
 do webhook da Cloud API do WhatsApp, então número conectado por QR code nunca tem.
@@ -116,12 +118,16 @@ resumo é o número que o seu anúncio realmente produziu.
 </ParamField>
 
 <ParamField query="page" default="1" type="integer">
-  Página (≥ 1).
+  Página (≥ 1). Valor ausente ou não numérico vira `1`.
 </ParamField>
 
 <ParamField query="pageSize" default="30" type="integer">
-  Itens por página (1–100).
+  Itens por página (1–100). Valores acima de 100 viram 100; valor ausente ou não numérico vira
+  `30`. `page × pageSize` não pode passar de 10.000 (`400 INVALID_PAGINATION`).
 </ParamField>
+
+Cada item de `referrals` é a mensagem recebida no mesmo formato das linhas de
+[`GET /v1/messages/history`](/pt-BR/api/messages/history), com o objeto `referral` abaixo.
 
 ### O objeto `referral`
 
@@ -160,9 +166,20 @@ curl "https://pilotstatus.com.br/v1/referrals?sourceType=ad&startDate=2026-08-01
       "direction": "INBOUND",
       "providerKind": "META",
       "externalMessageId": "wamid.HBgNNTU0Mj...",
+      "status": "DELIVERED",
       "messageType": "text",
+      "origin": null,
       "text": "Oi, vi o anúncio",
+      "participantName": "Maria",
+      "participantPhone": "5511999999999",
+      "participantUserId": null,
+      "repliedToExternalId": null,
+      "media": null,
+      "sentAt": null,
+      "deliveredAt": null,
+      "readAt": null,
       "providerTimestamp": "2026-08-16T12:00:00.000Z",
+      "createdAt": "2026-08-16T12:00:01.000Z",
       "referral": {
         "sourceId": "120249828053880703",
         "sourceType": "ad",
@@ -282,7 +299,7 @@ identificador por clique ligado ao indivíduo, e título/texto são conteúdo.
 | Modo PII | Efeito |
 | --- | --- |
 | `STORE_INDEFINITE` (padrão) | Tudo é devolvido. |
-| `STORE_X_DAYS` | Linhas mais antigas que a janela de retenção mantêm `sourceId` e `sourceType`; `ctwaClid`, `headline` e `body` vêm nulos e `redacted: true` é marcado. |
+| `STORE_X_DAYS` | Linhas mais antigas que a janela de retenção mantêm `sourceId`, `sourceType` e os nomes resolvidos (`adName` … `namesResolvedAt`); tudo o que vem do payload do anúncio (`sourceUrl`, `headline`, `body`, `mediaType`, `imageUrl`, `videoUrl`, `thumbnailUrl`, `ctwaClid`) vem nulo, assim como `text`, `participant*` e `media` da mensagem, e `redacted: true` é marcado na linha e no `referral`. |
 | `RELAY_ONLY` | A mesma divisão em toda linha, mais `notice: "PII_RELAY_ONLY"`. No resumo os **contadores seguem corretos** — só `lastSourceUrl` e `lastHeadline` voltam nulos, com `piiNotice: "PII_RELAY_ONLY"`. |
 
 É essa divisão que mantém a atribuição de anúncio funcionando num número RELAY_ONLY em vez de
@@ -295,8 +312,10 @@ devolver nada.
 | `400` | `INVALID_SOURCE_TYPE` | `sourceType` não era `ad` nem `post`. |
 | `400` | `INVALID_DATE_RANGE` | Data malformada, ou `startDate` depois de `endDate`. |
 | `400` | `INVALID_PAGINATION` | `page × pageSize` passou do limite de profundidade. Estreite o período. |
-| `400` | `NUMBER_NOT_FOUND` | A key não está atrelada a um número de WhatsApp. |
-| `401` | — | `x-api-key` ausente ou inválida. |
+| `400` | `NUMBER_NOT_FOUND` | A credencial não está atrelada a um número de WhatsApp. |
+| `400` | `WORKSPACE_ID_REQUIRED` | Chave de conta (`ps_account_`) sem o header `x-workspace-id`. |
+| `401` | — | Credencial ausente ou inválida. |
 | `403` | `TENANT_SCOPE_NOT_ALLOWED` | Credencial da conta usada sem `x-whatsapp-number-id`. |
-| `403` | `PERMISSION_DENIED` | Token OAuth/MCP cujo papel no workspace não tem `chat:read` (ANALYST). |
+| `403` | `PERMISSION_DENIED` | Token OAuth/MCP ou chave de conta cujo papel no workspace não tem `chat:read` (ANALYST). |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | O usuário por trás do token ou da chave de conta não é membro ativo do workspace. |
 | `404` | `NUMBER_NOT_FOUND` | `x-whatsapp-number-id` não indica um número desta conta. |
