@@ -11419,7 +11419,7 @@
     "/v1/webhooks": {
       "get": {
         "summary": "Listar webhooks",
-        "description": "Lista os webhooks visíveis para a key chamadora. Uma key de tenant vê TODOS os webhooks do tenant; com contexto de número (key escopada a número ou cabeçalho x-whatsapp-number-id) vê ESTRITAMENTE os webhooks inscritos naquele número (webhooks gerais do tenant sem assinatura NÃO aparecem). O segredo de assinatura NUNCA é retornado. Uma concessão OAuth por número precisa enviar x-whatsapp-number-id (senão 400 NUMBER_REQUIRED).",
+        "description": "Lista os webhooks visíveis para quem chama. Uma credencial de todo o workspace vê TODOS os webhooks do workspace; com contexto de número (key de número ou cabeçalho `x-whatsapp-number-id`) vê ESTRITAMENTE os webhooks inscritos nesse número. O `secret` de assinatura NUNCA é devolvido — `hasSecret` diz se as entregas são assinadas. Cada item traz também o estado da pausa automática (`circuitOpen`, `heldCount`, …). Uma concessão OAuth por número precisa enviar `x-whatsapp-number-id` (senão, `400 NUMBER_REQUIRED`).\n\nPermissões: `webhooks:read`. Uma key `ps_` clássica é limitada só pelo seu escopo; com chave de conta ou token OAuth/MCP o usuário precisa ser **Proprietário ou Admin** (senão, `403 PERMISSION_DENIED`).",
         "tags": [
           "Webhooks"
         ],
@@ -11434,6 +11434,16 @@
               "type": "string"
             },
             "example": "num_01HZX..."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "responses": {
@@ -11441,6 +11451,113 @@
             "description": "Listar webhooks",
             "content": {
               "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Id do webhook."
+                      },
+                      "tenantId": {
+                        "type": "string",
+                        "description": "Id do workspace."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Nome de exibição. Vazio ou ausente na criação/edição → o hostname da URL."
+                      },
+                      "url": {
+                        "type": "string",
+                        "description": "URL de destino (`http` ou `https`; hosts internos são recusados)."
+                      },
+                      "environment": {
+                        "type": "string",
+                        "description": "Sempre `LIVE` para webhooks criados pela API."
+                      },
+                      "deliveryTimeoutMs": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "description": "Prazo de entrega deste webhook em ms (1000–15000), ou `null` para o padrão de 10 s. Só a equipe da Pilot Status pode defini-lo."
+                      },
+                      "active": {
+                        "type": "boolean",
+                        "description": "`false` = desativado por você: nada é entregue."
+                      },
+                      "events": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Eventos assinados. Vazio = nada é entregue; `\"*\"` = todos os eventos, exceto o `lead.received`, que é opt-in."
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "updatedAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "hasSecret": {
+                        "type": "boolean",
+                        "description": "`true` quando as entregas são assinadas (`x-pilot-status-signature`). O segredo em si nunca é devolvido por uma leitura."
+                      },
+                      "lastTriggered": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time",
+                        "description": "Última tentativa de entrega, ou `null`."
+                      },
+                      "whatsappNumberIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "O número em que este webhook está inscrito."
+                      },
+                      "whatsappInstanceIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Conexões desse número às quais o webhook está vinculado."
+                      },
+                      "circuitOpen": {
+                        "type": "boolean",
+                        "description": "`true` enquanto a entrega para este destino está pausada automaticamente (veja `POST /v1/webhooks/{id}/reactivate`)."
+                      },
+                      "circuitOpenedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time",
+                        "description": "Quando a pausa começou, ou `null`."
+                      },
+                      "circuitSuccessPct": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Taxa de sucesso (%) nas últimas entregas quando a pausa começou, ou `null`."
+                      },
+                      "heldCount": {
+                        "type": "integer",
+                        "description": "Eventos retidos durante a pausa, aguardando reenvio."
+                      },
+                      "droppedCount": {
+                        "type": "integer",
+                        "description": "Eventos perdidos durante a pausa (retidos por mais de 48 h, ou acima de 20.000 retidos)."
+                      }
+                    }
+                  }
+                },
                 "example": [
                   {
                     "id": "wh_01HZX...",
@@ -11448,31 +11565,32 @@
                     "name": "n8n",
                     "url": "https://hooks.acme.com/whatsapp",
                     "environment": "LIVE",
+                    "deliveryTimeoutMs": null,
                     "active": true,
                     "events": [
                       "message.received",
                       "message.delivered"
                     ],
-                    "apiKeys": [
-                      {
-                        "id": "key_01HZX...",
-                        "name": "Default"
-                      }
-                    ],
+                    "createdAt": "2026-06-01T11:59:00.000Z",
+                    "updatedAt": "2026-06-01T12:00:00.000Z",
+                    "hasSecret": true,
                     "lastTriggered": "2026-06-28T09:59:00.000Z",
+                    "whatsappInstanceIds": [],
                     "whatsappNumberIds": [
                       "num_01HZX..."
                     ],
-                    "whatsappInstanceIds": [],
-                    "createdAt": "2026-06-01T11:59:00.000Z",
-                    "updatedAt": "2026-06-01T12:00:00.000Z"
+                    "circuitOpen": false,
+                    "circuitOpenedAt": null,
+                    "circuitSuccessPct": null,
+                    "heldCount": 0,
+                    "droppedCount": 0
                   }
                 ]
               }
             }
           },
-          "401": {
-            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+          "400": {
+            "description": "Requisição inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -11483,17 +11601,113 @@
                     },
                     "code": {
                       "type": "string"
+                    },
+                    "details": {
+                      "type": "object"
                     }
                   }
                 },
-                "example": {
-                  "error": "Unauthorized"
+                "examples": {
+                  "numberRequired": {
+                    "summary": "Concessão OAuth por número sem `x-whatsapp-number-id`",
+                    "value": {
+                      "error": "Provide x-whatsapp-number-id for a per-number connection",
+                      "code": "NUMBER_REQUIRED"
+                    }
+                  },
+                  "workspaceIdRequired": {
+                    "summary": "Chave de conta sem `x-workspace-id`",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
+                  }
                 }
               }
             }
           },
-          "429": {
-            "description": "Limite de taxa excedido",
+          "401": {
+            "description": "Credencial ausente ou inválida",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "missing": {
+                    "summary": "Sem credencial",
+                    "value": {
+                      "error": "Missing x-api-key, x-api-key-id or Authorization Bearer token"
+                    }
+                  },
+                  "invalid": {
+                    "summary": "API key inválida",
+                    "value": {
+                      "error": "Invalid API key"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Não permitido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "permissionDenied": {
+                    "summary": "Usuário de chave de conta / OAuth que não é Proprietário nem Admin",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (webhooks:read).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "notMember": {
+                    "summary": "Usuário de chave de conta / OAuth que não é membro ativo",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  },
+                  "tenantRequired": {
+                    "summary": "Credencial sem workspace",
+                    "value": {
+                      "error": "This credential is not bound to a workspace.",
+                      "code": "TENANT_REQUIRED"
+                    }
+                  },
+                  "archived": {
+                    "summary": "Workspace arquivado",
+                    "value": {
+                      "error": "This workspace has been archived and its API is closed. | Este workspace foi arquivado e sua API está encerrada.",
+                      "code": "WORKSPACE_ARCHIVED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha inesperada",
             "content": {
               "application/json": {
                 "schema": {
@@ -11508,7 +11722,7 @@
                   }
                 },
                 "example": {
-                  "error": "Too many requests"
+                  "error": "Internal server error"
                 }
               }
             }
@@ -11517,7 +11731,7 @@
       },
       "post": {
         "summary": "Criar webhook",
-        "description": "Cria um webhook inscrito em UM número de WhatsApp. O número vem do escopo da key (key de número), do cabeçalho x-whatsapp-number-id ou do campo whatsappNumberId no body — se o body contradisser o escopo da key → 400 NUMBER_MISMATCH; sem número resolvível → 400 NUMBER_REQUIRED; número de outro tenant → 404 NUMBER_NOT_FOUND. events escolhe o que será entregue: lista vazia/omitida NÃO dispara nada (não há \"assinar tudo\" implícito; use \"*\" para todos — todos os eventos exceto o `lead.received`, que é opt-in e precisa ser listado pelo nome) e eventos que o provedor do número não emite são descartados silenciosamente. O segredo de assinatura NUNCA é retornado.",
+        "description": "Cria um webhook inscrito em UM número de WhatsApp. O número vem do escopo da key (key de número), do cabeçalho `x-whatsapp-number-id` ou do campo `whatsappNumberId` no corpo — se o corpo contradisser o escopo da key → `400 NUMBER_MISMATCH`; sem número resolvível → `400 NUMBER_REQUIRED`; número de outro workspace → `404 NUMBER_NOT_FOUND`. `events` escolhe o que será entregue: lista vazia/omitida NÃO dispara nada (não há \"assinar tudo\" implícito; use `\"*\"` para todos — todos os eventos exceto o `lead.received`, que é opt-in e precisa ser listado pelo nome) e eventos que o provedor do número não emite são descartados silenciosamente. Campos desconhecidos no corpo são ignorados.\n\n**O `201` traz o `secret` de assinatura em claro, junto com `hasSecret: true` — a única resposta que o traz, fora o `rotate-secret`.** Guarde-o na hora (a resposta é enviada com `Cache-Control: no-store`). Via OAuth/MCP a criação é registrada antes na auditoria; se esse registro não puder ser gravado, o webhook é criado mesmo assim, mas `secret` volta `null` com `secretWithheld: true`, `secretWithheldReason` e `secretWithheldCode: \"OAUTH_SECRET_AUDIT_UNAVAILABLE\"` — rotacione-o para obter um.\n\nLimites: a mesma `url` duas vezes no mesmo número → `409 WEBHOOK_DUPLICATE`; no máximo 50 webhooks por workspace → `409 WEBHOOK_LIMIT_REACHED`.\n\nPermissões: `webhooks:manage` (Proprietário ou Admin com chave de conta ou token OAuth/MCP).",
         "tags": [
           "Webhooks"
         ],
@@ -11532,6 +11746,16 @@
               "type": "string"
             },
             "example": "num_01HZX..."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "requestBody": {
@@ -11543,13 +11767,14 @@
                 "properties": {
                   "url": {
                     "type": "string",
-                    "description": "Endpoint HTTPS que receberá os eventos.",
+                    "description": "URL de destino, `http` ou `https`. Algo que não é URL → `400 Validation error`; outro esquema, `localhost`, um IP de loopback ou privado, ou um host sem ponto → `400 INVALID_WEBHOOK_URL`. A mesma URL duas vezes no mesmo número → `409 WEBHOOK_DUPLICATE`.",
                     "example": "https://hooks.acme.com/whatsapp"
                   },
                   "name": {
                     "type": "string",
-                    "description": "Nome de exibição (padrão: hostname da URL).",
-                    "example": "n8n"
+                    "description": "Nome de exibição, até 100 caracteres (padrão: hostname da URL).",
+                    "example": "n8n",
+                    "maxLength": 100
                   },
                   "events": {
                     "type": "array",
@@ -11566,6 +11791,15 @@
                     "type": "string",
                     "description": "Número alvo — necessário só com key de tenant sem cabeçalho de número; com key de número deve coincidir com o escopo (400 NUMBER_MISMATCH).",
                     "example": "num_01HZX..."
+                  },
+                  "deliveryTimeoutMs": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1000,
+                    "maximum": 15000,
+                    "description": "**Só para a equipe da Pilot Status.** Prazo de entrega deste webhook em ms, inteiro de 1000 a 15000; `null` o remove (volta ao padrão de 10 s). Enviar a chave — inclusive com `null` — com qualquer outra credencial → `403 DELIVERY_TIMEOUT_STAFF_ONLY`. Keys `ps_` clássicas nunca são da equipe."
                   }
                 },
                 "required": [
@@ -11578,26 +11812,138 @@
         "responses": {
           "201": {
             "description": "Criar webhook",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
             "content": {
               "application/json": {
-                "example": {
-                  "id": "wh_01HZX...",
-                  "tenantId": "tenant_01HZX...",
-                  "name": "n8n",
-                  "url": "https://hooks.acme.com/whatsapp",
-                  "environment": "LIVE",
-                  "active": true,
-                  "events": [
-                    "message.received"
-                  ],
-                  "createdAt": "2026-07-03T12:00:00.000Z",
-                  "updatedAt": "2026-07-03T12:00:00.000Z"
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Id do webhook."
+                    },
+                    "tenantId": {
+                      "type": "string",
+                      "description": "Id do workspace."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Nome de exibição. Vazio ou ausente na criação/edição → o hostname da URL."
+                    },
+                    "url": {
+                      "type": "string",
+                      "description": "URL de destino (`http` ou `https`; hosts internos são recusados)."
+                    },
+                    "environment": {
+                      "type": "string",
+                      "description": "Sempre `LIVE` para webhooks criados pela API."
+                    },
+                    "deliveryTimeoutMs": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "description": "Prazo de entrega deste webhook em ms (1000–15000), ou `null` para o padrão de 10 s. Só a equipe da Pilot Status pode defini-lo."
+                    },
+                    "active": {
+                      "type": "boolean",
+                      "description": "`false` = desativado por você: nada é entregue."
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Eventos assinados. Vazio = nada é entregue; `\"*\"` = todos os eventos, exceto o `lead.received`, que é opt-in."
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "hasSecret": {
+                      "type": "boolean",
+                      "description": "`true` quando as entregas são assinadas (`x-pilot-status-signature`). O segredo em si nunca é devolvido por uma leitura."
+                    },
+                    "secret": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "O segredo de assinatura (64 caracteres hexadecimais), em claro. **Devolvido só aqui e pelo `rotate-secret`.** `null` quando retido (veja `secretWithheld`)."
+                    },
+                    "secretWithheld": {
+                      "type": "boolean",
+                      "description": "Presente (`true`) só quando, via OAuth/MCP, a criação não pôde ser gravada na auditoria: o webhook FOI criado, mas o segredo não é devolvido. Chame `POST /v1/webhooks/{id}/rotate-secret` para obter um."
+                    },
+                    "secretWithheldReason": {
+                      "type": "string",
+                      "description": "Explicação bilíngue, presente junto com `secretWithheld`."
+                    },
+                    "secretWithheldCode": {
+                      "type": "string",
+                      "description": "`OAUTH_SECRET_AUDIT_UNAVAILABLE`, presente junto com `secretWithheld`."
+                    }
+                  }
+                },
+                "examples": {
+                  "created": {
+                    "summary": "Criado",
+                    "value": {
+                      "id": "wh_01HZX...",
+                      "tenantId": "tenant_01HZX...",
+                      "name": "n8n",
+                      "url": "https://hooks.acme.com/whatsapp",
+                      "environment": "LIVE",
+                      "deliveryTimeoutMs": null,
+                      "active": true,
+                      "events": [
+                        "message.received"
+                      ],
+                      "createdAt": "2026-07-03T12:00:00.000Z",
+                      "updatedAt": "2026-07-03T12:00:00.000Z",
+                      "hasSecret": true,
+                      "secret": "9f2c4e6a8b0d1f3a5c7e9b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a1c3e5b7d9f1a"
+                    }
+                  },
+                  "secretWithheld": {
+                    "summary": "OAuth/MCP, auditoria indisponível",
+                    "value": {
+                      "id": "wh_01HZX...",
+                      "tenantId": "tenant_01HZX...",
+                      "name": "n8n",
+                      "url": "https://hooks.acme.com/whatsapp",
+                      "environment": "LIVE",
+                      "deliveryTimeoutMs": null,
+                      "active": true,
+                      "events": [
+                        "message.received"
+                      ],
+                      "createdAt": "2026-07-03T12:00:00.000Z",
+                      "updatedAt": "2026-07-03T12:00:00.000Z",
+                      "hasSecret": true,
+                      "secret": null,
+                      "secretWithheld": true,
+                      "secretWithheldReason": "The secret could not be recorded in the audit trail, so it was not returned. Rotate it to obtain a new one | Não foi possível registrar o segredo na auditoria, então ele não foi devolvido. Rotacione-o para obter um novo",
+                      "secretWithheldCode": "OAUTH_SECRET_AUDIT_UNAVAILABLE"
+                    }
+                  }
                 }
               }
             }
           },
           "400": {
-            "description": "Payload ou parâmetros inválidos — ou `INVALID_BODY` quando o corpo não é um JSON válido",
+            "description": "Requisição inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -11608,14 +11954,25 @@
                     },
                     "code": {
                       "type": "string"
+                    },
+                    "details": {
+                      "type": "object"
                     }
                   }
                 },
                 "examples": {
                   "validation": {
-                    "summary": "Erro de validação",
+                    "summary": "Falha na validação do schema (sem `code`)",
                     "value": {
-                      "error": "Validation error"
+                      "error": "Validation error",
+                      "details": {
+                        "formErrors": [],
+                        "fieldErrors": {
+                          "url": [
+                            "Must be a valid URL"
+                          ]
+                        }
+                      }
                     }
                   },
                   "invalidBody": {
@@ -11631,13 +11988,41 @@
                       "error": "The request body must be a JSON object | O corpo da requisição deve ser um objeto JSON",
                       "code": "INVALID_BODY"
                     }
+                  },
+                  "invalidUrl": {
+                    "summary": "URL recusada pela forma (host interno, loopback, esquema não suportado)",
+                    "value": {
+                      "error": "URL de webhook recusada: host de loopback (localhost)",
+                      "code": "INVALID_WEBHOOK_URL"
+                    }
+                  },
+                  "numberMismatch": {
+                    "summary": "`whatsappNumberId` do corpo difere do número da key",
+                    "value": {
+                      "error": "whatsappNumberId does not match the key's number scope",
+                      "code": "NUMBER_MISMATCH"
+                    }
+                  },
+                  "numberRequired": {
+                    "summary": "Nenhum número resolvível (key de tenant, sem campo no corpo, sem cabeçalho)",
+                    "value": {
+                      "error": "whatsappNumberId is required (body field or x-whatsapp-number-id header)",
+                      "code": "NUMBER_REQUIRED"
+                    }
+                  },
+                  "workspaceIdRequired": {
+                    "summary": "Chave de conta sem `x-workspace-id`",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
                   }
                 }
               }
             }
           },
           "401": {
-            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "description": "Credencial ausente ou inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -11651,14 +12036,80 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Unauthorized"
+                "examples": {
+                  "missing": {
+                    "summary": "Sem credencial",
+                    "value": {
+                      "error": "Missing x-api-key, x-api-key-id or Authorization Bearer token"
+                    }
+                  },
+                  "invalid": {
+                    "summary": "API key inválida",
+                    "value": {
+                      "error": "Invalid API key"
+                    }
+                  }
                 }
               }
             }
           },
-          "429": {
-            "description": "Limite de taxa excedido",
+          "403": {
+            "description": "Não permitido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "permissionDenied": {
+                    "summary": "Usuário de chave de conta / OAuth que não é Proprietário nem Admin",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (webhooks:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "notMember": {
+                    "summary": "Usuário de chave de conta / OAuth que não é membro ativo",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  },
+                  "tenantRequired": {
+                    "summary": "Credencial sem workspace",
+                    "value": {
+                      "error": "This credential is not bound to a workspace.",
+                      "code": "TENANT_REQUIRED"
+                    }
+                  },
+                  "archived": {
+                    "summary": "Workspace arquivado",
+                    "value": {
+                      "error": "This workspace has been archived and its API is closed. | Este workspace foi arquivado e sua API está encerrada.",
+                      "code": "WORKSPACE_ARCHIVED"
+                    }
+                  },
+                  "deliveryTimeoutStaffOnly": {
+                    "summary": "`deliveryTimeoutMs` enviado por quem não é da equipe da Pilot Status",
+                    "value": {
+                      "error": "deliveryTimeoutMs can only be set by Pilot Status platform staff; remove the field from the request. | deliveryTimeoutMs só pode ser definido pela equipe da Pilot Status; remova o campo do pedido.",
+                      "code": "DELIVERY_TIMEOUT_STAFF_ONLY"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Número fora do seu workspace",
             "content": {
               "application/json": {
                 "schema": {
@@ -11673,7 +12124,63 @@
                   }
                 },
                 "example": {
-                  "error": "Too many requests"
+                  "error": "WhatsApp number not found",
+                  "code": "NUMBER_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflito com os webhooks já cadastrados",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "duplicate": {
+                    "summary": "Mesma URL já cadastrada neste número",
+                    "value": {
+                      "error": "Já existe um webhook com esta URL para este número. Atualize o existente em vez de criar outro.",
+                      "code": "WEBHOOK_DUPLICATE"
+                    }
+                  },
+                  "limit": {
+                    "summary": "O workspace já tem 50 webhooks",
+                    "value": {
+                      "error": "Limite de 50 webhooks por workspace atingido (50). Remova os que não usa ou fale com o suporte.",
+                      "code": "WEBHOOK_LIMIT_REACHED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha inesperada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Internal server error"
                 }
               }
             }
@@ -11684,7 +12191,7 @@
     "/v1/webhooks/{id}": {
       "get": {
         "summary": "Detalhar webhook",
-        "description": "Retorna UM webhook por id (somente leitura). 404 WEBHOOK_NOT_FOUND se o webhook não for visível para a key chamadora — mesmo escopo de número de GET /api/v1/webhooks. O segredo de assinatura NUNCA é retornado.",
+        "description": "Devolve UM webhook pelo id, com `hasSecret` e o estado da pausa automática. `404 WEBHOOK_NOT_FOUND` se o webhook não for visível para quem chama — mesmo escopo de número de `GET /v1/webhooks`. O `secret` de assinatura NUNCA é devolvido.\n\nPermissões: `webhooks:read` (Proprietário ou Admin com chave de conta ou token OAuth/MCP).",
         "tags": [
           "Webhooks"
         ],
@@ -11709,6 +12216,16 @@
               "type": "string"
             },
             "example": "num_01HZX..."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "responses": {
@@ -11716,30 +12233,141 @@
             "description": "Detalhar webhook",
             "content": {
               "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Id do webhook."
+                    },
+                    "tenantId": {
+                      "type": "string",
+                      "description": "Id do workspace."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Nome de exibição. Vazio ou ausente na criação/edição → o hostname da URL."
+                    },
+                    "url": {
+                      "type": "string",
+                      "description": "URL de destino (`http` ou `https`; hosts internos são recusados)."
+                    },
+                    "environment": {
+                      "type": "string",
+                      "description": "Sempre `LIVE` para webhooks criados pela API."
+                    },
+                    "deliveryTimeoutMs": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "description": "Prazo de entrega deste webhook em ms (1000–15000), ou `null` para o padrão de 10 s. Só a equipe da Pilot Status pode defini-lo."
+                    },
+                    "active": {
+                      "type": "boolean",
+                      "description": "`false` = desativado por você: nada é entregue."
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Eventos assinados. Vazio = nada é entregue; `\"*\"` = todos os eventos, exceto o `lead.received`, que é opt-in."
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "hasSecret": {
+                      "type": "boolean",
+                      "description": "`true` quando as entregas são assinadas (`x-pilot-status-signature`). O segredo em si nunca é devolvido por uma leitura."
+                    },
+                    "lastTriggered": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time",
+                      "description": "Última tentativa de entrega, ou `null`."
+                    },
+                    "whatsappNumberIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "O número em que este webhook está inscrito."
+                    },
+                    "whatsappInstanceIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Conexões desse número às quais o webhook está vinculado."
+                    },
+                    "circuitOpen": {
+                      "type": "boolean",
+                      "description": "`true` enquanto a entrega para este destino está pausada automaticamente (veja `POST /v1/webhooks/{id}/reactivate`)."
+                    },
+                    "circuitOpenedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time",
+                      "description": "Quando a pausa começou, ou `null`."
+                    },
+                    "circuitSuccessPct": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Taxa de sucesso (%) nas últimas entregas quando a pausa começou, ou `null`."
+                    },
+                    "heldCount": {
+                      "type": "integer",
+                      "description": "Eventos retidos durante a pausa, aguardando reenvio."
+                    },
+                    "droppedCount": {
+                      "type": "integer",
+                      "description": "Eventos perdidos durante a pausa (retidos por mais de 48 h, ou acima de 20.000 retidos)."
+                    }
+                  }
+                },
                 "example": {
                   "id": "wh_01HZX...",
                   "tenantId": "tenant_01HZX...",
                   "name": "n8n",
                   "url": "https://hooks.acme.com/whatsapp",
                   "environment": "LIVE",
+                  "deliveryTimeoutMs": null,
                   "active": true,
                   "events": [
                     "message.received",
                     "message.delivered"
                   ],
+                  "createdAt": "2026-06-01T11:59:00.000Z",
+                  "updatedAt": "2026-06-01T12:00:00.000Z",
+                  "hasSecret": true,
                   "lastTriggered": "2026-06-28T09:59:00.000Z",
+                  "whatsappInstanceIds": [],
                   "whatsappNumberIds": [
                     "num_01HZX..."
                   ],
-                  "whatsappInstanceIds": [],
-                  "createdAt": "2026-06-01T11:59:00.000Z",
-                  "updatedAt": "2026-06-01T12:00:00.000Z"
+                  "circuitOpen": false,
+                  "circuitOpenedAt": null,
+                  "circuitSuccessPct": null,
+                  "heldCount": 0,
+                  "droppedCount": 0
                 }
               }
             }
           },
           "400": {
-            "description": "Payload ou parâmetros inválidos",
+            "description": "Requisição inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -11750,17 +12378,33 @@
                     },
                     "code": {
                       "type": "string"
+                    },
+                    "details": {
+                      "type": "object"
                     }
                   }
                 },
-                "example": {
-                  "error": "Validation error"
+                "examples": {
+                  "numberRequired": {
+                    "summary": "Concessão OAuth por número sem `x-whatsapp-number-id`",
+                    "value": {
+                      "error": "Provide x-whatsapp-number-id for a per-number connection",
+                      "code": "NUMBER_REQUIRED"
+                    }
+                  },
+                  "workspaceIdRequired": {
+                    "summary": "Chave de conta sem `x-workspace-id`",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
+                  }
                 }
               }
             }
           },
           "401": {
-            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "description": "Credencial ausente ou inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -11774,14 +12418,73 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Unauthorized"
+                "examples": {
+                  "missing": {
+                    "summary": "Sem credencial",
+                    "value": {
+                      "error": "Missing x-api-key, x-api-key-id or Authorization Bearer token"
+                    }
+                  },
+                  "invalid": {
+                    "summary": "API key inválida",
+                    "value": {
+                      "error": "Invalid API key"
+                    }
+                  }
                 }
               }
             }
           },
-          "429": {
-            "description": "Limite de taxa excedido",
+          "403": {
+            "description": "Não permitido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "permissionDenied": {
+                    "summary": "Usuário de chave de conta / OAuth que não é Proprietário nem Admin",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (webhooks:read).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "notMember": {
+                    "summary": "Usuário de chave de conta / OAuth que não é membro ativo",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  },
+                  "tenantRequired": {
+                    "summary": "Credencial sem workspace",
+                    "value": {
+                      "error": "This credential is not bound to a workspace.",
+                      "code": "TENANT_REQUIRED"
+                    }
+                  },
+                  "archived": {
+                    "summary": "Workspace arquivado",
+                    "value": {
+                      "error": "This workspace has been archived and its API is closed. | Este workspace foi arquivado e sua API está encerrada.",
+                      "code": "WORKSPACE_ARCHIVED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Webhook não visível para quem chama",
             "content": {
               "application/json": {
                 "schema": {
@@ -11796,7 +12499,29 @@
                   }
                 },
                 "example": {
-                  "error": "Too many requests"
+                  "error": "Webhook not found",
+                  "code": "WEBHOOK_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha inesperada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Internal server error"
                 }
               }
             }
@@ -11805,7 +12530,7 @@
       },
       "patch": {
         "summary": "Atualizar webhook",
-        "description": "Atualiza um webhook: qualquer subconjunto de name, url, active (false pausa as entregas sem apagar) e events. events SUBSTITUI a lista completa de assinaturas — lista vazia = não dispara nada; \"*\" = todos, exceto o `lead.received`, que é opt-in e precisa ser listado pelo nome; eventos que o provedor do número não emite são descartados. O número do webhook NÃO pode ser trocado pela API pública (400 NUMBER_RESCOPE_NOT_SUPPORTED) — apague e recrie. 404 se não for visível para a key. O segredo NUNCA é retornado.",
+        "description": "Atualiza um webhook: qualquer subconjunto de `name`, `url`, `active` (`false` interrompe as entregas sem excluir) e `events`. `events` SUBSTITUI a lista inteira de assinaturas — lista vazia = não dispara nada; `\"*\"` = todos, exceto o `lead.received`, que é opt-in e precisa ser listado pelo nome; eventos que o provedor do número não emite são descartados. Campos desconhecidos no corpo são ignorados. O número do webhook NÃO pode ser trocado pela API pública (`400 NUMBER_RESCOPE_NOT_SUPPORTED`) — exclua e recrie. Apontar para uma URL que outro webhook já usa no mesmo número → `409 WEBHOOK_DUPLICATE`. `404 WEBHOOK_NOT_FOUND` se não for visível para quem chama.\n\nResponde a linha atualizada do webhook — sem `secret`, e sem `hasSecret` nem o estado da pausa (leia-os com `GET`). Editar nunca troca o segredo.\n\nPermissões: `webhooks:manage` (Proprietário ou Admin com chave de conta ou token OAuth/MCP).",
         "tags": [
           "Webhooks"
         ],
@@ -11830,6 +12555,16 @@
               "type": "string"
             },
             "example": "num_01HZX..."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "requestBody": {
@@ -11841,18 +12576,19 @@
                 "properties": {
                   "name": {
                     "type": "string",
-                    "description": "Novo nome de exibição.",
-                    "example": "n8n-prod"
+                    "description": "Novo nome de exibição, até 100 caracteres. Vazio → hostname da URL.",
+                    "example": "n8n-prod",
+                    "maxLength": 100
                   },
                   "url": {
                     "type": "string",
-                    "description": "Novo endpoint.",
+                    "description": "Nova URL de destino. Mesmas regras da criação; uma URL que outro webhook já usa neste número → `409 WEBHOOK_DUPLICATE`.",
                     "example": "https://hooks.acme.com/whatsapp-v2"
                   },
                   "active": {
                     "type": "boolean",
                     "description": "false pausa as entregas; true retoma.",
-                    "example": "false"
+                    "example": false
                   },
                   "events": {
                     "type": "array",
@@ -11863,6 +12599,15 @@
                     "example": [
                       "message.received"
                     ]
+                  },
+                  "deliveryTimeoutMs": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1000,
+                    "maximum": 15000,
+                    "description": "**Só para a equipe da Pilot Status.** Prazo de entrega deste webhook em ms, inteiro de 1000 a 15000; `null` o remove (volta ao padrão de 10 s). Enviar a chave — inclusive com `null` — com qualquer outra credencial → `403 DELIVERY_TIMEOUT_STAFF_ONLY`. Keys `ps_` clássicas nunca são da equipe."
                   }
                 }
               }
@@ -11880,6 +12625,7 @@
                   "name": "n8n",
                   "url": "https://hooks.acme.com/whatsapp",
                   "environment": "LIVE",
+                  "deliveryTimeoutMs": null,
                   "active": false,
                   "events": [
                     "message.received",
@@ -11887,12 +12633,63 @@
                   ],
                   "createdAt": "2026-06-01T11:59:00.000Z",
                   "updatedAt": "2026-07-03T12:05:00.000Z"
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Id do webhook."
+                    },
+                    "tenantId": {
+                      "type": "string",
+                      "description": "Id do workspace."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Nome de exibição. Vazio ou ausente na criação/edição → o hostname da URL."
+                    },
+                    "url": {
+                      "type": "string",
+                      "description": "URL de destino (`http` ou `https`; hosts internos são recusados)."
+                    },
+                    "environment": {
+                      "type": "string",
+                      "description": "Sempre `LIVE` para webhooks criados pela API."
+                    },
+                    "deliveryTimeoutMs": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "description": "Prazo de entrega deste webhook em ms (1000–15000), ou `null` para o padrão de 10 s. Só a equipe da Pilot Status pode defini-lo."
+                    },
+                    "active": {
+                      "type": "boolean",
+                      "description": "`false` = desativado por você: nada é entregue."
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Eventos assinados. Vazio = nada é entregue; `\"*\"` = todos os eventos, exceto o `lead.received`, que é opt-in."
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
                 }
               }
             }
           },
           "400": {
-            "description": "Payload ou parâmetros inválidos — ou `INVALID_BODY` quando o corpo não é um JSON válido",
+            "description": "Requisição inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -11903,14 +12700,25 @@
                     },
                     "code": {
                       "type": "string"
+                    },
+                    "details": {
+                      "type": "object"
                     }
                   }
                 },
                 "examples": {
                   "validation": {
-                    "summary": "Erro de validação",
+                    "summary": "Falha na validação do schema (sem `code`)",
                     "value": {
-                      "error": "Validation error"
+                      "error": "Validation error",
+                      "details": {
+                        "formErrors": [],
+                        "fieldErrors": {
+                          "url": [
+                            "Must be a valid URL"
+                          ]
+                        }
+                      }
                     }
                   },
                   "invalidBody": {
@@ -11926,13 +12734,41 @@
                       "error": "The request body must be a JSON object | O corpo da requisição deve ser um objeto JSON",
                       "code": "INVALID_BODY"
                     }
+                  },
+                  "invalidUrl": {
+                    "summary": "URL recusada pela forma (host interno, loopback, esquema não suportado)",
+                    "value": {
+                      "error": "URL de webhook recusada: host de loopback (localhost)",
+                      "code": "INVALID_WEBHOOK_URL"
+                    }
+                  },
+                  "rescope": {
+                    "summary": "`whatsappNumberId` no PATCH",
+                    "value": {
+                      "error": "whatsappNumberId cannot be changed via the public API — delete and recreate the webhook",
+                      "code": "NUMBER_RESCOPE_NOT_SUPPORTED"
+                    }
+                  },
+                  "numberRequired": {
+                    "summary": "Concessão OAuth por número sem `x-whatsapp-number-id`",
+                    "value": {
+                      "error": "Provide x-whatsapp-number-id for a per-number connection",
+                      "code": "NUMBER_REQUIRED"
+                    }
+                  },
+                  "workspaceIdRequired": {
+                    "summary": "Chave de conta sem `x-workspace-id`",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
                   }
                 }
               }
             }
           },
           "401": {
-            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "description": "Credencial ausente ou inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -11946,14 +12782,80 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Unauthorized"
+                "examples": {
+                  "missing": {
+                    "summary": "Sem credencial",
+                    "value": {
+                      "error": "Missing x-api-key, x-api-key-id or Authorization Bearer token"
+                    }
+                  },
+                  "invalid": {
+                    "summary": "API key inválida",
+                    "value": {
+                      "error": "Invalid API key"
+                    }
+                  }
                 }
               }
             }
           },
-          "429": {
-            "description": "Limite de taxa excedido",
+          "403": {
+            "description": "Não permitido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "permissionDenied": {
+                    "summary": "Usuário de chave de conta / OAuth que não é Proprietário nem Admin",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (webhooks:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "notMember": {
+                    "summary": "Usuário de chave de conta / OAuth que não é membro ativo",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  },
+                  "tenantRequired": {
+                    "summary": "Credencial sem workspace",
+                    "value": {
+                      "error": "This credential is not bound to a workspace.",
+                      "code": "TENANT_REQUIRED"
+                    }
+                  },
+                  "archived": {
+                    "summary": "Workspace arquivado",
+                    "value": {
+                      "error": "This workspace has been archived and its API is closed. | Este workspace foi arquivado e sua API está encerrada.",
+                      "code": "WORKSPACE_ARCHIVED"
+                    }
+                  },
+                  "deliveryTimeoutStaffOnly": {
+                    "summary": "`deliveryTimeoutMs` enviado por quem não é da equipe da Pilot Status",
+                    "value": {
+                      "error": "deliveryTimeoutMs can only be set by Pilot Status platform staff; remove the field from the request. | deliveryTimeoutMs só pode ser definido pela equipe da Pilot Status; remova o campo do pedido.",
+                      "code": "DELIVERY_TIMEOUT_STAFF_ONLY"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Webhook não visível para quem chama",
             "content": {
               "application/json": {
                 "schema": {
@@ -11968,7 +12870,56 @@
                   }
                 },
                 "example": {
-                  "error": "Too many requests"
+                  "error": "Webhook not found",
+                  "code": "WEBHOOK_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflito com os webhooks já cadastrados",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "duplicate": {
+                    "summary": "Mesma URL já cadastrada neste número",
+                    "value": {
+                      "error": "Já existe um webhook com esta URL para este número. Atualize o existente em vez de criar outro.",
+                      "code": "WEBHOOK_DUPLICATE"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha inesperada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Internal server error"
                 }
               }
             }
@@ -11977,7 +12928,7 @@
       },
       "delete": {
         "summary": "Excluir webhook",
-        "description": "Exclui PERMANENTEMENTE um webhook (irreversível): a assinatura e seus logs de entrega são removidos e o endpoint simplesmente deixa de receber eventos. Para pausar sem perder o webhook, prefira PATCH com active=false. 404 se não for visível para a key chamadora (mesmo escopo de número da listagem).",
+        "description": "Exclui um webhook PERMANENTEMENTE (irreversível): a inscrição e os logs de entrega são removidos e o endpoint simplesmente deixa de receber eventos. Para interromper as entregas sem perder o webhook, prefira `PATCH` com `active: false`. `404 WEBHOOK_NOT_FOUND` se não for visível para quem chama (mesmo escopo de número da listagem).\n\nPermissões: `webhooks:manage` (Proprietário ou Admin com chave de conta ou token OAuth/MCP).",
         "tags": [
           "Webhooks"
         ],
@@ -12002,6 +12953,16 @@
               "type": "string"
             },
             "example": "num_01HZX..."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "responses": {
@@ -12017,7 +12978,7 @@
             }
           },
           "400": {
-            "description": "Payload ou parâmetros inválidos",
+            "description": "Requisição inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -12028,17 +12989,33 @@
                     },
                     "code": {
                       "type": "string"
+                    },
+                    "details": {
+                      "type": "object"
                     }
                   }
                 },
-                "example": {
-                  "error": "Validation error"
+                "examples": {
+                  "numberRequired": {
+                    "summary": "Concessão OAuth por número sem `x-whatsapp-number-id`",
+                    "value": {
+                      "error": "Provide x-whatsapp-number-id for a per-number connection",
+                      "code": "NUMBER_REQUIRED"
+                    }
+                  },
+                  "workspaceIdRequired": {
+                    "summary": "Chave de conta sem `x-workspace-id`",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
+                  }
                 }
               }
             }
           },
           "401": {
-            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "description": "Credencial ausente ou inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -12052,14 +13029,73 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Unauthorized"
+                "examples": {
+                  "missing": {
+                    "summary": "Sem credencial",
+                    "value": {
+                      "error": "Missing x-api-key, x-api-key-id or Authorization Bearer token"
+                    }
+                  },
+                  "invalid": {
+                    "summary": "API key inválida",
+                    "value": {
+                      "error": "Invalid API key"
+                    }
+                  }
                 }
               }
             }
           },
-          "429": {
-            "description": "Limite de taxa excedido",
+          "403": {
+            "description": "Não permitido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "permissionDenied": {
+                    "summary": "Usuário de chave de conta / OAuth que não é Proprietário nem Admin",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (webhooks:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "notMember": {
+                    "summary": "Usuário de chave de conta / OAuth que não é membro ativo",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  },
+                  "tenantRequired": {
+                    "summary": "Credencial sem workspace",
+                    "value": {
+                      "error": "This credential is not bound to a workspace.",
+                      "code": "TENANT_REQUIRED"
+                    }
+                  },
+                  "archived": {
+                    "summary": "Workspace arquivado",
+                    "value": {
+                      "error": "This workspace has been archived and its API is closed. | Este workspace foi arquivado e sua API está encerrada.",
+                      "code": "WORKSPACE_ARCHIVED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Webhook não visível para quem chama",
             "content": {
               "application/json": {
                 "schema": {
@@ -12074,7 +13110,29 @@
                   }
                 },
                 "example": {
-                  "error": "Too many requests"
+                  "error": "Webhook not found",
+                  "code": "WEBHOOK_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha inesperada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Internal server error"
                 }
               }
             }
@@ -12085,7 +13143,7 @@
     "/v1/webhooks/{id}/logs": {
       "get": {
         "summary": "Eventos de entrega do webhook",
-        "description": "Lista os eventos de entrega recentes de um webhook (somente leitura). Cada item traz event, status (SUCCESS|FAILED), statusCode, payload, response, durationMs e createdAt (UTC). Numa tentativa entregue, response traz o corpo do seu endpoint (cortado em 1000 caracteres) e statusCode o status HTTP. Quando a requisição nunca se completou — DNS, conexão recusada, timeout, TLS — statusCode é null e response traz a cadeia de causas, da mais externa para a mais interna, unidas por ' <- ' e marcadas com o código de erro do sistema, ex.: 'fetch failed <- getaddrinfo EAI_AGAIN hooks.example.com [EAI_AGAIN]'. Trate response como string de diagnóstico: o texto vem do runtime e não é contrato estável. Use limit (1–50) e event para filtrar. 404 se o webhook não for visível para a key chamadora; respeita o mesmo escopo de número de GET /api/v1/webhooks.",
+        "description": "Lista as tentativas de entrega recentes de um webhook, da mais nova para a mais antiga (somente leitura). Cada item traz `event`, `status` (`SUCCESS`|`FAILED`), `statusCode`, `payload`, `response`, `durationMs`, `whatsappNumberId`, `messageId`, `correlationId` e `createdAt` (UTC). Numa tentativa entregue, `response` traz o corpo do seu endpoint (truncado em 1000 caracteres) e `statusCode` o status HTTP. Quando a requisição nem se completou — DNS, conexão recusada, timeout, TLS — `statusCode` é `null` e `response` traz a cadeia de causas, com a mais interna por último, unidas por ` <- ` e marcadas com o código de erro do sistema, ex.: `fetch failed <- getaddrinfo EAI_AGAIN hooks.example.com [EAI_AGAIN]`. Trate `response` como texto de diagnóstico: a redação vem do runtime e não é um contrato estável. Use `limit` (1–50) e `event` para filtrar. `404 WEBHOOK_NOT_FOUND` se o webhook não for visível para quem chama; respeita o mesmo escopo de número de `GET /v1/webhooks`.\n\nPermissões: `webhooks:read` (Proprietário ou Admin com chave de conta ou token OAuth/MCP).",
         "tags": [
           "Webhooks"
         ],
@@ -12105,7 +13163,7 @@
             "name": "limit",
             "in": "query",
             "required": false,
-            "description": "Número de eventos a retornar (padrão 50).",
+            "description": "Quantidade de tentativas a devolver, de 1 a 50 (padrão 50). Acima de 50 vira 50; um valor não numérico ou não positivo volta ao padrão de 50.",
             "schema": {
               "type": "string",
               "description": "(integer (1–50))"
@@ -12131,6 +13189,16 @@
               "type": "string"
             },
             "example": "num_01HZX..."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "responses": {
@@ -12150,6 +13218,9 @@
                       "payload": "{\"event\":\"message.delivered\",\"data\":{}}",
                       "response": "ok",
                       "durationMs": 142,
+                      "whatsappNumberId": "num_01HZX...",
+                      "messageId": "msg_01HZX...",
+                      "correlationId": "corr_01HZX...",
                       "createdAt": "2026-06-28T09:59:00.000Z"
                     },
                     {
@@ -12161,6 +13232,9 @@
                       "payload": "{\"event\":\"message.delivered\",\"data\":{}}",
                       "response": "fetch failed <- getaddrinfo EAI_AGAIN hooks.example.com [EAI_AGAIN]",
                       "durationMs": 21,
+                      "whatsappNumberId": "num_01HZX...",
+                      "messageId": "msg_01HZY...",
+                      "correlationId": null,
                       "createdAt": "2026-06-28T10:02:00.000Z"
                     }
                   ]
@@ -12169,7 +13243,7 @@
             }
           },
           "400": {
-            "description": "Payload ou parâmetros inválidos",
+            "description": "Requisição inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -12180,17 +13254,33 @@
                     },
                     "code": {
                       "type": "string"
+                    },
+                    "details": {
+                      "type": "object"
                     }
                   }
                 },
-                "example": {
-                  "error": "Validation error"
+                "examples": {
+                  "numberRequired": {
+                    "summary": "Concessão OAuth por número sem `x-whatsapp-number-id`",
+                    "value": {
+                      "error": "Provide x-whatsapp-number-id for a per-number connection",
+                      "code": "NUMBER_REQUIRED"
+                    }
+                  },
+                  "workspaceIdRequired": {
+                    "summary": "Chave de conta sem `x-workspace-id`",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
+                  }
                 }
               }
             }
           },
           "401": {
-            "description": "Header `x-api-key` / `x-api-key-id` ausente ou inválido",
+            "description": "Credencial ausente ou inválida",
             "content": {
               "application/json": {
                 "schema": {
@@ -12204,14 +13294,73 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Unauthorized"
+                "examples": {
+                  "missing": {
+                    "summary": "Sem credencial",
+                    "value": {
+                      "error": "Missing x-api-key, x-api-key-id or Authorization Bearer token"
+                    }
+                  },
+                  "invalid": {
+                    "summary": "API key inválida",
+                    "value": {
+                      "error": "Invalid API key"
+                    }
+                  }
                 }
               }
             }
           },
-          "429": {
-            "description": "Limite de taxa excedido",
+          "403": {
+            "description": "Não permitido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "permissionDenied": {
+                    "summary": "Usuário de chave de conta / OAuth que não é Proprietário nem Admin",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (webhooks:read).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "notMember": {
+                    "summary": "Usuário de chave de conta / OAuth que não é membro ativo",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  },
+                  "tenantRequired": {
+                    "summary": "Credencial sem workspace",
+                    "value": {
+                      "error": "This credential is not bound to a workspace.",
+                      "code": "TENANT_REQUIRED"
+                    }
+                  },
+                  "archived": {
+                    "summary": "Workspace arquivado",
+                    "value": {
+                      "error": "This workspace has been archived and its API is closed. | Este workspace foi arquivado e sua API está encerrada.",
+                      "code": "WORKSPACE_ARCHIVED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Webhook não visível para quem chama",
             "content": {
               "application/json": {
                 "schema": {
@@ -12226,7 +13375,539 @@
                   }
                 },
                 "example": {
-                  "error": "Too many requests"
+                  "error": "Webhook not found",
+                  "code": "WEBHOOK_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha inesperada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{id}/rotate-secret": {
+      "post": {
+        "summary": "Rotacionar o segredo do webhook",
+        "description": "⚠️ **Efeito colateral real.** Gera um NOVO segredo de assinatura para o webhook e o devolve em claro, **uma única vez**: `{ \"id\", \"hasSecret\": true, \"secret\" }` (64 caracteres hexadecimais). O segredo anterior deixa de valer na hora — não há janela de sobreposição; entregas já em andamento assinam com o valor que o despacho delas carregou. É também como um webhook criado antes de 15/09/2026 (`hasSecret: false`, entregas sem assinatura) passa a ser assinado, e o único jeito de recuperar um segredo perdido. Sem corpo.\n\nVia OAuth/MCP a rotação é registrada na auditoria ANTES de acontecer; se esse registro não puder ser gravado, a rotação é recusada com `500 OAUTH_SECRET_AUDIT_UNAVAILABLE` e o segredo antigo continua valendo.\n\nPermissões: `webhooks:manage` (Proprietário ou Admin com chave de conta ou token OAuth/MCP). Mesmo escopo de número de `GET /v1/webhooks/{id}`: um webhook não visível para quem chama → `404 WEBHOOK_NOT_FOUND`.",
+        "tags": [
+          "Webhooks"
+        ],
+        "operationId": "post_webhooks_id_rotate_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Id do webhook.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "wh_01HZX..."
+          },
+          {
+            "name": "x-whatsapp-number-id",
+            "in": "header",
+            "required": false,
+            "description": "Restringe a um único número (obrigatório para concessões OAuth por número).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "num_01HZX..."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Novo segredo, em claro, uma única vez",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Id do webhook."
+                    },
+                    "hasSecret": {
+                      "type": "boolean",
+                      "description": "`true` quando as entregas são assinadas (`x-pilot-status-signature`). O segredo em si nunca é devolvido por uma leitura."
+                    },
+                    "secret": {
+                      "type": "string",
+                      "description": "O segredo de assinatura (64 caracteres hexadecimais), em claro. **Devolvido só aqui e pelo `rotate-secret`.**"
+                    }
+                  }
+                },
+                "example": {
+                  "id": "wh_01HZX...",
+                  "hasSecret": true,
+                  "secret": "9f2c4e6a8b0d1f3a5c7e9b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a1c3e5b7d9f1a"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Requisição inválida",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "examples": {
+                  "numberRequired": {
+                    "summary": "Concessão OAuth por número sem `x-whatsapp-number-id`",
+                    "value": {
+                      "error": "Provide x-whatsapp-number-id for a per-number connection",
+                      "code": "NUMBER_REQUIRED"
+                    }
+                  },
+                  "workspaceIdRequired": {
+                    "summary": "Chave de conta sem `x-workspace-id`",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente ou inválida",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "missing": {
+                    "summary": "Sem credencial",
+                    "value": {
+                      "error": "Missing x-api-key, x-api-key-id or Authorization Bearer token"
+                    }
+                  },
+                  "invalid": {
+                    "summary": "API key inválida",
+                    "value": {
+                      "error": "Invalid API key"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Não permitido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "permissionDenied": {
+                    "summary": "Usuário de chave de conta / OAuth que não é Proprietário nem Admin",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (webhooks:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "notMember": {
+                    "summary": "Usuário de chave de conta / OAuth que não é membro ativo",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  },
+                  "tenantRequired": {
+                    "summary": "Credencial sem workspace",
+                    "value": {
+                      "error": "This credential is not bound to a workspace.",
+                      "code": "TENANT_REQUIRED"
+                    }
+                  },
+                  "archived": {
+                    "summary": "Workspace arquivado",
+                    "value": {
+                      "error": "This workspace has been archived and its API is closed. | Este workspace foi arquivado e sua API está encerrada.",
+                      "code": "WORKSPACE_ARCHIVED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Webhook não visível para quem chama",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Webhook not found",
+                  "code": "WEBHOOK_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha inesperada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "auditUnavailable": {
+                    "summary": "OAuth/MCP: o registro de auditoria não pôde ser gravado, nada foi rotacionado",
+                    "value": {
+                      "error": "Could not record this access in the audit trail, so it was not performed. Try again | Não foi possível registrar este acesso na auditoria, então ele não foi realizado. Tente novamente",
+                      "code": "OAUTH_SECRET_AUDIT_UNAVAILABLE"
+                    }
+                  },
+                  "internal": {
+                    "summary": "Erro inesperado",
+                    "value": {
+                      "error": "Internal server error"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{id}/reactivate": {
+      "post": {
+        "summary": "Retomar um destino de webhook pausado",
+        "description": "Retoma a entrega para um destino que foi **pausado automaticamente** (`circuitOpen: true`). A entrega para um webhook é pausada quando a taxa de sucesso fica em 20% ou menos nas últimas 50 entregas (depois de pelo menos 20); durante a pausa, eventos novos ficam retidos (`heldCount`) por até 48 horas, no máximo 20.000 por webhook — além disso são perdidos (`droppedCount`) — e uma entrega a cada 5 minutos passa como sonda; se ela tiver sucesso, a pausa termina sozinha.\n\nEsta chamada termina a pausa na hora e libera até 1.000 eventos retidos, espaçados de 200 ms; o resto (`stillHeld`) sai no ciclo de reenvio de hora em hora. Responde `{ ok, released, stillHeld }` mais o estado atual da pausa. Idempotente: num webhook que já está entregando, responde `200` com `released: 0`. Não é o mesmo que `active` — reativar não liga de novo um webhook que você desativou. Sem corpo.\n\nPermissões: `webhooks:manage` (Proprietário ou Admin com chave de conta ou token OAuth/MCP). Mesmo escopo de número de `GET /v1/webhooks/{id}`.",
+        "tags": [
+          "Webhooks"
+        ],
+        "operationId": "post_webhooks_id_reactivate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Id do webhook.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "wh_01HZX..."
+          },
+          {
+            "name": "x-whatsapp-number-id",
+            "in": "header",
+            "required": false,
+            "description": "Restringe a um único número (obrigatório para concessões OAuth por número).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "num_01HZX..."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pausa encerrada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "description": "Sempre `true`."
+                    },
+                    "released": {
+                      "type": "integer",
+                      "description": "Eventos retidos liberados por esta chamada."
+                    },
+                    "stillHeld": {
+                      "type": "integer",
+                      "description": "Eventos retidos que continuam na fila (liberados pelo ciclo de hora em hora)."
+                    },
+                    "circuitOpen": {
+                      "type": "boolean",
+                      "description": "`true` enquanto a entrega para este destino está pausada automaticamente (veja `POST /v1/webhooks/{id}/reactivate`)."
+                    },
+                    "circuitOpenedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time",
+                      "description": "Quando a pausa começou, ou `null`."
+                    },
+                    "circuitSuccessPct": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Taxa de sucesso (%) nas últimas entregas quando a pausa começou, ou `null`."
+                    },
+                    "heldCount": {
+                      "type": "integer",
+                      "description": "Eventos retidos durante a pausa, aguardando reenvio."
+                    },
+                    "droppedCount": {
+                      "type": "integer",
+                      "description": "Eventos perdidos durante a pausa (retidos por mais de 48 h, ou acima de 20.000 retidos)."
+                    }
+                  }
+                },
+                "example": {
+                  "ok": true,
+                  "released": 12,
+                  "stillHeld": 0,
+                  "circuitOpen": false,
+                  "circuitOpenedAt": null,
+                  "circuitSuccessPct": null,
+                  "heldCount": 0,
+                  "droppedCount": 0
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Requisição inválida",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "examples": {
+                  "numberRequired": {
+                    "summary": "Concessão OAuth por número sem `x-whatsapp-number-id`",
+                    "value": {
+                      "error": "Provide x-whatsapp-number-id for a per-number connection",
+                      "code": "NUMBER_REQUIRED"
+                    }
+                  },
+                  "workspaceIdRequired": {
+                    "summary": "Chave de conta sem `x-workspace-id`",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial ausente ou inválida",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "missing": {
+                    "summary": "Sem credencial",
+                    "value": {
+                      "error": "Missing x-api-key, x-api-key-id or Authorization Bearer token"
+                    }
+                  },
+                  "invalid": {
+                    "summary": "API key inválida",
+                    "value": {
+                      "error": "Invalid API key"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Não permitido",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "permissionDenied": {
+                    "summary": "Usuário de chave de conta / OAuth que não é Proprietário nem Admin",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (webhooks:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "notMember": {
+                    "summary": "Usuário de chave de conta / OAuth que não é membro ativo",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  },
+                  "tenantRequired": {
+                    "summary": "Credencial sem workspace",
+                    "value": {
+                      "error": "This credential is not bound to a workspace.",
+                      "code": "TENANT_REQUIRED"
+                    }
+                  },
+                  "archived": {
+                    "summary": "Workspace arquivado",
+                    "value": {
+                      "error": "This workspace has been archived and its API is closed. | Este workspace foi arquivado e sua API está encerrada.",
+                      "code": "WORKSPACE_ARCHIVED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Webhook não visível para quem chama",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Webhook not found",
+                  "code": "WEBHOOK_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha inesperada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Internal server error"
                 }
               }
             }
@@ -26651,7 +28332,7 @@
     "/v1/phone-lines/webhooks": {
       "get": {
         "summary": "Listar webhooks das linhas",
-        "description": "Retorna `{ \"webhooks\": [ … ], \"events\": [ … ] }`: todos os webhooks das linhas do seu workspace, **do mais antigo para o mais novo**, e o catálogo de eventos que você pode assinar. **O segredo de assinatura nunca é devolvido aqui** — só uma vez, por `POST /v1/phone-lines/webhooks`.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "Retorna `{ \"webhooks\": [ … ], \"events\": [ … ] }`: todos os webhooks das linhas do seu workspace, **do mais antigo para o mais novo**, e o catálogo de eventos que você pode assinar. **O segredo de assinatura nunca é devolvido aqui** — só uma vez, por `POST /v1/phone-lines/webhooks`.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Phone Lines"
         ],
@@ -26886,11 +28567,23 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
+          }
+        ]
       },
       "post": {
         "summary": "Criar um webhook de linha",
-        "description": "⚠️ **Efeito colateral real — isto NÃO é uma simulação, inclusive pelo playground.** Cria um webhook de linha e responde **`201`** com `{ \"webhook\": { … } }`, incluindo o **`secret`** — o segredo de assinatura `plwh_…`. **É a única vez que ele é devolvido**: guarde-o na hora (a resposta é enviada com `Cache-Control: no-store`). Não há rotação: para trocá-lo, crie um novo webhook, passe o seu receptor a usar o segredo dele e exclua o antigo.\n\nNão é idempotente: duas chamadas criam dois webhooks, cada um com o seu segredo. Um workspace pode ter mais de um webhook de linha; cada um recebe os eventos que assinou. Eventos nunca são reenviados a um webhook criado depois deles.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "⚠️ **Efeito colateral real — isto NÃO é uma simulação, inclusive pelo playground.** Cria um webhook de linha e responde **`201`** com `{ \"webhook\": { … } }`, incluindo o **`secret`** — o segredo de assinatura `plwh_…`. **É a única vez que ele é devolvido**: guarde-o na hora (a resposta é enviada com `Cache-Control: no-store`). Não há rotação: para trocá-lo, crie um novo webhook, passe o seu receptor a usar o segredo dele e exclua o antigo.\n\nVia OAuth/MCP a criação é registrada antes na auditoria; se esse registro não puder ser gravado, o webhook é criado mesmo assim, mas `secret` volta `null` com `secretWithheld: true`, `secretWithheldReason` e `secretWithheldCode: \"OAUTH_SECRET_AUDIT_UNAVAILABLE\"`.\n\nNão é idempotente: duas chamadas criam dois webhooks, cada um com o seu segredo. Um workspace pode ter mais de um webhook de linha; cada um recebe os eventos que assinou. Eventos nunca são reenviados a um webhook criado depois deles.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Phone Lines"
         ],
@@ -26995,8 +28688,11 @@
                           "example": true
                         },
                         "secret": {
-                          "type": "string",
-                          "description": "O segredo de assinatura (`plwh_…`). **Devolvido só aqui, uma única vez** — nenhum endpoint o mostra de novo e não há rotação. É a chave do HMAC-SHA256 de `x-pilot-status-signature`.",
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "O segredo de assinatura (`plwh_…`). **Devolvido só aqui, uma única vez** — nenhum endpoint o mostra de novo e não há rotação. É a chave do HMAC-SHA256 de `x-pilot-status-signature`. `null` quando retido (veja `secretWithheld`).",
                           "example": "plwh_3f9c1a7e5b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
                         },
                         "createdAt": {
@@ -27004,6 +28700,18 @@
                           "format": "date-time",
                           "description": "ISO 8601 — quando o webhook foi criado.",
                           "example": "2026-10-27T13:58:02.000Z"
+                        },
+                        "secretWithheld": {
+                          "type": "boolean",
+                          "description": "Presente (`true`) só quando, via OAuth/MCP, a criação não pôde ser gravada na auditoria: o webhook FOI criado, mas o segredo não é devolvido. Aqui não há rotação — exclua-o e crie outro."
+                        },
+                        "secretWithheldReason": {
+                          "type": "string",
+                          "description": "Explicação bilíngue, presente junto com `secretWithheld`."
+                        },
+                        "secretWithheldCode": {
+                          "type": "string",
+                          "description": "`OAUTH_SECRET_AUDIT_UNAVAILABLE`, presente junto com `secretWithheld`."
                         }
                       }
                     }
@@ -27216,13 +28924,25 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
+          }
+        ]
       }
     },
     "/v1/phone-lines/webhooks/{id}": {
       "get": {
         "summary": "Obter um webhook de linha",
-        "description": "Retorna `{ \"webhook\": { … } }` — o mesmo objeto da lista, **nunca o segredo**. Um webhook de outro workspace responde **404 `WEBHOOK_NOT_FOUND`**, exatamente como um que não existe.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "Retorna `{ \"webhook\": { … } }` — o mesmo objeto da lista, **nunca o segredo**. Um webhook de outro workspace responde **404 `WEBHOOK_NOT_FOUND`**, exatamente como um que não existe.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Phone Lines"
         ],
@@ -27237,6 +28957,16 @@
             },
             "example": "cmh1w8b2k0001wh8example3d",
             "description": "O `id` do webhook (de `GET /v1/phone-lines/webhooks` ou da resposta da criação)."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "responses": {
@@ -27459,7 +29189,7 @@
       },
       "patch": {
         "summary": "Editar ou pausar um webhook de linha",
-        "description": "⚠️ **Efeito colateral real.** Muda os campos que você enviar e responde `{ \"webhook\": { … } }`; um campo ausente fica como está. `active: false` **pausa** o webhook (ele não recebe entregas — uma entrega que já está nas retentativas é marcada como falha na próxima tentativa) e `active: true` o retoma; eventos ocorridos enquanto ele estava pausado nunca são enviados.\n\nO webhook resultante é validado como na criação. **Só uma URL que muda é conferida de novo** contra destinos internos, então um webhook sempre pode ser pausado ou ter os eventos editados. Um `name` enviado em branco vira o host da URL (nova ou a guardada). **Editar nunca muda o segredo de assinatura**, e o segredo não é devolvido.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "⚠️ **Efeito colateral real.** Muda os campos que você enviar e responde `{ \"webhook\": { … } }`; um campo ausente fica como está. `active: false` **pausa** o webhook (ele não recebe entregas — uma entrega que já está nas retentativas é marcada como falha na próxima tentativa) e `active: true` o retoma; eventos ocorridos enquanto ele estava pausado nunca são enviados.\n\nO webhook resultante é validado como na criação. **Só uma URL que muda é conferida de novo** contra destinos internos, então um webhook sempre pode ser pausado ou ter os eventos editados. Um `name` enviado em branco vira o host da URL (nova ou a guardada). **Editar nunca muda o segredo de assinatura**, e o segredo não é devolvido.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Phone Lines"
         ],
@@ -27474,6 +29204,16 @@
             },
             "example": "cmh1w8b2k0001wh8example3d",
             "description": "O `id` do webhook (de `GET /v1/phone-lines/webhooks` ou da resposta da criação)."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "requestBody": {
@@ -27826,7 +29566,7 @@
       },
       "delete": {
         "summary": "Excluir um webhook de linha",
-        "description": "⚠️ **Efeito colateral real — isto NÃO é uma simulação, inclusive pelo playground.** Exclui o webhook e o log de entregas dele, e responde `{ \"ok\": true }`. As entregas pendentes dele são descartadas — nada mais é enviado para aquela URL. O segredo morre com ele. Uma segunda chamada responde `404 WEBHOOK_NOT_FOUND`.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "⚠️ **Efeito colateral real — isto NÃO é uma simulação, inclusive pelo playground.** Exclui o webhook e o log de entregas dele, e responde `{ \"ok\": true }`. As entregas pendentes dele são descartadas — nada mais é enviado para aquela URL. O segredo morre com ele. Uma segunda chamada responde `404 WEBHOOK_NOT_FOUND`.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Phone Lines"
         ],
@@ -27841,6 +29581,16 @@
             },
             "example": "cmh1w8b2k0001wh8example3d",
             "description": "O `id` do webhook (de `GET /v1/phone-lines/webhooks` ou da resposta da criação)."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "responses": {
@@ -28000,7 +29750,7 @@
     "/v1/phone-lines/webhooks/{id}/deliveries": {
       "get": {
         "summary": "Listar as entregas de um webhook",
-        "description": "Retorna `{ \"deliveries\": [ … ] }`: as entregas mais recentes do webhook, **da mais nova para a mais antiga**, com a situação e o resultado — **nunca o payload** (um `phone_line.code_received` traz o código de ativação; leia uma entrega completa com `GET …/deliveries/{deliveryId}`). Um webhook de outro workspace responde **404 `WEBHOOK_NOT_FOUND`**, nunca uma lista vazia.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "Retorna `{ \"deliveries\": [ … ] }`: as entregas mais recentes do webhook, **da mais nova para a mais antiga**, com a situação e o resultado — **nunca o payload** (um `phone_line.code_received` traz o código de ativação; leia uma entrega completa com `GET …/deliveries/{deliveryId}`). Um webhook de outro workspace responde **404 `WEBHOOK_NOT_FOUND`**, nunca uma lista vazia.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Phone Lines"
         ],
@@ -28026,6 +29776,16 @@
               "description": "(integer (1–200))"
             },
             "example": "50"
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "responses": {
@@ -28275,7 +30035,7 @@
     "/v1/phone-lines/webhooks/{id}/deliveries/{deliveryId}": {
       "get": {
         "summary": "Obter uma entrega do webhook",
-        "description": "Retorna `{ \"delivery\": { … } }`: os campos da lista mais o `durationMs` e o `responseBody` da última tentativa, e o **`payload` — o corpo exato que foi enviado e assinado, como uma string JSON**, para você conferir o seu código de assinatura contra ele. ⚠️ O payload de um `phone_line.code_received` traz o **código de ativação**, que é uma credencial: a resposta é enviada com `Cache-Control: private, no-store` — não a registre em log. Uma entrega de outro webhook ou workspace, ou um id desconhecido, responde **404 `WEBHOOK_DELIVERY_NOT_FOUND`**.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "Retorna `{ \"delivery\": { … } }`: os campos da lista mais o `durationMs` e o `responseBody` da última tentativa, e o **`payload` — o corpo exato que foi enviado e assinado, como uma string JSON**, para você conferir o seu código de assinatura contra ele. ⚠️ O payload de um `phone_line.code_received` traz o **código de ativação**, que é uma credencial: a resposta é enviada com `Cache-Control: private, no-store` — não a registre em log. Uma entrega de outro webhook ou workspace, ou um id desconhecido, responde **404 `WEBHOOK_DELIVERY_NOT_FOUND`**.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Phone Lines"
         ],
@@ -28300,6 +30060,16 @@
             },
             "example": "cmh1w9c4m0002dl8example5f",
             "description": "O `id` da entrega (da lista de entregas, ou o `id` que o seu endpoint recebeu)."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Só com chave de conta (`ps_account_`): o workspace em que agir, obtido em `GET /v1/workspaces`. Sem ele, uma chave de conta recebe `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
           }
         ],
         "responses": {
@@ -30423,7 +32193,7 @@
     "/v1/workspace/webhooks": {
       "get": {
         "summary": "Listar webhooks do workspace",
-        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\nRetorna `{ \"webhooks\": [ … ], \"events\": [ … ] }`: todos os webhooks das linhas do seu workspace, **do mais antigo para o mais novo**, e o catálogo de eventos que você pode assinar. **O segredo de assinatura nunca é devolvido aqui** — só uma vez, por `POST /v1/workspace/webhooks`.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\nRetorna `{ \"webhooks\": [ … ], \"events\": [ … ] }`: todos os webhooks das linhas do seu workspace, **do mais antigo para o mais novo**, e o catálogo de eventos que você pode assinar. **O segredo de assinatura nunca é devolvido aqui** — só uma vez, por `POST /v1/workspace/webhooks`.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/workspace/webhooks` aceita só uma chave **com escopo de tenant**: os webhooks do workspace pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks do workspace** — um cadastro separado de `/v1/webhooks`: recebem os eventos `phone_line.*` e `wallet.topup_paid`, e um webhook de número nunca recebe nenhum deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Workspace"
         ],
@@ -30443,7 +32213,7 @@
                         "properties": {
                           "id": {
                             "type": "string",
-                            "description": "O id do webhook. Use-o em todo caminho `/v1/phone-lines/webhooks/{id}`.",
+                            "description": "O id do webhook. Use-o em todo caminho `/v1/workspace/webhooks/{id}`.",
                             "example": "cmh1w8b2k0001wh8example3d"
                           },
                           "name": {
@@ -30502,7 +32272,7 @@
                       "items": {
                         "type": "string"
                       },
-                      "description": "Todos os nomes de eventos de linha. `\"*\"` não está na lista, mas é aceito em `events`.",
+                      "description": "Todos os nomes de eventos do workspace: os eventos de linha e `wallet.topup_paid`. `\"*\"` não está na lista, mas é aceito em `events`.",
                       "example": [
                         "phone_line.purchased",
                         "phone_line.audio_received",
@@ -30675,7 +32445,7 @@
       },
       "post": {
         "summary": "Criar um webhook do workspace",
-        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\n⚠️ **Efeito colateral real — isto NÃO é uma simulação, inclusive pelo playground.** Cria um webhook de linha e responde **`201`** com `{ \"webhook\": { … } }`, incluindo o **`secret`** — o segredo de assinatura `plwh_…`. **É a única vez que ele é devolvido**: guarde-o na hora (a resposta é enviada com `Cache-Control: no-store`). Não há rotação: para trocá-lo, crie um novo webhook, passe o seu receptor a usar o segredo dele e exclua o antigo.\n\nNão é idempotente: duas chamadas criam dois webhooks, cada um com o seu segredo. Um workspace pode ter mais de um webhook de linha; cada um recebe os eventos que assinou. Eventos nunca são reenviados a um webhook criado depois deles.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\n⚠️ **Efeito colateral real — isto NÃO é uma simulação, inclusive pelo playground.** Cria um webhook de linha e responde **`201`** com `{ \"webhook\": { … } }`, incluindo o **`secret`** — o segredo de assinatura `plwh_…`. **É a única vez que ele é devolvido**: guarde-o na hora (a resposta é enviada com `Cache-Control: no-store`). Não há rotação: para trocá-lo, crie um novo webhook, passe o seu receptor a usar o segredo dele e exclua o antigo.\n\nVia OAuth/MCP a criação é registrada antes na auditoria; se esse registro não puder ser gravado, o webhook é criado mesmo assim, mas `secret` volta `null` com `secretWithheld: true`, `secretWithheldReason` e `secretWithheldCode: \"OAUTH_SECRET_AUDIT_UNAVAILABLE\"`.\n\nNão é idempotente: duas chamadas criam dois webhooks, cada um com o seu segredo. Um workspace pode ter mais de um webhook de linha; cada um recebe os eventos que assinou. Eventos nunca são reenviados a um webhook criado depois deles.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/workspace/webhooks` aceita só uma chave **com escopo de tenant**: os webhooks do workspace pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks do workspace** — um cadastro separado de `/v1/webhooks`: recebem os eventos `phone_line.*` e `wallet.topup_paid`, e um webhook de número nunca recebe nenhum deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Workspace"
         ],
@@ -30719,10 +32489,11 @@
                         "phone_line.returned",
                         "phone_line.canceled",
                         "phone_line.verification_updated",
+                        "wallet.topup_paid",
                         "*"
                       ]
                     },
-                    "description": "Um ou mais eventos de linha, ou `\"*\"` para todos (neste cadastro, `\"*\"` significa todos os eventos de linha, inclusive os adicionados depois). Duplicados são removidos. Lista vazia ou evento desconhecido → `400 INVALID_WEBHOOK`.",
+                    "description": "Um ou mais eventos do workspace, e/ou `\"*\"`. `\"*\"` significa todos os eventos **de linha** (inclusive os adicionados depois) — `wallet.topup_paid` é opcional e precisa ser listado pelo nome, ex.: `[\"*\", \"wallet.topup_paid\"]`. Duplicados são removidos. Lista vazia ou evento desconhecido → `400 INVALID_WEBHOOK`.",
                     "example": [
                       "*"
                     ]
@@ -30751,7 +32522,7 @@
                       "properties": {
                         "id": {
                           "type": "string",
-                          "description": "O id do webhook. Use-o em todo caminho `/v1/phone-lines/webhooks/{id}`.",
+                          "description": "O id do webhook. Use-o em todo caminho `/v1/workspace/webhooks/{id}`.",
                           "example": "cmh1w8b2k0001wh8example3d"
                         },
                         "name": {
@@ -30780,8 +32551,11 @@
                           "example": true
                         },
                         "secret": {
-                          "type": "string",
-                          "description": "O segredo de assinatura (`plwh_…`). **Devolvido só aqui, uma única vez** — nenhum endpoint o mostra de novo e não há rotação. É a chave do HMAC-SHA256 de `x-pilot-status-signature`.",
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "O segredo de assinatura (`plwh_…`). **Devolvido só aqui, uma única vez** — nenhum endpoint o mostra de novo e não há rotação. É a chave do HMAC-SHA256 de `x-pilot-status-signature`. `null` quando retido (veja `secretWithheld`).",
                           "example": "plwh_3f9c1a7e5b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
                         },
                         "createdAt": {
@@ -30789,6 +32563,18 @@
                           "format": "date-time",
                           "description": "ISO 8601 — quando o webhook foi criado.",
                           "example": "2026-10-27T13:58:02.000Z"
+                        },
+                        "secretWithheld": {
+                          "type": "boolean",
+                          "description": "Presente (`true`) só quando, via OAuth/MCP, a criação não pôde ser gravada na auditoria: o webhook FOI criado, mas o segredo não é devolvido. Aqui não há rotação — exclua-o e crie outro."
+                        },
+                        "secretWithheldReason": {
+                          "type": "string",
+                          "description": "Explicação bilíngue, presente junto com `secretWithheld`."
+                        },
+                        "secretWithheldCode": {
+                          "type": "string",
+                          "description": "`OAUTH_SECRET_AUDIT_UNAVAILABLE`, presente junto com `secretWithheld`."
                         }
                       }
                     }
@@ -31019,7 +32805,7 @@
     "/v1/workspace/webhooks/{id}": {
       "get": {
         "summary": "Obter um webhook do workspace",
-        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\nRetorna `{ \"webhook\": { … } }` — o mesmo objeto da lista, **nunca o segredo**. Um webhook de outro workspace responde **404 `WEBHOOK_NOT_FOUND`**, exatamente como um que não existe.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\nRetorna `{ \"webhook\": { … } }` — o mesmo objeto da lista, **nunca o segredo**. Um webhook de outro workspace responde **404 `WEBHOOK_NOT_FOUND`**, exatamente como um que não existe.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/workspace/webhooks` aceita só uma chave **com escopo de tenant**: os webhooks do workspace pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks do workspace** — um cadastro separado de `/v1/webhooks`: recebem os eventos `phone_line.*` e `wallet.topup_paid`, e um webhook de número nunca recebe nenhum deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Workspace"
         ],
@@ -31033,7 +32819,7 @@
               "type": "string"
             },
             "example": "cmh1w8b2k0001wh8example3d",
-            "description": "O `id` do webhook (de `GET /v1/phone-lines/webhooks` ou da resposta da criação)."
+            "description": "O `id` do webhook (de `GET /v1/workspace/webhooks` ou da resposta da criação)."
           },
           {
             "name": "x-workspace-id",
@@ -31059,7 +32845,7 @@
                       "properties": {
                         "id": {
                           "type": "string",
-                          "description": "O id do webhook. Use-o em todo caminho `/v1/phone-lines/webhooks/{id}`.",
+                          "description": "O id do webhook. Use-o em todo caminho `/v1/workspace/webhooks/{id}`.",
                           "example": "cmh1w8b2k0001wh8example3d"
                         },
                         "name": {
@@ -31266,7 +33052,7 @@
       },
       "patch": {
         "summary": "Editar ou pausar um webhook do workspace",
-        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\n⚠️ **Efeito colateral real.** Muda os campos que você enviar e responde `{ \"webhook\": { … } }`; um campo ausente fica como está. `active: false` **pausa** o webhook (ele não recebe entregas — uma entrega que já está nas retentativas é marcada como falha na próxima tentativa) e `active: true` o retoma; eventos ocorridos enquanto ele estava pausado nunca são enviados.\n\nO webhook resultante é validado como na criação. **Só uma URL que muda é conferida de novo** contra destinos internos, então um webhook sempre pode ser pausado ou ter os eventos editados. Um `name` enviado em branco vira o host da URL (nova ou a guardada). **Editar nunca muda o segredo de assinatura**, e o segredo não é devolvido.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\n⚠️ **Efeito colateral real.** Muda os campos que você enviar e responde `{ \"webhook\": { … } }`; um campo ausente fica como está. `active: false` **pausa** o webhook (ele não recebe entregas — uma entrega que já está nas retentativas é marcada como falha na próxima tentativa) e `active: true` o retoma; eventos ocorridos enquanto ele estava pausado nunca são enviados.\n\nO webhook resultante é validado como na criação. **Só uma URL que muda é conferida de novo** contra destinos internos, então um webhook sempre pode ser pausado ou ter os eventos editados. Um `name` enviado em branco vira o host da URL (nova ou a guardada). **Editar nunca muda o segredo de assinatura**, e o segredo não é devolvido.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/workspace/webhooks` aceita só uma chave **com escopo de tenant**: os webhooks do workspace pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks do workspace** — um cadastro separado de `/v1/webhooks`: recebem os eventos `phone_line.*` e `wallet.topup_paid`, e um webhook de número nunca recebe nenhum deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Workspace"
         ],
@@ -31280,7 +33066,7 @@
               "type": "string"
             },
             "example": "cmh1w8b2k0001wh8example3d",
-            "description": "O `id` do webhook (de `GET /v1/phone-lines/webhooks` ou da resposta da criação)."
+            "description": "O `id` do webhook (de `GET /v1/workspace/webhooks` ou da resposta da criação)."
           },
           {
             "name": "x-workspace-id",
@@ -31328,10 +33114,11 @@
                         "phone_line.returned",
                         "phone_line.canceled",
                         "phone_line.verification_updated",
+                        "wallet.topup_paid",
                         "*"
                       ]
                     },
-                    "description": "Um ou mais eventos de linha, ou `\"*\"` para todos (neste cadastro, `\"*\"` significa todos os eventos de linha, inclusive os adicionados depois). Duplicados são removidos. Lista vazia ou evento desconhecido → `400 INVALID_WEBHOOK`.",
+                    "description": "Um ou mais eventos do workspace, e/ou `\"*\"`. `\"*\"` significa todos os eventos **de linha** (inclusive os adicionados depois) — `wallet.topup_paid` é opcional e precisa ser listado pelo nome, ex.: `[\"*\", \"wallet.topup_paid\"]`. Duplicados são removidos. Lista vazia ou evento desconhecido → `400 INVALID_WEBHOOK`.",
                     "example": [
                       "*"
                     ]
@@ -31362,7 +33149,7 @@
                       "properties": {
                         "id": {
                           "type": "string",
-                          "description": "O id do webhook. Use-o em todo caminho `/v1/phone-lines/webhooks/{id}`.",
+                          "description": "O id do webhook. Use-o em todo caminho `/v1/workspace/webhooks/{id}`.",
                           "example": "cmh1w8b2k0001wh8example3d"
                         },
                         "name": {
@@ -31643,7 +33430,7 @@
       },
       "delete": {
         "summary": "Excluir um webhook do workspace",
-        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\n⚠️ **Efeito colateral real — isto NÃO é uma simulação, inclusive pelo playground.** Exclui o webhook e o log de entregas dele, e responde `{ \"ok\": true }`. As entregas pendentes dele são descartadas — nada mais é enviado para aquela URL. O segredo morre com ele. Uma segunda chamada responde `404 WEBHOOK_NOT_FOUND`.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\n⚠️ **Efeito colateral real — isto NÃO é uma simulação, inclusive pelo playground.** Exclui o webhook e o log de entregas dele, e responde `{ \"ok\": true }`. As entregas pendentes dele são descartadas — nada mais é enviado para aquela URL. O segredo morre com ele. Uma segunda chamada responde `404 WEBHOOK_NOT_FOUND`.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/workspace/webhooks` aceita só uma chave **com escopo de tenant**: os webhooks do workspace pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks do workspace** — um cadastro separado de `/v1/webhooks`: recebem os eventos `phone_line.*` e `wallet.topup_paid`, e um webhook de número nunca recebe nenhum deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Workspace"
         ],
@@ -31657,7 +33444,7 @@
               "type": "string"
             },
             "example": "cmh1w8b2k0001wh8example3d",
-            "description": "O `id` do webhook (de `GET /v1/phone-lines/webhooks` ou da resposta da criação)."
+            "description": "O `id` do webhook (de `GET /v1/workspace/webhooks` ou da resposta da criação)."
           },
           {
             "name": "x-workspace-id",
@@ -31827,7 +33614,7 @@
     "/v1/workspace/webhooks/{id}/deliveries": {
       "get": {
         "summary": "Listar as entregas de um webhook",
-        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\nRetorna `{ \"deliveries\": [ … ] }`: as entregas mais recentes do webhook, **da mais nova para a mais antiga**, com a situação e o resultado — **nunca o payload** (um `phone_line.code_received` traz o código de ativação; leia uma entrega completa com `GET …/deliveries/{deliveryId}`). Um webhook de outro workspace responde **404 `WEBHOOK_NOT_FOUND`**, nunca uma lista vazia.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\nRetorna `{ \"deliveries\": [ … ] }`: as entregas mais recentes do webhook, **da mais nova para a mais antiga**, com a situação e o resultado — **nunca o payload** (um `phone_line.code_received` traz o código de ativação; leia uma entrega completa com `GET …/deliveries/{deliveryId}`). Um webhook de outro workspace responde **404 `WEBHOOK_NOT_FOUND`**, nunca uma lista vazia.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/workspace/webhooks` aceita só uma chave **com escopo de tenant**: os webhooks do workspace pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks do workspace** — um cadastro separado de `/v1/webhooks`: recebem os eventos `phone_line.*` e `wallet.topup_paid`, e um webhook de número nunca recebe nenhum deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Workspace"
         ],
@@ -31841,7 +33628,7 @@
               "type": "string"
             },
             "example": "cmh1w8b2k0001wh8example3d",
-            "description": "O `id` do webhook (de `GET /v1/phone-lines/webhooks` ou da resposta da criação)."
+            "description": "O `id` do webhook (de `GET /v1/workspace/webhooks` ou da resposta da criação)."
           },
           {
             "name": "limit",
@@ -32112,7 +33899,7 @@
     "/v1/workspace/webhooks/{id}/deliveries/{deliveryId}": {
       "get": {
         "summary": "Obter uma entrega do webhook",
-        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\nRetorna `{ \"delivery\": { … } }`: os campos da lista mais o `durationMs` e o `responseBody` da última tentativa, e o **`payload` — o corpo exato que foi enviado e assinado, como uma string JSON**, para você conferir o seu código de assinatura contra ele. ⚠️ O payload de um `phone_line.code_received` traz o **código de ativação**, que é uma credencial: a resposta é enviada com `Cache-Control: private, no-store` — não a registre em log. Uma entrega de outro webhook ou workspace, ou um id desconhecido, responde **404 `WEBHOOK_DELIVERY_NOT_FOUND`**.\n\nPermissões: com um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/phone-lines` aceita só uma chave **com escopo de tenant**: os webhooks das linhas pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks das linhas** — um cadastro separado de `/v1/webhooks`: recebem só eventos `phone_line.*`, e um webhook de número nunca recebe um deles.\n\n**Requer uma chave com escopo de tenant.**",
+        "description": "**Webhooks do workspace** — o mesmo cadastro de `/v1/phone-lines/webhooks` (mesmas linhas, segredo `plwh_`, assinatura, retentativas e entregas), com mais eventos: todos os `phone_line.*` **e mais `wallet.topup_paid`** (uma recarga da carteira foi creditada). `\"*\"` significa só os eventos das linhas: `wallet.topup_paid` é opcional, liste-o pelo nome (por exemplo `[\"*\", \"wallet.topup_paid\"]`). Esta superfície lista todos os webhooks do workspace. Chave com escopo de tenant (ou chave de conta com `x-workspace-id`); Proprietário ou Admin (`phone_lines:webhooks`) com credencial de usuário.\n\nRetorna `{ \"delivery\": { … } }`: os campos da lista mais o `durationMs` e o `responseBody` da última tentativa, e o **`payload` — o corpo exato que foi enviado e assinado, como uma string JSON**, para você conferir o seu código de assinatura contra ele. ⚠️ O payload de um `phone_line.code_received` traz o **código de ativação**, que é uma credencial: a resposta é enviada com `Cache-Control: private, no-store` — não a registre em log. Uma entrega de outro webhook ou workspace, ou um id desconhecido, responde **404 `WEBHOOK_DELIVERY_NOT_FOUND`**.\n\nPermissões: com uma chave de conta (`ps_account_`) ou um token OAuth / MCP, o usuário precisa ser **Proprietário ou Administrador** (`phone_lines:webhooks`) — caso contrário, `403 PERMISSION_DENIED`.\n\nTodo endpoint `/v1/workspace/webhooks` aceita só uma chave **com escopo de tenant**: os webhooks do workspace pertencem ao workspace, não a um número de WhatsApp, então uma chave com escopo de número (ou uma concessão OAuth por número) recebe `403 NUMBER_SCOPE_NOT_ALLOWED` antes de qualquer verificação de papel. Um `403 PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED` é enviado com `Cache-Control: no-store`.\n\nEstes são os **webhooks do workspace** — um cadastro separado de `/v1/webhooks`: recebem os eventos `phone_line.*` e `wallet.topup_paid`, e um webhook de número nunca recebe nenhum deles.\n\n**Requer uma chave com escopo de tenant.**",
         "tags": [
           "Workspace"
         ],
@@ -32126,7 +33913,7 @@
               "type": "string"
             },
             "example": "cmh1w8b2k0001wh8example3d",
-            "description": "O `id` do webhook (de `GET /v1/phone-lines/webhooks` ou da resposta da criação)."
+            "description": "O `id` do webhook (de `GET /v1/workspace/webhooks` ou da resposta da criação)."
           },
           {
             "name": "deliveryId",
