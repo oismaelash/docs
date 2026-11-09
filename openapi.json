@@ -5873,7 +5873,7 @@
     "/v1/templates": {
       "get": {
         "summary": "List templates",
-        "description": "Lists templates available for the linked number (scoped by number; WABA-shared for Meta). Each item has id, name, category, body, variables, plus source (\"META\" | \"PILOT_STATUS\"), metaStatus (\"APPROVED\" | \"PENDING\" | \"REJECTED\" | \"DISABLED\" | null), metaLanguage and sendable (boolean). On a Meta Cloud API number only source=META + metaStatus=APPROVED templates are sendable; non-Meta templates are not sendable on a Meta number. Requires a number-scoped key.\n\n**Requires a number-scoped key.**",
+        "description": "Lists templates available for the linked number (scoped by number; WABA-shared for Meta). Each item has id, name, category, body, variables, plus source (\"META\" | \"PILOT_STATUS\"), metaStatus (Meta's status as Meta reports it, e.g. \"APPROVED\", \"PENDING\", \"REJECTED\", \"PAUSED\", \"DISABLED\", or null), metaLanguage and sendable (boolean). On a Meta Cloud API number only source=META + metaStatus=APPROVED templates are sendable; non-Meta templates are not sendable on a Meta number, and on a non-Meta number only PILOT_STATUS templates are sendable. `body` is the stored template as a JSON string. The response is a plain array, with no pagination. Requires a number-scoped key.\n\nPermission `templates:read`: every role (`OWNER`, `ADMIN`, `AGENT`, `ANALYST`) for account keys and OAuth tokens; number and workspace keys have no role check. A workspace key, account key or OAuth token must name the number in `x-whatsapp-number-id`.\n\n**Requires a number-scoped key.**",
         "tags": [
           "Templates"
         ],
@@ -5923,7 +5923,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint",
+            "description": "Workspace/account key or OAuth token without `x-whatsapp-number-id` (`TENANT_SCOPE_NOT_ALLOWED`), a user role without `templates:read` (`PERMISSION_DENIED`), or a number outside an OAuth grant (`NUMBER_NOT_IN_GRANT`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5937,9 +5937,19 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
-                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "value": {
+                      "error": "Your workspace role does not allow this action (templates:read).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  }
                 }
               }
             }
@@ -5969,7 +5979,7 @@
       },
       "post": {
         "summary": "Create template",
-        "description": "Creates a template in the linked number's scope. The body field accepts three shapes: (1) a structured OBJECT { header?, body, footer?, buttons? } — recommended; (2) that same JSON as a STRING; or (3) PLAIN TEXT, auto-wrapped into { \"body\": { \"text\": ... } }. Structure: optional header NONE (default) | TEXT (0–1 variable, up to 60 chars) | IMAGE | VIDEO | DOCUMENT — media supplied via header.url (http/https) OR header.base64 (data URI data:<mime>;base64,…, re-hosted server-side); body.text up to 1024 chars, with named-style variables {{nome}} (must not start or end with a variable); footer.text up to 60 chars, no variables; buttons (up to 10 total) of types QUICK_REPLY (≤ 10), URL (≤ 2; static or dynamic with a trailing named variable such as {{link}} in the URL + a resolved example), PHONE_NUMBER (≤ 1) and COPY_CODE (≤ 1; the code goes in button.example) — mixing quick-reply with CTA buttons is allowed. Buttons may accompany a video or document (PDF) header. The examples field is REQUIRED whenever the body/header (or the dynamic URL) uses variables: an object mapping each variable to a sample value; missing → 400 { code: \"TEMPLATE_EXAMPLES_REQUIRED\", details: { missing: [...] } }. For Meta numbers the template is submitted to Meta for approval (metaStatus PENDING); 400 META_TEMPLATE_SUBMIT_FAILED if Meta rejects it. 409 if a template with that name already exists. Requires a number-scoped key.\n\n**Requires a number-scoped key.**",
+        "description": "Creates a template in the linked number's scope. The body field accepts three shapes: (1) a structured OBJECT { header?, body, footer?, buttons? } — recommended; (2) that same JSON as a STRING; or (3) PLAIN TEXT, auto-wrapped into { \"body\": { \"text\": ... } }. Structure: optional header NONE (default) | TEXT (0–1 variable, up to 60 chars) | IMAGE | VIDEO | DOCUMENT — media supplied via header.url (http/https) OR header.base64 (data URI data:<mime>;base64,…, re-hosted server-side); body.text up to 1024 chars, with named-style variables {{nome}} (must not start or end with a variable); footer.text up to 60 chars, no variables; buttons (up to 10 total) of types QUICK_REPLY (≤ 10), URL (≤ 2; static or dynamic with a trailing named variable such as {{link}} in the URL + a resolved example), PHONE_NUMBER (≤ 1) and COPY_CODE (≤ 1; the code goes in button.example) — mixing quick-reply with CTA buttons is allowed. Buttons may accompany a video or document (PDF) header. The examples field is REQUIRED whenever the body/header (or the dynamic URL) uses variables: an object mapping each variable to a sample value; missing → 400 { code: \"TEMPLATE_EXAMPLES_REQUIRED\", details: { missing: [...] } }. For Meta numbers the template is submitted to Meta for approval (metaStatus PENDING); 400 META_TEMPLATE_SUBMIT_FAILED if Meta rejects it. 409 if a template with that name already exists for this number. Only name, category, language, body and examples are read; variables, whatsappNumberId and metaWabaId are accepted and ignored, and any other top-level field (for example buttons placed next to body) is refused with 400 TEMPLATE_UNKNOWN_FIELDS. Requires a number-scoped key.\n\nPermission `templates:manage`: `OWNER` or `ADMIN` for account keys and OAuth tokens; number and workspace keys have no role check. A workspace key, account key or OAuth token must name the number in `x-whatsapp-number-id`.\n\n**Requires a number-scoped key.**",
         "tags": [
           "Templates"
         ],
@@ -5983,8 +5993,9 @@
                 "properties": {
                   "name": {
                     "type": "string",
-                    "description": "Template name (letters/numbers only; separators become _).",
-                    "example": "promo_cupom"
+                    "description": "Template name. Normalized first (lower-cased, accents removed, other characters become _), then must match [a-z0-9_], up to 100 characters.",
+                    "example": "promo_cupom",
+                    "maxLength": 100
                   },
                   "body": {
                     "type": "object",
@@ -6079,12 +6090,19 @@
                   "category": {
                     "type": "string",
                     "description": "Template category (default UTILITY).",
-                    "example": "MARKETING"
+                    "example": "MARKETING",
+                    "enum": [
+                      "MARKETING",
+                      "UTILITY",
+                      "OTP"
+                    ],
+                    "default": "UTILITY"
                   },
                   "language": {
                     "type": "string",
                     "description": "Template language (default pt_BR).",
-                    "example": "pt_BR"
+                    "example": "pt_BR",
+                    "default": "pt_BR"
                   }
                 },
                 "required": [
@@ -6110,7 +6128,7 @@
             }
           },
           "400": {
-            "description": "Missing examples — or `INVALID_BODY` when the body is not valid JSON",
+            "description": "Unknown top-level field (`TEMPLATE_UNKNOWN_FIELDS`), validation error, missing examples (`TEMPLATE_EXAMPLES_REQUIRED`), button the number cannot send (`TEMPLATE_WEB_BUTTON_NOT_SUPPORTED`), Meta refused the template (`META_TEMPLATE_SUBMIT_FAILED`), or `INVALID_BODY` when the body is not valid JSON",
             "content": {
               "application/json": {
                 "schema": {
@@ -6128,6 +6146,7 @@
                   "templateExamplesRequired": {
                     "summary": "TEMPLATE_EXAMPLES_REQUIRED",
                     "value": {
+                      "error": "Faltam valores de exemplo para as variáveis: nome",
                       "code": "TEMPLATE_EXAMPLES_REQUIRED",
                       "details": {
                         "missing": [
@@ -6141,6 +6160,31 @@
                     "value": {
                       "error": "The request body is not valid JSON | O corpo da requisição não é um JSON válido",
                       "code": "INVALID_BODY"
+                    }
+                  },
+                  "templateUnknownFields": {
+                    "value": {
+                      "error": "Campos não aceitos neste endpoint: buttons. buttons é um bloco do TEMPLATE: vai dentro de `body`, não no topo da requisição. …",
+                      "errorEn": "Fields not accepted by this endpoint: buttons. buttons is a block of the TEMPLATE: it goes inside `body`, not at the top of the request. …",
+                      "code": "TEMPLATE_UNKNOWN_FIELDS",
+                      "details": {
+                        "unknownFields": [
+                          "buttons"
+                        ]
+                      }
+                    }
+                  },
+                  "validationError": {
+                    "value": {
+                      "error": "Validation error",
+                      "details": {
+                        "formErrors": [],
+                        "fieldErrors": {
+                          "name": [
+                            "name is required"
+                          ]
+                        }
+                      }
                     }
                   }
                 }
@@ -6169,7 +6213,39 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint",
+            "description": "Workspace/account key or OAuth token without `x-whatsapp-number-id` (`TENANT_SCOPE_NOT_ALLOWED`), a user role without `templates:manage` (`PERMISSION_DENIED`), or a number outside an OAuth grant (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "value": {
+                      "error": "Your workspace role does not allow this action (templates:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The key's number no longer exists",
             "content": {
               "application/json": {
                 "schema": {
@@ -6184,8 +6260,50 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
-                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                  "error": "Template not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A template with that name already exists for this number",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Já existe um template com esse nome para este número."
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The header.base64 media could not be decoded or re-hosted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Template media upload failed",
+                  "code": "TEMPLATE_MEDIA_UPLOAD_FAILED"
                 }
               }
             }
@@ -6217,7 +6335,7 @@
     "/v1/templates/{id}": {
       "put": {
         "summary": "Update template",
-        "description": "Updates an existing template (by id or name) in the linked number's scope. The body follows the same contract as Create template: body as an OBJECT { header?, body, footer?, buttons? } (recommended), the same JSON as a STRING, or PLAIN TEXT; header NONE | TEXT (0–1 variable, up to 60) | IMAGE | VIDEO | DOCUMENT (media via header.url OR header.base64, re-hosted); body.text up to 1024 (variables {{nome}}, must not start/end with a variable); footer up to 60 with no variables; up to 10 buttons — QUICK_REPLY (≤ 10), URL (≤ 2; static or dynamic with a trailing named variable such as {{link}} + example), PHONE_NUMBER (≤ 1), COPY_CODE (≤ 1; code in button.example). The examples field is REQUIRED whenever variables exist; missing → 400 { code: \"TEMPLATE_EXAMPLES_REQUIRED\", details: { missing: [...] } }. For Meta numbers the new version is re-submitted to Meta for approval (metaStatus PENDING); 400 META_TEMPLATE_SUBMIT_FAILED if Meta rejects it. 409 TEMPLATE_NOT_EDITABLE if Meta does not allow editing the template in its current state (only rejected templates can be edited); when Meta refuses an edit for any reason the stored template is left unchanged. 404 TEMPLATE_NOT_FOUND if it doesn't exist in the number's scope. Requires a number-scoped key.\n\n**Requires a number-scoped key.**",
+        "description": "Updates an existing template (by id) in the linked number's scope. Only body and examples are applied; name, category, language, variables, whatsappNumberId and metaWabaId are accepted and ignored (name, category and language cannot be changed), and any other top-level field is refused with 400 TEMPLATE_UNKNOWN_FIELDS. The body field follows the same contract as Create template: body as an OBJECT { header?, body, footer?, buttons? } (recommended), the same JSON as a STRING, or PLAIN TEXT; header NONE | TEXT (0–1 variable, up to 60) | IMAGE | VIDEO | DOCUMENT (media via header.url OR header.base64, re-hosted); body.text up to 1024 (variables {{nome}}, must not start/end with a variable); footer up to 60 with no variables; up to 10 buttons — QUICK_REPLY (≤ 10), URL (≤ 2; static or dynamic with a trailing named variable such as {{link}} + example), PHONE_NUMBER (≤ 1), COPY_CODE (≤ 1; code in button.example). The examples field is REQUIRED whenever variables exist; missing → 400 { code: \"TEMPLATE_EXAMPLES_REQUIRED\", details: { missing: [...] } }. For Meta numbers the new version is re-submitted to Meta for approval (metaStatus PENDING); 400 META_TEMPLATE_SUBMIT_FAILED if Meta rejects it. 409 TEMPLATE_NOT_EDITABLE if Meta does not allow editing the template in its current state (only rejected templates can be edited); when Meta refuses an edit for any reason the stored template is left unchanged. 404 TEMPLATE_NOT_FOUND if it doesn't exist in the number's scope. Requires a number-scoped key.\n\nPermission `templates:manage`: `OWNER` or `ADMIN` for account keys and OAuth tokens; number and workspace keys have no role check. A workspace key, account key or OAuth token must name the number in `x-whatsapp-number-id`.\n\n**Requires a number-scoped key.**",
         "tags": [
           "Templates"
         ],
@@ -6227,11 +6345,11 @@
             "name": "id",
             "in": "path",
             "required": true,
-            "description": "Id or name of the template to update.",
+            "description": "Id of the template to update (the name is not accepted).",
             "schema": {
               "type": "string"
             },
-            "example": "promo_cupom"
+            "example": "tpl_01HZX..."
           }
         ],
         "requestBody": {
@@ -6331,12 +6449,12 @@
                   },
                   "category": {
                     "type": "string",
-                    "description": "Template category (default UTILITY).",
+                    "description": "Accepted and ignored: the category cannot be changed.",
                     "example": "MARKETING"
                   },
                   "language": {
                     "type": "string",
-                    "description": "Template language (default pt_BR).",
+                    "description": "Accepted and ignored: the language cannot be changed.",
                     "example": "pt_BR"
                   }
                 },
@@ -6356,13 +6474,17 @@
                   "id": "tpl_01HZX...",
                   "name": "promo_cupom",
                   "category": "MARKETING",
+                  "body": "{\"body\":{\"text\":\"Oi {{nome}}!\"}}",
+                  "variables": [
+                    "nome"
+                  ],
                   "metaStatus": "PENDING"
                 }
               }
             }
           },
           "400": {
-            "description": "Missing examples — or `INVALID_BODY` when the body is not valid JSON",
+            "description": "Unknown top-level field (`TEMPLATE_UNKNOWN_FIELDS`), validation error, missing examples (`TEMPLATE_EXAMPLES_REQUIRED`), button that cannot be authored or sent (`TEMPLATE_WEB_BUTTON_NOT_SUPPORTED`, `TEMPLATE_LIST_NOT_SUPPORTED_BY_META`), Meta refused the re-submission (`error` only), or `INVALID_BODY`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6380,6 +6502,7 @@
                   "templateExamplesRequired": {
                     "summary": "TEMPLATE_EXAMPLES_REQUIRED",
                     "value": {
+                      "error": "Faltam valores de exemplo para as variáveis: nome",
                       "code": "TEMPLATE_EXAMPLES_REQUIRED",
                       "details": {
                         "missing": [
@@ -6421,7 +6544,39 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint",
+            "description": "Workspace/account key or OAuth token without `x-whatsapp-number-id` (`TENANT_SCOPE_NOT_ALLOWED`), a user role without `templates:manage` (`PERMISSION_DENIED`), or a number outside an OAuth grant (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "value": {
+                      "error": "Your workspace role does not allow this action (templates:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found in the key's scope (also when `{id}` is a template name — only the id is accepted)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6436,8 +6591,8 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
-                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                  "error": "Template not found",
+                  "code": "TEMPLATE_NOT_FOUND"
                 }
               }
             }
@@ -6475,6 +6630,28 @@
               }
             }
           },
+          "422": {
+            "description": "The header.base64 media could not be decoded or re-hosted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Template media upload failed",
+                  "code": "TEMPLATE_MEDIA_UPLOAD_FAILED"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -6500,7 +6677,7 @@
       },
       "get": {
         "summary": "Get template",
-        "description": "Returns a template by id (or name), with body and variables. Also includes source (\"META\" | \"PILOT_STATUS\"), metaStatus (\"APPROVED\" | \"PENDING\" | \"REJECTED\" | \"DISABLED\" | null), metaLanguage and sendable — on a Meta Cloud API number only source=META + metaStatus=APPROVED templates are sendable. 404 TEMPLATE_NOT_FOUND if it doesn't exist in the number's scope. Requires a number-scoped key.\n\n**Requires a number-scoped key.**",
+        "description": "Returns a template by id, with body and variables. Also includes source (\"META\" | \"PILOT_STATUS\"), metaStatus (Meta's status as Meta reports it, e.g. \"APPROVED\", \"PENDING\", \"REJECTED\", \"PAUSED\", \"DISABLED\", or null), metaLanguage and sendable — on a Meta Cloud API number only source=META + metaStatus=APPROVED templates are sendable. 404 TEMPLATE_NOT_FOUND if it doesn't exist in the number's scope. Requires a number-scoped key.\n\nPermission `templates:read`: every role (`OWNER`, `ADMIN`, `AGENT`, `ANALYST`) for account keys and OAuth tokens; number and workspace keys have no role check. A workspace key, account key or OAuth token must name the number in `x-whatsapp-number-id`.\n\n**Requires a number-scoped key.**",
         "tags": [
           "Templates"
         ],
@@ -6510,11 +6687,11 @@
             "name": "id",
             "in": "path",
             "required": true,
-            "description": "Template id or name.",
+            "description": "Template id (the name is not accepted).",
             "schema": {
               "type": "string"
             },
-            "example": "boas_vindas"
+            "example": "tpl_01HZX..."
           }
         ],
         "responses": {
@@ -6534,27 +6711,6 @@
                   "metaStatus": "APPROVED",
                   "metaLanguage": "pt_BR",
                   "sendable": true
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid payload or parameters",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "example": {
-                  "error": "Validation error"
                 }
               }
             }
@@ -6581,7 +6737,39 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint",
+            "description": "Workspace/account key or OAuth token without `x-whatsapp-number-id` (`TENANT_SCOPE_NOT_ALLOWED`), a user role without `templates:read` (`PERMISSION_DENIED`), or a number outside an OAuth grant (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "value": {
+                      "error": "Your workspace role does not allow this action (templates:read).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found in the key's scope (also when `{id}` is a template name — only the id is accepted)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6596,8 +6784,8 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
-                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                  "error": "Template not found",
+                  "code": "TEMPLATE_NOT_FOUND"
                 }
               }
             }
@@ -6627,7 +6815,7 @@
       },
       "delete": {
         "summary": "Delete template",
-        "description": "Removes the template by id (or name) in the linked number's scope. For Meta templates it also removes the template from Meta (WABA). 404 TEMPLATE_NOT_FOUND if it doesn't exist or isn't owned by the number. Returns { deleted: true, id }. Requires a number-scoped key. Real and irreversible side effect.\n\nMeta deletes templates **by name**: every language version of that name on the WABA is deleted on Meta. Call with `?dry_run=true` first to see what will be deleted; the MCP tool `templates_delete` always does, and asks for confirmation.\n\n**Requires a number-scoped key.**",
+        "description": "Removes the template by id in the linked number's scope. For Meta templates it also removes the template from Meta (WABA). 404 TEMPLATE_NOT_FOUND if it doesn't exist or isn't owned by the number. Returns { deleted: true, id }. When Meta refuses the deletion, or no number of the workspace on that WABA has a Meta token, it returns 409 META_TEMPLATE_DELETE_REFUSED and nothing is deleted; `?force_local=true` then deletes only the local row (the template stays on Meta and the next sync brings it back). A template with no WABA (non-Meta number) is deleted locally only. Requires a number-scoped key. Real and irreversible side effect.\n\nMeta deletes templates **by name**: every language version of that name on the WABA is deleted on Meta. Call with `?dry_run=true` first to see what will be deleted; the MCP tool `templates_delete` always does, and asks for confirmation.\n\nPermission `templates:manage`: `OWNER` or `ADMIN` for account keys and OAuth tokens; number and workspace keys have no role check. A workspace key, account key or OAuth token must name the number in `x-whatsapp-number-id`.\n\n**Requires a number-scoped key.**",
         "tags": [
           "Templates"
         ],
@@ -6637,17 +6825,28 @@
             "name": "id",
             "in": "path",
             "required": true,
-            "description": "Id or name of the template to remove.",
+            "description": "Id of the template to remove (the name is not accepted).",
             "schema": {
               "type": "string"
             },
-            "example": "boas_vindas"
+            "example": "tpl_01HZX..."
           },
           {
             "name": "dry_run",
             "in": "query",
             "required": false,
-            "description": "`true` deletes nothing and returns a preview of what the delete would do: `action` (`DELETE_ON_META_AND_LOCAL` or `DELETE_LOCAL_ONLY`), the `template`, its `waba`, the number whose Meta token performs the deletion (`via_number`, `null` when none has a token — the delete would then be refused) and `warnings`. Same permission and scoping as the delete.",
+            "description": "`true` deletes nothing and returns a preview of what the delete would do: `action` (`DELETE_ON_META_AND_LOCAL` or `DELETE_LOCAL_ONLY`), the `template`, its `waba`, the number whose Meta token performs the deletion (`via_number`, `null` when none has a token — the delete would then be refused) and `warnings`. Same permission and scoping as the delete. Works for any template: `DELETE_LOCAL_ONLY` (with `waba` and `via_number` null) for a template with no WABA. Only the exact string `true` previews; any other value performs the real delete.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "example": true
+          },
+          {
+            "name": "force_local",
+            "in": "query",
+            "required": false,
+            "description": "`true` deletes the local row even when Meta refuses the deletion or cannot be contacted (no number with a Meta token on the WABA). The template stays on Meta and its name stays reserved; the next sync of a number on that WABA brings the row back. Use only after a `409 META_TEMPLATE_DELETE_REFUSED`.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -6660,30 +6859,41 @@
             "description": "Delete template",
             "content": {
               "application/json": {
-                "example": {
-                  "deleted": true,
-                  "id": "tpl_01HZX..."
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid payload or parameters",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "code": {
-                      "type": "string"
+                "examples": {
+                  "deleted": {
+                    "value": {
+                      "deleted": true,
+                      "id": "tpl_01HZX..."
+                    }
+                  },
+                  "dryRun": {
+                    "value": {
+                      "dry_run": true,
+                      "action": "DELETE_ON_META_AND_LOCAL",
+                      "template": {
+                        "id": "tpl_01HZX...",
+                        "name": "promo",
+                        "category": "MARKETING",
+                        "source": "META",
+                        "meta_status": "APPROVED",
+                        "meta_language": "pt_BR",
+                        "meta_template_id": "1234567890123456"
+                      },
+                      "waba": {
+                        "id": "1581714517011340",
+                        "name": "Acme"
+                      },
+                      "via_number": {
+                        "id": "wn_01HZX...",
+                        "number": "+5511999990000",
+                        "display_name": "Acme"
+                      },
+                      "warnings": [
+                        "Irreversible: the template is deleted on Meta and in Pilot Status. Meta does not let the same name be reused for about 30 days.",
+                        "Meta deletes by name: every language version of \"promo\" on this WABA is deleted on Meta, not only this one."
+                      ]
                     }
                   }
-                },
-                "example": {
-                  "error": "Validation error"
                 }
               }
             }
@@ -6710,7 +6920,39 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint",
+            "description": "Workspace/account key or OAuth token without `x-whatsapp-number-id` (`TENANT_SCOPE_NOT_ALLOWED`), a user role without `templates:manage` (`PERMISSION_DENIED`), or a number outside an OAuth grant (`NUMBER_NOT_IN_GRANT`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "value": {
+                      "error": "Your workspace role does not allow this action (templates:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found in the key's scope (also when `{id}` is a template name — only the id is accepted)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6725,8 +6967,33 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
-                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                  "error": "Template not found",
+                  "code": "TEMPLATE_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Meta refused the deletion, or could not be contacted: nothing was deleted. `error` is English, `errorPT` Portuguese.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Template \"promo\" was NOT deleted: Meta refused the deletion. Reason: … It still exists on your WABA, consuming quota and keeping the name reserved (re-creating a template with the same name will fail). Fix the token's permission on that WABA and try again, or delete the template in Meta Business Manager.",
+                  "errorPT": "O template \"promo\" NÃO foi excluído: a Meta recusou a exclusão. Motivo: … ",
+                  "code": "META_TEMPLATE_DELETE_REFUSED",
+                  "template_name": "promo",
+                  "can_force_local_delete": true
                 }
               }
             }
@@ -6758,7 +7025,7 @@
     "/v1/templates/{id}/insights": {
       "get": {
         "summary": "Get template insights",
-        "description": "Returns Meta's delivery and engagement numbers for a template over the last `days` days (7, 30 or 90; default 30): totals of sent, delivered and read, `readRate` (read / delivered, `null` when nothing was delivered), button clicks and a daily series.\n\nData comes from Meta's template analytics: daily granularity, only the last 90 days, and the most recent days may still be filling in. The first call for a WhatsApp Business Account may enable template insights on that account at Meta.\n\nOnly templates submitted to Meta have insights (`409 TEMPLATE_NOT_ON_META` otherwise). Meta does not provide template insights for WhatsApp Business App / coexistence numbers (`422 TEMPLATE_INSIGHTS_UNAVAILABLE_SMB`). Same access as `GET /v1/templates/{id}`: permission `templates:read`; a number-scoped key only sees templates of its numbers.\n\n**Requires a number-scoped key.**",
+        "description": "Returns Meta's delivery and engagement numbers for a template over the last `days` days (7, 30 or 90; default 30): totals of sent, delivered and read, `readRate` (read / delivered, `null` when nothing was delivered), button clicks and a daily series.\n\nData comes from Meta's template analytics: daily granularity, only the last 90 days, and the most recent days may still be filling in. The first call for a WhatsApp Business Account may enable template insights on that account at Meta.\n\nOnly templates submitted to Meta have insights (`409 TEMPLATE_NOT_ON_META` otherwise). Meta does not provide template insights for WhatsApp Business App / coexistence numbers (`422 TEMPLATE_INSIGHTS_UNAVAILABLE_SMB`). Same access as `GET /v1/templates/{id}`: permission `templates:read` (every role, for account keys and OAuth tokens); a number-scoped key only sees templates of its numbers.\n\n**Requires a number-scoped key.**",
         "tags": [
           "Templates"
         ],
@@ -6768,11 +7035,11 @@
             "name": "id",
             "in": "path",
             "required": true,
-            "description": "Template id or name.",
+            "description": "Template id (the name is not accepted).",
             "schema": {
               "type": "string"
             },
-            "example": "boas_vindas"
+            "example": "tpl_01HZX..."
           },
           {
             "name": "days",
@@ -7045,7 +7312,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint",
+            "description": "Workspace/account key or OAuth token without `x-whatsapp-number-id` (`TENANT_SCOPE_NOT_ALLOWED`), a user role without `templates:read` (`PERMISSION_DENIED`), or a number outside an OAuth grant (`NUMBER_NOT_IN_GRANT`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7059,9 +7326,19 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
-                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "value": {
+                      "error": "Your workspace role does not allow this action (templates:read).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  }
                 }
               }
             }
@@ -7244,7 +7521,7 @@
     "/v1/templates/{id}/submit": {
       "post": {
         "summary": "Submit template to Meta",
-        "description": "Submits the template to Meta for approval — the dashboard's **Submit to Meta**. Use it for a template that was never sent to Meta (`source: \"PILOT_STATUS\"`) or to re-submit a rejected one. The target is the key's WhatsApp number, which must be a Meta Cloud API number with a WhatsApp Business Account (`422 TEMPLATE_REQUIRES_META_NUMBER` otherwise). The body is empty: the number comes from the key, and any field — `whatsappNumberId` included — is refused with `400 UNKNOWN_FIELDS`.\n\nReturns the template (now `source: \"META\"`, usually `metaStatus: \"PENDING\"`) plus `metaTemplateId`. Meta reviews it asynchronously: read the status later with `GET /v1/templates/{id}` or refresh it with `POST /v1/templates/sync`. Permission `templates:manage` (same as the dashboard).\n\n**Requires a number-scoped key.**",
+        "description": "Submits the template to Meta for approval — the dashboard's **Submit to Meta**. Use it for a template that was never sent to Meta (`source: \"PILOT_STATUS\"`) or to re-submit a rejected one. The target is the key's WhatsApp number, which must be a Meta Cloud API number with a WhatsApp Business Account (`422 TEMPLATE_REQUIRES_META_NUMBER` otherwise). The body is empty: the number comes from the key, and any field — `whatsappNumberId` included — is refused with `400 UNKNOWN_FIELDS`.\n\nReturns the template (now `source: \"META\"`, usually `metaStatus: \"PENDING\"`) plus `metaTemplateId`. Meta reviews it asynchronously: read the status later with `GET /v1/templates/{id}` or refresh it with `POST /v1/templates/sync`. Permission `templates:manage` (same as the dashboard): `OWNER` or `ADMIN` for account keys and OAuth tokens.\n\n**Requires a number-scoped key.**",
         "tags": [
           "Templates"
         ],
@@ -7327,7 +7604,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint",
+            "description": "Workspace/account key or OAuth token without `x-whatsapp-number-id` (`TENANT_SCOPE_NOT_ALLOWED`), a user role without `templates:manage` (`PERMISSION_DENIED`), or a number outside an OAuth grant (`NUMBER_NOT_IN_GRANT`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7341,9 +7618,19 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
-                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "value": {
+                      "error": "Your workspace role does not allow this action (templates:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  }
                 }
               }
             }
@@ -7385,9 +7672,20 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Meta does not allow editing this template in its current state … | A Meta não permite editar este template no estado atual …",
-                  "code": "TEMPLATE_NOT_EDITABLE"
+                "examples": {
+                  "TEMPLATE_NOT_EDITABLE": {
+                    "value": {
+                      "error": "Meta does not allow editing this template in its current state … | A Meta não permite editar este template no estado atual …",
+                      "code": "TEMPLATE_NOT_EDITABLE",
+                      "meta_user_message": "Message templates can only be edited if they have been rejected."
+                    }
+                  },
+                  "TEMPLATE_ALREADY_SUBMITTED": {
+                    "value": {
+                      "error": "This template was already submitted to Meta. | Este template já foi enviado para a Meta.",
+                      "code": "TEMPLATE_ALREADY_SUBMITTED"
+                    }
+                  }
                 }
               }
             }
@@ -7441,7 +7739,7 @@
     "/v1/templates/sync": {
       "post": {
         "summary": "Sync templates from Meta",
-        "description": "Pulls every template of the key's WhatsApp Business Account from Meta — the dashboard's **Sync from Meta** — creating the ones Pilot Status does not have and updating status, category and content of the others (for example a `PENDING` template that Meta has since approved). The body is empty; any field is refused with `400 UNKNOWN_FIELDS`.\n\nOne sync per number at a time, shared with the dashboard: while one runs, another call gets `429 TEMPLATE_SYNC_IN_PROGRESS` with a `Retry-After` header (up to 120 seconds). Permission `templates:manage`.\n\n**Requires a number-scoped key.**",
+        "description": "Pulls every template of the key's WhatsApp Business Account from Meta — the dashboard's **Sync from Meta** — creating the ones Pilot Status does not have and updating status, category and content of the others (for example a `PENDING` template that Meta has since approved). The body is empty; any field is refused with `400 UNKNOWN_FIELDS`.\n\nOne sync per number at a time, shared with the dashboard: while one runs, another call gets `429 TEMPLATE_SYNC_IN_PROGRESS` with `Retry-After: 120` (the lock lasts at most 120 seconds and is released when the running sync ends). Permission `templates:manage`: `OWNER` or `ADMIN` for account keys and OAuth tokens.\n\n**Requires a number-scoped key.**",
         "tags": [
           "Templates"
         ],
@@ -7502,7 +7800,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint",
+            "description": "Workspace/account key or OAuth token without `x-whatsapp-number-id` (`TENANT_SCOPE_NOT_ALLOWED`), a user role without `templates:manage` (`PERMISSION_DENIED`), or a number outside an OAuth grant (`NUMBER_NOT_IN_GRANT`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7516,9 +7814,19 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
-                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                "examples": {
+                  "TENANT_SCOPE_NOT_ALLOWED": {
+                    "value": {
+                      "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                      "code": "TENANT_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "PERMISSION_DENIED": {
+                    "value": {
+                      "error": "Your workspace role does not allow this action (templates:manage).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  }
                 }
               }
             }
@@ -7686,7 +7994,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -7701,7 +8009,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -7903,7 +8211,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -7918,7 +8226,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -8025,6 +8333,195 @@
                 },
                 "example": {
                   "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error. Never carries the internal message — that belongs in the log",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Erro interno do servidor.",
+                  "errorEN": "Internal server error.",
+                  "code": "INTERNAL_ERROR"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/flows/meta/sync": {
+      "post": {
+        "summary": "Sync Flows from Meta",
+        "description": "Pulls the Flow catalogue of the key's WABA from Meta into Pilot Status now, instead of waiting for the hourly sync — useful after creating or editing Flows directly in Meta's Business Manager. `created` and `updated` count local rows, `seen` the Flows Meta listed. `truncated: true` means the WABA has more Flows than one sync reads (20 pages of 100); the rest arrive on the next run — it is not an error. Permission `flows:manage`.\n\nIt takes **no fields**: send no body or `{}`. A body that is not a JSON object is 400 `FLOW_BODY_INVALID`; `whatsappNumberId` / `wabaId` / `metaWabaId` are 400 `FLOW_NUMBER_FROM_KEY`; any other field is 400 `FLOW_UNKNOWN_FIELDS`.\n\n⚠️ **One sync per number at a time.** A second request while one is running answers 429 `FLOW_SYNC_IN_PROGRESS` with `Retry-After: 120`.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.",
+        "tags": [
+          "Flows"
+        ],
+        "operationId": "post_flows_meta_sync",
+        "responses": {
+          "200": {
+            "description": "What the sync did",
+            "content": {
+              "application/json": {
+                "example": {
+                  "created": 1,
+                  "updated": 4,
+                  "seen": 5,
+                  "truncated": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`FLOW_BODY_INVALID`, `FLOW_NUMBER_FROM_KEY`, `FLOW_UNKNOWN_FIELDS`, or a refusal from Meta's Graph",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Corpo inválido: este endpoint não recebe corpo. Envie nenhum corpo, ou um objeto JSON vazio. Um corpo truncado não é tratado como corpo vazio.",
+                  "errorEN": "Invalid body: this endpoint takes no body. Send no body at all, or an empty JSON object. A truncated body is not treated as an empty one.",
+                  "code": "FLOW_BODY_INVALID"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The key's number is not a Meta (Cloud API) number, or has no WABA behind it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Flows existem apenas em números Meta (API Oficial). O número desta chave não é Meta ou não tem uma WABA associada — use uma chave de um número Meta.",
+                  "errorEN": "Flows only exist on Meta (Cloud API) numbers. This key's number is not a Meta number, or has no WABA behind it — use a key bound to a Meta number.",
+                  "code": "FLOW_REQUIRES_META_NUMBER"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`FLOW_SYNC_IN_PROGRESS` — a sync of this number is already running. `Retry-After: 120`",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying",
+                "schema": {
+                  "type": "integer",
+                  "example": 120
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Já existe uma sincronia de Flows em andamento para o número desta chave. Tente de novo em até 120 segundos (o cabeçalho Retry-After traz o mesmo número). Sincronizar duas vezes o mesmo número em paralelo faz as duas falharem.",
+                  "errorEN": "A Flows sync is already running for this key's number. Try again in up to 120 seconds (the Retry-After header carries the same number). Syncing one number twice in parallel makes both attempts fail.",
+                  "code": "FLOW_SYNC_IN_PROGRESS"
                 }
               }
             }
@@ -8192,7 +8689,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -8207,7 +8704,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -8430,7 +8927,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -8445,7 +8942,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -8689,7 +9186,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -8704,7 +9201,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -8892,6 +9389,505 @@
             }
           }
         }
+      },
+      "get": {
+        "summary": "Get Flow JSON",
+        "description": "Reads the Flow JSON document Meta currently holds for this Flow, live from the Graph. `flowJson` is a **string**, returned byte for byte as Meta serves it — not parsed, not reformatted — so it can be edited and sent back to `POST /v1/flows/{id}/json` unchanged. Permission `flows:read`. The response is `Cache-Control: no-store`.\n\nA Flow that has not reached Meta yet (`metaFlowId: null`) is 404 `FLOW_NOT_FOUND`. When Meta returns no document — a Flow that never received one, or a transient failure — the answer is 502 `FLOW_JSON_UNAVAILABLE`. Naming the number in the query (`whatsappNumberId`, `numberId`, `wabaId`, `metaWabaId`) is 400 `FLOW_NUMBER_FROM_KEY`; a refusal from Meta's Graph is 400 with Meta's reason in both languages.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.",
+        "tags": [
+          "Flows"
+        ],
+        "operationId": "get_flows_id_json",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The **local** id of the Flow — the `id` field `GET /v1/flows` returns, never `metaFlowId`.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "cmf1a2b3c4d5e6f7g8h9i0j1"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Flow JSON, verbatim, as a string",
+            "content": {
+              "application/json": {
+                "example": {
+                  "id": "cmf1a2b3c4d5e6f7g8h9i0j1",
+                  "flowJson": "{\"version\":\"7.1\",\"screens\":[{\"id\":\"WELCOME_SCREEN\",\"title\":\"Welcome\",\"terminal\":true,\"layout\":{\"type\":\"SingleColumnLayout\",\"children\":[]}}]}"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`FLOW_NUMBER_FROM_KEY`, or a refusal from Meta's Graph",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Esta rota não aceita whatsappNumberId na query: o número é o da própria chave de API. Use a chave do número onde o Flow vive.",
+                  "errorEN": "This route does not accept whatsappNumberId in the query: the number is the API key's own. Use the key bound to the number the Flow lives on.",
+                  "code": "FLOW_NUMBER_FROM_KEY"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No Flow with that id inside the key's own WABA. Never 403: a Flow of another tenant is indistinguishable from one that does not exist, on purpose — a 403 would confirm someone else's id to whoever guessed it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Flow não encontrado para o número desta chave.",
+                  "errorEN": "Flow not found for this key's number.",
+                  "code": "FLOW_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The key's number is not a Meta (Cloud API) number, or has no WABA behind it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Flows existem apenas em números Meta (API Oficial). O número desta chave não é Meta ou não tem uma WABA associada — use uma chave de um número Meta.",
+                  "errorEN": "Flows only exist on Meta (Cloud API) numbers. This key's number is not a Meta number, or has no WABA behind it — use a key bound to a Meta number.",
+                  "code": "FLOW_REQUIRES_META_NUMBER"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error. Never carries the internal message — that belongs in the log",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Erro interno do servidor.",
+                  "errorEN": "Internal server error.",
+                  "code": "INTERNAL_ERROR"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`FLOW_JSON_UNAVAILABLE` — Meta returned no document for this Flow",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "A Meta não devolveu o documento deste Flow. Se ele nunca recebeu um JSON, envie um; se já recebeu, tente de novo em instantes.",
+                  "errorEN": "Meta returned no document for this Flow. If it never received a JSON, upload one; if it did, try again shortly.",
+                  "code": "FLOW_JSON_UNAVAILABLE"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/flows/{id}/preview": {
+      "post": {
+        "summary": "Get Flow preview link",
+        "description": "Asks Meta for the Flow's web preview link. The body is optional — no body, an empty string and `{}` are all accepted; `invalidate` is the only field, and `true` expires the previous link and mints a new one. `expiresAt` is Meta's value verbatim, or `null` when Meta sends none. Permission `flows:manage`. The response is `Cache-Control: no-store`.\n\n⛔ **The link is public** — anyone holding the URL opens the Flow with no login (`requiresLogin: false`), so forwarding it shares the form. **And the preview is not a sandbox**: on a `data_exchange` Flow Meta calls your endpoint for real. The response repeats this in `warning` / `warningEN`.\n\n`invalidate` must be a real boolean: `\"true\"` is 400 `FLOW_PREVIEW_INVALIDATE_INVALID`, never coerced. A body that is not JSON, or not an object, is 400 `FLOW_BODY_INVALID`; `whatsappNumberId` / `wabaId` are 400 `FLOW_NUMBER_FROM_KEY`; any other field is 400 `FLOW_UNKNOWN_FIELDS`. A Flow that has not reached Meta is 404 `FLOW_NOT_FOUND`; when Meta returns no link the answer is 502 `FLOW_PREVIEW_UNAVAILABLE`.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.",
+        "tags": [
+          "Flows"
+        ],
+        "operationId": "post_flows_id_preview",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The **local** id of the Flow — the `id` field `GET /v1/flows` returns, never `metaFlowId`.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "cmf1a2b3c4d5e6f7g8h9i0j1"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "invalidate": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "`true` expires the current preview link and mints a new one. Must be a real boolean.",
+                    "example": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A public preview link",
+            "content": {
+              "application/json": {
+                "example": {
+                  "flowId": "cmf1a2b3c4d5e6f7g8h9i0j1",
+                  "previewUrl": "https://business.facebook.com/wa/manage/flows/1122334455/preview/?token=b9d6b0c8-1c2f-4f0e-9b1a-3c4d5e6f7a8b",
+                  "expiresAt": "2026-09-08T12:00:00+0000",
+                  "invalidated": false,
+                  "requiresLogin": false,
+                  "warning": "Este link é público: quem tiver a URL abre o Flow sem nenhum login, então encaminhá-lo é compartilhar o formulário. E o preview não é sandbox: num Flow data_exchange a Meta chama o seu endpoint de verdade, e o que ele gravar fica gravado.",
+                  "warningEN": "This link is public: anyone holding the URL opens the Flow with no login at all, so forwarding it shares the form. And the preview is not a sandbox: on a data_exchange Flow, Meta calls your endpoint for real, and whatever it writes stays written."
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`FLOW_PREVIEW_INVALIDATE_INVALID`, `FLOW_BODY_INVALID`, `FLOW_NUMBER_FROM_KEY`, `FLOW_UNKNOWN_FIELDS`, or a refusal from Meta's Graph",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "invalidate precisa ser um booleano (true ou false) e é recusado como texto: `\"true\"` seria lido como \"não invalide\" e deixaria vivo um link que você acredita ter expirado, e `\"false\"` é truthy e expiraria um link em circulação. Nos dois casos a resposta pareceria sucesso.",
+                  "errorEN": "invalidate must be a boolean (true or false); a string is refused: `\"true\"` would read as \"do not invalidate\" and leave alive a link you believe expired, and `\"false\"` is truthy and would expire a link still in circulation. Either way the answer would look like success.",
+                  "code": "FLOW_PREVIEW_INVALIDATE_INVALID"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No Flow with that id inside the key's own WABA. Never 403: a Flow of another tenant is indistinguishable from one that does not exist, on purpose — a 403 would confirm someone else's id to whoever guessed it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Flow não encontrado para o número desta chave.",
+                  "errorEN": "Flow not found for this key's number.",
+                  "code": "FLOW_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The key's number is not a Meta (Cloud API) number, or has no WABA behind it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Flows existem apenas em números Meta (API Oficial). O número desta chave não é Meta ou não tem uma WABA associada — use uma chave de um número Meta.",
+                  "errorEN": "Flows only exist on Meta (Cloud API) numbers. This key's number is not a Meta number, or has no WABA behind it — use a key bound to a Meta number.",
+                  "code": "FLOW_REQUIRES_META_NUMBER"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error. Never carries the internal message — that belongs in the log",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Erro interno do servidor.",
+                  "errorEN": "Internal server error.",
+                  "code": "INTERNAL_ERROR"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`FLOW_PREVIEW_UNAVAILABLE` — Meta returned no preview link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "A Meta não devolveu link de preview para este Flow. Tente de novo.",
+                  "errorEN": "Meta returned no preview link for this Flow. Try again.",
+                  "code": "FLOW_PREVIEW_UNAVAILABLE"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/flows/{id}/endpoint": {
@@ -8955,7 +9951,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -8970,7 +9966,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -9085,7 +10081,7 @@
       },
       "put": {
         "summary": "Set Flow endpoint destination",
-        "description": "Stores the customer's OWN webhook — the destination we forward each decrypted Flow exchange to. **This does NOT touch Meta.** Registering `endpoint_uri` on the Flow is a separate act against a separate system (`POST` on this same resource); doing it here would silently re-point the Flow of a tenant who already runs their own endpoint, on a request that looked like a rename. What this answers instead is where Meta IS pointing — `metaEndpointUri`, `drift` and `warnings`.\n\n⛔ `url` must be `https://`. The body forwarded to it is the END USER's form answers, decrypted by us out of Meta's envelope one hop earlier; over `http://` that is PII in the clear, and there is no flag that allows it (400 `FLOW_ENDPOINT_URL_NOT_HTTPS`). The refused URL is not echoed back — it may carry a token in its query string.\n\n⚠️ `url` is REQUIRED and may be `null` EXPLICITLY, never by omission. An absent field and a `null` one mean opposite things — \"I sent you a partial body\" and \"remove the destination\" — so an omitted `url` is 400 `FLOW_ENDPOINT_URL_REQUIRED` rather than a wipe of a working configuration. `\"url\": null` CLEARS the destination and KEEPS the secret; `rotateSecret: true` is the exit for a secret that leaked.\n\n⚠️ `secret` comes back on exactly ONE response in the life of a secret: the request that minted it. It is encrypted at rest and there is no read path back, so `secret: null` means \"one already existed and was kept\", not \"there is none\" — `hasSecret` answers that.\n\nA truncated body is not read as an empty one: `{\"url\": \"https://x\"` (one missing brace) is 400 `FLOW_BODY_INVALID`. Only `url` and `rotateSecret` are accepted; the number comes from the KEY, so naming it in the body is 400 `FLOW_NUMBER_FROM_KEY`. Permission `flows:manage`.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.",
+        "description": "Stores the customer's OWN webhook — the destination we forward each decrypted Flow exchange to. **This does NOT touch Meta.** Registering `endpoint_uri` on the Flow is a separate act against a separate system (`POST` on this same resource); doing it here would silently re-point the Flow of a tenant who already runs their own endpoint, on a request that looked like a rename. What this answers instead is where Meta IS pointing — `metaEndpointUri`, `drift` and `warnings`.\n\n⛔ `url` must be `https://`. The body forwarded to it is the END USER's form answers, decrypted by us out of Meta's envelope one hop earlier; over `http://` that is PII in the clear, and there is no flag that allows it (400 `FLOW_ENDPOINT_URL_NOT_HTTPS`). The refused URL is not echoed back — it may carry a token in its query string.\n\n⚠️ `url` is REQUIRED and may be `null` EXPLICITLY, never by omission. An absent field and a `null` one mean opposite things — \"I sent you a partial body\" and \"remove the destination\" — so an omitted `url` is 400 `FLOW_ENDPOINT_URL_REQUIRED` rather than a wipe of a working configuration. `\"url\": null` CLEARS the destination and KEEPS the secret; `rotateSecret: true` is the exit for a secret that leaked.\n\n⚠️ `secret` comes back on exactly ONE response in the life of a secret: the request that minted it. It is encrypted at rest and there is no read path back, so `secret: null` means \"one already existed and was kept\", not \"there is none\" — `hasSecret` answers that.\n\nA truncated body is not read as an empty one: `{\"url\": \"https://x\"` (one missing brace) is 400 `FLOW_BODY_INVALID`. Only `url` and `rotateSecret` are accepted; the number comes from the KEY, so naming it in the body is 400 `FLOW_NUMBER_FROM_KEY`. Permission `flows:manage`.\n\n🔐 **Over an OAuth token, every secret this route mints is written to an audit trail** (user, OAuth client, workspace, Flow, IP, user agent — never the secret), under the route's own role rule (`flows:manage`: ADMIN and OWNER). `rotateSecret: true` is recorded BEFORE rotating: if the audit row cannot be written nothing is rotated and the answer is 500 `OAUTH_SECRET_AUDIT_UNAVAILABLE`. A secret minted by the first save is recorded AFTER the save: if the row cannot be written the destination stays saved but the secret is withheld — `secret: null` plus `secretWithheld: true`, `secretWithheldReason` and `secretWithheldCode: \"OAUTH_SECRET_AUDIT_UNAVAILABLE\"`; rotate to obtain a new one. API keys never go through this trail.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.",
         "tags": [
           "Flows"
         ],
@@ -9129,7 +10125,7 @@
         },
         "responses": {
           "200": {
-            "description": "Destination stored. `secret` is present ONLY when this request minted one — a rotation, or the first save on this Flow",
+            "description": "Destination stored. `secret` is present ONLY when this request minted one — a rotation, or the first save on this Flow. Over OAuth, when the minted secret could not be recorded in the audit trail: `secret: null` plus `secretWithheld: true`, `secretWithheldReason` and `secretWithheldCode`",
             "content": {
               "application/json": {
                 "example": {
@@ -9197,7 +10193,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -9212,7 +10208,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -9296,7 +10292,7 @@
             }
           },
           "500": {
-            "description": "`FLOW_ENDPOINT_SECRET_UNAVAILABLE` when the at-rest encryption key is not configured — the save is refused rather than storing the signing secret in the clear or forwarding unsigned — or the generic `INTERNAL_ERROR`. Neither body names an environment variable",
+            "description": "`FLOW_ENDPOINT_SECRET_UNAVAILABLE` when the at-rest encryption key is not configured — the save is refused rather than storing the signing secret in the clear or forwarding unsigned — or the generic `INTERNAL_ERROR`. Neither body names an environment variable. Over OAuth, `OAUTH_SECRET_AUDIT_UNAVAILABLE` (standard `/v1` envelope, `{error, code}`) when `rotateSecret: true` could not be recorded in the audit trail — nothing was rotated",
             "content": {
               "application/json": {
                 "schema": {
@@ -9315,10 +10311,22 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Não foi possível guardar o segredo de assinatura deste endpoint: o serviço não está configurado para armazená-lo com segurança. Fale com o suporte.",
-                  "errorEN": "Could not store this endpoint's signing secret: the service is not configured to keep it safely. Contact support.",
-                  "code": "FLOW_ENDPOINT_SECRET_UNAVAILABLE"
+                "examples": {
+                  "secretUnavailable": {
+                    "summary": "FLOW_ENDPOINT_SECRET_UNAVAILABLE",
+                    "value": {
+                      "error": "Não foi possível guardar o segredo de assinatura deste endpoint: o serviço não está configurado para armazená-lo com segurança. Fale com o suporte.",
+                      "errorEN": "Could not store this endpoint's signing secret: the service is not configured to keep it safely. Contact support.",
+                      "code": "FLOW_ENDPOINT_SECRET_UNAVAILABLE"
+                    }
+                  },
+                  "oauthAuditUnavailable": {
+                    "summary": "OAUTH_SECRET_AUDIT_UNAVAILABLE — OAuth rotation not recorded, not performed (standard /v1 envelope)",
+                    "value": {
+                      "error": "Could not record this access in the audit trail, so it was not performed. Try again | Não foi possível registrar este acesso na auditoria, então ele não foi realizado. Tente novamente",
+                      "code": "OAUTH_SECRET_AUDIT_UNAVAILABLE"
+                    }
+                  }
                 }
               }
             }
@@ -9371,7 +10379,7 @@
         },
         "responses": {
           "200": {
-            "description": "Destination stored. `secret` is present ONLY when this request minted one — a rotation, or the first save on this Flow",
+            "description": "Destination stored. `secret` is present ONLY when this request minted one — a rotation, or the first save on this Flow. Over OAuth, when the minted secret could not be recorded in the audit trail: `secret: null` plus `secretWithheld: true`, `secretWithheldReason` and `secretWithheldCode`",
             "content": {
               "application/json": {
                 "example": {
@@ -9439,7 +10447,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -9454,7 +10462,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -9538,7 +10546,7 @@
             }
           },
           "500": {
-            "description": "`FLOW_ENDPOINT_SECRET_UNAVAILABLE` when the at-rest encryption key is not configured — the save is refused rather than storing the signing secret in the clear or forwarding unsigned — or the generic `INTERNAL_ERROR`. Neither body names an environment variable",
+            "description": "`FLOW_ENDPOINT_SECRET_UNAVAILABLE` when the at-rest encryption key is not configured — the save is refused rather than storing the signing secret in the clear or forwarding unsigned — or the generic `INTERNAL_ERROR`. Neither body names an environment variable. Over OAuth, `OAUTH_SECRET_AUDIT_UNAVAILABLE` (standard `/v1` envelope, `{error, code}`) when `rotateSecret: true` could not be recorded in the audit trail — nothing was rotated",
             "content": {
               "application/json": {
                 "schema": {
@@ -9557,10 +10565,22 @@
                     }
                   }
                 },
-                "example": {
-                  "error": "Não foi possível guardar o segredo de assinatura deste endpoint: o serviço não está configurado para armazená-lo com segurança. Fale com o suporte.",
-                  "errorEN": "Could not store this endpoint's signing secret: the service is not configured to keep it safely. Contact support.",
-                  "code": "FLOW_ENDPOINT_SECRET_UNAVAILABLE"
+                "examples": {
+                  "secretUnavailable": {
+                    "summary": "FLOW_ENDPOINT_SECRET_UNAVAILABLE",
+                    "value": {
+                      "error": "Não foi possível guardar o segredo de assinatura deste endpoint: o serviço não está configurado para armazená-lo com segurança. Fale com o suporte.",
+                      "errorEN": "Could not store this endpoint's signing secret: the service is not configured to keep it safely. Contact support.",
+                      "code": "FLOW_ENDPOINT_SECRET_UNAVAILABLE"
+                    }
+                  },
+                  "oauthAuditUnavailable": {
+                    "summary": "OAUTH_SECRET_AUDIT_UNAVAILABLE — OAuth rotation not recorded, not performed (standard /v1 envelope)",
+                    "value": {
+                      "error": "Could not record this access in the audit trail, so it was not performed. Try again | Não foi possível registrar este acesso na auditoria, então ele não foi realizado. Tente novamente",
+                      "code": "OAUTH_SECRET_AUDIT_UNAVAILABLE"
+                    }
+                  }
                 }
               }
             }
@@ -9569,7 +10589,7 @@
       },
       "post": {
         "summary": "Register Flow endpoint at Meta",
-        "description": "Registers OUR proxy as this Flow's `endpoint_uri` at Meta — the deliberate act the `PUT` on this same resource refuses to perform. **Without it `data_exchange` is unreachable**: Meta refuses to publish a Flow whose routing model needs an endpoint, with *\"Publishing without specifying 'endpoint_uri' is forbidden\"*.\n\n⛔ It is a different verb and not a side effect of the `PUT` because the two acts have different subjects. Saving a destination is the tenant describing THEIR webhook; this is us telling META to route the Flow through us. Fusing them would mean a tenant who runs their own Flow endpoint loses every exchange the next time they fix a typo in a URL.\n\n⚠️ The body is OPTIONAL — unlike `PUT`, this verb has no required field, so no body, an empty string and `{}` are all accepted. A truncated body is still refused (400 `FLOW_BODY_INVALID`), and `confirmOverwrite` is the only field accepted.\n\n⛔ `confirmOverwrite` is not a formality. The current `endpoint_uri` is read LIVE from the Graph — not from `metaEndpointUri`, which an hourly sync writes and which is therefore silent about a URI registered in the last hour. If the Flow already points somewhere else, registering takes every exchange away from whoever answers today, so the default is 409 `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` — whose body carries a FOURTH top-level field, `currentEndpointUri`, naming the endpoint that would be displaced. Ours is never echoed: it embeds the number's endpoint path token. A non-boolean is refused and never coerced (400 `FLOW_ENDPOINT_CONFIRM_INVALID`), because `\"false\"` read as truthy would take over a live endpoint on a request whose author believed they had declined.\n\nIdempotent: a Flow already pointing at us answers 200 without a Graph write, and `metaEndpointUri` is refreshed either way. A number with no endpoint keypair is refused with 422 `FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` — registering anyway tells Meta to encrypt for a keypair that does not exist, and every exchange of the published Flow would 421. Permission `flows:manage`.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.",
+        "description": "Registers OUR proxy as this Flow's `endpoint_uri` at Meta — the deliberate act the `PUT` on this same resource refuses to perform. **Without it `data_exchange` is unreachable**: Meta refuses to publish a Flow whose routing model needs an endpoint, with *\"Publishing without specifying 'endpoint_uri' is forbidden\"*.\n\n⛔ It is a different verb and not a side effect of the `PUT` because the two acts have different subjects. Saving a destination is the tenant describing THEIR webhook; this is us telling META to route the Flow through us. Fusing them would mean a tenant who runs their own Flow endpoint loses every exchange the next time they fix a typo in a URL.\n\n⚠️ The body is OPTIONAL — unlike `PUT`, this verb has no required field, so no body, an empty string and `{}` are all accepted. A truncated body is still refused (400 `FLOW_BODY_INVALID`), and `confirmOverwrite` is the only field accepted.\n\n⛔ `confirmOverwrite` is not a formality. The current `endpoint_uri` is read LIVE from the Graph — not from `metaEndpointUri`, which an hourly sync writes and which is therefore silent about a URI registered in the last hour. If the Flow already points somewhere else, registering takes every exchange away from whoever answers today, so the default is 409 `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` — whose body carries a FOURTH top-level field, `currentEndpointUri`, naming the endpoint that would be displaced. Ours is never echoed: it embeds the number's endpoint path token. A non-boolean is refused and never coerced (400 `FLOW_ENDPOINT_CONFIRM_INVALID`), because `\"false\"` read as truthy would take over a live endpoint on a request whose author believed they had declined.\n\nIdempotent: a Flow already pointing at us answers 200 without a Graph write, and `metaEndpointUri` is refreshed either way. A number with no endpoint keypair is refused with 422 `FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` — registering anyway tells Meta to encrypt for a keypair that does not exist, and every exchange of the published Flow would 421. Permission `flows:manage`.\n\n⚠️ **Writing `endpoint_uri` on a `PUBLISHED` Flow makes Meta move it back to `DRAFT`.** When that happens the Flow is published again in the same request, and the response says so: `republished: true`, `finalStatus: \"PUBLISHED\"`. If the re-publish fails, or Meta does not report `PUBLISHED` afterwards, the answer is 502 `FLOW_REPUBLISH_FAILED` with `finalStatus` in the body — the endpoint WAS registered and the Flow is left in `DRAFT`: publish it again. When nothing was written, `republished` is `false` and `finalStatus` is the status Meta reported.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.",
         "tags": [
           "Flows"
         ],
@@ -9605,7 +10625,7 @@
         },
         "responses": {
           "200": {
-            "description": "Meta now points this Flow at our proxy. `metaEndpointUri` is refreshed from what was just written, not from the hourly mirror. No `secret`: registering mints nothing",
+            "description": "Meta now points this Flow at our proxy. `metaEndpointUri` is refreshed from what was just written, not from the hourly mirror. No `secret`: registering mints nothing. `republished` says whether a Flow Meta moved back to `DRAFT` was published again; `finalStatus` is the Flow's status at Meta at the end of the request",
             "content": {
               "application/json": {
                 "example": {
@@ -9617,7 +10637,9 @@
                   "drift": false,
                   "numberHasKey": true,
                   "numberKeyUploadedAt": "2026-09-01T18:04:00.000Z",
-                  "warnings": []
+                  "warnings": [],
+                  "republished": false,
+                  "finalStatus": "DRAFT"
                 }
               }
             }
@@ -9672,7 +10694,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -9687,7 +10709,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -9830,6 +10852,41 @@
                 }
               }
             }
+          },
+          "502": {
+            "description": "`FLOW_REPUBLISH_FAILED` — the endpoint was registered, but the Flow Meta moved to `DRAFT` could not be published again. `finalStatus` carries its status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "finalStatus": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "example": {
+                  "error": "O endpoint foi registrado, mas a Meta voltou o Flow para rascunho e a republicação falhou. O Flow está em DRAFT: publique-o de novo.",
+                  "errorEN": "The endpoint was registered, but Meta moved the Flow back to draft and re-publishing failed. The Flow is in DRAFT: publish it again.",
+                  "code": "FLOW_REPUBLISH_FAILED",
+                  "finalStatus": "DRAFT"
+                }
+              }
+            }
           }
         }
       }
@@ -9939,7 +10996,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -9954,7 +11011,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -10197,7 +11254,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -10212,7 +11269,7 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
@@ -10693,7 +11750,7 @@
             }
           },
           "403": {
-            "description": "Tenant-scoped key used on a number-scoped endpoint, or the key's role lacks the permission",
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
             "content": {
               "application/json": {
                 "schema": {
@@ -10708,7 +11765,242 @@
                   }
                 },
                 "example": {
-                  "error": "Tenant-scoped keys cannot call number endpoints",
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+                  "code": "TENANT_SCOPE_NOT_ALLOWED"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No Flow with that id inside the key's own WABA. Never 403: a Flow of another tenant is indistinguishable from one that does not exist, on purpose — a 403 would confirm someone else's id to whoever guessed it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Flow não encontrado para o número desta chave.",
+                  "errorEN": "Flow not found for this key's number.",
+                  "code": "FLOW_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The key's number is not a Meta (Cloud API) number, or has no WABA behind it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Flows existem apenas em números Meta (API Oficial). O número desta chave não é Meta ou não tem uma WABA associada — use uma chave de um número Meta.",
+                  "errorEN": "Flows only exist on Meta (Cloud API) numbers. This key's number is not a Meta number, or has no WABA behind it — use a key bound to a Meta number.",
+                  "code": "FLOW_REQUIRES_META_NUMBER"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Too many requests"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error. Never carries the internal message — that belongs in the log",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Erro interno do servidor.",
+                  "errorEN": "Internal server error.",
+                  "code": "INTERNAL_ERROR"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/flows/{id}/traces": {
+      "get": {
+        "summary": "List Flow endpoint traces",
+        "description": "What OUR proxy saw on this Flow's `data_exchange` calls: Meta's `action`, the `screen`, the `outcome` (`FORWARDED`, `CUSTOMER_ERROR`, `NO_DESTINATION` — treat the set as open), the HTTP status your webhook answered (`null` when there was no response), how long it took, and on the failure path the bodies exchanged. Most recent first. Permission `flows:read`. The response is `Cache-Control: no-store`.\n\n⚠️ **Not paginated**: it returns the most recent 50 traces, and sending `page` or `pageSize` is 400 `FLOW_TRACES_NOT_PAGINATED` — every page would return the same rows. Every other query parameter is ignored.\n\n⚠️ **Short-lived**: a trace is served for 24 hours. An empty list carries `\"notice\": \"FLOW_TRACES_RETENTION_WINDOW\"`, because `[]` can mean \"never called\" or \"called, and aged out\".\n\n⛔ **Bodies are redacted per number.** `forwardedBody` and `customerBody` are `null` on success. On a number in `RELAY_ONLY` — or when the number behind a trace can no longer be resolved — they are replaced with `\"conteúdo indisponível\"`; `outcome`, `httpStatus`, `durationMs` and `failureReason` stay intact.\n\nThe Flow is resolved inside the key's WABA; a Flow of another WABA, or of another tenant, is 404 `FLOW_NOT_FOUND`.\n\n**Requires a number-scoped key.** A tenant-scoped key must name the number with the `x-whatsapp-number-id` header, or it gets 403 `TENANT_SCOPE_NOT_ALLOWED`.",
+        "tags": [
+          "Flows"
+        ],
+        "operationId": "get_flows_id_traces",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The **local** id of the Flow — the `id` field `GET /v1/flows` returns, never `metaFlowId`.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "cmf1a2b3c4d5e6f7g8h9i0j1"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The most recent traces (at most 50). `notice` is present only when the list is empty",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "traces": {
+                    "summary": "A failed exchange",
+                    "value": {
+                      "traces": [
+                        {
+                          "id": "cmf7t1r2a3c4e5s6t7u8v9w0",
+                          "action": "data_exchange",
+                          "screen": "WELCOME_SCREEN",
+                          "outcome": "CUSTOMER_ERROR",
+                          "httpStatus": 500,
+                          "durationMs": 812,
+                          "failureReason": "Customer endpoint answered HTTP 500",
+                          "forwardedBody": "{\"action\":\"data_exchange\",\"screen\":\"WELCOME_SCREEN\",\"data\":{\"observacao\":\"Aobaaa\"}}",
+                          "customerBody": "Internal Server Error",
+                          "createdAt": "2026-09-06T16:08:12.616Z"
+                        }
+                      ]
+                    }
+                  },
+                  "empty": {
+                    "summary": "Nothing inside the 24-hour window",
+                    "value": {
+                      "traces": [],
+                      "notice": "FLOW_TRACES_RETENTION_WINDOW"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`FLOW_TRACES_NOT_PAGINATED` — `page` or `pageSize` was sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "Portuguese half"
+                    },
+                    "errorEN": {
+                      "type": "string",
+                      "description": "English half"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Esta rota não é paginada: ela devolve a cauda mais recente de trocas do Flow, dentro da janela de retenção. Remova `page` e `pageSize` — repetir a chamada com outra página devolveria exatamente as mesmas trocas.",
+                  "errorEN": "This route is not paginated: it returns the most recent tail of the Flow's exchanges, within the retention window. Drop `page` and `pageSize` — asking for another page would return exactly the same exchanges.",
+                  "code": "FLOW_TRACES_NOT_PAGINATED"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `x-api-key` / `x-api-key-id` header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`TENANT_SCOPE_NOT_ALLOWED` — a workspace key, account key or OAuth token that did not name the number with `x-whatsapp-number-id`. For credentials that carry a user (OAuth tokens, `ps_account_` keys): `PERMISSION_DENIED` when that user's workspace role lacks the permission, `WORKSPACE_MEMBERSHIP_REQUIRED` when the user is no longer an active member. Number and workspace keys are not role-gated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
                   "code": "TENANT_SCOPE_NOT_ALLOWED"
                 }
               }
