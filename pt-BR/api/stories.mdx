@@ -24,7 +24,7 @@ Um **story** (no WhatsApp, *status*) é uma publicação de texto, imagem ou ví
 
 `POST https://pilotstatus.com.br/v1/stories`
 
-Responde **`202`** com o story na fila: `{ "id", "status": "QUEUED", "type", "recipients": "explicit" | "privacy" }`. Envie o cabeçalho `Idempotency-Key` para repetir com segurança: a mesma chave devolve o mesmo `id`.
+Responde **`202`** com o story na fila: `{ "id", "status": "QUEUED", "type", "recipients": "explicit" | "privacy", "deliverAt" }` (`deliverAt` vem `null` quando o story sai na hora). Envie o cabeçalho `Idempotency-Key` para repetir com segurança: a mesma chave devolve o mesmo `id`.
 
 | Campo | Tipo | Regras |
 | --- | --- | --- |
@@ -36,6 +36,7 @@ Responde **`202`** com o story na fila: `{ "id", "status": "QUEUED", "type", "re
 | `mediaUrl` | string | Obrigatório quando `type` é `image` ou `video`. Uma URL `https` pública — a única forma de enviar mídia (não há `mediaId`). Até **100 MiB**. |
 | `caption` | string | Só `image` / `video`. Até 1024 caracteres. |
 | `recipients` | string[] | Opcional. Números (E.164 sem `+`) ou JIDs; duplicados são removidos. **De 1 a 5000** itens — acima de 5000 responde `400 VALIDATION_ERROR`. Sem o campo → privacidade do status do aparelho. |
+| `deliverAt` | string | Opcional. Data e hora ISO-8601 para publicar o story depois. Veja [Agendar um story](#agendar-um-story). |
 
 Campos desconhecidos são recusados com `400 VALIDATION_ERROR`.
 
@@ -60,6 +61,30 @@ A transparência (alfa) do fundo é ignorada na escolha da cor de texto de contr
 - O Pilot Status baixa a `mediaUrl` e a envia ao WhatsApp. O limite é de **100 MiB**, o mesmo das mensagens de mídia.
 - Imagens **WebP** são convertidas para JPEG antes da publicação.
 
+## Agendar um story
+
+Envie `deliverAt` para publicar o story mais tarde. Valem as mesmas regras do `deliverAt` do [envio de mensagem](/pt-BR/api/messages/send):
+
+- ISO-8601 com fuso, ex.: `2026-11-12T10:00:00-03:00`; é gravado em UTC. Sem fuso, é lido como UTC.
+- Um horário no passado, ou agora, publica na hora.
+- Um valor inválido responde `400 VALIDATION_ERROR` com `details.deliverAt: ["Invalid datetime"]`.
+- O story fica `QUEUED` até lá, e `GET /v1/stories/{id}` devolve o `deliverAt`.
+- A `mediaUrl` é baixada **na hora da publicação**, não do agendamento. Se a URL sair do ar até lá, o story falha e você recebe `message.failed`.
+- A cobrança (1 mensagem) só acontece quando ele sai. Story cancelado não é cobrado.
+
+Para cancelar, chame `DELETE /v1/stories/{id}` enquanto o story ainda está `QUEUED` e o `deliverAt` está no futuro. Veja [Apagar um story](#apagar-um-story).
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/stories \
+  -H "x-api-key: ps_number_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "type": "text", "text": "Abrimos às 10h!", "deliverAt": "2026-11-12T10:00:00-03:00" }'
+```
+
+```json
+{ "id": "cm3story0002", "status": "QUEUED", "type": "text", "recipients": "privacy", "deliverAt": "2026-11-12T13:00:00.000Z" }
+```
+
 ## Consultar um story
 
 `GET https://pilotstatus.com.br/v1/stories/{id}`
@@ -73,6 +98,7 @@ A transparência (alfa) do fundo é ignorada na escolha da cor de texto de contr
   "recipientsMode": "explicit",
   "recipientCount": 2,
   "recipients": ["5511999999999", "5521988887777"],
+  "deliverAt": null,
   "createdAt": "2026-11-10T14:00:00.000Z",
   "sentAt": "2026-11-10T14:00:03.000Z",
   "revokedAt": null
@@ -87,7 +113,9 @@ A transparência (alfa) do fundo é ignorada na escolha da cor de texto de contr
 
 `DELETE https://pilotstatus.com.br/v1/stories/{id}`
 
-- Remove o story dos aparelhos de todos que o receberam (a mesma lista efetiva do envio, mesmo que a privacidade tenha mudado depois).
+- **Agendado e ainda não vencido** (`QUEUED` com `deliverAt` no futuro): cancela. Responde **`200`** com `{ "id", "canceledAt" }`; o story vira `CANCELED`, nunca é publicado e não é cobrado.
+- **`QUEUED` e já vencido** (está sendo publicado): `409 STORY_NOT_REVOCABLE` com o `status`. Tente de novo quando estiver `SENT`.
+- **Enviado:** remove o story dos aparelhos de todos que o receberam (a mesma lista efetiva do envio, mesmo que a privacidade tenha mudado depois).
 - Só vale para um story já enviado (`status` `SENT`, `DELIVERED`, `READ` ou `PLAYED`) e ainda não apagado; senão, `409 STORY_NOT_REVOCABLE`. Mais de 24 horas depois de `sentAt` → `410 STORY_EXPIRED`.
 - Responde **`200`** com `{ "id", "revokedAt" }`. Não é cobrado e não cria mensagem nova.
 
