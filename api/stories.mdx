@@ -24,7 +24,7 @@ A **story** (called *status* inside WhatsApp) is a text, image or video post tha
 
 `POST https://pilotstatus.com.br/v1/stories`
 
-Answers **`202`** with the story queued: `{ "id", "status": "QUEUED", "type", "recipients": "explicit" | "privacy" }`. Send an `Idempotency-Key` header to retry safely: the same key returns the same `id`.
+Answers **`202`** with the story queued: `{ "id", "status": "QUEUED", "type", "recipients": "explicit" | "privacy", "deliverAt" }` (`deliverAt` is `null` when the story goes out right away). Send an `Idempotency-Key` header to retry safely: the same key returns the same `id`.
 
 | Field | Type | Rules |
 | --- | --- | --- |
@@ -36,6 +36,7 @@ Answers **`202`** with the story queued: `{ "id", "status": "QUEUED", "type", "r
 | `mediaUrl` | string | Required when `type` is `image` or `video`. A public `https` URL — the only way to pass media (there is no `mediaId`). Up to **100 MiB**. |
 | `caption` | string | `image` / `video` only. Up to 1024 characters. |
 | `recipients` | string[] | Optional. Phone numbers (E.164 without `+`) or JIDs; duplicates are removed. **1 to 5000** items — more than 5000 answers `400 VALIDATION_ERROR`. Left out → the phone's status privacy. |
+| `deliverAt` | string | Optional. ISO-8601 date-time to publish the story later. See [Schedule a story](#schedule-a-story). |
 
 Unknown fields are refused with `400 VALIDATION_ERROR`.
 
@@ -60,6 +61,30 @@ The alpha of the background is ignored when picking the contrasting text color.
 - Pilot Status downloads `mediaUrl` and uploads it to WhatsApp. The limit is **100 MiB**, the same as for media messages.
 - **WebP** images are converted to JPEG before publishing.
 
+## Schedule a story
+
+Send `deliverAt` to publish the story at a later time. It follows the same rules as `deliverAt` on [sending a message](/api/messages/send):
+
+- ISO-8601 with a time zone, e.g. `2026-11-12T10:00:00-03:00`; it is stored in UTC. Without a zone it is read as UTC.
+- A time in the past, or now, publishes right away.
+- An invalid value answers `400 VALIDATION_ERROR` with `details.deliverAt: ["Invalid datetime"]`.
+- The story stays `QUEUED` until then, and `GET /v1/stories/{id}` returns its `deliverAt`.
+- `mediaUrl` is downloaded **at publish time**, not when you schedule. If the URL is gone by then, the story fails and you get `message.failed`.
+- It is charged (1 message) only when it goes out. A canceled story is not charged.
+
+To cancel, call `DELETE /v1/stories/{id}` while the story is still `QUEUED` and its `deliverAt` is in the future. See [Delete a story](#delete-a-story).
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/stories \
+  -H "x-api-key: ps_number_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "type": "text", "text": "Opening at 10!", "deliverAt": "2026-11-12T10:00:00-03:00" }'
+```
+
+```json
+{ "id": "cm3story0002", "status": "QUEUED", "type": "text", "recipients": "privacy", "deliverAt": "2026-11-12T13:00:00.000Z" }
+```
+
 ## Read a story
 
 `GET https://pilotstatus.com.br/v1/stories/{id}`
@@ -73,6 +98,7 @@ The alpha of the background is ignored when picking the contrasting text color.
   "recipientsMode": "explicit",
   "recipientCount": 2,
   "recipients": ["5511999999999", "5521988887777"],
+  "deliverAt": null,
   "createdAt": "2026-11-10T14:00:00.000Z",
   "sentAt": "2026-11-10T14:00:03.000Z",
   "revokedAt": null
@@ -87,7 +113,9 @@ The alpha of the background is ignored when picking the contrasting text color.
 
 `DELETE https://pilotstatus.com.br/v1/stories/{id}`
 
-- Removes the story from the phones of everyone who received it (the same effective list as the send, even if the privacy setting changed since).
+- **Scheduled and not due yet** (`QUEUED` with a future `deliverAt`): cancels it. Answers **`200`** with `{ "id", "canceledAt" }`; the story becomes `CANCELED`, is never published and is not charged.
+- **`QUEUED` and already due** (it is being published): `409 STORY_NOT_REVOCABLE` with its `status`. Try again once it is `SENT`.
+- **Sent:** removes the story from the phones of everyone who received it (the same effective list as the send, even if the privacy setting changed since).
 - Only a story already sent (`status` `SENT`, `DELIVERED`, `READ` or `PLAYED`) and not yet deleted; otherwise `409 STORY_NOT_REVOCABLE`. More than 24 hours after `sentAt` → `410 STORY_EXPIRED`.
 - Answers **`200`** with `{ "id", "revokedAt" }`. It is not charged and creates no new message.
 
@@ -109,7 +137,7 @@ Error messages are bilingual (`English | Portuguese`).
 | `403` | `PERMISSION_DENIED` | The credential's role lacks the permission. |
 | `404` | — | The story does not exist for this number. |
 | `409` | `WHATSAPP_INSTANCE_NOT_CONNECTED` | The session is not connected. |
-| `409` | `STORY_NOT_REVOCABLE` | Delete on a story not sent yet (`QUEUED`, `FAILED`) or already deleted. |
+| `409` | `STORY_NOT_REVOCABLE` | Delete on a story that is being published (`QUEUED` and due), failed, canceled or already deleted. |
 | `410` | `STORY_EXPIRED` | Delete more than 24 hours after the story was sent. |
 
 ## Examples
