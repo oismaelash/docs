@@ -1,0 +1,172 @@
+---
+title: "WhatsApp Stories (Status) API"
+sidebarTitle: "Stories"
+description: "Publish, read and delete WhatsApp stories (status) from the connected number."
+mode: "wide"
+---
+
+A **story** (called *status* inside WhatsApp) is a text, image or video post that your number's contacts see in the **Updates** tab for **24 hours**. Pilot Status publishes it from the **same WhatsApp number** tied to your API key, as `POST /v1/messages/send` does.
+
+<Warning>
+  Stories are available on **Evolution GO** numbers only. A Meta Cloud API number answers `400 NOT_SUPPORTED_FOR_META` (the Cloud API has no stories), and an unofficial number on any other session (e.g. Evolution v2) answers `400 NOT_SUPPORTED_FOR_PROVIDER`.
+</Warning>
+
+## How a story works
+
+- **Who sees it.** Send `recipients` (phone numbers in E.164 without `+`, or JIDs) and only those contacts receive it. Leave it out and the phone's own **status privacy** setting decides (*My contacts*, *My contacts except…*, *Only share with…*).
+- **Nobody in the privacy list.** The story is still published and charged: it shows only on your own devices, and `GET /v1/stories/{id}` returns `recipientCount: 0`.
+- **24 hours.** WhatsApp removes the story 24 hours after it was sent. You can delete it earlier with `DELETE /v1/stories/{id}`; after 24 hours the answer is `410 STORY_EXPIRED`.
+- **Charging.** Each story counts as **1 message** in your plan once it is sent, whatever the number of recipients. Deleting is free.
+- **Where it shows.** A story is not a conversation: it does not appear in the inbox, but it is listed in `GET /v1/messages` and in the message log, and fires the usual `message.sent` / `message.failed` webhooks with `type: "story"`.
+
+## Publish a story
+
+`POST https://pilotstatus.com.br/v1/stories`
+
+Answers **`202`** with the story queued: `{ "id", "status": "QUEUED", "type", "recipients": "explicit" | "privacy" }`. Send an `Idempotency-Key` header to retry safely: the same key returns the same `id`.
+
+| Field | Type | Rules |
+| --- | --- | --- |
+| `type` | string | **Required.** `text`, `image` or `video`. |
+| `text` | string | Required when `type` is `text`. 1–700 characters. |
+| `backgroundColor` | string | `text` only. `#RRGGBB` or `#AARRGGBB`. Default `#128C7E` (WhatsApp green). |
+| `textColor` | string | `text` only. `#RRGGBB` or `#AARRGGBB`. See [Colors](#colors). |
+| `font` | string | `text` only. A font **name** from [Fonts](#fonts). Default `system`. A number is refused. |
+| `mediaUrl` | string | Required when `type` is `image` or `video`. A public `https` URL — the only way to pass media (there is no `mediaId`). Up to **100 MiB**. |
+| `caption` | string | `image` / `video` only. Up to 1024 characters. |
+| `recipients` | string[] | Optional. Phone numbers (E.164 without `+`) or JIDs; duplicates are removed. **1 to 5000** items — more than 5000 answers `400 VALIDATION_ERROR`. Left out → the phone's status privacy. |
+
+Unknown fields are refused with `400 VALIDATION_ERROR`.
+
+### Colors
+
+| You send | Background | Text |
+| --- | --- | --- |
+| neither | `#128C7E` | `#FFFFFF` |
+| only `backgroundColor` | yours | `#FFFFFF` or `#000000`, whichever contrasts more with your background |
+| only `textColor` | `#128C7E` | yours |
+| both | yours | yours — contrast is **not** checked |
+
+The alpha of the background is ignored when picking the contrasting text color.
+
+### Fonts
+
+`system` (default), `system_text`, `script`, `system_bold`, `morningbreeze`, `calistoga`, `exo2`, `courier`.
+
+### Media
+
+- **Images and videos** only; audio stories are not supported.
+- Pilot Status downloads `mediaUrl` and uploads it to WhatsApp. The limit is **100 MiB**, the same as for media messages.
+- **WebP** images are converted to JPEG before publishing.
+
+## Read a story
+
+`GET https://pilotstatus.com.br/v1/stories/{id}`
+
+```json
+{
+  "id": "cm3story0001",
+  "type": "image",
+  "status": "SENT",
+  "caption": "New collection",
+  "recipientsMode": "explicit",
+  "recipientCount": 2,
+  "recipients": ["5511999999999", "5521988887777"],
+  "createdAt": "2026-11-10T14:00:00.000Z",
+  "sentAt": "2026-11-10T14:00:03.000Z",
+  "revokedAt": null
+}
+```
+
+- `recipients` is the **effective** list of who received the story, without your own number: the one you sent (`recipientsMode: "explicit"`) or the one the phone's privacy produced (`"privacy"`). It is `null` while the story is `QUEUED`.
+- Recipients are third-party data and follow the same retention as message content: outside the retention window, `recipients` is `null` and `redacted: true`; `recipientCount` stays.
+- The id must belong to the credential's number; an id from another number, or a message that is not a story, answers `404`.
+
+## Delete a story
+
+`DELETE https://pilotstatus.com.br/v1/stories/{id}`
+
+- Removes the story from the phones of everyone who received it (the same effective list as the send, even if the privacy setting changed since).
+- Only a story already sent (`status` `SENT`, `DELIVERED`, `READ` or `PLAYED`) and not yet deleted; otherwise `409 STORY_NOT_REVOCABLE`. More than 24 hours after `sentAt` → `410 STORY_EXPIRED`.
+- Answers **`200`** with `{ "id", "revokedAt" }`. It is not charged and creates no new message.
+
+## Authentication
+
+Same rules as [sending a message](/api/messages/send): a **number key** (`ps_number_`) acts on its own number; a workspace key, an account key (with `x-workspace-id`) or an OAuth token must name the number in `x-whatsapp-number-id`. With an account key or an OAuth token, publishing and deleting need the `messages:send` permission (**AGENT**, **ADMIN** or **OWNER**) and reading needs `logs:read:content`. See [Authentication](/api/authentication).
+
+## Errors
+
+Error messages are bilingual (`English | Portuguese`).
+
+| Status | `code` | When |
+| --- | --- | --- |
+| `400` | `NUMBER_NOT_FOUND` | The credential is not tied to a number. |
+| `400` | `NOT_SUPPORTED_FOR_META` | The number is a Meta Cloud API number. |
+| `400` | `NOT_SUPPORTED_FOR_PROVIDER` | The number's session is not Evolution GO (e.g. Evolution v2). |
+| `400` | `VALIDATION_ERROR` | Invalid body; `details` lists each field. |
+| `402` / `429` | same codes as [sending a message](/api/messages/send) | Plan limit reached. |
+| `403` | `PERMISSION_DENIED` | The credential's role lacks the permission. |
+| `404` | — | The story does not exist for this number. |
+| `409` | `WHATSAPP_INSTANCE_NOT_CONNECTED` | The session is not connected. |
+| `409` | `STORY_NOT_REVOCABLE` | Delete on a story not sent yet (`QUEUED`, `FAILED`) or already deleted. |
+| `410` | `STORY_EXPIRED` | Delete more than 24 hours after the story was sent. |
+
+## Examples
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/stories" \
+  -H "x-api-key: ps_number_your_key" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: promo-2026-11-10" \
+  -d '{
+    "type": "text",
+    "text": "Sale today!",
+    "backgroundColor": "#25D366",
+    "font": "calistoga",
+    "recipients": ["5511999999999"]
+  }'
+```
+
+```typescript Node
+import { PilotStatusClient } from "@pilot-status/sdk";
+
+const client = new PilotStatusClient({ apiKey: process.env.PILOT_STATUS_API_KEY! });
+
+const story = await client.stories.create({
+  type: "image",
+  mediaUrl: "https://example.com/collection.jpg",
+  caption: "New collection",
+});
+
+const details = await client.stories.get(story.id);
+await client.stories.delete(story.id);
+```
+
+```python Python
+import os
+from pilot_status import PilotStatusClient
+
+client = PilotStatusClient(api_key=os.environ["PILOT_STATUS_API_KEY"])
+
+story = client.stories.create({
+    "type": "video",
+    "mediaUrl": "https://example.com/teaser.mp4",
+    "caption": "Coming soon",
+    "recipients": ["5511999999999", "5521988887777"],
+})
+
+details = client.stories.get(story["id"])
+client.stories.delete(story["id"])
+```
+
+```json Response (202)
+{ "id": "cm3story0001", "status": "QUEUED", "type": "text", "recipients": "explicit" }
+```
+
+</CodeGroup>
+
+## MCP
+
+The [MCP server](/integrations/mcp-server) exposes the same operations as `stories_send`, `story_get` and `story_delete`.
