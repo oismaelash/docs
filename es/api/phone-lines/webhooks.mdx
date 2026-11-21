@@ -1,0 +1,599 @@
+---
+title: "Eventos de webhook de líneas telefónicas: referencia"
+sidebarTitle: "Webhooks de líneas"
+description: "Los webhooks del producto Líneas telefónicas (registrados en el dashboard o mediante la API, /v1/phone-lines/webhooks) y sus eventos: compra, llamada y código de activación, renovación, fallo de pago, suspensión, devolución, cancelación y verificación, con payloads, headers, verificación de firma y comportamiento de reintentos."
+mode: "wide"
+---
+
+# Webhooks de líneas telefónicas
+
+<Tip>
+  Pruébalos con tu key en el Playground: [`GET /v1/phone-lines/webhooks`](/es/playground/phone-lines/list-line-webhooks), [`POST /v1/phone-lines/webhooks`](/es/playground/phone-lines/create-line-webhook), [`GET …/{id}`](/es/playground/phone-lines/get-line-webhook), [`PATCH …/{id}`](/es/playground/phone-lines/update-line-webhook), [`DELETE …/{id}`](/es/playground/phone-lines/delete-line-webhook), [`GET …/{id}/deliveries`](/es/playground/phone-lines/list-line-webhook-deliveries), [`GET …/deliveries/{deliveryId}`](/es/playground/phone-lines/get-line-webhook-delivery).
+</Tip>
+
+Las líneas telefónicas envían sus eventos a los **webhooks de líneas telefónicas**: un registro propio, separado de los [webhooks de número](/es/api/webhooks/configure). Los dos nunca se mezclan:
+
+- Un webhook de número (incluso uno suscrito a `"*"`) **nunca** recibe un evento `phone_line.*`.
+- Un webhook de líneas telefónicas recibe **solo** eventos `phone_line.*`, nunca eventos de mensajes ni de números.
+
+## Configurar
+
+Gestiona los webhooks de líneas telefónicas **en el dashboard** o **mediante la API**: es el mismo registro, y lo que creas en uno aparece en el otro. En el dashboard, en **Phone lines → Line webhooks** (`/linhas/webhooks`), como **Owner o Admin**; en la API, con una key **con alcance de tenant** en [`/v1/phone-lines/webhooks`](#mediante-la-api). Las reglas son las mismas en ambos:
+
+- **Nombre**: opcional, hasta 100 caracteres, para distinguir tus webhooks en la lista. Si se deja en blanco, el webhook recibe el nombre del host de la URL (`hooks.example.com`), igual que los webhooks de número. Este nombre del webhook no se envía en las entregas (el `name` de una entrega es el de la línea).
+- **URL de destino**: debe ser `https` y debe apuntar a una dirección pública. Una URL que apunta a una dirección interna o de red privada (`localhost`, una IP de loopback o privada, un nombre de host sin punto, o un nombre que resuelve a alguna de esas) se rechaza al guardarla (`WEBHOOK_URL_REFUSED`), ya que nunca se llamaría.
+- **Eventos**: elige uno o más de los eventos de abajo, o **todos** (`"*"`). Dentro de este registro, `"*"` significa todos los eventos de líneas telefónicas. Se requiere al menos uno.
+- **Secret de firma**: se muestra **una sola vez**, cuando se crea el webhook (empieza con `plwh_`): en el dashboard, en la ventana **Signing secret** que se abre justo después de hacer clic en **Create webhook** (con un botón **Copy**; se cierra con **Got it**); en la API, en la respuesta del `POST`. Guárdalo de inmediato: nada lo vuelve a mostrar, y no hay rotación. Para cambiarlo, crea un webhook nuevo, mueve tu receptor a su secret y elimina el anterior.
+- **Pausar / reanudar, editar (nombre, URL y eventos) y eliminar.** Editar nunca cambia el secret de firma. Una URL nueva se verifica igual que al crear; guardar sin cambiar la URL no la vuelve a verificar, así que un webhook siempre se puede pausar.
+- **Registro de entregas**: por webhook: evento, estado (pendiente, entregado, fallido), intentos, el status HTTP que respondió tu endpoint y el último error.
+
+Un workspace puede tener más de un webhook de líneas telefónicas; cada uno recibe los eventos a los que se suscribió.
+
+<Note>
+  Este registro también está disponible como [webhooks de workspace](/es/api/workspace-webhooks), en `/v1/workspace/webhooks` y en la pantalla **Workspace keys**, que agregan el evento de wallet `wallet.topup_paid`. La lista de aquí también muestra esos webhooks; uno que incluye `wallet.topup_paid` puede leerse y eliminarse aquí, pero editarlo aquí devuelve **400 `INVALID_WEBHOOK`**: edítalo en `/v1/workspace/webhooks`.
+</Note>
+
+### Mediante la API
+
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| `GET` | `/v1/phone-lines/webhooks` | Lista los webhooks de líneas telefónicas (los más antiguos primero) y el catálogo de eventos. |
+| `POST` | `/v1/phone-lines/webhooks` | Crea un webhook. Devuelve el secret de firma, **solo esta vez**. |
+| `GET` | `/v1/phone-lines/webhooks/{id}` | Obtiene un webhook. |
+| `PATCH` | `/v1/phone-lines/webhooks/{id}` | Edita nombre, URL y eventos, o pausa y reanuda (`active`). |
+| `DELETE` | `/v1/phone-lines/webhooks/{id}` | Elimina un webhook. |
+| `GET` | `/v1/phone-lines/webhooks/{id}/deliveries` | Las entregas más recientes del webhook, sin su body. |
+| `GET` | `/v1/phone-lines/webhooks/{id}/deliveries/{deliveryId}` | Una entrega completa, con el body que se envió. |
+
+<Note>
+  Requiere una key **con alcance de tenant**: una [key de workspace](/es/api/key-types#claves-de-workspace), o una [key de cuenta](/es/api/key-types#claves-de-cuenta) con `x-workspace-id`; una key con alcance de número recibe **403 `NUMBER_SCOPE_NOT_ALLOWED`**, como en todos los endpoints de `/v1/phone-lines`. Con una key de cuenta o un token OAuth / MCP, el usuario debe ser **Owner o Admin** (`phone_lines:webhooks`); de lo contrario, `403 PERMISSION_DENIED`. Todos se pueden probar en el **Playground → [Phone Lines](/es/playground/phone-lines/list-line-webhooks)**.
+</Note>
+
+#### Crear un webhook
+
+`POST https://pilotstatus.com.br/v1/phone-lines/webhooks` con `{ name?, url, events }`. Responde **`201`** con `{ "webhook": { … } }`, enviado con `Cache-Control: no-store`.
+
+<ParamField body="url" type="string" required>
+  La URL pública `https` que recibe las entregas.
+</ParamField>
+
+<ParamField body="events" type="string[]" required>
+  Uno o más nombres de la [tabla de eventos](#eventos), o `["*"]` para todos los eventos de líneas telefónicas. Los duplicados se ignoran.
+</ParamField>
+
+<ParamField body="name" type="string">
+  Hasta 100 caracteres. Si está ausente o en blanco, se convierte en el host de la URL.
+</ParamField>
+
+Cualquier otro campo del body se rechaza con **400 `UNKNOWN_FIELDS`**, que nombra los campos.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines/webhooks" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -d '{
+    "name": "My app",
+    "url": "https://hooks.example.com/pilot/phone-lines",
+    "events": ["phone_line.code_received", "phone_line.payment_failed"]
+  }'
+```
+
+```json Response (201)
+{
+  "webhook": {
+    "id": "cmh1w8b2k0001wh8example3d",
+    "name": "My app",
+    "url": "https://hooks.example.com/pilot/phone-lines",
+    "events": ["phone_line.code_received", "phone_line.payment_failed"],
+    "active": true,
+    "secret": "plwh_3f9a1c7e5b2d8f4a6c0e9b1d7f3a5c8e2b4d6f8a0c1e3b5d",
+    "createdAt": "2026-10-27T13:58:02.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+<Warning>
+  **El `secret` viene solo en esta respuesta.** Ninguna lectura (`GET`, `PATCH`, la lista) lo devuelve, y no hay rotación. Guárdalo en tu servidor antes de hacer cualquier otra cosa; si lo pierdes, crea un webhook nuevo y elimina el anterior. Crear **no** es idempotente: repetir el `POST` (después de un timeout, por ejemplo) crea un segundo webhook con otro secret; revisa la lista antes de volver a crear.
+
+  Con un token OAuth/MCP, la creación se registra primero en un registro de auditoría. Si ese registro no se puede escribir, el webhook **se crea igual**, pero la respuesta trae `"secret": null` con `"secretWithheld": true`, un `secretWithheldReason` bilingüe y `"secretWithheldCode": "OAUTH_SECRET_AUDIT_UNAVAILABLE"`: elimina ese webhook y crea otro.
+</Warning>
+
+#### Listar y obtener
+
+`GET https://pilotstatus.com.br/v1/phone-lines/webhooks` responde `{ "webhooks": [ … ], "events": [ … ] }`: los webhooks del workspace, los más antiguos primero, y el catálogo de eventos a los que puede suscribirse un webhook de líneas telefónicas. `GET …/webhooks/{id}` responde `{ "webhook": { … } }`. Un webhook de otro workspace responde **404 `WEBHOOK_NOT_FOUND`**, igual que un id que no existe.
+
+```json Response (200) — GET /v1/phone-lines/webhooks
+{
+  "webhooks": [
+    {
+      "id": "cmh1w8b2k0001wh8example3d",
+      "name": "My app",
+      "url": "https://hooks.example.com/pilot/phone-lines",
+      "events": ["phone_line.code_received", "phone_line.payment_failed"],
+      "active": true,
+      "lastDeliveryAt": "2026-10-27T14:11:51.000Z",
+      "lastStatusCode": 200,
+      "createdAt": "2026-10-27T13:58:02.000Z"
+    }
+  ],
+  "events": [
+    "phone_line.purchased",
+    "phone_line.audio_received",
+    "phone_line.code_received",
+    "phone_line.code_failed",
+    "phone_line.renewed",
+    "phone_line.payment_failed",
+    "phone_line.suspended",
+    "phone_line.returned",
+    "phone_line.canceled",
+    "phone_line.verification_updated"
+  ]
+}
+```
+
+| Campo | Descripción |
+| --- | --- |
+| `id` | El id del webhook, para las rutas `/v1/phone-lines/webhooks/{id}`. |
+| `name` | Nunca vacío: el nombre que se le dio, o el host de la URL. |
+| `url` | La URL de destino. |
+| `events` | Los eventos suscritos, o `["*"]`. |
+| `active` | `false` cuando está pausado: un webhook pausado no recibe entregas. |
+| `lastDeliveryAt` | ISO 8601 de la última entrega **exitosa**, o `null`. Un intento fallido no lo cambia. |
+| `lastStatusCode` | El último status HTTP que respondió tu endpoint, exitoso o no, o `null`. |
+| `createdAt` | ISO 8601: cuándo se creó el webhook. |
+
+#### Editar, pausar y eliminar
+
+`PATCH https://pilotstatus.com.br/v1/phone-lines/webhooks/{id}` acepta `name`, `url`, `events` y `active`, todos opcionales; lo que no se envía queda como está. Responde `{ "webhook": { … } }` sin el secret, que nunca cambia. Solo una URL que **cambia** se vuelve a verificar: pausar o cambiar los eventos siempre funciona, incluso cuando la URL guardada sería rechazada hoy. Un `name` enviado en blanco vuelve al host de la URL.
+
+```bash
+# Pausar
+curl -X PATCH "https://pilotstatus.com.br/v1/phone-lines/webhooks/cmh1w8b2k0001wh8example3d" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -d '{ "active": false }'
+```
+
+`DELETE https://pilotstatus.com.br/v1/phone-lines/webhooks/{id}` responde `{ "ok": true }`. Las entregas pendientes del webhook se descartan.
+
+#### Registro de entregas
+
+`GET https://pilotstatus.com.br/v1/phone-lines/webhooks/{id}/deliveries` responde `{ "deliveries": [ … ] }`, las más recientes primero, **sin el body** de cada entrega.
+
+<ParamField query="limit" default="50" type="integer">
+  De 1 a 200. Cualquier otro valor → **400 `INVALID_LIMIT`**.
+</ParamField>
+
+```json Response (200)
+{
+  "deliveries": [
+    {
+      "id": "cmh1w9c4m0002dl8example5f",
+      "event": "phone_line.code_received",
+      "status": "DELIVERED",
+      "attempts": 1,
+      "responseStatus": 200,
+      "lastError": null,
+      "createdAt": "2026-10-27T14:11:51.000Z",
+      "deliveredAt": "2026-10-27T14:11:52.000Z"
+    }
+  ]
+}
+```
+
+`status` es `PENDING`, `DELIVERED` o `FAILED`; `responseStatus` es el status HTTP que respondió tu endpoint, y `lastError` el último error cuando no volvió ninguna respuesta aceptada.
+
+`GET https://pilotstatus.com.br/v1/phone-lines/webhooks/{id}/deliveries/{deliveryId}` responde `{ "delivery": { … } }` con los mismos campos más tres del **último intento**: `durationMs`, `responseBody` (la respuesta de tu endpoint, hasta 1,000 caracteres) y `payload`: el body exacto que se envió y se firmó, como un **string** JSON. Calcula el HMAC sobre ese string con tu secret y obtienes el `x-pilot-status-signature` que llevó la entrega. Se envía con `Cache-Control: no-store`.
+
+<Warning>
+  El `payload` de un `phone_line.code_received` trae el código de activación, que es una credencial. La lista nunca lo trae; leer una entrega sí. No registres esa respuesta en logs.
+</Warning>
+
+
+#### Errores
+
+Los errores siguen el [envoltorio de líneas telefónicas](/es/api/phone-lines/overview#errores): un `error` bilingüe y un `code`. Los errores de autenticación y alcance (`401`, `403 NUMBER_SCOPE_NOT_ALLOWED`, `TENANT_REQUIRED`, `WORKSPACE_ARCHIVED`, `PERMISSION_DENIED`, `WORKSPACE_MEMBERSHIP_REQUIRED`) son los mismos que en todos los endpoints de `/v1/phone-lines`.
+
+| Status | `code` | Dónde | Qué pasó |
+| --- | --- | --- | --- |
+| `400` | `INVALID_BODY` | `POST`, `PATCH` | El body no es un objeto JSON. |
+| `400` | `UNKNOWN_FIELDS` | `POST`, `PATCH` | Campos distintos de `name`, `url`, `events` (y `active`, en `PATCH`). `details.unknownFields` indica cuáles. |
+| `400` | `INVALID_FIELD_TYPE` | `POST`, `PATCH` | Un campo tiene el tipo incorrecto, por ejemplo `"active": "false"` o `null`. `details.field` y `details.expected` indican cuál y qué se esperaba. |
+| `400` | `INVALID_WEBHOOK` | `POST`, `PATCH` | `url` ausente, inválida o no `https`, o `events` vacío o con un evento desconocido. |
+| `400` | `INVALID_WEBHOOK_NAME` | `POST`, `PATCH` | `name` de más de 100 caracteres. |
+| `400` | `WEBHOOK_URL_REFUSED` | `POST`, `PATCH` | La URL apunta a una dirección interna o de red privada. |
+| `400` | `INVALID_LIMIT` | `GET …/deliveries` | `limit` no es un entero de 1 a 200. |
+| `404` | `WEBHOOK_NOT_FOUND` | `…/{id}`, `…/deliveries` | No hay ningún webhook con ese id en tu workspace. |
+| `404` | `WEBHOOK_DELIVERY_NOT_FOUND` | `…/deliveries/{deliveryId}` | No hay ninguna entrega con ese id en ese webhook. |
+| `500` | `INTERNAL_ERROR` | todos | Fallo inesperado. |
+
+<Accordion title="Mensajes de error exactos">
+  | `code` | `error` |
+  | --- | --- |
+  | `INVALID_WEBHOOK` | `Invalid webhook: use an https URL and known events. \| Webhook inválido: use uma URL https e eventos conhecidos.` |
+  | `INVALID_WEBHOOK_NAME` | `Invalid webhook name: use at most 100 characters. \| Nome do webhook inválido: use no máximo 100 caracteres.` |
+  | `WEBHOOK_URL_REFUSED` | `Webhook URL refused: it points to an internal or private network address, which we never call. Use a public address. \| URL do webhook recusada: ela aponta para um endereço interno ou de rede privada, que nunca chamamos. Use um endereço público.` |
+  | `WEBHOOK_NOT_FOUND` | `Webhook not found. \| Webhook não encontrado.` |
+  | `WEBHOOK_DELIVERY_NOT_FOUND` | `Webhook delivery not found. \| Entrega do webhook não encontrada.` |
+
+  `INVALID_BODY`, `UNKNOWN_FIELDS`, `INVALID_FIELD_TYPE` e `INVALID_LIMIT` construyen su mensaje a partir de la solicitud (nombra el campo con problema) y siguen el mismo patrón `English | Portuguese`.
+</Accordion>
+
+## Eventos
+
+| Evento | Cuándo se dispara |
+| --- | --- |
+| `phone_line.purchased` | Se compró una línea (dashboard o `POST /v1/phone-lines`): un evento por número comprado. |
+| `phone_line.audio_received` | Se capturó la llamada de una solicitud de código y se guardó su grabación (`CAPTURED`), antes de que se lea el código, lo cual puede tardar unos minutos. Trae el [`audioUrl`](#la-url-del-audio) de la grabación. |
+| `phone_line.code_received` | Terminó una solicitud de código: **una vez por solicitud**, con el `code`, o con `code: null` y su `failureReason` cuando terminó sin uno. |
+| `phone_line.code_failed` | Una solicitud de código terminó sin código, de forma definitiva: una vez, con el `reason`. Siempre va acompañado de un `phone_line.code_received` cuyo `code` es `null`. |
+| `phone_line.renewed` | Un cobro de renovación tuvo éxito, incluido uno tardío que hace volver una línea `PAYMENT_PENDING` o `SUSPENDED`. |
+| `phone_line.payment_failed` | Falló un cobro de renovación y la línea pasó de `ACTIVE` a `PAYMENT_PENDING`. Una vez por renovación: los reintentos que siguen no lo vuelven a disparar. |
+| `phone_line.suspended` | La línea seguía sin pagar 2 días después del fallo y ahora está `SUSPENDED`. |
+| `phone_line.returned` | La línea se devolvió a la operadora (`RETURNED`): 1 día después de la suspensión, de inmediato cuando se cancela una línea sin pagar o se deja fuera en **Choose which lines to keep** del dashboard, o 3 días después del rechazo de la verificación del titular bajo la que se compró. `reason` indica cuál. |
+| `phone_line.canceled` | Una línea cancelada al final del período llegó a `currentPeriodEnd` y ahora está `CANCELED`. |
+| `phone_line.verification_updated` | La verificación del titular de la cuenta cambió de estado: terminada (aprobada automáticamente, o enviada a revisión manual), o revisada (aprobada, rechazada, o se solicitó otro documento). |
+
+<Note>
+  Cada solicitud de código aceptada termina con **un** `phone_line.code_received` (con el código, o con `code: null`), así que basta con esperar ese evento. Una transcripción fallida se reintenta a partir de la grabación guardada (hasta 3 intentos en total); solo se envía el resultado final, nunca los intentos intermedios. Una solicitud rechazada al crearse (`503 SUPPLIER_UNAVAILABLE`, `poll_not_scheduled`) no envía ningún evento: quien la hizo ya recibió el error.
+
+  `phone_line.audio_received` y `phone_line.code_failed` se agregaron el 2026-09-28. Un webhook suscrito a todos los eventos (`"*"`) los recibe; un webhook con una lista explícita recibe solo los eventos que lista: edítalo para agregarlos.
+</Note>
+
+## Formato del payload
+
+Cada entrega es un `POST` con un body JSON:
+
+```json
+{
+  "id": "cmg5k4d1v0003dl8example2m",
+  "event": "phone_line.purchased",
+  "createdAt": "2026-10-01T14:03:11.000Z",
+  "data": {
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "number": "551148637200",
+    "name": "(11) 4863-7200",
+    "currentPeriodEnd": "2026-11-01T14:03:11.000Z"
+  }
+}
+```
+
+| Campo | Descripción |
+| --- | --- |
+| `id` | El id de la entrega: el mismo en cada reintento de esta entrega. **Deduplica con él.** Cada webhook recibe su propia entrega, así que dos webhooks suscritos al mismo evento reciben `id`s diferentes. |
+| `event` | El nombre del evento. |
+| `createdAt` | ISO 8601: cuándo se registró el evento. |
+| `data` | Los campos del evento, abajo. |
+
+Headers:
+
+| Header | Valor |
+| --- | --- |
+| `Content-Type` | `application/json` |
+| `x-pilot-status-signature` | HMAC-SHA256 en hexadecimal del body crudo, con el secret del webhook como clave. |
+| `Idempotency-Key` | El mismo valor que el `id` del body. |
+
+Cada evento sobre una línea (todos salvo `phone_line.verification_updated`) trae el `lineId`, el `number` y el **`name`** de la línea: el nombre que tu equipo le dio en el dashboard o, cuando no tiene, su número formateado (`(11) 4863-7200`), igual que [`name`](/es/api/phone-lines/list#campos-del-objeto-de-línea) en el objeto de la línea. Una línea se compra sin nombre, así que `phone_line.purchased` siempre trae el número formateado. `name` es el nombre al momento del evento: renombrar una línea no envía ningún evento, y un reintento de una entrega trae el nombre con el que se registró. Igual que `displayName` en los webhooks de número, es una etiqueta: identifica las líneas por `lineId`.
+
+<Note>
+  **Aquí los números no llevan `+`.** `number` son dígitos E.164 sin el signo más (`551148637200`), exactamente como en los endpoints de `/v1/phone-lines`, a diferencia de los webhooks de número, cuyos campos de teléfono llevan `+`.
+</Note>
+
+## La URL del audio
+
+Los tres eventos de una solicitud de código (`phone_line.audio_received`, `phone_line.code_received` y `phone_line.code_failed`) traen **`audioUrl`**: la URL absoluta de [`GET /v1/phone-lines/activations/{activationId}/audio`](/es/api/phone-lines/activation-codes#descargar-el-audio), que sirve la grabación de la llamada.
+
+```text
+https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio
+```
+
+- **Cuando la solicitud tiene una grabación, está ahí.** `phone_line.audio_received` siempre la tiene: se envía una vez que la grabación está guardada. `phone_line.code_received` y `phone_line.code_failed` la tienen siempre que la llamada se guardó: con el código, y también cuando no se pudo leer ningún código (`no_code_in_transcript`, `transcription_failed`), que es justo cuando más te interesa escucharla.
+- **`null` cuando no hay**: la key siempre está presente. Es una solicitud que terminó antes de que se guardara alguna llamada: `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` o `audio_store_failed`.
+- **No contiene ninguna credencial.** Obtenla con tu key **con alcance de tenant** (`x-api-key`), como cualquier endpoint de `/v1/phone-lines`; sin key responde `401`, y la key de otro workspace recibe `404`. Guardar o registrar la URL no expone la grabación.
+- **Deja de responder cuando la línea sale de tu workspace.** Una línea `RETURNED` o `CANCELED` tiene sus grabaciones borradas, y la URL entonces responde `404`.
+
+```bash
+curl "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -o activation.wav
+```
+
+## Payloads
+
+`lineId` es el `id` de la línea en [`GET /v1/phone-lines/{id}`](/es/api/phone-lines/list#obtener-una-línea).
+
+<AccordionGroup>
+  <Accordion title="phone_line.purchased">
+    ```json
+    {
+      "id": "cmg5k4d1v0003dl8example2m",
+      "event": "phone_line.purchased",
+      "createdAt": "2026-10-01T14:03:11.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "name": "(11) 4863-7200",
+        "currentPeriodEnd": "2026-11-01T14:03:11.000Z"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.code_received">
+    ```json
+    {
+      "id": "cmg5k4d1v0004dl8example3n",
+      "event": "phone_line.code_received",
+      "createdAt": "2026-10-01T14:11:51.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "name": "Support SP",
+        "activationId": "cmg5k3a7c0002ac8example4q",
+        "code": "123456",
+        "failureReason": null,
+        "audioUrl": "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio"
+      }
+    }
+    ```
+
+    `code` es `null` cuando la solicitud terminó sin uno; en ese caso, `failureReason` indica por qué, con el propio [`failureReason`](/es/api/phone-lines/activation-codes#estados) de la solicitud: `no_code_in_transcript`, `transcription_failed` (fallaron los 3 intentos), `no_call_in_window`, `canceled_by_customer`, `audio_download_failed` o `audio_store_failed`. `audioUrl` es la grabación, o `null` cuando la solicitud no tiene: consulta [La URL del audio](#la-url-del-audio).
+
+    <Warning>
+      Este payload trae el código de activación, que es una credencial. Verifica la firma antes de confiar en él, y no registres el body en logs.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="phone_line.audio_received">
+    ```json
+    {
+      "id": "cmg5k4c9t0011dl8example7m",
+      "event": "phone_line.audio_received",
+      "createdAt": "2026-10-01T14:11:42.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "name": "Support SP",
+        "activationId": "cmg5k3a7c0002ac8example4q",
+        "capturedAt": "2026-10-01T14:11:42.000Z",
+        "audioUrl": "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio"
+      }
+    }
+    ```
+
+    La llamada llegó y su grabación está guardada; se está leyendo el código. Se envía una vez por solicitud. Aquí `audioUrl` siempre está definido: [descarga la grabación](/es/api/phone-lines/activation-codes#descargar-el-audio) con tu key. La grabación en sí nunca va en el body, y su transcripción nunca se envía. Una llamada cuya grabación no se pudo descargar o guardar no envía `audio_received`: solo `code_failed` y `code_received`.
+  </Accordion>
+
+  <Accordion title="phone_line.code_failed">
+    ```json
+    {
+      "id": "cmg5k4f2w0012dl8example8p",
+      "event": "phone_line.code_failed",
+      "createdAt": "2026-10-01T14:15:14.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "name": "Support SP",
+        "activationId": "cmg5k3a7c0002ac8example4q",
+        "reason": "no_call_in_window",
+        "audioUrl": null
+      }
+    }
+    ```
+
+    `reason` es el `failureReason` de la solicitud: consulta [Estados](/es/api/phone-lines/activation-codes#estados). El mismo valor llega en el `failureReason` del `phone_line.code_received` enviado junto con él. Aquí `audioUrl` es `null` porque no llegó ninguna llamada; con `no_code_in_transcript` o `transcription_failed` apunta a la grabación.
+  </Accordion>
+
+  <Accordion title="phone_line.renewed">
+    ```json
+    {
+      "id": "cmg5k4d1v0005dl8example4p",
+      "event": "phone_line.renewed",
+      "createdAt": "2026-11-01T14:17:05.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "name": "Support SP",
+        "currentPeriodEnd": "2026-12-01T14:03:11.000Z"
+      }
+    }
+    ```
+
+    `currentPeriodEnd` es el final del período que se acaba de pagar.
+  </Accordion>
+
+  <Accordion title="phone_line.payment_failed">
+    ```json
+    {
+      "id": "cmg5k4d1v0006dl8example5r",
+      "event": "phone_line.payment_failed",
+      "createdAt": "2026-11-01T14:17:05.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "name": "Support SP"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.suspended">
+    ```json
+    {
+      "id": "cmg5k4d1v0007dl8example6s",
+      "event": "phone_line.suspended",
+      "createdAt": "2026-11-03T14:17:04.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "name": "Support SP"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.returned">
+    ```json
+    {
+      "id": "cmg5k4d1v0008dl8example7t",
+      "event": "phone_line.returned",
+      "createdAt": "2026-11-04T14:17:06.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "name": "Support SP",
+        "reason": "unpaid"
+      }
+    }
+    ```
+
+    `reason` es el motivo por el que la línea volvió a la operadora, un código estable en snake_case:
+
+    | `reason` | Cuándo |
+    | --- | --- |
+    | `unpaid` | Seguía sin pagar 1 día después de la suspensión. |
+    | `canceled_by_customer` | Dejaste ir una línea sin pagar: [`DELETE /v1/phone-lines/{id}`](/es/api/phone-lines/cancel) sobre una línea `PAYMENT_PENDING` o `SUSPENDED`, o **Choose which lines to keep** en el dashboard. |
+    | `verification_rejected` | La línea se compró mientras la verificación del titular estaba en revisión manual, y esa revisión fue rechazada. Se envía 3 días después del rechazo; todos los cobros que pagó la línea se reembolsan a la wallet. |
+
+    Trata un `reason` que no conoces igualmente como una devolución. El historial de códigos de la línea (códigos y grabaciones de llamadas) se borra cuando se devuelve.
+  </Accordion>
+
+  <Accordion title="phone_line.canceled">
+    ```json
+    {
+      "id": "cmg5k4d1v0009dl8example8u",
+      "event": "phone_line.canceled",
+      "createdAt": "2026-11-01T14:17:03.000Z",
+      "data": {
+        "lineId": "cmg5k2l1n0001pl8example9x",
+        "number": "551148637200",
+        "name": "Support SP"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="phone_line.verification_updated">
+    ```json
+    {
+      "id": "cmg5k4d1v0010dl8example9v",
+      "event": "phone_line.verification_updated",
+      "createdAt": "2026-10-01T13:58:40.000Z",
+      "data": {
+        "verificationId": "cmg5k0v3r0000vf8example7k",
+        "status": "APPROVED"
+      }
+    }
+    ```
+
+    `status` es uno de:
+
+    | `status` | Significado | ¿Puede comprar? |
+    | --- | --- | --- |
+    | `APPROVED` | Verificada. | Sí |
+    | `IN_REVIEW` | Terminada, esperando una revisión manual. | Sí |
+    | `NEEDS_DOCUMENT` | El revisor pidió otro documento. | No: `VERIFICATION_REQUIRED` |
+    | `REJECTED` | Rechazada. Las líneas compradas mientras estaba `IN_REVIEW` se devuelven 3 días después, con sus cobros reembolsados a la wallet. | No: `VERIFICATION_REJECTED` |
+
+    Lee el estado completo (documento enmascarado, canales de contacto, la nota del revisor) con [`GET /v1/phone-lines/verification`](/es/api/phone-lines/verification#leer-el-estado). `verificationId` es su `verification.id`, y también la identifica en las conversaciones con soporte.
+  </Accordion>
+</AccordionGroup>
+
+## Verificar la firma
+
+Cada webhook de líneas telefónicas tiene un secret, así que **cada entrega está firmada**. `x-pilot-status-signature` es el **HMAC-SHA256 del body crudo de la solicitud** en hexadecimal, con el secret del webhook como clave (el string completo, incluido el prefijo `plwh_`). Calcúlalo sobre los bytes exactamente como se recibieron, antes de cualquier parseo de JSON, y compara en tiempo constante.
+
+**Con el SDK de Python** (`pilot-status` 1.16.0 o posterior), `verify_webhook_signature(raw_body, signature_header, secret)` lo hace por ti: es la misma función que para los webhooks de número, llamada con el secret completo `plwh_...`. Pasa el body exactamente como llegó por la red (Flask `request.get_data()`, FastAPI `await request.body()`), nunca el JSON parseado y re-serializado. Compara en tiempo constante y devuelve `False`, sin lanzar nunca una excepción, ante un header ausente o mal formado, un secret vacío o un body alterado:
+
+```bash
+pip install "pilot-status>=1.16.0"
+```
+
+<CodeGroup>
+
+```python Flask
+import os
+
+from flask import Flask, abort, request
+from pilot_status import WEBHOOK_SIGNATURE_HEADER, verify_webhook_signature
+
+app = Flask(__name__)
+SECRET = os.environ["PILOT_STATUS_WEBHOOK_SECRET"]  # el string completo plwh_...
+
+@app.post("/hooks/pilot-status")
+def pilot_status_hook():
+    raw = request.get_data()  # los bytes crudos que se firmaron, no json.dumps(request.json)
+    if not verify_webhook_signature(raw, request.headers.get(WEBHOOK_SIGNATURE_HEADER), SECRET):
+        abort(401)
+    # ... parsea json.loads(raw) y procésalo
+    return "", 200
+```
+
+```python FastAPI
+import os
+
+from fastapi import FastAPI, HTTPException, Request
+from pilot_status import WEBHOOK_SIGNATURE_HEADER, verify_webhook_signature
+
+app = FastAPI()
+SECRET = os.environ["PILOT_STATUS_WEBHOOK_SECRET"]  # el string completo plwh_...
+
+@app.post("/hooks/pilot-status")
+async def pilot_status_hook(request: Request):
+    raw = await request.body()  # los bytes crudos que se firmaron
+    if not verify_webhook_signature(raw, request.headers.get(WEBHOOK_SIGNATURE_HEADER), SECRET):
+        raise HTTPException(status_code=401)
+    # ... parsea json.loads(raw) y procésalo
+    return {}
+```
+
+</CodeGroup>
+
+**Sin el SDK**, calcúlalo tú mismo:
+
+<CodeGroup>
+
+```javascript Node
+const crypto = require("node:crypto");
+
+// rawBody: el body de la solicitud exactamente como se recibió (Buffer o string).
+function isValidSignature(rawBody, signatureHeader, secret) {
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const received = String(signatureHeader ?? "");
+  return (
+    received.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received))
+  );
+}
+```
+
+```python Python
+import hashlib
+import hmac
+
+# raw_body: el body de la solicitud exactamente como se recibió (bytes).
+def is_valid_signature(raw_body: bytes, signature_header: str | None, secret: str) -> bool:
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_header or "")
+```
+
+</CodeGroup>
+
+Es el mismo cálculo que en los webhooks de número, así que un receptor que ya los verifica funciona aquí con el secret de este webhook. La firma cubre solo el body (no hay header de timestamp), así que apóyate en `id` para descartar duplicados.
+
+## Entrega y reintentos
+
+- **Responde con cualquier `2xx` en menos de 10 segundos.** Cualquier otra cosa (otro status, un timeout, un error de conexión) cuenta como un intento fallido.
+- **6 intentos en total**: el primero de inmediato, luego reintentos con unos 30 s, 1 min, 2 min, 4 min y 8 min de separación, normalmente unos **15 minutos** de principio a fin. Después del último, la entrega se marca como fallida en el registro. Una entrega que no se pudo encolar al principio la retoma un barrido cada hora, así que su primer intento puede llegar más tarde.
+- **No se siguen las redirecciones.** Una respuesta `3xx` cuenta como un intento fallido.
+- **Al menos una vez.** Un reintento después de que tu endpoint procesó el evento pero no respondió a tiempo lo entrega de nuevo, con el mismo `id`. El orden no está garantizado.
+- **Webhooks pausados o eliminados.** Un evento se entrega solo a los webhooks que están activos y suscritos cuando ocurre. Cada intento vuelve a revisar el webhook: una entrega cuyo webhook está pausado cuando toca un intento (incluida una que ya está en sus reintentos) se marca como fallida y no se envía después; eliminar un webhook descarta sus entregas pendientes. Los eventos nunca se reenvían a un webhook creado o reanudado después.
+- **Se rechazan los destinos internos.** Una URL cuyo host resuelve a una dirección privada o de red interna no se llama, y no se reintenta. Una URL así ya se rechaza al guardar el webhook; esto cubre un nombre cuyo DNS se movió hacia adentro después. Una consulta DNS que falla es distinto: no impide guardar, y en la entrega se reintenta como cualquier otro fallo.
+
+<Tip>
+  Trata estos eventos como notificaciones, no como la fuente de verdad. Cuando alguno pudo haberse perdido (tu endpoint estuvo caído más tiempo que los reintentos), lee el estado actual con [`GET /v1/phone-lines`](/es/api/phone-lines/list).
+</Tip>

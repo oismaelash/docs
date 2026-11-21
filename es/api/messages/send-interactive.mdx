@@ -1,0 +1,162 @@
+---
+title: "Enviar botones interactivos: POST /v1/messages/send"
+sidebarTitle: "Enviar interactivo"
+description: "Agrega botones de respuesta, URL, llamada y copiar, listas de selección única y carruseles a los envíos con POST /v1/messages/send, y recibe los toques como webhooks entrantes normales."
+---
+
+<Tip>
+  ¿Estás construyendo un chatbot que responde con menús? Empieza por [Chatbots con botones y listas](/es/guides/interactive-messages): el ciclo completo, desde el menú hasta la elección del cliente, en ambos tipos de número.
+</Tip>
+
+# Enviar botones interactivos
+
+No existe un endpoint `/messages/interactive` separado. Los botones son campos adicionales (`buttons`, `header`, `footer`) del endpoint de envío **único**:
+
+```text
+POST https://pilotstatus.com.br/v1/messages/send
+```
+
+## Dónde se permiten los botones
+
+- **Envíos con plantilla** (`templateId`): `buttons` reemplaza los botones propios de la plantilla y se puede combinar con medios de plantilla (incluidos `video` / `document`; Meta Cloud API puede rechazar algunas combinaciones de botón \+ video/documento al momento de la entrega).
+- **Envíos de texto libre** (`text`): `buttons` junto al texto; `header` y `footer` requieren `buttons`.
+- **No se permiten** en el modo de medios directos simple (`media` \+ `mediaType` sin `templateId`/`text`); consulta [Enviar un mensaje](/es/api/messages/send).
+
+Hasta **3** botones por mensaje. Tipos: `reply`, `url`, `call`, `copy`. En un envío de **texto libre**, `call` y `copy` se rechazan (`400 BUTTON_PHONE_NUMBER_TEMPLATE_ONLY` / `400 BUTTON_COPY_CODE_TEMPLATE_ONLY`: solo existen en plantillas) y solo se permite un `url` (`400 BUTTONS_MULTIPLE_URL`).
+
+<Warning>
+  **En números de Meta Cloud API, no mezcles `url` con `reply` en un envío de TEXTO LIBRE.**
+  WhatsApp no tiene una forma admitida de combinar un botón de enlace con botones de respuesta fuera de una
+  plantilla: la CTA URL es su propio tipo de mensaje interactivo y lleva un único
+  botón.
+
+  Ambos órdenes fallan, y uno de ellos falla *en silencio*:
+
+  | lo que envías | lo que pasa |
+  | --- | --- |
+  | `reply` antes de `url` | rechazado en el momento: `Invalid mixed buttons sequence` |
+  | `url` antes de `reply` | **aceptado con `202`, y luego nunca entregado** (`Message undeliverable`) |
+
+  Medido el 2026-08-15 en la misma conversación, una variable a la vez: el texto simple
+  se entregó, `reply` solo se entregó, `url` solo fue leído; solo la mezcla falló.
+
+  **Qué hacer en cambio:** envía dos mensajes (uno con el botón de enlace y otro con los
+  botones de respuesta), o usa una **plantilla** aprobada, donde el conjunto de botones se valida
+  al momento de la aprobación. Esta restricción no se aplica a los números no oficiales (Pilot Status web).
+</Warning>
+
+## Ejemplo: plantilla \+ botones
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "confirm-template",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John" },
+    "buttons": [
+      { "type": "reply", "displayText": "Confirm", "id": "confirm" },
+      { "type": "url", "displayText": "View details", "url": "https://example.com/order/123" }
+    ]
+  }'
+```
+
+## Lista
+
+Una `list` es un botón que abre un menú de hasta **10** filas: un envío de **texto libre**, sin plantilla. `text` es el cuerpo; `footer` es opcional; `header`, `buttons` y `templateId` no se permiten con ella. En números de **Meta** solo se envía dentro de la **ventana de servicio de 24 horas**.
+
+```json
+{
+  "text": "You have 3 open invoices. Which one do you want to pay?",
+  "destinationNumber": "+5511999999999",
+  "list": {
+    "buttonText": "See invoices",
+    "sections": [
+      { "title": "Open invoices",
+        "rows": [
+          { "id": "inv-2041", "title": "Invoice 2041", "description": "$1,250.00 · due Oct 30" },
+          { "id": "inv-2057", "title": "Invoice 2057", "description": "$480.00 · due Nov 05" }
+        ] }
+    ]
+  }
+}
+```
+
+Límites: `buttonText` de 1 a 20 caracteres, de 1 a 10 secciones, **10 filas en total**, `title` de fila de 1 a 24 caracteres, `description` hasta 72, `id` hasta 200. Referencia completa en [Enviar un mensaje](/es/api/messages/send#listas); un flujo de chatbot completo en [Chatbots con botones y listas](/es/guides/interactive-messages).
+
+## Carrusel
+
+Un **carrusel de sesión** agrega una fila horizontal deslizable de **2 a 10 tarjetas** a un envío de **texto libre**, sin plantilla y sin aprobación. Es un objeto `carousel` más un `text` a nivel de mensaje que se convierte en el **cuerpo del carrusel**. Cada tarjeta lleva su propia **imagen**, un **cuerpo** opcional y sus propios **botones de respuesta rápida**. Los carruseles de sesión funcionan en **ambos** tipos de número, Meta Cloud API y no oficial (Pilot Status web); sin embargo, en números de **Meta** solo se envían dentro de la **ventana de servicio de 24 horas**. Fuera de ella, Meta rechaza el texto libre, así que usa en su lugar un **carrusel de plantilla** aprobado ([Plantillas](/es/api/templates)):
+
+```json
+{
+  "text": "Check out our latest offers",
+  "destinationNumber": "+5511999999999",
+  "carousel": {
+    "cardTemplate": { "hasBody": true, "buttons": [{ "type": "QUICK_REPLY" }] },
+    "cards": [
+      { "media": { "format": "IMAGE", "url": "https://media.example.com/a.png" },
+        "body": "Sneakers — 30% off",
+        "buttons": [{ "type": "QUICK_REPLY", "text": "I want it", "payload": "SKU-1" }] },
+      { "media": { "format": "IMAGE", "url": "https://media.example.com/b.png" },
+        "body": "Backpack — free shipping",
+        "buttons": [{ "type": "QUICK_REPLY", "text": "I want it", "payload": "SKU-2" }] }
+    ]
+  }
+}
+```
+
+<Warning>
+  En números de **Meta**, un **botón URL en un carrusel de sesión es imposible**: Meta devuelve `400`. Los botones de carrusel de sesión de Meta son **solo `QUICK_REPLY`**, y una mezcla de `QUICK_REPLY` \+ `URL` en una tarjeta se permite **solo** en un carrusel de *plantilla* ([Plantillas](/es/api/templates)). En números **no oficiales (Pilot Status web)**, un botón **`URL`** funciona de forma ad hoc: se convierte en un botón de enlace nativo.
+</Warning>
+
+- `cardTemplate` es el **esqueleto compartido** con el que debe coincidir cada tarjeta: una decisión de `hasBody` y una lista de botones (**tipos y orden**). Cada tarjeta solo completa su propio `media`, `body` y los **valores** de los botones (`text`, `payload`).
+- **`hasBody` es todo o nada**: si `cardTemplate.hasBody` es `true`, cada tarjeta necesita un `body`; si es `false`, ninguna puede tenerlo. Los `buttons` de cada tarjeta deben coincidir con `cardTemplate.buttons` en **cantidad, tipo y orden** (los tipos del esqueleto: `QUICK_REPLY` en Meta, o `URL` en números no oficiales).
+- Límites (se aplican: `422`/`400` si se incumplen): **de 2 a 10 tarjetas**; `body` de tarjeta hasta **160** caracteres (todas las tarjetas o ninguna); hasta **2 botones por tarjeta**; `text` del botón (etiqueta) hasta **20** caracteres; `payload` del botón (id) hasta **256** caracteres; **`text` a nivel de mensaje obligatorio**, hasta **1024** caracteres (el cuerpo del carrusel).
+- **Regla de medios**: `media.format` es `IMAGE`; `media.url` debe ser una **URL absoluta que empiece con `https://`, en un host público, que termine en `.png`, `.jpg`, `.jpeg` o `.webp`, sin query string**. Una ruta relativa (`06-photo.png`), una URL `http://` o un host privado se rechazan **antes** del despacho con `400 TEMPLATE_CAROUSEL_MEDIA_NOT_DISPATCHABLE` y el índice de la tarjeta (`cardIndex`, desde 0); de lo contrario, Meta haría fallar todo el carrusel con un error de descarga que no dice qué tarjeta.
+- **Nombres de archivo con acentos**: un archivo subido desde una Mac puede guardarse con el acento como un carácter separado (`ta%CC%81bua.png`) mientras que el enlace que escribes usa el combinado (`t%C3%A1bua.png`). Se ven idénticos pero son direcciones distintas, así que el enlace responde `404` y el envío falla. Renombra las imágenes sin acentos ni espacios, o abre cada URL en el navegador antes de enviar.
+- **Exclusión mutua**: `carousel` requiere `text` y **no** se puede combinar con `templateId`, `list`, `buttons` ni con un envío de medios directos (`media` \+ `mediaType`); **no** se permite un `header` (los medios van en cada tarjeta).
+- El toque en la respuesta rápida de una tarjeta llega como un **webhook entrante normal**, exactamente igual que un botón de respuesta; consulta [Cómo llegan las respuestas de los botones](#cómo-llegan-las-respuestas-de-los-botones) más abajo.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "text": "Check out our latest offers",
+    "destinationNumber": "+5511999999999",
+    "carousel": {
+      "cardTemplate": { "hasBody": true, "buttons": [{ "type": "QUICK_REPLY" }] },
+      "cards": [
+        { "media": { "format": "IMAGE", "url": "https://media.example.com/a.png" },
+          "body": "Sneakers — 30% off",
+          "buttons": [{ "type": "QUICK_REPLY", "text": "I want it", "payload": "SKU-1" }] },
+        { "media": { "format": "IMAGE", "url": "https://media.example.com/b.png" },
+          "body": "Backpack — free shipping",
+          "buttons": [{ "type": "QUICK_REPLY", "text": "I want it", "payload": "SKU-2" }] }
+      ]
+    }
+  }'
+```
+
+## Respuesta (202)
+
+```json
+{
+  "id": "msg_abc",
+  "correlationId": "corr_123",
+  "status": "QUEUED"
+}
+```
+
+## Cómo llegan las respuestas de los botones
+
+Un toque en un botón de **respuesta** o en una fila de lista llega como un webhook entrante normal. Su forma depende de cómo esté conectado el número ([Qué eventos envía tu número](/es/api/webhooks/events#qué-eventos-envía-tu-número)):
+
+- **No oficial (Pilot Status web)**: un evento canónico `message.reply` (o `message.received`) cuyo `content` es la **etiqueta del botón** o el **título de la fila** (por ejemplo `"Confirm"`), con `quotedMessageId` apuntando a tu mensaje original. No existe un evento `button_reply`. El `id` de una fila de lista vuelve en `buttonId` (el de un botón también, cuando WhatsApp lo informa); como alternativa, usa la etiqueta en `content` más `quotedMessageId` (y `correlationId` cuando esté presente).
+- **Meta Cloud API (oficial)**: el **sobre nativo** de Meta (campo `messages`) con `type: "interactive"`. El `id` que definiste **sí** se devuelve: `interactive.button_reply.id` para un botón, `interactive.list_reply.id` para una fila de lista, más `context.id` (el `wamid` de tu mensaje).
+
+Ejemplos de payload para ambos en [Chatbots con botones y listas](/es/guides/interactive-messages#recibir-la-elección-del-cliente).
+
+Consulta los payloads completos en [Eventos de webhook](/es/api/webhooks/events) y la lista completa de parámetros (formas del objeto botón, reglas de `header`/`footer`) en [Enviar un mensaje](/es/api/messages/send).

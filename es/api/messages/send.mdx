@@ -1,0 +1,476 @@
+---
+title: "POST /v1/messages/send: enviar un mensaje de WhatsApp"
+sidebarTitle: "Enviar un mensaje"
+description: "Envía mensajes de WhatsApp con plantilla, texto libre o medios directos a través de un solo endpoint."
+mode: "wide"
+---
+
+# Enviar un mensaje de WhatsApp
+
+```text
+POST https://pilotstatus.com.br/v1/messages/send
+```
+
+Este es el **único** endpoint de envío. Admite tres modos de nivel superior **mutuamente excluyentes**:
+
+1. **Envío con plantilla**: `templateId` (\+ `variables` opcional)
+2. **Envío de texto libre**: `text`
+3. **Envío de medios directo**: `media` \+ `mediaType` (sin `templateId`, sin `text`)
+
+<Note>
+  Se debe usar exactamente un modo por solicitud. No existen endpoints separados `/messages/text`, `/messages/media` ni `/messages/interactive`.
+</Note>
+
+<Frame caption="La página Message usa este mismo endpoint: elige una plantilla, asigna las variables a columnas de una hoja de cálculo, sube los destinatarios y copia el curl generado automáticamente.">
+  ![Página Message del panel con un selector de plantillas y vista previa, variables asignadas a columnas de una hoja de cálculo, una lista de destinatarios con carga de Excel/CSV, acciones Send y Schedule, y el curl generado automáticamente de la llamada exacta a la API](/images/dashboard/message-composer.png)
+</Frame>
+
+## Encabezados
+
+- `Content-Type: application/json`
+- `x-api-key: ps_...` (o `x-api-key-id: <api_key_id>`): una clave **por número**, o una clave de toda la cuenta que indique el número remitente en el encabezado [`x-whatsapp-number-id`](/es/api/authentication) (sin él: `403 TENANT_SCOPE_NOT_ALLOWED`)
+
+**Los tokens OAuth / MCP y las claves de cuenta** (`ps_account_`) también necesitan el permiso `messages:send` (roles `AGENT`, `ADMIN`, `OWNER`); el rol `ANALYST` recibe `403 PERMISSION_DENIED`. Una clave `ps_` clásica no se ve afectada por los roles.
+
+<ParamField header="Idempotency-Key" type="string">
+  **Opcional.** Hace que un reintento sea seguro: dentro de **24 horas**, una segunda solicitud con la misma clave y el mismo cuerpo devuelve la primera respuesta aceptada en lugar de volver a enviar el mensaje. Cualquier cadena de hasta **255 caracteres** sin caracteres de control; si es demasiado larga o tiene un carácter de control → **400 `IDEMPOTENCY_KEY_INVALID`**. Si no se envía, el endpoint se comporta exactamente como antes. Consulta [Idempotencia](#idempotencia).
+</ParamField>
+
+## Destino (exactamente uno)
+
+<ParamField body="destinationNumber" type="string">
+  Teléfono de destino en **E.164** (solo dígitos, el `+` inicial es opcional, al menos 10 dígitos, por ejemplo `+5511999999999`) **o** el Business-Scoped User ID (BSUID, por ejemplo `BR.13491208655302741918`) del contacto, el `userId` devuelto por [`GET /v1/conversations`](/es/api/conversations).
+</ParamField>
+
+<ParamField body="groupId" type="string">
+  JID de grupo de WhatsApp que termina en `@g.us`.
+</ParamField>
+
+<ParamField body="newsletterId" type="string">
+  JID de canal de WhatsApp que termina en `@newsletter`. No disponible en números de Meta Cloud API: `400 NOT_SUPPORTED_FOR_META`.
+</ParamField>
+
+<ParamField body="replyToMessageId" type="string">
+  Envía el mensaje como **respuesta** citando un mensaje anterior. Acepta el `id` interno del mensaje, el `correlationId` o el id de mensaje del proveedor (wamid) de un mensaje en este número; un valor que no coincide con nada se pasa al proveedor tal cual. No se permite con `newsletterId`.
+</ParamField>
+
+## Campos de modo
+
+<ParamField body="templateId" type="string">
+  Plantilla de `/templates` en el panel. Mutuamente excluyente con `text` y con el modo de medios directo.
+</ParamField>
+
+<ParamField body="variables" type="object">
+  Mapa clave→valor para las variables de la plantilla. Las variables obligatorias faltantes producen `MISSING_TEMPLATE_VARIABLES`. Para una plantilla creada en la consola de Meta cuyo botón de URL dinámica tiene un marcador numerado (`https://ctlnk.io/{{1}}`, no el `{{1}}` del cuerpo), pasa el sufijo de la URL del botón como `button_<N>`, donde `N` es la posición del botón entre los botones de la plantilla, empezando en 1: `{ "1": "Maria", "button_1": "Gggkf" }`. Consulta [Plantillas](/es/api/templates#marcadores-de-botón-en-plantillas-creadas-en-meta). En un número oficial, la misma clave también lleva el código de un botón de copiar código cuyo valor no tiene `{{variable}}`: `{ "button_2": "BLACKFRIDAY" }`; consulta [Botones de copiar código en números oficiales](/es/api/templates#botones-de-copiar-código-en-números-oficiales).
+</ParamField>
+
+<ParamField body="text" type="string">
+  Cuerpo de un mensaje de texto libre. Obligatorio si no se envía `templateId` (y no se hace un envío de medios directo).
+</ParamField>
+
+<ParamField body="media" type="string">
+  Una URL http(s) pública **o** un data URI en base64 (por ejemplo `data:audio/ogg;base64,AAAA...`) de un archivo de imagen, video, documento o audio. Los data URI en base64 se aceptan en Meta Cloud API y en números **no oficiales (Pilot Status web)**. En números no oficiales, Pilot Status sube el archivo decodificado a su propio almacenamiento y envía al proveedor una URL; si esa subida falla, el mensaje falla con `MEDIA_REHOST_FAILED`. Para stickers en números no oficiales, usa una URL http(s) pública. Anula cualquier `mediaUrl` incrustado en la plantilla. El base64 tiene un tope según el tamaño decodificado: **50 MiB** (52,428,800 bytes) cuando `mediaType` es `document`, **16 MiB** (16,777,216 bytes) para cualquier otro tipo y cuando se omite `mediaType`. Por encima del tope, la solicitud se rechaza con `400 Validation error`, y `details.fieldErrors.media` indica el límite. Envía un archivo más grande como URL http(s) pública: en números de Meta Cloud API queda sujeto a los límites propios de Meta (documento 100 MB, video y audio 16 MB, imagen 5 MB), y un archivo por encima de ellos falla después del `202` con `META_MEDIA_TOO_LARGE`. Una URL (o una redirección con la que responda) que apunta a una dirección de red interna o privada nunca se descarga: el mensaje falla después del `202` con `MEDIA_DOWNLOAD_FAILED`, en todos los tipos de número.
+</ParamField>
+
+<ParamField body="mediaType" type="string">
+  `image`, `video`, `document`, `audio`, `voice` o `sticker`. Defínelo explícitamente cuando la extensión de la URL no sea obvia (por ejemplo, PDF cuya URL no termina en `.pdf`). `voice` se entrega como **nota de voz (PTT)** de WhatsApp en todos los números; `audio` se entrega como **archivo de audio** en números oficiales (Meta Cloud API) y como nota de voz en números no oficiales (Pilot Status web). Para enviar una nota de voz, usa `voice` (consulta [Audio y notas de voz](/es/guides/media-messages#audio-y-notas-de-voz)). Antes de enviar, el audio se convierte a AAC en MP4 (`audio/mp4`) en números oficiales y a Ogg/Opus en números no oficiales. Para `audio` y `voice`, se muestra un indicador de presencia al contacto justo antes de la entrega: los números no oficiales (Pilot Status web) muestran "grabando audio" (gravando); los números de Meta Cloud API muestran "escribiendo" (digitando), ya que la Cloud API no tiene variante de grabación y solo aparece cuando la conversación tiene un mensaje entrante reciente al cual asociarse. El indicador de escritura se muestra antes de cada envío conversacional en números de Meta y Evolution; en números de Meta, salvo que `markRead` sea `false` (consulta [Confirmación de lectura e indicador de escritura](#confirmación-de-lectura-e-indicador-de-escritura)). También puedes activarlo de forma independiente con [Indicador de escritura](/es/api/messages/typing). `sticker` envía un **sticker** de WhatsApp: solo envío de medios directo, nunca con `templateId`, nunca con `caption`, y el archivo debe ser **`image/webp`** de **exactamente 512×512 píxeles** (estático de hasta **100 KB**, animado de hasta **500 KB**).
+</ParamField>
+
+<ParamField body="mediaFilename" type="string">
+  Nombre de archivo que ve el destinatario para un **documento**: 1–240 caracteres; `/` y `\` se reemplazan por `_`. Se acepta en:
+
+  - un **envío de documento directo** (`media` \+ `mediaType: "document"`, sin `templateId`, sin `text`). Si se omite, el nombre toma el último segmento de la URL.
+  - un **envío con plantilla cuya plantilla aprobada tiene un encabezado `DOCUMENT`**: con `media` (el documento que reemplaza al de ejemplo de la plantilla) o sin él (renombra el documento guardado en la plantilla). Si también envías `mediaType`, debe ser `document`.
+
+  Sin `mediaFilename`, el documento de una plantilla llega sin un título adecuado en números oficiales (Meta Cloud API), donde WhatsApp muestra el genérico "Document", y con un nombre inferido de la URL en números no oficiales. Funciona en Meta Cloud API, Evolution v2 y Evolution GO.
+
+  Un envío de texto libre `text` con este campo devuelve `400` ("mediaFilename is only supported for direct media sends and templates with a document header"), al igual que cualquier `mediaType` distinto de `document`. En una plantilla cuyo encabezado es `IMAGE`, `VIDEO`, `TEXT` o no existe, devuelve `422` `MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`, con `details.templateName` y `details.headerType`: el nombre no tendría a dónde ir, así que se rechaza en lugar de descartarse.
+</ParamField>
+
+<ParamField body="caption" type="string">
+  Leyenda de un **envío de medios directo** (1–1024 caracteres), para `image`, `video` y `document`. Con `audio` o `sticker` se rechaza con `400`; con `voice` no se rechaza, pero no la envíes: se descarta en números no oficiales.
+</ParamField>
+
+### Envío de medios directo
+
+Envía medios por sí solos proporcionando `media` \+ `mediaType` **sin** `templateId` y **sin** `text`. En este modo `buttons`, `header`, `footer` y `variables` **no están permitidos**; se admite un `caption` opcional para `image`, `video` y `document`, pero **no** para `audio`, `voice` ni `sticker`.
+
+<Note>
+  Los envíos de medios están disponibles en **todos los planes, incluido Free**: cuentan contra la cuota de mensajes del número igual que cualquier otro mensaje. No hay un cobro aparte para enviar medios.
+</Note>
+
+## Programación y ventana de entrega
+
+<ParamField body="deliverAt" type="string">
+  Fecha y hora ISO 8601 para programar el envío. Un valor sin sufijo de zona horaria se interpreta como UTC.
+</ParamField>
+
+<ParamField body="deliverUntil" type="string">
+  Fecha límite ISO 8601 para la entrega. Si vence, el mensaje falla (consulta [Códigos de error de logs](/es/api/messages/log-error-codes)). Una fecha límite ya pasada se rechaza con `400 DELIVER_UNTIL_IN_PAST`; una igual o anterior a `deliverAt`, con `400 DELIVER_UNTIL_NOT_AFTER_DELIVER_AT`.
+</ParamField>
+
+## Confirmación de lectura e indicador de escritura
+
+<ParamField body="markRead" type="boolean">
+  Si este envío marca el último mensaje entrante del contacto como **leído** (palomitas azules) y muestra el indicador **"escribiendo"** (digitando) antes de la entrega. Si se omite, decide la configuración [`markReadOnSend`](/es/api/numbers/settings#confirmación-de-lectura-al-enviar) del número, que es `true` salvo que la hayas cambiado. Un valor que no es boolean se rechaza con `400`.
+</ParamField>
+
+En un número **oficial (Meta Cloud API)**, `markRead: false` envía el mensaje **sin** el indicador de escritura **y sin** marcar la conversación como leída. Las dos cosas no se pueden separar: la Cloud API solo muestra el indicador de escritura como parte de una confirmación de lectura del último mensaje entrante del contacto, así que no hay forma de mostrar el indicador y mantener el mensaje sin leer.
+
+Úsalo cuando responde un agente automatizado y una persona aún debe encontrar la conversación **sin leer** en WhatsApp más tarde:
+
+```json
+{
+  "destinationNumber": "+5511999999999",
+  "text": "Thanks! A specialist will reply shortly.",
+  "markRead": false
+}
+```
+
+<Note>
+  - En números **no oficiales (Pilot Status web)** `markRead` no tiene efecto: allí enviar nunca marca nada como leído. Lo que marca los mensajes como leídos al llegar es la configuración [`readMessages`](/es/api/numbers/settings) del número: mantenla desactivada si la conversación debe quedar sin leer.
+  - El contador de no leídos del panel **no** se reinicia con un envío, diga lo que diga `markRead`.
+  - [`POST /v1/messages/typing`](/es/api/messages/typing) en un número de Meta **también** marca como leído el último mensaje entrante. Un agente que quiere mantener la conversación sin leer no debe llamarlo.
+</Note>
+
+## Otros campos
+
+<ParamField body="labels" type="string[]">
+  Etiqueta el destino con Labels (alcance de tenant): hasta **50** nombres, cada uno de 1–200 caracteres. Se procesa de forma asíncrona. Con `retentionDays = 0` en la clave de API, las Labels se crean pero el vínculo con el teléfono/grupo puede no guardarse (PII).
+</ParamField>
+
+<ParamField body="marketingOptions" type="object">
+  Solo para plantillas **MARKETING**. `aiRewriteEnabled: true` activa la variación automática del texto final del mensaje para reducir patrones repetitivos (antispam) conservando la intención. Si la variación no se puede aplicar, se envía el texto original. Los envíos MARKETING también reciben un retraso variable automático en la cola (predeterminado **8–25 s**) para espaciar el ritmo de envío.
+</ParamField>
+
+<ParamField body="buttons" type="array">
+  Hasta 3 botones que **anulan** los botones de la plantilla (excepto en números de Meta, ver abajo). Cada botón tiene `type` y `displayText` más campos específicos del tipo:
+
+  - `{ "type": "reply", "displayText": "Yes", "id": "yes" }`: respuesta rápida
+  - `{ "type": "url", "displayText": "Site", "url": "https://example.com" }`: botón de URL
+  - `{ "type": "call", "displayText": "Call", "phoneNumber": "+5511999999999" }`: botón de llamada
+  - `{ "type": "copy", "displayText": "Code", "copyCode": "ABC123" }`: botón de copiar
+
+  `buttons` se puede combinar con cualquier `mediaType`. La API no rechaza botones con `mediaType: "video"` o `mediaType: "document"` (los números no oficiales los aceptan); ten en cuenta que Meta Cloud API puede rechazar algunas combinaciones de botón \+ video/documento al momento de la entrega.
+
+  En **números de Meta (oficiales)**, los botones de una plantilla están fijados por la plantilla aprobada: `buttons` no los reemplaza ni completa una variable de botón. Completa un botón de URL dinámica mediante `variables`: por su nombre (por ejemplo `link`) o, para un marcador numerado en una plantilla creada en la consola de Meta, como `button_<N>`. El código de un botón de copiar código también va en `variables` como `button_<N>`, no en `copyCode`.
+</ParamField>
+
+<ParamField body="header" type="object">
+  Encabezado de un mensaje interactivo de texto libre. Requiere `buttons`. Tipos: `{ "type": "text", "content": "Header title" }` (hasta 60 caracteres), o `image` / `video` / `document` con una URL pública como `content`.
+</ParamField>
+
+<ParamField body="footer" type="string">
+  Pie del mensaje (máximo 60 caracteres). Requiere `buttons` o `list`.
+</ParamField>
+
+<ParamField body="list" type="object">
+  Lista interactiva de selección única para un envío de texto libre. Requiere `text`; mutuamente excluyente con `templateId`, `buttons`, `header` y medios directos (`footer` está permitido). Consulta [Listas](#listas) más abajo.
+</ParamField>
+
+<ParamField body="carousel" type="object">
+  Carrusel de sesión (2–10 tarjetas deslizables) para un envío de texto libre. Requiere `text`; mutuamente excluyente con `templateId`, `list`, `buttons`, `header` y medios directos. En números de Meta, solo dentro de la ventana de servicio de 24 horas. Consulta [Carrusel](/es/api/messages/send-interactive#carrusel).
+</ParamField>
+
+<ParamField body="flow" type="object">
+  Botón de WhatsApp Flow dinámico para un envío de texto libre: **solo números de Meta Cloud API** (`422 FLOW_REQUIRES_META_NUMBER` en otros), dentro de una ventana de 24 horas abierta (`422 FLOW_WINDOW_CLOSED`). Requiere `text`; mutuamente excluyente con `templateId`, `list`, `carousel`, `buttons`, `header` y medios directos. El `flow_token` lo genera Pilot Status: un cuerpo que trae uno se rechaza con `422 FLOW_TOKEN_NOT_ACCEPTED`. Consulta [Flows dinámicos](/es/guides/send-flow-dynamic).
+</ParamField>
+
+### Restricciones del texto libre
+
+- `media` y `mediaType` no se pueden usar con `text` (texto libre).
+- `header` solo se admite cuando hay `buttons`; `footer` necesita `buttons` o `list` (limitación de Meta Cloud API).
+- En números de Meta, los mensajes de texto libre solo funcionan dentro de la **ventana de conversación de 24 h** de WhatsApp. Fuera de la ventana, se devuelve un error `META_OUTSIDE_24H_WINDOW` en el webhook `message.failed`; usa una plantilla aprobada en su lugar. Puedes verificar si la ventana está abierta antes de enviar con [`GET /v1/service-window`](/es/playground/messages/service-window).
+
+## Botones
+
+`buttons` adjunta hasta **3** botones interactivos: en un envío de **texto libre**, o para **anular** los botones de una plantilla en un envío **con plantilla** (no en números de Meta, consulta la nota de abajo). Cada elemento necesita `type` \+ `displayText` y un campo específico del tipo:
+
+| `type` | Campo extra | Comportamiento |
+| --- | --- | --- |
+| `reply` | `id` (string) | Respuesta rápida. El toque llega como un webhook entrante normal cuyo `content` es la etiqueta del botón. El `id` vuelve como `buttonId` en números no oficiales cuando WhatsApp lo informa, y como `interactive.button_reply.id` en números oficiales. |
+| `url` | `url` (https) | Abre un enlace. **Como máximo uno** por envío de texto libre (`400 BUTTONS_MULTIPLE_URL`). |
+| `call` | `phoneNumber` (E.164) | Marca el número. **Solo envíos con plantilla**: en un envío de texto libre se rechaza con `400 BUTTON_PHONE_NUMBER_TEMPLATE_ONLY`. |
+| `copy` | `copyCode` (string) | Copia un código al portapapeles. **Solo envíos con plantilla**: en un envío de texto libre se rechaza con `400 BUTTON_COPY_CODE_TEMPLATE_ONLY`. |
+
+El vocabulario de plantillas se acepta como alias de cada `type` (`QUICK_REPLY`, `URL`, `PHONE_NUMBER`, `COPY_CODE`), y `text` como alias de `displayText`.
+
+```json
+{
+  "text": "Confirm your appointment?",
+  "destinationNumber": "+5511999999999",
+  "buttons": [
+    { "type": "reply", "displayText": "Confirm", "id": "confirm" },
+    { "type": "url", "displayText": "Details", "url": "https://example.com/order/123" }
+  ]
+}
+```
+
+- `header` solo se permite **junto con** `buttons`; `footer` con `buttons` o `list` (limitación de Meta Cloud API).
+- No existe un evento `button_reply`. Identifica los toques por `buttonId` cuando está presente (no oficial) o por el `button_reply.id` nativo (oficial); si no, por la etiqueta en `content` \+ `quotedMessageId`.
+- En números de **Meta Cloud API**, los botones de texto libre solo funcionan dentro de la ventana de servicio de 24 horas. Fuera de ella, envía una **plantilla aprobada**. Los botones de plantilla usan un **vocabulario distinto** (`QUICK_REPLY`, `URL`, `PHONE_NUMBER`, `COPY_CODE`, `PAYMENT_REQUEST`), definido cuando se crea la plantilla; consulta [Plantillas](/es/api/templates).
+
+<Note>
+  En **números de Meta (oficiales)**, los botones de una plantilla están fijados por la plantilla aprobada. En un envío con plantilla allí, el `buttons` de la solicitud no los reemplaza ni completa una variable de botón: completa un botón de URL dinámica mediante `variables`, por su nombre (por ejemplo `link`) o, para un marcador numerado en una plantilla creada en la consola de Meta, como `button_<N>` (consulta [Plantillas](/es/api/templates#marcadores-de-botón-en-plantillas-creadas-en-meta)). El código de un botón de copiar código va de la misma forma, como `button_<N>`, no en `copyCode` (consulta [Botones de copiar código en números oficiales](/es/api/templates#botones-de-copiar-código-en-números-oficiales)).
+</Note>
+
+## Listas
+
+`list` adjunta una **lista de selección única** interactiva a un envío de **texto libre**: `text` se convierte en el cuerpo del mensaje y `buttonText` es la etiqueta del botón que abre el menú de filas. Mutuamente excluyente con `templateId`, `buttons` y medios directos:
+
+```json
+{
+  "text": "How can we help you today?",
+  "destinationNumber": "+5511999999999",
+  "list": {
+    "buttonText": "See areas",
+    "sections": [
+      {
+        "title": "Support",
+        "rows": [
+          { "id": "clients", "title": "Clients", "description": "Look up and register clients" },
+          { "title": "Orders", "description": "Track an existing order" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- Límites (los de Meta, aplicados de forma uniforme en **todos** los tipos de número): `buttonText` de 1–20 caracteres, **1–10 secciones**, máximo **10 filas en total** entre todas las secciones, `title` de fila de 1–24 caracteres, `description` de fila de hasta 72 caracteres, `id` de fila de hasta 200 caracteres (se genera si falta). El `title` de sección es opcional.
+- Funciona en **ambos** tipos de número con la misma solicitud: los números de **Meta Cloud API** envían la lista interactiva oficial; los números **no oficiales (Pilot Status web)** envían la lista nativa.
+- La selección del destinatario llega como un **mensaje/webhook entrante normal**.
+
+## Ejemplos
+
+<CodeGroup>
+
+```bash Envío con plantilla
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "onboarding-test",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John", "order_id": "123" }
+  }'
+```
+
+```bash Programado + labels
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "onboarding-test",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John" },
+    "labels": ["vip", "customers"],
+    "deliverAt": "2026-02-24T15:05:00.000Z"
+  }'
+```
+
+```bash Texto libre
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "text": "Hi! Your delivery has been confirmed for tomorrow.",
+    "destinationNumber": "+5511999999999"
+  }'
+```
+
+```bash Texto libre con botones
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "text": "Would you like to confirm your appointment?",
+    "destinationNumber": "+5511999999999",
+    "buttons": [
+      { "type": "reply", "displayText": "Confirm", "id": "confirm" },
+      { "type": "reply", "displayText": "Cancel", "id": "cancel" }
+    ]
+  }'
+```
+
+```bash Texto libre con encabezado + pie
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "text": "Your reservation is confirmed!",
+    "destinationNumber": "+5511999999999",
+    "header": { "type": "image", "content": "https://example.com/reservation.png" },
+    "footer": "Example Hotel",
+    "buttons": [
+      { "type": "url", "displayText": "View details", "url": "https://example.com/reservation/123" }
+    ]
+  }'
+```
+
+```bash Medios directos (URL de nota de voz)
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/voice.ogg",
+    "mediaType": "voice"
+  }'
+```
+
+```bash Medios directos (imagen en base64)
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "data:image/png;base64,iVBORw0...",
+    "mediaType": "image"
+  }'
+```
+
+```bash Plantilla + medios + botones
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "confirm-template",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John" },
+    "media": "https://example.com/promo.png",
+    "mediaType": "image",
+    "buttons": [
+      { "type": "reply", "displayText": "Yes", "id": "confirm" },
+      { "type": "url", "displayText": "View offer", "url": "https://example.com/offer" }
+    ]
+  }'
+```
+
+```bash Plantilla con encabezado de documento + nombre de archivo
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "templateId": "invoice-issued",
+    "destinationNumber": "+5511999999999",
+    "variables": { "name": "John" },
+    "media": "https://cdn.example.com/files/8f3a1c.pdf",
+    "mediaType": "document",
+    "mediaFilename": "Invoice 123.pdf"
+  }'
+```
+
+```bash Reintento seguro (Idempotency-Key)
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Idempotency-Key: order-48213-+5511999999999" \
+  -d '{
+    "templateId": "order-confirmed",
+    "destinationNumber": "+5511999999999",
+    "variables": { "order_id": "48213" }
+  }'
+```
+
+</CodeGroup>
+
+En el ejemplo **Plantilla \+ medios \+ botones**, `buttons` no reemplaza los botones de la plantilla en un número de Meta (oficial): allí los botones de la plantilla aprobada están fijados, y un botón de URL dinámica o el código de un botón de copiar código se completa mediante `variables` (consulta [Botones](#botones)).
+
+En el ejemplo **Plantilla con encabezado de documento \+ nombre de archivo**, la plantilla aprobada `invoice-issued` tiene un encabezado `DOCUMENT`: `media` reemplaza su documento de ejemplo y `mediaFilename` es el nombre que ve el destinatario. Omite `media` para enviar el documento guardado en la plantilla con el nuevo nombre.
+
+## Respuesta (202)
+
+```json
+{
+  "id": "msg_abc",
+  "correlationId": "corr_123",
+  "status": "QUEUED",
+  "createdAt": "2026-02-24T15:00:00.000Z",
+  "origin": "My WhatsApp",
+  "sourceNumber": "5511888888888"
+}
+```
+
+<ResponseField name="id" type="string">
+  ID interno del mensaje. Guárdalo: es el valor que se usa con `GET /v1/messages/{id}` y coincide con `internalMessageId` en los webhooks.
+</ResponseField>
+
+<ResponseField name="correlationId" type="string">
+  Identificador de correlación de la solicitud de envío.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Siempre `QUEUED` al aceptarse.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string">
+  Cuándo se aceptó el mensaje (ISO 8601, UTC).
+</ResponseField>
+
+<ResponseField name="origin" type="string">
+  El **nombre del número/instancia remitente** (su nombre visible cuando lo tiene). No es lo mismo que la etiqueta de carril `origin` de [`GET /v1/messages`](/es/api/messages/list).
+</ResponseField>
+
+<ResponseField name="sourceNumber" type="string | null">
+  Los dígitos del número remitente, cuando se resuelven.
+</ResponseField>
+
+<ResponseField name="flowToken" type="string">
+  Solo en un envío que lleva un WhatsApp Flow (un bloque `flow`, o una plantilla con un botón de Flow): el token que Pilot Status generó para él, que vuelve con la respuesta en `flow.response_received` y en `GET /v1/flows/{id}/responses`. **Ausente** en cualquier otro envío.
+</ResponseField>
+
+Una respuesta reproducida de una solicitud anterior con la misma `Idempotency-Key` lleva el encabezado de respuesta **`Idempotent-Replayed: true`**, con el mismo estado y cuerpo que la original: el `id` es el del mensaje ya encolado. Consulta [Idempotencia](#idempotencia).
+
+## Correlación con webhooks
+
+- El campo **`id`** de la respuesta es el mismo que el campo **`id`** de `message.sent`, `message.delivered`, `message.read` y `message.failed`. En **`message.reply`**, usa **`quotedMessageId`** (el `messageId` de WhatsApp de tu mensaje original) y **`correlationId`** para vincular la respuesta con tu envío.
+- El **`messageId`** de WhatsApp (wamid) **no** está en el cuerpo del `202`; aparece por primera vez en el webhook **`message.sent`** (y se repite en los eventos de estado de ese mensaje).
+- Guarda el **`id`** cuando recibas el `202` y usa [`GET /v1/messages/{id}`](/es/api/messages/status) con el mismo valor.
+
+## Idempotencia
+
+Un cliente que agota el tiempo de espera o pierde la conexión en esta solicitud no puede saber si el mensaje se encoló. Enviarlo de nuevo sin protección puede entregarlo **dos veces**. El encabezado opcional `Idempotency-Key` cierra esa brecha. Lo que garantiza, exactamente:
+
+- **Opcional.** Sin el encabezado, nada cambia: cada solicitud es un envío nuevo.
+- **Ventana de 24 horas, por número.** La clave tiene alcance _(tu workspace, el número de WhatsApp de la clave de API, el valor de la clave)_. La misma clave en otro número, o desde otro workspace, nunca choca con la tuya.
+- **Misma clave, mismo cuerpo → la primera respuesta, no se vuelve a enviar nada.** Dentro de la ventana, la solicitud devuelve la respuesta guardada de la primera llamada aceptada (`2xx`), con el mismo estado, el mismo cuerpo y el mismo `id` de mensaje, y no se encola ni envía nada. La respuesta reproducida lleva el encabezado **`Idempotent-Replayed: true`**.
+- **Misma clave, cuerpo distinto → `409 IDEMPOTENCY_KEY_REUSED`.** Una clave identifica un mensaje, ya sea que la primera llamada siga en curso o ya haya terminado. Para enviar un mensaje distinto, usa una clave nueva.
+- **Misma clave mientras la primera llamada sigue en curso → `409 IDEMPOTENCY_KEY_IN_USE`.** Espera un momento y reintenta con la misma clave: cuando termine la primera llamada, recibirás su respuesta.
+- **Solo se recuerda `2xx`.** Si la primera llamada falla (`400`, `404`, `422 BILLING_SUSPENDED`, `429`, `5xx`…), la clave se libera: corrige el cuerpo y reintenta con la **misma** clave.
+- **Almacén no disponible → `503 IDEMPOTENCY_UNAVAILABLE`.** Si enviaste una clave y la plataforma no puede verificarla, la solicitud se rechaza en lugar de arriesgar un duplicado: no se envió nada. Es seguro reintentar con la misma clave.
+
+### Cómo elegir la clave
+
+Deriva la clave de algo estable de tu lado que identifique el mensaje, de modo que una nueva ejecución del mismo trabajo produzca la misma clave: por ejemplo, el id del pedido más el destinatario (`order-48213-+5511999999999`). O genera un UUID y **guárdalo antes del primer intento**, y luego reutilízalo en cada reintento. Una clave generada de nuevo en cada intento no protege nada.
+
+<Steps>
+  <Step title="Envía con una clave">
+    Envía la solicitud con una `Idempotency-Key` derivada de tus datos.
+  </Step>
+  <Step title="Ante un timeout, 5xx o error de red">
+    Reenvía el **mismo cuerpo con la misma clave**. Si la primera llamada fue aceptada, recibes su respuesta (`Idempotent-Replayed: true`) y el mensaje no se envía dos veces; si no lo fue, el mensaje se envía ahora.
+  </Step>
+  <Step title="Ante 409 IDEMPOTENCY_KEY_IN_USE o 503 IDEMPOTENCY_UNAVAILABLE">
+    Espera y reintenta con la misma clave, con backoff.
+  </Step>
+</Steps>
+
+## Errores comunes
+
+| Estado | Significado |
+| --- | --- |
+| `400` | Cuerpo que no es JSON válido, incluido el vacío (`code: INVALID_BODY`; consulta [Cuerpo JSON mal formado](/es/api/overview#cuerpo-json-mal-formado); la `Idempotency-Key` no se reserva, así que reintenta el cuerpo corregido con la misma clave) |
+| `400` | Payload inválido (por ejemplo, teléfono que no está en E.164, campos obligatorios ausentes, `MISSING_TEMPLATE_VARIABLES` / `INVALID_TEMPLATE_VARIABLE_VALUE` indicando la clave, o texto libre no soportado por el proveedor: `code: FREE_FORM_NOT_SUPPORTED`), o en un número oficial una plantilla no aprobada en Meta: `code: META_TEMPLATE_NOT_APPROVED`, o una `Idempotency-Key` de más de 255 caracteres o con un carácter de control: `code: IDEMPOTENCY_KEY_INVALID` (`details.maxLength`: `255`), o `mediaFilename` en un envío de texto libre `text` o con un `mediaType` distinto de `document` |
+| `400` | `Validation error` con `details` (`fieldErrors` / `formErrors` de zod): los rechazos del esquema: dos modos o dos destinos a la vez, `mediaType` ausente en un envío de medios directo, un `caption` en `audio`/`sticker`, `voice`/`audio`/`sticker` como medio de plantilla, un `list`/`carousel`/`flow` combinado con algo que excluye, `media` en base64 por encima de su tope de tamaño. Los campos desconocidos del cuerpo se **ignoran**, no se rechazan |
+| `400` | `INVALID_MARK_READ`: `markRead` presente pero no boolean. `DELIVER_UNTIL_IN_PAST` / `DELIVER_UNTIL_NOT_AFTER_DELIVER_AT`: consulta [Programación](#programación-y-ventana-de-entrega). `NOT_SUPPORTED_FOR_META`: `newsletterId` en un número de Meta. `BUTTON_COPY_CODE_TEMPLATE_ONLY` / `BUTTON_PHONE_NUMBER_TEMPLATE_ONLY` / `BUTTONS_MULTIPLE_URL`: rechazos de botones de texto libre |
+| `401` | Credencial ausente/inválida (`{"error": "Invalid API key"}`) |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED`: una clave de toda la cuenta sin `x-whatsapp-number-id`. `PERMISSION_DENIED`: token OAuth/MCP o clave de cuenta cuyo rol no tiene `messages:send` |
+| `404` | `TEMPLATE_NOT_FOUND`: no hay plantilla con ese id o nombre en este número (`details.templateId` repite lo que enviaste). `NUMBER_NOT_FOUND`: el número de la clave se eliminó o se reconectó; genera una clave para el número actual |
+| `409` | Una solicitud con la misma `Idempotency-Key` y el mismo cuerpo sigue en curso (`code: IDEMPOTENCY_KEY_IN_USE`): reintenta con la misma clave en un momento. O la `Idempotency-Key` ya se usó con un cuerpo distinto en las últimas 24 horas (`code: IDEMPOTENCY_KEY_REUSED`): usa una clave nueva |
+| `409` | `NUMBER_BLOCKED`: el número no puede enviar en este momento (`reason` y `observedAt` en el cuerpo). `LINKED_WHATSAPP_INSTANCE_NOT_FOUND`: se eliminó la instancia a la que apunta la clave |
+| `422` | La facturación del tenant está suspendida (`code: BILLING_SUSPENDED`, con `reason`): cobranza pendiente, o un saldo WALLET / de extras sin pagar; regulariza tus créditos o tu tarjeta para volver a enviar. O `mediaFilename` en una plantilla cuyo encabezado aprobado no es `DOCUMENT` (`code: MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`, `details.templateName`, `details.headerType`). O una plantilla cuyos botones no se pueden enviar (`TEMPLATE_BUTTON_NOT_SUPPORTED`), un Flow en un número que no es de Meta (`FLOW_REQUIRES_META_NUMBER`), y los demás rechazos de Flow, lista y carrusel (`FLOW_TOKEN_NOT_ACCEPTED`, `FLOW_WINDOW_CLOSED`, `FLOW_NOT_SENDABLE`, `FLOW_PAYLOAD_NOT_ALLOWED`, `SERVICE_WINDOW_CLOSED`, …) |
+| `429` | **Cuota de mensajes del plan**, no un límite de tasa de solicitudes: `{"error": "Rate limit exceeded", "reason": "Plan limit reached (<N> messages)"}`, o `"reason": "No active subscription"`. No hay encabezado `Retry-After`: compra más mensajes o cambia de plan; reintentar no ayuda |
+| `503` | Se envió una `Idempotency-Key` y el almacén de idempotencia no está disponible (`code: IDEMPOTENCY_UNAVAILABLE`): no se envió nada; reintenta con la misma clave |
+
+Los fallos de entrega asíncronos (por ejemplo `META_OUTSIDE_24H_WINDOW`, `META_TEMPLATE_PAUSED`, `WHATSAPP_NOT_EXIST`) aparecen como `errorCode` en [`GET /v1/messages/{id}`](/es/api/messages/status) y [`GET /v1/messages`](/es/api/messages/list), en Logs, y mediante el webhook `message.failed` en números no oficiales; consulta [Códigos de error de logs](/es/api/messages/log-error-codes).

@@ -1,0 +1,284 @@
+---
+title: "GET /v1/numbers: Lista y detalle"
+sidebarTitle: "Listar y obtener números"
+description: "GET /v1/numbers: Devuelve todos los números de WhatsApp conectados a tu proyecto de Pilot Status, con su estado, tipo e identificadores únicos."
+mode: "wide"
+---
+
+# Listar e inspeccionar números
+
+Lista todos los números de WhatsApp de tu cuenta, u obtén el detalle completo de un número, incluida su salud y, para números de Meta, datos en vivo del Meta Graph.
+
+<Note>
+  **`GET /v1/numbers` requiere una credencial de toda la cuenta**: una clave de workspace (con alcance de tenant) o un token OAuth con acceso a todo el workspace. Una clave con alcance de número, o un token OAuth con acceso solo a algunos números, recibe `403` con `code: "NUMBER_SCOPE_NOT_ALLOWED"`. `GET /v1/numbers/{id}` también acepta una clave con alcance de número. Autentícate con el encabezado `x-api-key: ps_...`.
+
+  Con un token OAuth / MCP o una clave de cuenta (`ps_account_`), ambas rutas necesitan el permiso `numbers:read`, que tienen todos los roles del workspace; un usuario que ya no es miembro activo recibe `403 WORKSPACE_MEMBERSHIP_REQUIRED`.
+</Note>
+
+## GET /v1/numbers: Listar todos los números
+
+Lista todas las instancias de WhatsApp del **tenant** de la clave de API como un array JSON.
+
+- **No** devuelve credenciales de sesión.
+- Cada número expone su `state` de conexión plano y un indicador `isFullyConnected`. Un número no oficial (QR) es **un elemento por número**, sin importar cuántas conexiones tenga: `state` es `OPEN` cuando todas las conexiones están abiertas, `PARTIAL` cuando solo algunas lo están, `DISCONNECTED` cuando ninguna lo está, y `SHADOWBAN` (con un string `reason`) cuando Meta rechaza envíos por la conexión web. `isFullyConnected` es `true` solo para `OPEN`. Un elemento de Meta lee `OPEN` o `DISCONNECTED` a partir de `health.sendable`.
+- La lista **no** fuerza una actualización masiva del estado de conexión: usa `GET /v1/numbers/{id}/status` por número cuando necesites una verificación en vivo.
+- Las entradas `apiKeys` de cada elemento incluyen solo `name`, `keyPrefix` y `keyLast4` (sin el `id` de la clave de API).
+- Los elementos de Meta (Cloud API) también incluyen un bloque `coexistence`; consulta [Coexistence](#coexistence-y-por-qué-platformtype-no-lo-indica) más abajo.
+- Cada elemento incluye `extraChargeUnpaidSince` y `extraChargeDisconnectAt`; consulta [Cargo de número extra sin pagar](#cargo-de-número-extra-sin-pagar) más abajo.
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+## GET /v1/numbers/{id}: Detalle completo de un número
+
+Devuelve el `state`/`isFullyConnected` plano, un bloque `health` (consulta [El bloque `health`](#el-bloque-health)) y, para números de **Meta**, un bloque `meta` anidado en camelCase con información de `phone`, `profile` y `waba` obtenida del Meta Graph. Para números que no son de Meta, `meta` es `null`.
+
+<ParamField query="refresh" type="string">
+  Agrega `?refresh=1` para forzar una consulta en vivo al Meta Graph y guardar la instantánea. Por defecto la respuesta viene de caché (última instantánea de `meta`).
+</ParamField>
+
+Los secretos (tokens de acceso, app secret, configuración del proveedor) **nunca** se devuelven. Devuelve `404` (`{ "error": "Number not found" }`) si el id no pertenece al tenant de quien llama.
+
+El detalle también incluye la configuración del número (`piiMode`, `piiRetentionDays` y el bloque `settings`, descritos en [Configuración del número](/es/api/numbers/settings)) y `historyImport` (más abajo). En un número no oficial, su `state` es `OPEN` en cuanto **una** conexión está activa (aquí no existe `PARTIAL`), `DISCONNECTED` en caso contrario, y `SHADOWBAN` como en la lista.
+
+```bash
+# 1) list to get the id
+curl "https://pilotstatus.com.br/v1/numbers" \
+  -H "x-api-key: ps_your_token_here"
+
+# 2) fetch full detail of one number (add ?refresh=1 to pull live from the Meta Graph)
+curl "https://pilotstatus.com.br/v1/numbers/wa_abc?refresh=1" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+Respuesta (número de Meta):
+
+```json
+{
+  "id": "wa_abc",
+  "number": "5511999999999",
+  "name": "My WhatsApp",
+  "provider": "META",
+  "state": "OPEN",
+  "isFullyConnected": true,
+  "createdAt": "2026-02-24T15:00:00.000Z",
+  "updatedAt": "2026-06-30T09:18:33.000Z",
+  "health": {
+    "qualityRating": "GREEN",
+    "messagingLimitTier": null,
+    "portfolioMessagingLimitTier": "TIER_2K",
+    "metaStatus": "CONNECTED",
+    "code": null,
+    "reason": null,
+    "sendable": true
+  },
+  "extraChargeUnpaidSince": null,
+  "extraChargeDisconnectAt": null,
+  "meta": {
+    "fetchedAt": "2026-06-30T09:18:33.000Z",
+    "phone": {
+      "displayPhoneNumber": "+55 11 99999-9999",
+      "verifiedName": "Acme LTDA",
+      "qualityRating": "GREEN",
+      "messagingLimitTier": "TIER_2K",
+      "isPinEnabled": true,
+      "isOnBizApp": false
+    },
+    "profile": {
+      "about": "8h-18h",
+      "email": "contato@acme.com",
+      "websites": ["https://acme.com"],
+      "vertical": "RETAIL"
+    },
+    "waba": {
+      "id": "1029384756",
+      "name": "Acme WABA",
+      "currency": "BRL",
+      "businessVerificationStatus": "verified",
+      "country": "BR"
+    }
+  },
+  "coexistence": {
+    "status": "NO",
+    "evidence": "meta_is_on_biz_app"
+  }
+}
+```
+
+Para un número que no es de Meta (no oficial / QR), la misma llamada devuelve `"provider": "PILOT_STATUS"`, `"meta": null` y `"coexistence": null`.
+
+## El bloque `historyImport`
+
+Qué pasó con el historial del dispositivo de la conexión **actual**. Ambos campos son `null` cuando no pasó nada.
+
+```json
+"historyImport": {
+  "discarded": { "firstAt": "2026-09-16T11:25:34.790Z", "lastAt": "2026-09-16T11:26:11.500Z", "events": 81 },
+  "syncRefused": { "at": "2026-09-16T13:37:37.043Z", "reason": "SYNC_LIMIT_REACHED" }
+}
+```
+
+| Campo | Significado |
+| --- | --- |
+| `discarded` | El historial llegó mientras `settings.historyImportEnabled` era `false` y se descartó. `events` cuenta las entregas descartadas. |
+| `syncRefused` | Meta se negó a enviar de nuevo el historial de este número. `reason` es `SYNC_LIMIT_REACHED`. |
+
+Ambos son definitivos. Meta entrega el historial de un número **una sola vez**, y eliminar y volver a conectar el número no hace que lo envíe de nuevo. Una nueva conexión del mismo número empieza con ambos en `null`.
+
+## El bloque `health`
+
+`health` es el único lugar que responde *¿puede este número enviar ahora mismo y, si no, por qué?*. Se deriva de las señales de Meta mediante un único evaluador compartido, así que la lista, el detalle y el panel nunca discrepan.
+
+Un bloqueo de envíos vive **fuera** de `health`: un cargo de número extra sin pagar. Lo informa `extraChargeUnpaidSince`, en el nivel superior del número; consulta [Cargo de número extra sin pagar](#cargo-de-número-extra-sin-pagar).
+
+<ResponseField name="health.sendable" type="boolean">
+  **Nuestro veredicto, no el de Meta.** `state` / `isFullyConnected` en un número de Meta se derivan de él (`sendable → "OPEN"`, en caso contrario `"DISCONNECTED"`).
+
+  Léelo como *"¿cree Pilot Status actualmente que este número puede enviar?"*, que es lo que suman los campos de abajo, y no es la misma pregunta que *"¿aceptará Meta el próximo envío?"*. Solo Meta responde la segunda, y la responde por mensaje, en la respuesta a ese envío.
+
+  <Warning>
+    **Controla NUESTROS envíos, así que un `false` erróneo no es cosmético.** Cuando pasa a false, la cola de envío del número se pausa y los jobs se postergan: tus mensajes dejan de salir y Meta nunca los ve. Medido el 2026-09-15: un veredicto derivado de un campo de estado del Graph mantuvo un número en `sendable: false` durante casi cuatro horas mientras Meta aceptaba sus envíos perfectamente. La regla detrás de esto se retiró ese mismo día.
+
+    Entonces: alerta sobre `sendable: false`, por supuesto, porque significa que tu tráfico se detuvo. Pero trátalo como *"dejamos de enviar, aquí está el `code`"*, y confírmalo con el error de un envío real antes de decirle a un cliente que el número está bloqueado en Meta.
+  </Warning>
+</ResponseField>
+
+<ResponseField name="health.qualityRating" type="string | null">
+  La calificación de calidad de Meta para el número, en mayúsculas y transmitida tal cual: `GREEN`, `YELLOW`, `RED`, `UNKNOWN`. `null` cuando Meta no informó ninguna. **`RED` detiene los envíos** de nuestro lado (`sendable: false`).
+</ResponseField>
+
+<ResponseField name="health.messagingLimitTier" type="string | null">
+  El límite de mensajería **propio del número** (`messaging_limit_tier`), por ejemplo `TIER_250`, `TIER_1K`, `TIER_2K`, `TIER_10K`, `TIER_100K`, `TIER_UNLIMITED`. `null` cuando Meta no informa ninguno para él, lo cual ya es información: un número sin tier propio no es un número de Cloud API completamente registrado, y **no se pueden habilitar llamadas** para él.
+</ResponseField>
+
+<ResponseField name="health.portfolioMessagingLimitTier" type="string | null">
+  El límite del **Business Portfolio** (`whatsapp_business_manager_messaging_limit`), guardado como campo propio. Meta lo devuelve incluso cuando falta el tier por número.
+
+  Antes sustituía a `messagingLimitTier` cada vez que Meta omitía el del número, y la sustitución era invisible: el panel mostraba "2K/24h" para un número que estaba en `TIER_250`, y la puerta de habilitación de llamadas se abrió para 17 números que no tenían ningún tier. **Cuál de los dos rige un envío determinado lo decide Meta, no nosotros**: lee ambos, y trata `messagingLimitTier: null` como "este número no tiene límite propio", nunca como "tiene el del portfolio".
+</ResponseField>
+
+<ResponseField name="health.metaStatus" type="string | null">
+  El `status` del número de teléfono en Meta, en mayúsculas y **transmitido textualmente**. No lo enumeramos, porque Meta agrega valores sin aviso. Lo que *sí* fijamos es cómo se clasifica cada uno:
+
+  | `metaStatus` | Veredicto | `sendable` |
+  | --- | --- | --- |
+  | `RESTRICTED`, `BANNED`, `DISABLED`, `DELETED`, `PENDING_DELETION` | `BLOCKED` | `false` |
+  | `RATE_LIMITED` | `DEGRADED` | `false` |
+  | `FLAGGED` | `DEGRADED` | `false` |
+  | `DISCONNECTED` | `HEALTHY`, con `code: meta_phone_not_registered` | `true` |
+  | cualquier otro (por ejemplo, `CONNECTED`, `PENDING`) | este campo no opina | — |
+
+  Un valor fuera de ambos conjuntos no aporta nada al veredicto; la calidad y la regla de número de prueba de abajo aún pueden bloquear.
+</ResponseField>
+
+<ResponseField name="health.code" type="string | null">
+  Causa legible por máquinas, `null` cuando está sano, con una excepción, `meta_phone_not_registered`, que aparece en una fila `HEALTHY` con `sendable: true`. **Decide según este campo**, no según `reason`.
+
+  | `code` | Significado | `sendable` |
+  | --- | --- | --- |
+  | `meta_status_restricted` / `_banned` / `_disabled` / `_deleted` / `_pending_deletion` | Meta bloqueó el número | `false` |
+  | `meta_status_flagged` | Meta marcó el número | `false` |
+  | `meta_messaging_limit_reached` | Meta informa `RATE_LIMITED` | `false` |
+  | `meta_quality_red` | La calificación de calidad es `RED` | `false` |
+  | `meta_phone_not_registered` | Meta informa el número como `DISCONNECTED`: **no está registrado en la Cloud API**, y Meta rechaza cada envío desde él con `133010` (`errorCode: META_PHONE_NOT_REGISTERED`) hasta que lo esté. Regístralo de nuevo en el panel (**Numbers → Register on the Cloud API**); si Meta responde que el PIN no coincide, el panel pide el PIN de verificación en dos pasos del número. Se mantiene `sendable: true` a propósito: un campo de estado del Graph nunca pausa tu cola, así que cada envío falla con el error explícito de Meta en lugar de quedar en silencio | `true` |
+  | ~~`meta_test_number_name_not_approved`~~ | **En proceso de retiro: no decidas según él.** Codificaba un veredicto leído de `name_status`, y se midió que ese campo no distingue entre "puede enviar" y "no puede": Meta aprobó un nombre visible tres veces sin que cambiara el nodo del teléfono, y `POST /{phone}/register` lo aplicó en segundos mientras `name_status` seguía exactamente igual. La capacidad de envío de un número de prueba la responde la respuesta de Meta al envío (el `131037`), no un campo de estado del Graph | — |
+  | `all_connections_down` / `web_shadowban_463` / `inbound_dammed` / `manual_resume` | Números web nativos (QR) y acciones de operador; nunca el veredicto de envío de un número de Meta | — |
+</ResponseField>
+
+<ResponseField name="health.reason" type="string | null">
+  El mensaje legible para personas de la misma causa, en portugués. **String de diagnóstico, no un contrato**: la redacción cambia entre versiones. Muéstralo; no lo analices.
+</ResponseField>
+
+<Note>
+  **Las transiciones de salud también se pueden recibir por push.** `number.health_degraded`, `number.health_blocked`, `number.health_shadowban`, `number.recovered`, `number.inbound_stalled` y `number.inbound_recovered` se disparan en la transición y **están en el selector de eventos**: suscríbete a cada uno por nombre, sin necesidad del comodín `"*"`.
+
+  ⚠️ Llegan en el formato canónico `{ event, data }`, **no** en el sobre nativo de Meta. Si te suscribes a salud y a conversación en el mismo webhook, tu endpoint recibe dos formatos de cuerpo en una misma URL. Consulta [salud del número en la referencia de eventos](/es/api/webhooks/events#salud-del-número-suscribible-desde-el-2026-09-15).
+</Note>
+
+## Cargo de número extra sin pagar
+
+Un número extra (un número que supera la capacidad que tu workspace pagó) se cobra cuando **se conecta por primera vez** ([Números extra](/es/api/extra-numbers#se-cobra-al-conectar-por-primera-vez)). Si ese cargo es rechazado, el número sigue conectado pero los envíos desde él quedan bloqueados hasta que se pague. Dos campos de nivel superior lo informan, en **cada** elemento de `GET /v1/numbers` (no oficiales y de Meta) y en `GET /v1/numbers/{id}`:
+
+<ResponseField name="extraChargeUnpaidSince" type="string | null">
+  Instante ISO 8601 en el que el cargo fue rechazado por primera vez. Los envíos desde el número están bloqueados desde entonces: `POST /v1/messages/send` responde `409 NUMBER_BLOCKED` con `reason: "extra_charge_unpaid"`. `null` cuando el número no está bloqueado.
+</ResponseField>
+
+<ResponseField name="extraChargeDisconnectAt" type="string | null">
+  Instante ISO 8601 en el que el número se desconecta si sigue sin pagarse: 7 días después de `extraChargeUnpaidSince`. `null` cuando el número no está bloqueado, y **siempre `null` en un número de Meta Cloud API**: nunca se desconecta, permanece bloqueado para envíos hasta que se pague.
+</ResponseField>
+
+```json
+{
+  "id": "wa_abc",
+  "provider": "PILOT_STATUS",
+  "state": "OPEN",
+  "isFullyConnected": true,
+  "extraChargeUnpaidSince": "2026-10-10T12:00:00.000Z",
+  "extraChargeDisconnectAt": "2026-10-17T12:00:00.000Z"
+}
+```
+
+<Warning>
+  **Estos campos no forman parte de `health`.** El bloqueo tiene que ver con la facturación, no con la conexión: `state`, `isFullyConnected` y `health.sendable` siguen describiendo solo la conexión, y `health.code` nunca muestra `extra_charge_unpaid`. Un número puede leer `state: "OPEN"` y `health.sendable: true` y aun así rechazar cada envío. Revisa también `extraChargeUnpaidSince`.
+</Warning>
+
+Para levantar el bloqueo, llama a [`POST /v1/numbers/{id}/pay`](/es/api/numbers/pay), recarga la billetera o guarda una tarjeta. Una vez pagado, ambos campos vuelven a `null`.
+
+## Actualizar desde el Meta Graph
+
+`?refresh=1` es lo único que lee a Meta. **Nada actualiza `meta` por ti de forma programada**: sin él, `meta.fetchedAt` queda fijo en el momento en que se escribió la instantánea por última vez (normalmente el momento en que se vinculó el número), sin importar cuánto tráfico haya manejado el número desde entonces.
+
+Lo que cuesta una actualización: **cuatro lecturas secuenciales del Graph** (el nodo del número de teléfono, el perfil del negocio, la WABA y la configuración de llamadas), cada una con su propio try/catch, y luego una escritura para guardar la instantánea. **No hay límite de tasa de nuestra parte** en la llamada; el techo que encontrarás es el propio throttling del Graph de Meta, compartido con todas las demás llamadas hechas con el token de ese número.
+
+Como la actualización **se guarda**, la frescura no es una propiedad del endpoint: un `GET /v1/numbers` posterior lee la misma instantánea que la actualización acaba de escribir. La lista no es permanentemente "más débil" que el detalle: es la misma caché.
+
+<Note>
+  **Por qué `coexistence.evidence` puede diferir entre dos llamadas en el mismo instante.** Ambas rutas ejecutan el mismo predicado, y este prefiere la evidencia más fuerte *presente en la instantánea*:
+
+  1. `meta.phone.isOnBizApp` → `meta_is_on_biz_app`
+  2. si no, `metaIsCoexistence` (registrado a partir de lo que Meta respondió en el onboarding) → `history_sync`
+  3. si no, la huella → `phone_fields` (siempre solo `LIKELY`)
+  4. si no, `UNKNOWN`
+
+  `is_on_biz_app` es un campo **no documentado** del Graph, así que va en la lista amplia de campos; si esa solicitud falla, recurrimos a un conjunto mínimo de campos que no lo incluye. Por eso, una instantánea sin él responde desde `history_sync`: mismo estado, evidencia más débil. Un `?refresh=1` exitoso vuelve a poner `isOnBizApp` en la instantánea y, desde entonces, **ambas** rutas informan `meta_is_on_biz_app`.
+</Note>
+
+<Warning>
+  **`UNKNOWN` no es un problema de tiempo, así que esperar no lo resuelve.** Significa que no tenemos ninguna evidencia: ni `isOnBizApp` en la instantánea, ni respuesta del onboarding, ni coincidencia de huella. Llama a `?refresh=1` **de inmediato**: eso es lo que obtiene `is_on_biz_app`, y normalmente se resuelve a `CONFIRMED` o `NO` en esa misma llamada.
+
+  Si *sigue* en `UNKNOWN` después de una actualización exitosa, la lectura amplia del teléfono está fallando. Mira `meta.errors` / `meta.graphErrors` en la misma respuesta para ver el motivo (un token vencido y una app eliminada aparecen ahí): reintentar con un temporizador no servirá.
+</Warning>
+
+## Coexistence (y por qué `platformType` no lo indica)
+
+**Coexistence** significa que el número sigue activo en la **app WhatsApp Business** en un teléfono *y* conectado a la Cloud API al mismo tiempo.
+
+<Warning>
+  **No** leas `meta.phone.platformType` para responder esto. Un número en coexistence informa `CLOUD_API`, porque **está** en la Cloud API. Eso es lo que significa coexistence. El conjunto de valores de Meta para ese campo no tiene un miembro `COEXISTENCE`, así que un número en coexistence y un número "puro" de Cloud API son indistinguibles ahí.
+</Warning>
+
+Lee el bloque `coexistence` en su lugar. Se devuelve en números de Meta tanto en `GET /v1/numbers` como en `GET /v1/numbers/{id}`, y es `null` para números no oficiales (vinculados por QR).
+
+<ResponseField name="coexistence.status" type="string">
+  `CONFIRMED`: el número **está** en coexistence.
+  `NO`: no lo está; es un número puro de Cloud API (no disponible en la app del teléfono).
+  `LIKELY`: inferido, no respondido: Meta deja una huella en un número en coexistence (rechaza `/register`, así que el número queda `NOT_VERIFIED`, con estado de nombre `NON_EXISTS` y sin PIN).
+  `UNKNOWN`: no podemos responder con lo que tenemos.
+</ResponseField>
+
+<ResponseField name="coexistence.evidence" type="string">
+  De dónde vino la respuesta, para que puedas distinguir una respuesta de una suposición: `meta_is_on_biz_app` (el propio campo de Meta, también reflejado en `meta.phone.isOnBizApp`), `history_sync` (lo que Meta respondió cuando pedimos el historial del dispositivo) o `phone_fields` (la huella de arriba, que solo aparece con `LIKELY`). `null` cuando el estado es `UNKNOWN`.
+</ResponseField>
+
+<Warning>
+  `UNKNOWN` **no** significa "no". La huella detrás de `LIKELY` es una señal unidireccional: cuando coincide vale la pena confiar en ella, pero su ausencia no prueba nada. Trata `UNKNOWN` como "pregunta de nuevo más tarde": llamar a `?refresh=1` sobre el número obtiene la respuesta propia de Meta y normalmente la mejora a `CONFIRMED` o `NO`.
+</Warning>
+
+### Qué cambia coexistence en la práctica
+
+- Meta **rechaza** `/register` para el número ("not available for SMB businesses"), así que nunca se convierte en un número de Cloud API completamente registrado.
+- **No se pueden habilitar llamadas** mientras el número siga en coexistence.
+- **La mensajería funciona con normalidad**: el envío y la recepción no se ven afectados.
+- Para usar llamadas, el número tiene que migrarse fuera de la app WhatsApp Business. Esa es decisión del dueño del número.

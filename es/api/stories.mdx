@@ -1,0 +1,215 @@
+---
+title: "API de historias (Status) de WhatsApp"
+sidebarTitle: "Historias"
+description: "Publica, lee y elimina historias (estados) de WhatsApp desde el número conectado."
+mode: "wide"
+---
+
+Una **historia** (llamada *estado* dentro de WhatsApp) es una publicación de texto, imagen o video que los contactos de tu número ven en la pestaña **Novedades** durante **24 horas**. Pilot Status la publica desde el **mismo número de WhatsApp** vinculado a tu clave de API, como lo hace `POST /v1/messages/send`.
+
+<Warning>
+  Las historias están disponibles solo en números **Evolution GO**. Un número de Meta Cloud API responde `400 NOT_SUPPORTED_FOR_META` (la Cloud API no tiene historias), y un número no oficial en cualquier otra sesión (por ejemplo, Evolution v2) responde `400 NOT_SUPPORTED_FOR_PROVIDER`.
+</Warning>
+
+## Cómo funciona una historia
+
+- **Quién la ve.** Envía `recipients` (números de teléfono en E.164 sin `+`, o JID) y solo esos contactos la reciben. Si lo omites, decide la configuración de **privacidad de estados** del propio teléfono (*Mis contactos*, *Mis contactos, excepto…*, *Solo compartir con…*).
+- **Nadie en la lista de privacidad.** La historia igual se publica y se cobra: aparece solo en tus propios dispositivos, y `GET /v1/stories/{id}` devuelve `recipientCount: 0`.
+- **24 horas.** WhatsApp elimina la historia 24 horas después de enviada. Puedes eliminarla antes con `DELETE /v1/stories/{id}`; pasadas las 24 horas la respuesta es `410 STORY_EXPIRED`.
+- **Cobro.** Cada historia cuenta como **1 mensaje** de tu plan una vez enviada, sin importar la cantidad de destinatarios. Eliminarla es gratis.
+- **Dónde aparece.** Una historia no es una conversación: no aparece en la bandeja de entrada, pero se lista en `GET /v1/messages` y en el log de mensajes, y dispara los webhooks habituales `message.sent` / `message.failed` con `type: "story"`.
+- **Las confirmaciones de entrega y lectura son de mejor esfuerzo.** `SENT` es el estado garantizado. Una historia puede pasar a `DELIVERED` o `READ` cuando WhatsApp reenvía la confirmación a la sesión conectada, pero en historias muchas veces no lo hace: la visualización se registra en el teléfono principal ("Mi estado" muestra quién la vio) y la confirmación puede no llegar nunca a la API. No construyas lógica ni alertas que esperen `READ` en una historia.
+
+## Publicar una historia
+
+`POST https://pilotstatus.com.br/v1/stories`
+
+Responde **`202`** con la historia en cola: `{ "id", "status": "QUEUED", "type", "recipients": "explicit" | "privacy", "deliverAt" }` (`deliverAt` es `null` cuando la historia sale de inmediato). Envía un encabezado `Idempotency-Key` para reintentar de forma segura: la misma clave devuelve el mismo `id`.
+
+| Campo | Tipo | Reglas |
+| --- | --- | --- |
+| `type` | string | **Obligatorio.** `text`, `image` o `video`. |
+| `text` | string | Obligatorio cuando `type` es `text`. De 1 a 700 caracteres. |
+| `backgroundColor` | string | Solo `text`. `#RRGGBB` o `#AARRGGBB`. Por defecto `#128C7E` (verde de WhatsApp). |
+| `textColor` | string | Solo `text`. `#RRGGBB` o `#AARRGGBB`. Consulta [Colores](#colores). |
+| `font` | string | Solo `text`. Un **nombre** de fuente de [Fuentes](#fuentes). Por defecto `system`. Un número se rechaza. |
+| `mediaUrl` | string | Obligatorio cuando `type` es `image` o `video`. Una URL `https` pública, la única forma de pasar multimedia (no existe `mediaId`). Hasta **100 MiB**. |
+| `caption` | string | Solo `image` / `video`. Hasta 1024 caracteres. |
+| `recipients` | string[] | Opcional. Números de teléfono (E.164 sin `+`) o JID; los duplicados se eliminan. De **1 a 5000** elementos: más de 5000 responde `400 VALIDATION_ERROR`. Si se omite → la privacidad de estados del teléfono. |
+| `deliverAt` | string | Opcional. Fecha y hora ISO-8601 para publicar la historia más tarde. Consulta [Programar una historia](#programar-una-historia). |
+
+Los campos desconocidos se rechazan con `400 VALIDATION_ERROR`.
+
+### Colores
+
+| Lo que envías | Fondo | Texto |
+| --- | --- | --- |
+| ninguno | `#128C7E` | `#FFFFFF` |
+| solo `backgroundColor` | el tuyo | `#FFFFFF` o `#000000`, el que más contraste con tu fondo |
+| solo `textColor` | `#128C7E` | el tuyo |
+| ambos | el tuyo | el tuyo: el contraste **no** se verifica |
+
+El alfa del fondo se ignora al elegir el color de texto de contraste.
+
+### Fuentes
+
+`system` (por defecto), `system_text`, `script`, `system_bold`, `morningbreeze`, `calistoga`, `exo2`, `courier`.
+
+### Multimedia
+
+- Solo **imágenes y videos**; las historias de audio no son compatibles.
+- Pilot Status descarga `mediaUrl` y lo sube a WhatsApp. El límite es de **100 MiB**, el mismo que para los mensajes multimedia.
+- Las imágenes **WebP** se convierten a JPEG antes de publicarse.
+
+## Programar una historia
+
+Envía `deliverAt` para publicar la historia más tarde. Sigue las mismas reglas que `deliverAt` al [enviar un mensaje](/es/api/messages/send):
+
+- ISO-8601 con zona horaria, por ejemplo `2026-11-12T10:00:00-03:00`; se guarda en UTC. Sin zona se interpreta como UTC.
+- Una hora en el pasado, o la actual, publica de inmediato.
+- Un valor inválido responde `400 VALIDATION_ERROR` con `details.deliverAt: ["Invalid datetime"]`.
+- La historia queda en `QUEUED` hasta entonces, y `GET /v1/stories/{id}` devuelve su `deliverAt`.
+- `mediaUrl` se descarga **al momento de publicar**, no cuando programas. Si la URL ya no existe para entonces, la historia falla y recibes `message.failed`.
+- Se cobra (1 mensaje) solo cuando sale. Una historia cancelada no se cobra.
+
+Para cancelar, llama a `DELETE /v1/stories/{id}` mientras la historia siga en `QUEUED` y su `deliverAt` esté en el futuro. Consulta [Eliminar una historia](#eliminar-una-historia).
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/stories \
+  -H "x-api-key: ps_number_..." \
+  -H "Content-Type: application/json" \
+  -d '{ "type": "text", "text": "Opening at 10!", "deliverAt": "2026-11-12T10:00:00-03:00" }'
+```
+
+```json
+{ "id": "cm3story0002", "status": "QUEUED", "type": "text", "recipients": "privacy", "deliverAt": "2026-11-12T13:00:00.000Z" }
+```
+
+## Leer una historia
+
+`GET https://pilotstatus.com.br/v1/stories/{id}`
+
+```json
+{
+  "id": "cm3story0001",
+  "type": "image",
+  "status": "SENT",
+  "caption": "New collection",
+  "recipientsMode": "explicit",
+  "recipientCount": 2,
+  "recipients": ["5511999999999", "5521988887777"],
+  "deliverAt": null,
+  "createdAt": "2026-11-10T14:00:00.000Z",
+  "sentAt": "2026-11-10T14:00:03.000Z",
+  "revokedAt": null,
+  "errorMessage": null,
+  "errorCode": null
+}
+```
+
+Una historia que falló incluye el motivo y su código, con las mismas reglas que `errorMessage` y `errorCode` en [`GET /v1/messages/{id}`](/es/api/messages/read): `errorMessage` es el texto público (inglés y portugués separados por ` | `, sin detalles internos) y `errorCode` es un código estable. Ambos son `null` cuando la historia no falló.
+
+```json
+{
+  "id": "cm3story0003",
+  "type": "image",
+  "status": "FAILED",
+  "errorMessage": "The story media could not be downloaded | Não foi possível baixar a mídia do story",
+  "errorCode": "MEDIA_DOWNLOAD_FAILED"
+}
+```
+
+- `recipients` es la lista **efectiva** de quién recibió la historia, sin tu propio número: la que enviaste (`recipientsMode: "explicit"`) o la que produjo la privacidad del teléfono (`"privacy"`). Es `null` mientras la historia está en `QUEUED`.
+- Los destinatarios son datos de terceros y siguen la misma retención que el contenido de los mensajes: fuera de la ventana de retención, `recipients` es `null` y `redacted: true`; `recipientCount` se mantiene.
+- El id debe pertenecer al número de la credencial; un id de otro número, o un mensaje que no es una historia, responde `404`.
+
+## Eliminar una historia
+
+`DELETE https://pilotstatus.com.br/v1/stories/{id}`
+
+- **Programada y todavía no vencida** (`QUEUED` con un `deliverAt` futuro): la cancela. Responde **`200`** con `{ "id", "canceledAt" }`; la historia pasa a `CANCELED`, nunca se publica y no se cobra.
+- **`QUEUED` y ya vencida** (se está publicando): `409 STORY_NOT_REVOCABLE` con su `status`. Inténtalo de nuevo cuando esté en `SENT`.
+- **Enviada:** elimina la historia de los teléfonos de todos los que la recibieron (la misma lista efectiva del envío, aunque la configuración de privacidad haya cambiado desde entonces).
+- Solo una historia ya enviada (`status` `SENT`, `DELIVERED`, `READ` o `PLAYED`) y todavía no eliminada; de lo contrario, `409 STORY_NOT_REVOCABLE`. Más de 24 horas después de `sentAt` → `410 STORY_EXPIRED`.
+- Responde **`200`** con `{ "id", "revokedAt" }`. No se cobra y no crea ningún mensaje nuevo.
+
+## Autenticación
+
+Las mismas reglas que para [enviar un mensaje](/es/api/messages/send): una **clave de número** (`ps_number_`) actúa sobre su propio número; una clave de workspace, una clave de cuenta (con `x-workspace-id`) o un token OAuth deben indicar el número en `x-whatsapp-number-id`. Con una clave de cuenta o un token OAuth, publicar y eliminar necesitan el permiso `messages:send` (**AGENT**, **ADMIN** u **OWNER**) y leer necesita `logs:read:content`. Consulta [Autenticación](/es/api/authentication).
+
+## Errores
+
+Los mensajes de error son bilingües (`English | Portuguese`).
+
+| Estado | `code` | Cuándo |
+| --- | --- | --- |
+| `400` | `NUMBER_NOT_FOUND` | La credencial no está vinculada a un número. |
+| `400` | `NOT_SUPPORTED_FOR_META` | El número es un número de Meta Cloud API. |
+| `400` | `NOT_SUPPORTED_FOR_PROVIDER` | La sesión del número no es Evolution GO (por ejemplo, Evolution v2). |
+| `400` | `VALIDATION_ERROR` | Cuerpo inválido; `details` lista cada campo. |
+| `402` / `429` | los mismos códigos que al [enviar un mensaje](/es/api/messages/send) | Se alcanzó el límite del plan. |
+| `403` | `PERMISSION_DENIED` | El rol de la credencial no tiene el permiso. |
+| `404` | — | La historia no existe para este número. |
+| `409` | `WHATSAPP_INSTANCE_NOT_CONNECTED` | La sesión no está conectada. |
+| `409` | `STORY_NOT_REVOCABLE` | Eliminación de una historia que se está publicando (`QUEUED` y vencida), que falló, que fue cancelada o que ya fue eliminada. |
+| `410` | `STORY_EXPIRED` | Eliminación más de 24 horas después de enviada la historia. |
+
+## Ejemplos
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/stories" \
+  -H "x-api-key: ps_number_your_key" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: promo-2026-11-10" \
+  -d '{
+    "type": "text",
+    "text": "Sale today!",
+    "backgroundColor": "#25D366",
+    "font": "calistoga",
+    "recipients": ["5511999999999"]
+  }'
+```
+
+```typescript Node
+import { PilotStatusClient } from "@pilot-status/sdk";
+
+const client = new PilotStatusClient({ apiKey: process.env.PILOT_STATUS_API_KEY! });
+
+const story = await client.stories.create({
+  type: "image",
+  mediaUrl: "https://example.com/collection.jpg",
+  caption: "New collection",
+});
+
+const details = await client.stories.get(story.id);
+await client.stories.delete(story.id);
+```
+
+```python Python
+import os
+from pilot_status import PilotStatusClient
+
+client = PilotStatusClient(api_key=os.environ["PILOT_STATUS_API_KEY"])
+
+story = client.stories.create({
+    "type": "video",
+    "mediaUrl": "https://example.com/teaser.mp4",
+    "caption": "Coming soon",
+    "recipients": ["5511999999999", "5521988887777"],
+})
+
+details = client.stories.get(story["id"])
+client.stories.delete(story["id"])
+```
+
+```json Response (202)
+{ "id": "cm3story0001", "status": "QUEUED", "type": "text", "recipients": "explicit" }
+```
+
+</CodeGroup>
+
+## MCP
+
+El [servidor MCP](/es/integrations/mcp-server) expone las mismas operaciones como `stories_send`, `story_get` y `story_delete`.

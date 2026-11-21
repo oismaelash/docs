@@ -1,0 +1,109 @@
+---
+title: "Tipos de API key: claves de número, de workspace y de cuenta"
+sidebarTitle: "Tipos de clave"
+description: "Los tres tipos de API key de Pilot Status (claves de número ps_number_, claves de workspace ps_workspace_ con una clave principal y claves con nombre, y claves de cuenta ps_account_ que eligen un workspace con x-workspace-id), dónde se crea cada una y los errores que cada una puede recibir."
+mode: "wide"
+---
+
+# Tipos de API key
+
+Pilot Status tiene tres tipos de API key. Todas van en el mismo header `x-api-key`, y el prefijo te dice de qué tipo es una clave.
+
+| Tipo | Prefijo | Pertenece a | Dónde la creas | Para qué sirve |
+| --- | --- | --- | --- | --- |
+| **Clave de número** | `ps_number_` | Un número de WhatsApp | **API Keys** (`/api-keys`) | Enviar y leer a través de ese número. |
+| **Clave de workspace** | `ps_workspace_` | Un workspace | **Workspace keys** (`/workspace-api-keys`) | Gestionar el workspace: números, líneas, facturación, webhooks. También actúa sobre cualquier número del workspace con `x-whatsapp-number-id`. |
+| **Clave de cuenta** | `ps_account_` | **Tú**, el usuario | **Profile → API** (`/profile?tab=api`) | Crear workspaces y actuar en cualquier workspace del que seas miembro, con tu rol en él. |
+
+<Note>
+  **Las claves creadas antes del 2026-10-28 siguen funcionando.** Tienen el formato anterior `ps_` + hex, sin el tipo en el prefijo. Una clave de número antigua sigue siendo una clave de número, y una clave antigua con alcance de tenant sigue siendo una clave de workspace. No necesitas reemplazarlas.
+</Note>
+
+## Claves de número
+
+Aquí no cambió nada. Cada número de WhatsApp tiene **una clave predeterminada**, en la página **API Keys**, que puedes **regenerar** (no existe "crear otra"). Actúa solo sobre su propio número: una clave de número en un endpoint exclusivo de workspace recibe **403 `NUMBER_SCOPE_NOT_ALLOWED`**. Consulta [API keys](/es/api/api-keys).
+
+**Una clave de número no puede crear números.** `POST /v1/numbers`, `POST /v1/numbers/meta` y `POST /v1/numbers/remote-pairing` le responden con **403 `NUMBER_KEY_CANNOT_CREATE_NUMBER`**, incluidas las claves de número antiguas. Crea números con una clave de workspace o una clave de cuenta.
+
+## Claves de workspace
+
+Una clave de workspace es lo que la documentación llama **clave con alcance de tenant**: está vinculada al workspace, no a un número. Tienen su propia pantalla, **Workspace keys** (`/workspace-api-keys`), en la barra lateral. Antes del 2026-10-28 la clave de workspace estaba en **Profile → API**; esa pestaña ahora contiene tus claves de cuenta.
+
+Un workspace tiene dos tipos de clave de workspace:
+
+| | Clave principal | Claves con nombre |
+| --- | --- | --- |
+| Cuántas | Una | Hasta **50** claves activas por workspace, incluida la principal (las revocadas no cuentan) |
+| Quién la genera | **Owner** | **Owner o Admin** |
+| Quién la usa | El agente de IA dentro de la app y cualquier integración que configures con ella | Una integración cada una, para que puedas revocar una sin afectar a las demás |
+| Revocar | **No es posible**: regenérala en su lugar | Sí, con efecto en la siguiente solicitud |
+| Regenerar | Sí. Solo cambia la principal; las claves con nombre siguen funcionando | No: revócala y crea otra |
+
+- **La clave en bruto se muestra una sola vez**, cuando se crea o se regenera. Guárdala de inmediato.
+- **Tu clave existente con alcance de tenant es la clave principal del workspace.**
+- **Una clave con nombre creada por un miembro no queda huérfana cuando ese miembro se va:** al eliminarlo, la operación se detiene con `409 MEMBER_HAS_API_KEYS` hasta que el Owner decida revocar la clave o conservarla ([detalles](/es/api/workspace#eliminar-un-miembro-que-creó-claves-de-api)).
+- A través de la API, una clave de cuenta lista, crea y revoca claves de workspace con [`/v1/workspaces/{id}/api-keys`](/es/api/workspaces#claves-de-workspace), y rota la clave principal con `POST /v1/api-keys/regenerate`.
+
+## Claves de cuenta
+
+Una clave de cuenta es **tuya, no de un workspace**. Cualquier usuario puede crear una en **Profile → API**, hasta **20** por usuario. Una clave llega a todos los workspaces de los que eres miembro activo, y en cada solicitud actúa con **tu rol actual** en el workspace que indica: si te bajan de rol o te eliminan, la clave pierde ese acceso en la siguiente solicitud.
+
+Es la clave que usa un revendedor para [crear un workspace por cliente final](/es/api/workspaces) y operarlos todos con una sola credencial.
+
+### Elige el workspace con `x-workspace-id`
+
+En cada endpoint que actúa sobre un workspace, envía el id del workspace en `x-workspace-id`. Los ids vienen de [`GET /v1/workspaces`](/es/api/workspaces#listar-tus-workspaces).
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers" \
+  -H "x-api-key: ps_account_your_account_key" \
+  -H "x-workspace-id: cmh2a1b2c0001ws8example7k"
+```
+
+- **Dentro de ese workspace, la clave se comporta como la propia clave del workspace**, recortada según tu rol. Un rol que no permite la acción recibe **403 `PERMISSION_DENIED`**.
+- **Un miembro limitado a algunos números** solo llega a esos números, como en el panel.
+- **`x-whatsapp-number-id`** limita la solicitud a un número de ese workspace, igual que con una clave de workspace. Un id que no es un número de ese workspace recibe **404 `NUMBER_NOT_FOUND`**.
+- **`x-api-key-id` no es compatible** con una clave de cuenta. Enviar ambos devuelve `401` `API key headers mismatch`.
+- **Las claves de cuenta llevan un usuario.** Por eso pueden hacer lo que una clave de workspace no puede, como [gestionar miembros](/es/api/workspace) (según tu rol), y pueden crear claves de workspace con nombre, cosa que los tokens OAuth/MCP no pueden (un token OAuth usado por el Owner del workspace puede rotar la clave principal del workspace y las claves de número; consulta [Secretos y API keys por OAuth](/es/integrations/mcp-server#secretos-y-api-keys-por-oauth)).
+
+### Errores
+
+| Estado | `code` | Cuándo |
+| --- | --- | --- |
+| `400` | `WORKSPACE_ID_REQUIRED` | Una clave de cuenta en un endpoint que actúa sobre un workspace, sin `x-workspace-id`. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | No eres miembro activo del workspace indicado en `x-workspace-id` (o en la ruta). Un workspace que no existe o está archivado recibe la misma respuesta. |
+| `403` | `ACCOUNT_KEY_REQUIRED` | Una clave de workspace, una clave de número o un token OAuth/MCP en un endpoint que solo las claves de cuenta pueden llamar (`/v1/workspaces*`). |
+| `403` | `PERMISSION_DENIED` | Tu rol en ese workspace no permite la acción. |
+| `401` | — | La clave no existe o fue revocada (`Invalid API key`). |
+
+<Accordion title="Mensajes de error exactos">
+  | `code` | `error` |
+  | --- | --- |
+  | `WORKSPACE_ID_REQUIRED` | `An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) \| Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)` |
+  | `WORKSPACE_MEMBERSHIP_REQUIRED` | `The user behind this account API key is not an active member of the workspace named by x-workspace-id \| O usuário desta API key de conta não é membro ativo do workspace indicado em x-workspace-id` |
+  | `ACCOUNT_KEY_REQUIRED` | `This endpoint requires an account API key (ps_account_…), created in Profile → API. Workspace keys, number keys and OAuth tokens cannot use it \| Este endpoint exige uma API key de conta (ps_account_…), criada em Perfil → API. Chaves de workspace, de número e tokens OAuth não podem usá-lo` |
+</Accordion>
+
+<Warning>
+  **Una clave de cuenta es la credencial más poderosa que puedes tener.** Llega a todos los workspaces a los que perteneces, con tu rol en cada uno. Mantenla solo en tu servidor, nunca en un navegador ni en una app, y revócala en **Profile → API** si se filtra.
+</Warning>
+
+## Qué puede llamar cada credencial
+
+Los tokens de acceso OAuth (emitidos a conectores MCP y apps OAuth, enviados como `Authorization: Bearer`) son el cuarto tipo de credencial. Como una clave de cuenta, llevan un usuario y actúan con el rol actual de ese usuario.
+
+| | Clave de número | Clave de workspace | Clave de cuenta + `x-workspace-id` | Token OAuth |
+| --- | --- | --- | --- | --- |
+| Endpoints por número (envío, estado, plantillas…) | Su propio número | Cualquier número, indicado en `x-whatsapp-number-id` | Cualquier número que puedas ver, indicado en `x-whatsapp-number-id` | Igual que una clave de cuenta; un token autorizado para números específicos solo llega a esos |
+| Endpoints de todo el workspace (`/v1/numbers`, `/v1/api-keys`, `/v1/branding`, `/v1/workspace`…) | ❌ `403 NUMBER_SCOPE_NOT_ALLOWED` | ✅ | ✅, salvo que estés restringido a algunos números (`403 NUMBER_SCOPE_NOT_ALLOWED`) | ✅ solo con consentimiento para todo el workspace (si no, `403 NUMBER_SCOPE_NOT_ALLOWED`) |
+| Crear un número (`POST /v1/numbers`, `/v1/numbers/meta`, `/v1/numbers/remote-pairing`) | ❌ `403 NUMBER_KEY_CANNOT_CREATE_NUMBER` | ✅, también limitado con `x-whatsapp-number-id` | ✅ según el rol (Admin u Owner), salvo que estés restringido a algunos números (`403 NUMBERS_GRANT_NOT_ALLOWED`) | ✅ según el rol, solo con consentimiento para todo el workspace (si no, `403 NUMBERS_GRANT_NOT_ALLOWED`) |
+| Escrituras de miembros, archivado, transferencia de propiedad | ❌ | ❌ `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_*` | ✅ según el rol | ✅ según el rol |
+| `/v1/workspaces*` (crear workspaces, claves de workspace con nombre) | ❌ | ❌ | ✅ | ❌ `403 ACCOUNT_KEY_REQUIRED` |
+| Revelar, regenerar o rotar claves `ps_` (`/v1/api-keys*`) | Rotar su propia clave | ✅ | Según el rol: listar y rotar la principal requieren **Owner**; regenerar la clave de un número requiere **Admin** | **Solo Owner**, verificado en vivo en cada llamada y registrado en un log de auditoría; cualquier otro recibe `403 OAUTH_SECRET_REQUIRES_OWNER` |
+| Verificación de rol | Ninguna: el alcance de la clave es su autoridad | Ninguna: el alcance de la clave es su autoridad | Tu rol en vivo (`403 PERMISSION_DENIED`) | Tu rol en vivo (`403 PERMISSION_DENIED`) |
+
+## Qué clave usar
+
+- **Envías mensajes desde un número:** una clave de número.
+- **Operas un workspace y gestionas sus números, líneas y facturación:** una clave de workspace, una con nombre por integración.
+- **Revendes y mantienes un workspace por cliente:** una clave de cuenta para crear los workspaces y actuar en cada uno con `x-workspace-id`. Consulta [Facturación para revendedores](/es/reseller-billing).

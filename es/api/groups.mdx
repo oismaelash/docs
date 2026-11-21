@@ -1,0 +1,135 @@
+---
+title: "API de grupos de WhatsApp"
+description: "Envía a grupos de WhatsApp, lístalos, créalos y adminístralos, incluidos participantes, invitaciones y mensajes fijados."
+mode: "wide"
+---
+
+Los grupos de WhatsApp funcionan **tanto** para números no oficiales (emparejados por QR) **como** para números oficiales de la **Meta Cloud API**, siempre que el número de Meta sea una **Official Business Account (OBA) aprobada** con grupos habilitados.
+
+<Warning>
+  Cuando un número de la Meta Cloud API no es una OBA elegible, Meta rechaza la operación de grupo y el endpoint responde con el código **`META_GROUPS_NOT_ELIGIBLE`**. El estado HTTP es el que devolvió Meta (normalmente **400**).
+</Warning>
+
+## Modelo de id de grupo
+
+Un grupo se identifica en todas partes por su **JID terminado en `@g.us`**. Para números de la Meta Cloud API, el grupo se representa como un **pseudo-JID** `<META_GROUP_ID>@g.us`: lo usas exactamente como cualquier otro JID de grupo (la conversión entre el id opaco de grupo de Meta y `@g.us` ocurre internamente en el límite HTTP de Meta). Los boletines/canales (`@newsletter`) siguen **sin soporte para números de Meta**.
+
+En la ruta de una URL, codifica el JID: `120363123456789012@g.us` → `120363123456789012%40g.us`.
+
+## Enviar a un grupo
+
+En `POST /v1/messages/send`, pasa **`groupId`** (JID terminado en `@g.us`) **en lugar de** `destinationNumber` o `newsletterId`. **Exactamente un** destino por solicitud.
+
+- Se aplican las mismas reglas de plantilla/categoría que para números de teléfono.
+
+## Autenticación
+
+Cada endpoint de grupos actúa sobre **un número de WhatsApp**:
+
+- una **clave de número** (`ps_number_`) actúa sobre su propio número;
+- una **clave de workspace** (`ps_workspace_`), una **clave de cuenta** (`ps_account_`, con `x-workspace-id`) o un **token OAuth** debe indicar el número en el encabezado `x-whatsapp-number-id`. Sin él, la respuesta es `403 TENANT_SCOPE_NOT_ALLOWED`. Consulta [Autenticación](/es/api/authentication).
+
+Con una clave de cuenta o un token OAuth, el rol del usuario en el workspace debe incluir `groups:manage`: **AGENT**, **ADMIN** u **OWNER**. Cualquier otro rol recibe `403 PERMISSION_DENIED`.
+
+## `GET /v1/groups`
+
+Devuelve `{ "groups": [ { "id": "…@g.us", "name": "…" } ] }` para el número sobre el que actúa la credencial. `name` puede ser `null`.
+
+- Funciona para números no oficiales y números elegibles de la Meta Cloud API.
+- La sesión de un número no oficial debe estar **conectada** (`OPEN`); de lo contrario, **409** con `WHATSAPP_INSTANCE_NOT_CONNECTED`.
+- Cuando el número no tiene una sesión de WhatsApp detrás, la respuesta es **200** con `{ "groups": [] }`.
+- La lista se **almacena en caché hasta 1 hora**. Si el proveedor falla y existe una lista de las **últimas 24 horas**, se devuelve esa lista con `"stale": true` y `"asOf"` (el instante ISO en que se obtuvo).
+- Un timeout del proveedor sin lista de las últimas 24 horas devuelve **503** `WHATSAPP_GROUPS_UPSTREAM_TIMEOUT`: reintenta más tarde.
+
+## Endpoints de administración de grupos
+
+`{groupId}` es el JID del grupo (`…@g.us`), codificado para URL. Los cuerpos de solicitud son JSON; los campos que no están listados se ignoran.
+
+| Método y ruta | Cuerpo | Respuesta | Descripción |
+| --- | --- | --- | --- |
+| `POST /v1/groups` | `{ subject, participants? }` | `201` `{ id, subject, participants }` | Crea un grupo. `subject` tiene de 1 a 100 caracteres (recortado). `participants` son números de teléfono en dígitos E.164. `participants` en la respuesta lista los miembros que el proveedor confirmó. |
+| `GET /v1/groups/{groupId}` | — | `200` `{ id, subject, participants }` | Información del grupo: asunto y participantes con sus roles. |
+| `DELETE /v1/groups/{groupId}` | — | `200` `{ success: true }` | Sale del grupo (en números de Meta, el grupo se cierra). |
+| `POST /v1/groups/{groupId}/participants` | `{ participants: [...] }` | `200` `{ affected }` | Agrega participantes. |
+| `DELETE /v1/groups/{groupId}/participants` | `{ participants: [...] }` | `200` `{ affected }` | Elimina participantes (cuerpo JSON en el `DELETE`). |
+| `POST /v1/groups/{groupId}/participants/promote` | `{ participants: [...] }` | `200` `{ affected }` | Promueve participantes a admin. |
+| `POST /v1/groups/{groupId}/participants/demote` | `{ participants: [...] }` | `200` `{ affected }` | Degrada admins a participantes regulares. |
+| `POST /v1/groups/{groupId}/invite` | `{ reset? }` | `200` `{ link }` | Obtiene el enlace de invitación del grupo. `reset: true` revoca el enlace actual y emite uno nuevo. `link` es `null` cuando el proveedor no devuelve ninguno. |
+| `POST /v1/groups/{groupId}/pin` | `{ messageId, action }` | `200` `{ success: true }` | Fija o desfija un mensaje del grupo (`action`: `"pin"` o `"unpin"`). **No es compatible con números no oficiales legacy** (`400 FEATURE_NOT_SUPPORTED`). |
+
+- Los arreglos `participants` necesitan **al menos una** entrada.
+- Un objeto de participante es `{ wa_id, user_id?, role? }`: `wa_id` es el teléfono en dígitos E.164 (en números no oficiales puede ser el JID del participante), `user_id` es el Business-Scoped User ID de Meta cuando está presente, y `role` es `"admin"` o `"member"` cuando el proveedor lo informa.
+- `affected` lista los participantes que el proveedor confirmó. En números no oficiales, repite los participantes que enviaste.
+
+## Ejemplo (crear un grupo)
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://pilotstatus.com.br/v1/groups \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_number_your_key" \
+  -d '{ "subject": "Sales Team", "participants": ["5511999999999", "5511888888888"] }'
+```
+
+```json Response (201)
+{
+  "id": "120363123456789012@g.us",
+  "subject": "Sales Team",
+  "participants": [
+    { "wa_id": "5511999999999" },
+    { "wa_id": "5511888888888" }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Ejemplo (obtener información del grupo)
+
+```bash
+curl "https://pilotstatus.com.br/v1/groups/120363123456789012%40g.us" \
+  -H "x-api-key: ps_number_your_key"
+```
+
+```json
+{
+  "id": "120363123456789012@g.us",
+  "subject": "Sales Team",
+  "participants": [
+    { "wa_id": "5511999999999", "role": "admin" },
+    { "wa_id": "5511888888888", "role": "member" }
+  ]
+}
+```
+
+En números no oficiales, la información del grupo pasa por una caché compartida que retrocede cuando el proveedor tiene problemas. Mientras retrocede, el endpoint responde **503** `GROUP_INFO_TEMPORARILY_UNAVAILABLE` con `retryAfterSeconds` en el cuerpo y un encabezado `Retry-After`.
+
+## Obtener `groupId`
+
+- **Webhook `message.group`**: el payload incluye `groupId` (y `groupName` cuando está disponible).
+- **`GET /v1/groups`**: devuelve los ids de grupo para el número sobre el que actúa la credencial.
+
+## Errores
+
+Los errores de validación responden `400` con `{ "error": "Validation error", "details": { "formErrors": [...], "fieldErrors": { ... } } }` (sin `code`).
+
+| Estado | `code` | Cuándo |
+| --- | --- | --- |
+| `400` | `INVALID_BODY` | El cuerpo no es JSON válido (un cuerpo vacío se lee como `{}`). Consulta [Cuerpo JSON malformado](/es/api/overview#cuerpo-json-mal-formado). |
+| `400` | `FEATURE_NOT_SUPPORTED` | El proveedor del número no admite la operación (por ejemplo, `pin` en un número no oficial legacy). |
+| `400` | `NUMBER_NOT_FOUND` | La credencial no está vinculada a un número de WhatsApp con sesión (endpoints de administración). |
+| normalmente `400` | `META_GROUPS_NOT_ELIGIBLE` | El número de la Meta Cloud API no es una OBA aprobada (o no tiene grupos habilitados), o el id del grupo es incorrecto. |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Credencial de workspace/cuenta sin `x-whatsapp-number-id`. |
+| `403` | `PERMISSION_DENIED` | Clave de cuenta / usuario OAuth cuyo rol no tiene `groups:manage`. |
+| `409` | `WHATSAPP_INSTANCE_NOT_CONNECTED` | La sesión no está `OPEN`. |
+| `409` | `LINKED_WHATSAPP_INSTANCE_NOT_FOUND` | La instancia vinculada a la clave ya no existe. |
+| estado del proveedor | `WHATSAPP_UPSTREAM_ERROR` | El proveedor de WhatsApp rechazó la llamada; `details: { status, body }` trae su respuesta. En números de Meta se usa en su lugar el código de Meta mapeado. |
+| `502` | `WHATSAPP_INVALID_JSON` | El proveedor respondió con JSON inválido. |
+| `503` | `WHATSAPP_SESSION_KEY_MISSING` | La clave de sesión del número no está configurada. |
+| `503` | `GROUP_INFO_TEMPORARILY_UNAVAILABLE` | Solo `GET /v1/groups/{groupId}`: reintenta después de `Retry-After` segundos. |
+| `503` | `WHATSAPP_GROUPS_UPSTREAM_TIMEOUT` | Solo `GET /v1/groups`: timeout del proveedor y sin lista de las últimas 24 horas. |
+
+## Variables en botones
+
+Cada `{{placeholder}}` en el JSON de la plantilla almacenada (cuerpo **y** etiquetas de botones) se valida al enviar y aparece en el arreglo `variables` de nivel superior de `GET /v1/templates/{id}` después de que **guardes la plantilla** en el panel.

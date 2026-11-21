@@ -1,0 +1,100 @@
+---
+title: "DELETE /v1/phone-lines/{id}: cancelar una línea"
+sidebarTitle: "Cancelar una línea"
+description: "Cancela una línea telefónica. Una línea pagada sigue utilizable hasta el final de su período y no se reembolsa; una línea impaga se devuelve al operador de inmediato, sin garantía de que pueda volver a comprarse, y su historial de códigos se elimina."
+mode: "wide"
+---
+
+# Cancelar una línea telefónica
+
+<Tip>
+  Pruébalo con tu clave en el Playground: [`DELETE /v1/phone-lines/{id}`](/es/playground/phone-lines/cancel-phone-line).
+</Tip>
+
+`DELETE /v1/phone-lines/{id}` cancela una línea y responde con la línea **tal como queda después**. Lo que ocurre depende del `status` de la línea.
+
+<Note>
+  Requiere una clave **con alcance de tenant**. Con un token OAuth / MCP, solo el **Owner** del workspace puede cancelar (`phone_lines:cancel`); de lo contrario, `403 PERMISSION_DENIED`.
+</Note>
+
+## Endpoint
+
+`DELETE https://pilotstatus.com.br/v1/phone-lines/{id}`
+
+Sin cuerpo. `{id}` es el `id` de la línea, no el número de teléfono.
+
+## Qué ocurre, según el estado
+
+| `status` antes | Resultado | Respuesta |
+| --- | --- | --- |
+| `ACTIVE` | **Cancelada al final del período, sin reembolso.** La línea sigue `ACTIVE` y totalmente utilizable (códigos de activación incluidos) hasta `currentPeriodEnd`. No se renueva y pasa a `CANCELED` cuando termina el período. | `200`, `status: "ACTIVE"`, `cancelAtPeriodEnd: true` |
+| `ACTIVE`, ya cancelada | No cambia nada: puedes volver a llamar sin riesgo. | `200`, la misma línea |
+| `PAYMENT_PENDING`, `SUSPENDED` | **Devuelta de inmediato.** No queda período pagado, así que el número vuelve ahora al pool del operador. **Irreversible.** | `200`, `status: "RETURNED"` |
+| `RETURNED`, `CANCELED` | Rechazada: la línea ya terminó. | `409 NOT_CANCELABLE` |
+
+<Warning>
+  **Un número devuelto deja de ser tuyo**: nada deshace una devolución y **no hay garantía de que pueda volver a comprarse**, porque vuelve al pool del operador, donde cualquiera puede alquilarlo después. La cuenta de WhatsApp activada en él sigue vinculada a ese número: quien lo alquile después puede solicitar un código de verificación para ella. El historial de códigos de la línea (códigos y grabaciones de llamadas) se elimina. Cancelar una línea impaga hace esto **de inmediato**, sin período de gracia.
+</Warning>
+
+Si ya hay en curso una devolución de la misma línea impaga (iniciada por el proceso de facturación horario o por **Choose which lines to keep** (Elegir qué líneas conservar) en el panel), la llamada responde `200` con la línea tal como está, posiblemente todavía `PAYMENT_PENDING` o `SUSPENDED`, y ese proceso completa la devolución. Vuelve a leer la línea para confirmar `RETURNED`.
+
+¿Cambiaste de opinión sobre una línea `ACTIVE`? Deshacer una cancelación programada solo está disponible en el panel, para el Owner del workspace (**Phone lines** → la línea → **Undo cancellation**), mientras la línea siga `ACTIVE`.
+
+## Ejemplo
+
+<CodeGroup>
+
+```bash cURL
+curl -X DELETE "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Respuesta (200): línea pagada
+{
+  "line": {
+    "id": "cmg5k2l1n0001pl8example9x",
+    "name": "Support SP",
+    "number": "551148637200",
+    "display": "(11) 4863-7200",
+    "ddd": "11",
+    "status": "ACTIVE",
+    "price": 33.9,
+    "currency": "BRL",
+    "purchasedAt": "2026-10-01T14:03:11.000Z",
+    "currentPeriodEnd": "2026-11-01T14:03:11.000Z",
+    "cancelAtPeriodEnd": true,
+    "paymentPendingSince": null,
+    "suspendedAt": null,
+    "returnedAt": null,
+    "canceledAt": null,
+    "activationCount": 1,
+    "amountDue": null
+  }
+}
+```
+
+</CodeGroup>
+
+El cuerpo es el [objeto line](/es/api/phone-lines/list#campos-del-objeto-de-línea).
+
+## Eventos
+
+- Una línea cancelada al final del período envía `phone_line.canceled` cuando pasa a `CANCELED`, normalmente dentro de aproximadamente una hora después de `currentPeriodEnd`; si el operador no confirma, se reintenta en cada ejecución horaria. En ese momento se elimina su historial de códigos (códigos y grabaciones de llamadas).
+- Una línea impaga devuelta por esta llamada envía `phone_line.returned` de inmediato, con `reason: "canceled_by_customer"`.
+
+Consulta [Webhooks de líneas telefónicas](/es/api/phone-lines/webhooks).
+
+## Errores
+
+| Estado | `code` | Significado |
+| --- | --- | --- |
+| `401` | — | Credencial ausente o inválida. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Clave con alcance de número (o permiso OAuth por número). Usa la clave con alcance de tenant. |
+| `403` | `TENANT_REQUIRED` | La credencial no está vinculada a ningún workspace (`error` solo en inglés). |
+| `403` | `WORKSPACE_ARCHIVED` | El workspace fue archivado y su API está cerrada. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | Token OAuth / MCP de un usuario que ya no es miembro activo. |
+| `403` | `PERMISSION_DENIED` | Token OAuth / MCP de un usuario que no es el Owner del workspace. |
+| `404` | `LINE_NOT_FOUND` | No existe esa línea en tu workspace. Una línea de otro workspace responde lo mismo y no se modifica. |
+| `409` | `NOT_CANCELABLE` | La línea ya está `RETURNED` o `CANCELED`. |
+| `503` | `SUPPLIER_UNAVAILABLE` | Solo para líneas impagas: el operador no confirmó la devolución. **Esta llamada no cambió la línea**: reintenta en unos minutos. |
+| `500` | `INTERNAL_ERROR` | Falla inesperada. |

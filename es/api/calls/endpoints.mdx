@@ -1,0 +1,337 @@
+---
+title: "Referencia de la API de llamadas"
+sidebarTitle: "Referencia de la API"
+description: "Todos los endpoints de /v1/calls: iniciar, responder, rechazar y terminar llamadas, configuración de llamadas y permisos de llamada."
+mode: "wide"
+---
+
+# Referencia de la API de llamadas
+
+URL base: `https://pilotstatus.com.br/v1` Encabezados: `Content-Type: application/json`, `x-api-key: <your_api_key>` (o `x-api-key-id`).
+
+<Note>
+  Las llamadas funcionan en **dos** tipos de proveedor: **META** (números de la Meta Cloud API) y números **no oficiales (Pilot Status web)** conectados por QR. Cualquier otro proveedor devuelve `400 FEATURE_NOT_SUPPORTED`. Consulta la [descripción general](/es/api/calls/overview).
+</Note>
+
+## Autenticación
+
+Cada endpoint `/v1/calls*` actúa sobre **un número de WhatsApp**:
+
+- una **clave de número** (`ps_number_`) actúa sobre su propio número;
+- una **clave de workspace** (`ps_workspace_`), una **clave de cuenta** (`ps_account_`, con `x-workspace-id`) o un **token OAuth** debe indicar el número en el encabezado `x-whatsapp-number-id`; sin él, la respuesta es `403 TENANT_SCOPE_NOT_ALLOWED`. Consulta [Autenticación](/es/api/authentication).
+
+Con una clave de cuenta o un token OAuth, el rol del usuario en el workspace se verifica en cada solicitud:
+
+| Endpoints | Permiso | Roles permitidos |
+| --- | --- | --- |
+| `GET`·`PUT /v1/calls/settings` | `calls:settings:manage` | ADMIN, OWNER |
+| Todos los demás endpoints `/v1/calls*` | `calls:handle` | AGENT, ADMIN, OWNER |
+
+Cualquier otro rol recibe `403 PERMISSION_DENIED`. Un token OAuth con permiso solo para algunos números recibe `403 NUMBER_NOT_IN_GRANT` para una llamada de otro número.
+
+<Warning>
+  **El manejo de SDP difiere según el proveedor.** META es WebRTC: proporcionas una **oferta** SDP en `POST /v1/calls` y una **respuesta** SDP en `accept`; el medio fluye entre el navegador y WhatsApp. El proveedor no oficial (Pilot Status web) **no recibe SDP** (`sdpOffer`/`sdpAnswer` quedan en `null`); el medio se maneja **en el servidor** y controlas el audio con los endpoints `/play` y `/realtime-session`, exclusivos del proveedor no oficial.
+</Warning>
+
+## Endpoints
+
+| Método | Endpoint | Proveedores | Descripción |
+| --- | --- | --- | --- |
+| `POST` | `/v1/calls` | META, Unofficial | Inicia una llamada iniciada por la empresa (BIC). META necesita una oferta SDP; Unofficial no recibe SDP. |
+| `GET` | `/v1/calls` | META, Unofficial | Lista las llamadas del número (las más nuevas primero; `limit` 1–100, cursor `before` ISO 8601). |
+| `GET` | `/v1/calls/{callId}` | META, Unofficial | Una llamada; agrega `?includeSdp=1` para `sdpOffer`/`sdpAnswer` (solo META; `null` en Unofficial). |
+| `POST` | `/v1/calls/{callId}/accept` | META, Unofficial | Responde una llamada entrante (UIC). META proporciona la respuesta SDP; Unofficial no recibe cuerpo. |
+| `POST` | `/v1/calls/{callId}/reject` | META, Unofficial | Rechaza una llamada entrante (sin cuerpo). |
+| `POST` | `/v1/calls/{callId}/terminate` | META, Unofficial | Cuelga una llamada activa (sin cuerpo). |
+| `POST` | `/v1/calls/{callId}/pre-accept` | **Solo META** | Respuesta SDP anticipada OPCIONAL (reduce los cortes de audio; la llamada se conecta solo con accept). |
+| `GET` | `/v1/calls/settings` | **Solo META** | Lee el objeto de configuración `calling` del número. |
+| `PUT` | `/v1/calls/settings` | **Solo META** | Actualización parcial de la configuración `calling`. |
+| `GET` | `/v1/calls/permissions?to=<phone>` | **Solo META** | Consulta si la empresa puede llamar a `to`. |
+| `POST` | `/v1/calls/permissions/request` | **Solo META** | Envía la solicitud interactiva de permiso de llamada (dentro de la ventana de 24 h). |
+| `POST` | `/v1/calls/{callId}/play` | **Solo Unofficial** | Reproduce un archivo de audio en una llamada activa (el servidor lo descarga); `hangupAfterPlay` opcional. |
+| `POST` | `/v1/calls/{callId}/realtime-session` | **Solo Unofficial** | Abre un WebSocket de audio PCM16 full-duplex para la llamada. |
+
+`{callId}` acepta **o bien** el id de llamada de Pilot Status (el `id` del objeto de llamada) **o bien** el id de llamada del proveedor (`externalCallId`: `wacid.…` de Meta en META, el CallID en Unofficial).
+
+<Note>
+  Los endpoints marcados **Solo META** devuelven `400 FEATURE_NOT_SUPPORTED` en números Unofficial, y los endpoints marcados **Solo Unofficial** devuelven `400 FEATURE_NOT_SUPPORTED` en números META. Unofficial no tiene modelo de permisos BIC ni superficie de configuración de llamadas. Un número Unofficial que no está conectado devuelve `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
+</Note>
+
+## 1. Habilitar las llamadas en el número <sub>(solo META)</sub>
+
+Pilot Status intenta habilitar las llamadas automáticamente cuando se conecta un número de Meta. Lee o ajusta en cualquier momento:
+
+```bash
+curl "https://pilotstatus.com.br/v1/calls/settings" \
+  -H "x-api-key: ps_your_key_here"
+
+curl -X PUT "https://pilotstatus.com.br/v1/calls/settings" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "status": "ENABLED", "call_icon_visibility": "DEFAULT" }'
+```
+
+- `PUT` es **parcial**: envía solo `status`, `call_icon_visibility`, `callback_permission_status`, `call_hours`, `voicemail` (el objeto `sip` se rechaza).
+- Un `call_hours` enviado **reemplaza** por completo el objeto almacenado (semántica de Meta).
+- Los números con un límite de mensajería **inferior a 2.000/día todavía no pueden habilitar llamadas** (error 138015 de Meta, devuelto como `META_CALLING_TIER_TOO_LOW` → Pilot Status marca el número como `PENDING_TIER` y reintenta a medida que sube el nivel).
+- Habilitar también requiere que la WABA tenga **suscrito el campo de webhook `calls`** (o SIP configurado); sin él, Meta devuelve **138018** (`META_CALLING_PREREQUISITES_MISSING`) y Pilot Status marca el número como `PENDING_WEBHOOK`. Suscribe el campo `calls` en la WABA (o configura SIP) y luego reintenta.
+- También puedes disparar la habilitación desde el panel: el botón **Enable calling** en **Meta details** de un número (página Numbers) informa `ENABLED`, `PENDING_TIER` o `PENDING_WEBHOOK`.
+- Valores: `status`, `callback_permission_status`, `call_hours.status` y `voicemail.status` aceptan `ENABLED` | `DISABLED`; `call_icon_visibility` acepta `DEFAULT` | `DISABLE_ALL`. `call_hours` también puede llevar `timezone_id`, `weekly_operating_hours` (`day_of_week`, `open_time`, `close_time`) y `holiday_schedule` (`date`, `start_time`, `end_time`).
+- Se requiere al menos un campo. Cualquier campo no listado arriba (incluido `sip`) se rechaza con `400 Validation error`.
+- `GET` devuelve `{ "calling": { ... } }` (el objeto tal como lo expone Meta); `PUT` devuelve `{ "success": true }`.
+- Las credenciales SIP nunca se solicitan ni se devuelven.
+
+<Note>
+  Los números Unofficial no tienen superficie de configuración de llamadas: este endpoint devuelve `400 FEATURE_NOT_SUPPORTED`. Las llamadas están disponibles siempre que la instancia Unofficial esté conectada.
+</Note>
+
+## 2. Permiso de llamada (obligatorio antes de una BIC) <sub>(solo META)</sub>
+
+```bash
+# consultar
+curl "https://pilotstatus.com.br/v1/calls/permissions?to=%2B5511999999999" \
+  -H "x-api-key: ps_your_key_here"
+
+# solicitar (dentro de la ventana de servicio de 24 h)
+curl -X POST "https://pilotstatus.com.br/v1/calls/permissions/request" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "to": "+5511999999999", "text": "May we call you about your order?" }'
+```
+
+Respuesta de la consulta:
+
+```json
+{
+  "permission": { "status": "temporary", "expiration_time": 1768550400 },
+  "actions": [
+    {
+      "action_name": "start_call",
+      "can_perform_action": true,
+      "limits": [{ "time_period": "PT24H", "max_allowed": 1, "current_usage": 0 }]
+    }
+  ]
+}
+```
+
+- `to` es obligatorio en ambos endpoints (`400 MISSING_TO` en la consulta). Acepta un teléfono E.164 o un BSUID de Meta en el endpoint de solicitud.
+- `text` (opcional, 1 a 1024 caracteres) es el motivo que se muestra al usuario.
+- El endpoint de solicitud responde `201` con `{ "messageId": "wamid.…" }`.
+
+La respuesta del usuario llega como el evento de webhook **`call.permission_updated`** (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`). Meta limita la tasa de solicitudes de permiso (error 138009) y el volumen de BIC (100 llamadas/24 h por número, error 138012).
+
+<Note>
+  Unofficial no tiene modelo de permisos BIC: los endpoints de permisos devuelven `400 FEATURE_NOT_SUPPORTED`. Realiza las llamadas BIC directamente.
+</Note>
+
+## 3. Iniciar una llamada (BIC)
+
+<CodeGroup>
+
+```bash META (SDP offer)
+curl -X POST "https://pilotstatus.com.br/v1/calls" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "to": "+5511999999999",
+    "sdp": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n...",
+    "sdpType": "offer",
+    "bizOpaqueCallbackData": "order-42"
+  }'
+```
+
+```bash Unofficial (no SDP)
+curl -X POST "https://pilotstatus.com.br/v1/calls" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "to": "+5511999999999",
+    "bizOpaqueCallbackData": "order-42"
+  }'
+```
+
+</CodeGroup>
+
+```json
+HTTP 201
+{ "id": "cmc1x2y3z0000abcd1234efgh", "externalCallId": "wacid.ABGG...", "status": "INITIATED" }
+```
+
+- **META:** `sdp` es la **oferta** RFC 8866 producida por TU cliente WebRTC. El SDP del lado de la empresa debe usar `a=setup:active`. Sin permiso, Meta devuelve 138006 → el endpoint expone `code: "META_CALL_PERMISSION_REQUIRED"`.
+- **Unofficial:** omite `sdp`/`sdpType`: el medio está en el servidor. Controla el audio después con `/play` o `/realtime-session`.
+- `to` es un teléfono E.164 (`+` opcional) o un BSUID de Meta.
+- `bizOpaqueCallbackData` (opcional, hasta 512 caracteres) se guarda en la llamada y se devuelve en el webhook de terminación.
+- `sdp` tiene como máximo 128 KB. `sdpType` acepta solo `"offer"` (el valor por defecto).
+- `externalCallId` es `null` si el proveedor todavía no devolvió un id de llamada.
+- La llamada se registra antes de contactar al proveedor: si el proveedor la rechaza, la llamada queda en la lista con `status: "FAILED"`, `errorCode` y `errorMessage`.
+
+## 4. Responder una llamada entrante (UIC)
+
+Cuando un usuario llama a tu número, recibes el webhook **`call.ringing`**. Luego:
+
+<CodeGroup>
+
+```bash META (SDP answer)
+# obtén la llamada con la oferta SDP
+curl "https://pilotstatus.com.br/v1/calls/wacid.ABGG...?includeSdp=1" \
+  -H "x-api-key: ps_your_key_here"
+
+# responde (cuerpo: tu respuesta SDP; sdpType por defecto es "answer")
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../accept" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "sdp": "v=0\r\n..." }'
+```
+
+```bash Unofficial (no SDP)
+curl -X POST "https://pilotstatus.com.br/v1/calls/cmc1x2y3z0000abcd1234efgh/accept" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+</CodeGroup>
+
+```bash
+# rechazar / colgar (sin cuerpo, ambos proveedores)
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../reject" -H "x-api-key: ps_your_key_here"
+curl -X POST "https://pilotstatus.com.br/v1/calls/wacid.ABGG.../terminate" -H "x-api-key: ps_your_key_here"
+```
+
+`accept`/`pre-accept`/`reject`/`terminate` responden `{ "success": true, "id": "…", "status": "…" }`: `ACCEPTED` después de `accept`, `REJECTED` después de `reject`, `COMPLETED` después de `terminate`; `pre-accept` mantiene el estado actual. `sdpType` acepta solo `"answer"` (el valor por defecto). En META, `pre-accept` es opcional (respuesta SDP anticipada para reducir cortes); la llamada se conecta solo con `accept`. En Unofficial, `accept` no recibe cuerpo y `pre-accept` no está disponible.
+
+## 5. Reproducir audio en una llamada <sub>(solo Unofficial)</sub>
+
+Reproduce un archivo de audio pregrabado en una llamada Unofficial activa. El backend descarga el archivo (detrás de una protección SSRF) y lo transmite en el servidor hacia la llamada. Cuando la llamada todavía no está activa, el audio se encola y empieza en cuanto el usuario responde.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/calls/cmc1x2y3z0000abcd1234efgh/play" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "mediaUrl": "https://example.com/greeting.mp3", "hangupAfterPlay": true }'
+```
+
+```json
+{ "success": true, "id": "cmc1x2y3z0000abcd1234efgh", "status": "ACCEPTED" }
+```
+
+- `mediaUrl`: URL pública http(s) (hasta 2048 caracteres) de un archivo `.mp3`, `.wav` u `.opus`. El backend la descarga primero: hasta **20 MiB**, timeout de 30 segundos, como máximo 3 redirecciones. Una URL que se resuelve a una dirección privada/interna devuelve `400 CALL_MEDIA_URL_BLOCKED`; un archivo más grande, `400 CALL_MEDIA_TOO_LARGE`; cualquier otra falla de descarga, `400 CALL_MEDIA_DOWNLOAD_FAILED`.
+- `hangupAfterPlay` (opcional): termina la llamada automáticamente cuando acaba la reproducción. Perfecto para flujos de notificación: `POST /v1/calls` \+ `play` con `hangupAfterPlay: true` es un bot completo de "llamar, hablar, colgar" sin temporizador del lado del cliente.
+
+<Tip>
+  Aloja el audio en un **almacenamiento rápido** (S3/CDN): el backend descarga el archivo antes de entregarlo al servidor de medios, así que la reproducción solo puede empezar cuando termina esa descarga. Un alojamiento lento agrega segundos de silencio al inicio de la llamada.
+</Tip>
+
+<Note>
+  Devuelve `400 FEATURE_NOT_SUPPORTED` en números META (usa en su lugar el flujo de medios WebRTC).
+</Note>
+
+## 6. Sesión de audio en tiempo real <sub>(solo Unofficial)</sub>
+
+Abre un WebSocket de audio PCM16 full-duplex para una llamada Unofficial activa: ideal para transmitir un agente en vivo o un modelo de voz en tiempo real.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/calls/cmc1x2y3z0000abcd1234efgh/realtime-session" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "mode": "talk" }'
+```
+
+```json
+{
+  "wsUrl": "wss://<dedicated-media-host>/call/media/realtime/ws/...?token=...",
+  "token": "d3f4...",
+  "expiresInSeconds": 120
+}
+```
+
+- `mode` (**obligatorio**): `"talk"` envía tu audio y recibe el del interlocutor; `"listen"` solo recibe.
+- El socket transporta tramas de audio binarias crudas PCM16 little-endian (WebSocket simple, no WebRTC).
+- Si el proveedor no devuelve una sesión, el endpoint responde `502 CALL_REALTIME_SESSION_UNAVAILABLE`.
+
+<Warning>
+  El `wsUrl` devuelto está en un **host de medios dedicado**: conéctate a él **directamente**, no a través de la URL base de la API. El token es de **un solo uso** con un TTL corto (~2 minutos). La capa HTTP no actualiza conexiones WebSocket, así que el socket en tiempo real no pasa por proxy a través de `/v1`.
+</Warning>
+
+<Note>
+  Devuelve `400 FEATURE_NOT_SUPPORTED` en números META.
+</Note>
+
+## 7. Objeto de llamada (DTO)
+
+```json
+{
+  "id": "cmc1x2y3z0000abcd1234efgh",
+  "externalCallId": "wacid.ABGG...",
+  "direction": "INBOUND",
+  "status": "COMPLETED",
+  "peerNumber": "5511999999999",
+  "fromNumber": "5511999999999",
+  "conversationId": "conv_abc",
+  "bizOpaqueCallbackData": null,
+  "startedAt": "2026-07-03T15:00:00.000Z",
+  "connectedAt": "2026-07-03T15:00:05.000Z",
+  "endedAt": "2026-07-03T15:02:05.000Z",
+  "durationSeconds": 120,
+  "errorCode": null,
+  "errorMessage": null,
+  "createdAt": "2026-07-03T15:00:00.000Z",
+  "updatedAt": "2026-07-03T15:02:05.000Z"
+}
+```
+
+- `status`: `INITIATED` | `RINGING` | `ACCEPTED` | `REJECTED` | `COMPLETED` | `FAILED` | `MISSED`.
+- `direction`: `INBOUND` (UIC) | `OUTBOUND` (BIC).
+- Los SDP (`sdpOffer`/`sdpAnswer`) aparecen solo con `?includeSdp=1` en `GET /v1/calls/{callId}` y solo en META; en Unofficial siempre son `null`.
+- `durationSeconds` se completa solo cuando la llamada fue respondida.
+- `externalCallId` es `null` mientras el proveedor no haya asignado un id de llamada.
+- Cuando la configuración de privacidad del número oculta la llamada (números solo de retransmisión, o llamadas más antiguas que la ventana de retención), `peerNumber`, `fromNumber` y los SDP son `null` y el objeto lleva `"redacted": true`.
+- `GET /v1/calls` devuelve `{ "calls": [ ... ] }`. Para paginar, pasa el `createdAt` de la última llamada como `before`. Un `limit` fuera de 1–100 devuelve `400 INVALID_LIMIT`; un `before` que no es una fecha devuelve `400 INVALID_BEFORE`.
+
+## Webhooks
+
+`call.ringing`, `call.connected`, `call.ended` (lleva `duration` en segundos cuando la llamada fue respondida) y `call.missed` se disparan para números **tanto META como Unofficial**. `call.permission_updated` es **solo META**: los números Unofficial no tienen modelo de permisos de llamada. (En el objeto de llamada REST devuelto por `GET /v1/calls`, el campo equivalente es `durationSeconds`.)
+
+## Facturación
+
+- **META:** las llamadas iniciadas por la empresa (BIC) las factura Meta en la WABA: por minuto, en pulsos de 6 segundos, solo mientras la llamada está respondida. Las llamadas iniciadas por el usuario (UIC) son gratuitas.
+- **Unofficial:** sin cargo por minuto de Meta.
+- Pilot Status no cobra nada por las llamadas en ninguno de los dos proveedores.
+
+## Errores comunes
+
+Los errores de validación responden `400` con `{ "error": "Validation error", "details": { "formErrors": [...], "fieldErrors": { ... } } }` (sin `code`).
+
+| Estado | `code` | Cuándo |
+| --- | --- | --- |
+| `400` | `FEATURE_NOT_SUPPORTED` | El número no admite este endpoint (un endpoint solo de Meta en Unofficial o viceversa, o un proveedor que no es ni META ni Unofficial). |
+| `400` | `NUMBER_NOT_FOUND` | La credencial no está vinculada a un número. |
+| `400` | `INVALID_BODY` | El cuerpo no es JSON válido (un cuerpo vacío se lee como `{}`). Consulta [Cuerpo JSON malformado](/es/api/overview#cuerpo-json-mal-formado). |
+| `400` | `INVALID_LIMIT`, `INVALID_BEFORE` | `limit` / `before` incorrectos en `GET /v1/calls`. |
+| `400` | `MISSING_TO` | `GET /v1/calls/permissions` sin `to`. |
+| `400` | `CALL_MEDIA_URL_BLOCKED`, `CALL_MEDIA_TOO_LARGE`, `CALL_MEDIA_DOWNLOAD_FAILED` | `play` no pudo descargar `mediaUrl`. |
+| `401` | — | Credencial ausente o inválida. |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Credencial de workspace/cuenta sin `x-whatsapp-number-id`. |
+| `403` | `PERMISSION_DENIED` | Clave de cuenta / usuario OAuth cuyo rol no tiene `calls:handle` (o `calls:settings:manage` para la configuración). |
+| `403` | `NUMBER_NOT_IN_GRANT` | Token OAuth sin permiso sobre el número de la llamada. |
+| `404` | `CALL_NOT_FOUND` | El `callId` no pertenece al número de la credencial. |
+| `409` | `WHATSAPP_INSTANCE_NOT_CONNECTED` | El número Unofficial no está conectado. |
+| `409` | `LINKED_WHATSAPP_INSTANCE_NOT_FOUND` | La instancia vinculada a la clave ya no existe. |
+| `502` | `WHATSAPP_INVALID_JSON` | El proveedor respondió con JSON inválido. |
+| `502` | `CALL_REALTIME_SESSION_UNAVAILABLE` | `realtime-session`: el proveedor no devolvió una sesión. |
+| `503` | `WHATSAPP_SESSION_KEY_MISSING` | La clave de sesión del número no está configurada. |
+| estado del proveedor | código mapeado | El proveedor rechazó la llamada; `details: { status, body }` trae su respuesta. Los números Unofficial usan `WHATSAPP_UPSTREAM_ERROR`. |
+
+Los errores de llamadas de Meta se reenvían con un `code` mapeado:
+
+| Código de Meta | `code` |
+| --- | --- |
+| 131044 | `META_CALLING_PAYMENT_REQUIRED`: la WABA no tiene método de pago; las llamadas iniciadas por la empresa las factura Meta, agrega una tarjeta en Payment settings en WhatsApp Manager. |
+| 138000 | `META_CALLING_NOT_ENABLED` |
+| 138002 | `META_CALL_CONCURRENT_LIMIT` |
+| 138006 | `META_CALL_PERMISSION_REQUIRED` |
+| 138009 | `META_CALL_PERMISSION_REQUEST_LIMIT` |
+| 138012 | `META_CALL_LIMIT_REACHED` (100 llamadas/24 h por número) |
+| 138013 | `META_CALLING_NOT_AVAILABLE_REGION` |
+| 138014 | `META_CALLING_DISABLED_QUALITY` |
+| 138015 | `META_CALLING_TIER_TOO_LOW` (nivel de mensajería inferior a 2.000/día; el panel muestra `PENDING_TIER`) |
+| 138018 | `META_CALLING_PREREQUISITES_MISSING` (suscribe el campo de webhook `calls` o configura SIP; el panel muestra `PENDING_WEBHOOK`) |
+| 138019–138023 | `META_CALL_MEDIA_FAILED` |

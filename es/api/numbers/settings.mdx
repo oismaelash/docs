@@ -1,0 +1,171 @@
+---
+title: "PATCH /v1/numbers/{id}: configuración del número"
+sidebarTitle: "Configuración del número"
+description: "PATCH /v1/numbers/{id}: política de retención, comportamiento del historial, confirmación de lectura al enviar y la configuración avanzada de Evolution GO de un número."
+mode: "wide"
+---
+
+# Configuración del número
+
+`PATCH /v1/numbers/{id}` es donde configuras un número. Es **parcial**: solo cambian los campos que envías.
+
+<Warning>
+No existe `POST /v1/numbers/{id}/settings`. Si vienes de la Evolution API, esa ruta no existe aquí y devuelve un 404, al igual que su campo `syncFullHistory`. El equivalente es `settings.historyImportEnabled`, más abajo.
+</Warning>
+
+```bash
+curl -X PATCH https://pilotstatus.com.br/v1/numbers/num_01HZX... \
+  -H "x-api-key: $PILOT_STATUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "settings": {
+      "rejectCall": true,
+      "msgRejectCall": "I do not take calls here",
+      "webhookHistoricalMessages": false
+    }
+  }'
+```
+
+El mismo bloque `settings` vuelve en `GET /v1/numbers/{id}`.
+
+## Campos
+
+| Campo | Tipo | Predeterminado | Se aplica a |
+| --- | --- | --- | --- |
+| `piiMode` | `STORE_INDEFINITE` \| `STORE_X_DAYS` \| `RELAY_ONLY` | `STORE_INDEFINITE` | todos los proveedores |
+| `piiRetentionDays` | entero 1–3650 | `null` | obligatorio con `STORE_X_DAYS` |
+| `settings.historyImportEnabled` | boolean | `true` | todos los proveedores |
+| `settings.webhookHistoricalMessages` | boolean | `false` | todos los proveedores |
+| `settings.ignoreNewsletters` | boolean | `false` | todos los proveedores |
+| `settings.markReadOnSend` | boolean | `true` | números oficiales (Meta) |
+| `settings.alwaysOnline` | boolean \| null | `null` | números no oficiales |
+| `settings.rejectCall` | boolean \| null | `null` | números no oficiales |
+| `settings.msgRejectCall` | string (≤1000) \| null | `null` | números no oficiales |
+| `settings.readMessages` | boolean \| null | `null` | números no oficiales |
+| `settings.ignoreGroups` | boolean \| null | `null` | números no oficiales |
+| `settings.ignoreStatus` | boolean \| null | `null` | números no oficiales |
+
+`null` en uno de los campos de números no oficiales significa **restablecer al valor predeterminado del proveedor**; no significa `false`.
+
+<Note>
+  **`ignoreGroups` e `ignoreStatus` tienen como valor predeterminado "no enviar".** El tráfico de grupos y
+  de Status está desactivado en el proveedor hasta que un webhook lo solicita: suscribirse a
+  `message.group` / `message.newsletter` activa los grupos, y suscribirse a
+  [`message.stories`](/es/api/webhooks/events) activa Status, para los números que
+  cubre ese webhook.
+
+  Configurar cualquiera de los dos campos **explícitamente** anula eso: un `true` explícito mantiene el
+  tráfico desactivado incluso con una suscripción activa, y no se revierte silenciosamente la
+  próxima vez que se guarda un webhook. Vuelve a ponerlo en `null` para regresar al
+  comportamiento basado en suscripciones.
+</Note>
+
+Fíjate en el nombre del campo `ignoreGroups`. Ese es el dialecto que realmente habla el proveedor no oficial; `groupsIgnore` pertenece a otra versión del proveedor y nunca llega a tu número.
+
+<Note>
+En un número oficial de Meta los seis campos avanzados se aceptan y se guardan, pero nada los aplica nunca. La respuesta lo indica en `settings.appliesTo.advanced`, que es `"none"` para números de Meta y `"evolution-go"` para los no oficiales.
+</Note>
+
+## Historial
+
+Cuando un número se conecta, WhatsApp entrega al proveedor el historial de mensajes del dispositivo, y la plataforma importa hasta **30 días** hacia atrás desde el momento de la conexión. Dos interruptores independientes controlan qué pasa con él:
+
+- **`historyImportEnabled`**: si ese historial se guarda o no. **Su valor predeterminado es `true`**: un número nuevo conserva las conversaciones previas del dispositivo. Desactívalo si no las quieres.
+- **`webhookHistoricalMessages`**: si esos mensajes antiguos se **entregan a tus webhooks**. Desactivado por defecto: cada reconexión vuelve a reproducir el historial, y nada en el payload permite que tu integración lo distinga de un mensaje que acaba de llegar. Actívalo y llegarán como `message.received` / `message.group` / `message.newsletter`; en el plan FREE también cuentan contra tu cupo de mensajes entrantes.
+
+Para **leer** el historial, usa [`GET /v1/messages/history`](/es/api/messages/history) con `startDate` / `endDate`: esa es la vía soportada, y filtra por el momento en que realmente ocurrió cada mensaje.
+
+## Canales
+
+`ignoreNewsletters` decide qué pasa con una publicación de un **Canal de WhatsApp** (`@newsletter`) que llega a tu número. Su valor predeterminado es `false`, así que un número que hoy recibe canales sigue recibiéndolos.
+
+Ponlo en `true` y la publicación se descarta **al llegar**: no genera conversación, ni mensaje guardado, ni webhook `message.newsletter`. No hay modo parcial: es toda la clase de tráfico, tanto en el chat como en la integración.
+
+```bash
+curl -X PATCH https://pilotstatus.com.br/v1/numbers/num_01HZX... \
+  -H "x-api-key: $PILOT_STATUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "settings": { "ignoreNewsletters": true } }'
+```
+
+<Note>
+**Se parece a `ignoreGroups`, pero no es uno de los campos avanzados, y la asimetría es del proveedor, no nuestra.** El proveedor no oficial aplica `ignoreGroups` por sí mismo, y el evento de grupo nunca sale de él. No tiene un filtro equivalente para `@newsletter`, así que una publicación de canal siempre llega a la plataforma y el único lugar donde se puede rechazar es aquí.
+
+Por eso también este campo acepta un simple `true` / `false` y nunca `null`: `null` significa "restablecer al valor predeterminado del proveedor", y para los canales no hay un valor predeterminado del proveedor al que volver.
+</Note>
+
+Un número oficial de Meta nunca recibe canales. El campo se acepta y se guarda allí, sin nada que descartar.
+
+### Pide el historial cuando CREES el número
+
+<Warning>
+**`historyImportEnabled` tiene que decidirse antes de que el número se conecte, o nunca.** WhatsApp entrega el historial en una sola ráfaga justo después de la conexión, el indicador se lee por mensaje a medida que llegan, y nada puede volver a solicitarlos. Crear el número y luego enviar un `PATCH` compite con esa ráfaga.
+
+`POST /v1/numbers` acepta el mismo bloque `settings` exactamente por esta razón:
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/numbers \
+  -H "x-api-key: $PILOT_STATUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Support",
+    "number": "5511999999999",
+    "settings": { "historyImportEnabled": true }
+  }'
+```
+
+El `201` devuelve los `settings` con los que se creó el número, incluidos los valores predeterminados. `POST /v1/numbers/remote-pairing` también acepta el bloque, y ahí es donde más importa, porque quien abre el enlace de vinculación se conecta en el acto.
+</Warning>
+
+<Note>
+**El valor predeterminado cambió dos veces, y una fila existente nunca se reescribe.**
+
+| Número creado | Nace con |
+| --- | --- |
+| hasta el 2026-08-25 | `true` |
+| del 2026-08-26 al 2026-09-16 | `false` |
+| desde el 2026-09-16 | `true` |
+
+Ninguno de los cambios tocó números que ya existían: desde el 25/08 el panel pregunta antes de conectar, así que un `false` guardado puede ser una elección real de quien conectó. **Si el número es anterior a hoy, lee el valor en lugar de suponerlo.** El panel hace la pregunta en el asistente de conexión, junto al número de teléfono.
+</Note>
+
+## Confirmación de lectura al enviar
+
+`markReadOnSend` es el valor predeterminado del campo [`markRead`](/es/api/messages/send#confirmación-de-lectura-e-indicador-de-escritura) de `POST /v1/messages/send`: lo que hace un envío cuando no lo indica. Su valor predeterminado es `true`: cada envío marca el último mensaje entrante del contacto como **leído** (palomitas azules) y muestra **"typing"** (escribiendo) antes de la entrega.
+
+Ponlo en `false` y, en un número **oficial (Meta Cloud API)**, los envíos salen **sin** el indicador de escritura y **sin** marcar la conversación como leída: útil cuando responde un agente automatizado y una persona aún debe ver la conversación sin leer más tarde. Las dos cosas no se pueden separar: la Cloud API solo muestra el indicador de escritura como parte de una confirmación de lectura. Un envío individual todavía puede anularlo con `markRead`.
+
+```bash
+curl -X PATCH https://pilotstatus.com.br/v1/numbers/num_01HZX... \
+  -H "x-api-key: $PILOT_STATUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "settings": { "markReadOnSend": false } }'
+```
+
+<Note>
+En un número **no oficial** el campo se acepta y se guarda, sin efecto: allí enviar nunca marca nada como leído. La respuesta indica dónde se aplica en `settings.appliesTo.sending`: `"meta"` en un número oficial, `"none"` en uno no oficial. Lo que marca los mensajes como leídos al llegar es `readMessages`: mantenlo desactivado si las conversaciones deben quedar sin leer. Y recuerda que [`POST /v1/messages/typing`](/es/api/messages/typing) en un número de Meta también marca como leído el último mensaje entrante.
+</Note>
+
+## Propagación al proveedor
+
+Los campos de números no oficiales se guardan en el número **y** se envían a sus instancias conectadas. La respuesta informa ese envío en `settingsSync`:
+
+```json
+{ "settingsSync": { "applied": 1, "failed": 0, "skipped": 0 } }
+```
+
+El envío es de mejor esfuerzo. Una instancia que está desconectada en ese momento no hace fallar la solicitud: el valor queda guardado y se vuelve a aplicar la próxima vez que esa instancia se aprovisione. `skipped` cuenta las instancias en un proveedor que no tiene esa configuración.
+
+## Errores
+
+| Estado | `code` | Cuándo |
+| --- | --- | --- |
+| 400 | `INVALID_SETTINGS` | `settings` no es un objeto, un campo tiene el tipo incorrecto, o `msgRejectCall` tiene más de 1000 caracteres |
+| 400 | — | `{ "error": "Invalid piiMode" }`, o `piiMode: "STORE_X_DAYS"` sin un `piiRetentionDays` entero de 1 a 3650 |
+| 400 | `INVALID_BODY` | el cuerpo no es JSON válido; no se cambia nada ([Cuerpo JSON mal formado](/es/api/overview#cuerpo-json-mal-formado)). Un cuerpo vacío responde `EMPTY_PATCH` |
+| 400 | `EMPTY_PATCH` | el cuerpo no trae ningún campo reconocido; esto es un error, no una operación vacía silenciosa |
+| 403 | `PERMISSION_DENIED` | token OAuth / MCP o clave de cuenta (`ps_account_`) de un usuario por debajo de Admin; la ruta necesita `numbers:update` |
+| 403 | `NUMBER_NOT_IN_GRANT` | token OAuth con acceso a otros números, no a este |
+| 404 | — | `{ "error": "Number not found" }`: el número no pertenece al tenant autenticado |
+
+Un `200` devuelve el número completo, con la misma forma que [`GET /v1/numbers/{id}`](/es/api/numbers/list), más `settingsSync` cuando se enviaron campos de números no oficiales. `piiRetentionDays` solo se lee junto con `piiMode`; enviado solo se ignora, y un cuerpo sin nada más responde `EMPTY_PATCH`.

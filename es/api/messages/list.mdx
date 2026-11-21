@@ -1,0 +1,222 @@
+---
+title: "GET /v1/messages: listar los logs de mensajes"
+sidebarTitle: "Listar mensajes"
+description: "Lista y filtra los logs de mensajes (enviados y recibidos) del número de WhatsApp de la API key."
+mode: "wide"
+---
+
+# Listar los logs de mensajes
+
+```text
+GET https://pilotstatus.com.br/v1/messages
+```
+
+Lista los logs de mensajes (**enviados y recibidos**) del número de WhatsApp vinculado a tu API key, del más reciente al más antiguo, con paginación y filtros. Para el detalle completo de un solo mensaje, usa [`GET /v1/messages/{messageId}`](/es/api/messages/status).
+
+<Note>
+  La página [Logs y Analytics](/es/dashboard/logs-analytics) del panel es la contraparte visual de este endpoint: las mismas filas, filtros y estados que ves allí son lo que este endpoint devuelve como JSON.
+</Note>
+
+## Headers
+
+- `x-api-key: ps_...` (o `x-api-key-id: <api_key_id>`): una clave **con alcance de número**, o una clave de toda la cuenta que indique el número en el header [`x-whatsapp-number-id`](/es/api/authentication). Una clave de toda la cuenta sin ese header recibe `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+**Los tokens OAuth / MCP y las account keys** (`ps_account_`) también necesitan el permiso `logs:read:content` (roles `AGENT`, `ADMIN`, `OWNER`): las filas llevan el cuerpo del mensaje, así que el rol `ANALYST` recibe `403 PERMISSION_DENIED`. Una clave clásica `ps_` no se ve afectada por los roles.
+
+## Parámetros de query
+
+| Parámetro | Tipo | Predeterminado | Descripción |
+| --- | --- | --- | --- |
+| `page` | integer | `1` | Número de página (empieza en 1). |
+| `pageSize` | integer | `30` | Filas por página (máx. `100`). `page × pageSize` no puede superar `10000`: más allá de eso, acota con `startDate`/`endDate` (`400 INVALID_PAGINATION`). |
+| `status` | string (CSV) | — | Filtra por estado de entrega: `QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED` (el destinatario escuchó la nota de voz), `FAILED`, `CANCELED` (no distingue mayúsculas de minúsculas). Acepta una lista separada por comas (por ejemplo, `status=FAILED,CANCELED`). Cualquier otro valor se rechaza con `400 INVALID_STATUS`. Los estados de entrega solo existen para mensajes salientes, así que este filtro **implica** resultados solo salientes. |
+| `direction` | string | — | `in` (recibidos) u `out` (enviados); cualquier otro valor es `400 INVALID_DIRECTION`. `out` deja fuera las filas salientes que no tuvieron solicitud de envío: consulta el Warning en [Filas salientes sin solicitud de envío](#filas-salientes-sin-solicitud-de-envío). |
+| `startDate` | string | — | Límite inferior ISO 8601 sobre `createdAt` (por ejemplo, `2026-02-01T00:00:00.000Z`). |
+| `endDate` | string | — | Límite superior ISO 8601 sobre `createdAt`. No puede ser anterior a `startDate`. |
+| `search` | string | — | Un número de teléfono en **cualquier** formato (`+5511999999999`, `5511999999999`, `11 99999-9999`, …) o un nombre de plantilla. |
+| `templateId` | string | — | **Id o nombre** de la plantilla: devuelve solo los mensajes enviados con esa plantilla (solo salientes, como `status`). |
+| `window` | string | — | `open` o `closed`: el estado de la ventana de servicio de 24 h **registrado en el momento del envío** (consulta la Note de abajo); cualquier otro valor es `400 INVALID_WINDOW`. Solo salientes. |
+
+<Note>
+  **Ventana de servicio de 24 h:** WhatsApp abre una ventana de atención al cliente de 24 horas cada vez que un contacto te escribe. `serviceWindowOpenAtSend` registra el estado de esa ventana en el momento en que se aceptó cada mensaje saliente: `true` significa que fue una respuesta dentro de una ventana abierta y se envió de inmediato; `false` significa que fue un envío "en frío" fuera de la ventana (dosificado por el motor antibloqueo en los números web de Pilot Status, y que requiere una plantilla aprobada en los números de Meta Cloud API); `null` significa que la ventana no se calculó (filas entrantes, destinos de grupo/canal). Filtra con `window=open` / `window=closed`.
+</Note>
+
+## Ejemplos
+
+<CodeGroup>
+
+```bash x-api-key
+curl "https://pilotstatus.com.br/v1/messages?page=1&pageSize=20" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```bash x-api-key-id
+curl "https://pilotstatus.com.br/v1/messages?page=1&pageSize=20" \
+  -H "x-api-key-id: ck_xxx"
+```
+
+```bash Filtrado (salientes fallidos en un rango de fechas)
+curl "https://pilotstatus.com.br/v1/messages?status=FAILED&direction=out&startDate=2026-02-01T00:00:00.000Z&endDate=2026-02-28T23:59:59.999Z" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+</CodeGroup>
+
+## Respuesta (200)
+
+```json
+{
+  "data": [
+    {
+      "id": "msg_abc",
+      "correlationId": "corr_123",
+      "direction": "OUT",
+      "from": "+5511888888888",
+      "to": "+5511999999999",
+      "content": "Hi John, your order 123 is on its way!",
+      "template": "order_shipped",
+      "status": "READ",
+      "errorCode": null,
+      "errorMessage": null,
+      "origin": "API",
+      "serviceWindowOpenAtSend": true,
+      "createdAt": "2026-02-24T15:00:00.000Z",
+      "sentAt": "2026-02-24T15:00:05.000Z",
+      "deliveredAt": "2026-02-24T15:00:07.000Z",
+      "readAt": "2026-02-24T15:02:11.000Z",
+      "externalMessageId": "wamid.HBgLNTUxMTk5OTk5OTk5"
+    },
+    {
+      "id": "msg_def",
+      "correlationId": null,
+      "direction": "IN",
+      "from": "+5511999999999",
+      "to": "+5511888888888",
+      "content": "Thanks! See you tomorrow.",
+      "template": null,
+      "status": "DELIVERED",
+      "errorCode": null,
+      "errorMessage": null,
+      "origin": null,
+      "serviceWindowOpenAtSend": null,
+      "createdAt": "2026-02-24T15:03:40.000Z",
+      "sentAt": "2026-02-24T15:03:39.000Z",
+      "deliveredAt": null,
+      "readAt": null,
+      "externalMessageId": "wamid.HBgLNTUxMTg4ODg4ODg4"
+    }
+  ],
+  "page": 1,
+  "pageSize": 20,
+  "total": 2,
+  "totalPages": 1
+}
+```
+
+## Campos de la respuesta
+
+| Campo | Descripción |
+| --- | --- |
+| `id` | Id interno del mensaje: úsalo con [`GET /v1/messages/{messageId}`](/es/api/messages/status) para el detalle de un solo mensaje. |
+| `correlationId` | Identificador de correlación de la solicitud de envío. `null` en filas recibidas y en filas salientes que no tuvieron solicitud de envío (consulta [Filas salientes sin solicitud de envío](#filas-salientes-sin-solicitud-de-envío)). |
+| `direction` | `IN` (recibido) u `OUT` (enviado). |
+| `from` / `to` | Números de teléfono del remitente y del destinatario. |
+| `content` | Texto del mensaje. `null` cuando lo oculta el modo de retención de PII del número. |
+| `template` | Nombre de la plantilla en envíos con plantilla; en otro caso `null`. |
+| `status` | Estado de entrega de los mensajes salientes (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED`, `FAILED`, `CANCELED`); consulta [Estado del mensaje](/es/api/messages/status). En filas entrantes es el estado almacenado del mensaje recibido (normalmente `DELIVERED` o `READ`), nunca `null`. |
+| `errorCode` / `errorMessage` | Se completan en envíos `FAILED`; consulta [Códigos de error de los logs](/es/api/messages/log-error-codes). [`GET /v1/messages/{messageId}`](/es/api/messages/status) devuelve el mismo `errorCode` para el mismo mensaje. |
+| `origin` | De dónde se originó el envío. Conjunto completo de valores abajo. |
+| `serviceWindowOpenAtSend` | `true`, `false` o `null`: el estado de la ventana de servicio de 24 h registrado en el momento del envío (consulta la Note de arriba). |
+| `createdAt` / `sentAt` / `deliveredAt` / `readAt` | Marcas de tiempo del ciclo de vida (ISO 8601). |
+| `externalMessageId` | ID de mensaje de WhatsApp del proveedor (wamid). |
+| `redacted` | Presente (`true`) solo en filas ocultadas por el modo de retención de PII del número; ver abajo. |
+
+<Note>
+  **Retención:** las filas respetan el **modo de retención de PII** del número. Las filas nunca se ocultan: una fila redactada (`RELAY_ONLY`, o más antigua que la ventana `STORE_X_DAYS`) conserva su sobre (ids, estado, marcas de tiempo) con `content` y el número del contacto (`to` en envíos, `from` en filas recibidas) en `null`, y lleva `redacted: true`. En un número `RELAY_ONLY` la respuesta también lleva `"notice": "PII_RELAY_ONLY"`.
+</Note>
+
+
+
+### `origin`: por qué vía salió el mensaje
+
+| Valor | Vía |
+| --- | --- |
+| `API` | `POST /v1/messages/send`: la API pública |
+| `MCP` | La herramienta del servidor MCP de Pilot Status |
+| `CHATWOOT` | Una respuesta de un agente desde un inbox de Chatwoot. Desde un inbox **espejo de API**, Pilot Status la envía y la fila es un envío normal. Desde un inbox **nativo de WhatsApp Cloud**, Chatwoot la envía por sí mismo a través de la [capa Meta](/es/api/layer/meta); ver abajo |
+| `CHAT` | El chat del panel de Pilot Status |
+| `DASHBOARD` | Una vista previa de plantilla enviada desde el panel |
+| `SYSTEM` | Emitido por la plataforma (bienvenida de onboarding y otros envíos internos) |
+| `APP` | **Saliente, pero no a través de nosotros**: la empresa lo envió desde la app WhatsApp Business en el teléfono, o desde otra herramienta en la misma WABA. En un número de Meta estas filas vienen de los webhooks `message_echoes` / `smb_message_echoes` |
+| `LAYER` | Enviado a través de la [capa Meta de Pilot Status](/es/api/layer/meta) por un cliente que no es un inbox nativo de Chatwoot: por ejemplo, tu propio código llamando a la Graph API con tu clave `ps_` |
+| `null` | Un mensaje entrante, **o** uno saliente cuya fuente de envío no es ninguna de las anteriores |
+
+<Warning>
+  **`origin: null` no significa "entrante".** Para eso, lee `direction`. Un `null` en una fila `OUT` significa que el envío llevaba una fuente que no mapeamos a una etiqueta pública; trátalo como "saliente sin clasificar", no como tráfico recibido, o un reporte de facturación contará de menos tus propios envíos sin avisarte.
+</Warning>
+
+El conjunto crece. Trata un valor que no reconozcas como "saliente sin clasificar", no como un error.
+
+### Filas salientes sin solicitud de envío
+
+Tres tipos de fila `OUT` no fueron enviados por Pilot Status, así que no hay una solicitud de envío detrás de ellos: `APP`, `LAYER` y `CHATWOOT` desde un inbox nativo de WhatsApp Cloud. En estas filas:
+
+- `correlationId`, `template`, `serviceWindowOpenAtSend`, `errorCode` y `errorMessage` son `null`;
+- [`GET /v1/messages/{messageId}`](/es/api/messages/status) responde `404`: la fila del listado es todo lo que hay;
+- `status` sigue los estados que reporta Meta: `SENT`, `DELIVERED`, `READ` o `FAILED`;
+- el mensaje **no** cuenta en el consumo de mensajes de tu plan;
+- en un número cuyo modo de retención de PII redacta la fila, `to` y `content` son `null` y se agrega `redacted: true`, como en cualquier otra fila.
+
+Una fila `CHATWOOT` desde un inbox espejo de API es un envío normal: tiene `correlationId` y detalle completo.
+
+En las filas `LAYER` y en las filas `CHATWOOT` de inbox nativo, `content` es lo que llevaba la solicitud a la Graph API: el cuerpo de texto, la leyenda de un medio o el texto del cuerpo de un mensaje interactivo. Tres tipos reciben en su lugar un texto corto generado:
+
+- una plantilla se lee `Template: <name>`: el cuerpo renderizado no se almacena, y `template` queda en `null`;
+- una ubicación se lee `Location: <latitude>, <longitude>`, seguida de su nombre y dirección cuando la solicitud los tenía;
+- los contactos se leen `Contacts: <names>`.
+
+El audio y los stickers tienen `content: null`.
+
+Una fila `CHATWOOT` de inbox nativo:
+
+```json
+{
+  "id": "cm_01J9...",
+  "correlationId": null,
+  "direction": "OUT",
+  "from": "+5511911111111",
+  "to": "5511988887777",
+  "content": "agent reply",
+  "template": null,
+  "status": "SENT",
+  "errorCode": null,
+  "errorMessage": null,
+  "origin": "CHATWOOT",
+  "serviceWindowOpenAtSend": null,
+  "createdAt": "2026-10-06T18:00:00.000Z",
+  "sentAt": "2026-10-06T18:00:00.000Z",
+  "deliveredAt": null,
+  "readAt": null,
+  "externalMessageId": "wamid.HBgNNTUxMTk4ODg4Nzc3NxUCABEYEjA="
+}
+```
+
+<Warning>
+  **Los filtros `status`, `direction=out`, `templateId` y `window` dejan fuera estas filas.** Devuelven solo mensajes que tuvieron una solicitud de envío, así que las filas `APP`, `LAYER` y `CHATWOOT` de inbox nativo nunca coinciden con ellos, aunque sean `OUT`. Para obtener estas filas, lista sin esos filtros (`startDate`, `endDate` y un `search` por número de teléfono las conservan) y lee `direction` y `origin`.
+</Warning>
+
+Las filas `LAYER`, y las filas `CHATWOOT` de un inbox nativo, se registran solo desde el momento en que Pilot Status empezó a registrar los envíos por la capa para el número. Los envíos anteriores no se recuperan. Qué se registra y qué no: [Capa Meta → Los envíos quedan registrados en Logs](/es/api/layer/meta#los-envíos-quedan-registrados-en-logs).
+
+## Errores comunes
+
+| Estado | Significado |
+| --- | --- |
+| `400` | `INVALID_DATE_RANGE`: `startDate`/`endDate` malformados, o `endDate` anterior a `startDate` |
+| `400` | `INVALID_STATUS` / `INVALID_DIRECTION` / `INVALID_WINDOW`: un valor de filtro fuera del conjunto aceptado |
+| `400` | `INVALID_PAGINATION`: `page × pageSize` por encima de `10000` |
+| `400` | `NUMBER_NOT_FOUND`: la credencial no indica ningún número de WhatsApp |
+| `401` | Credencial ausente o inválida (`{"error": "Invalid API key"}`) |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED`: una clave de toda la cuenta sin `x-whatsapp-number-id` |
+| `403` | `PERMISSION_DENIED`: token OAuth/MCP o account key cuyo rol no tiene `logs:read:content` (`ANALYST`) |
+
+Pruébalo en el Playground: [Listar mensajes](/es/playground/messages/list-messages).

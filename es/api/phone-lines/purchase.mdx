@@ -1,0 +1,201 @@
+---
+title: "POST /v1/phone-lines: comprar líneas telefónicas"
+sidebarTitle: "Comprar líneas"
+description: "Compra de 1 a 10 números fijos brasileños en una sola solicitud. Cada número se cobra y se adquiere por separado; el header Idempotency-Key es obligatorio para que un reintento nunca compre dos veces."
+mode: "wide"
+---
+
+# Comprar líneas telefónicas
+
+<Tip>
+  Pruébalo con tu clave en el Playground: [`POST /v1/phone-lines`](/es/playground/phone-lines/buy-phone-lines).
+</Tip>
+
+`POST /v1/phone-lines` compra **de 1 a 10** números obtenidos de [`GET /v1/phone-lines/available`](/es/api/phone-lines/available). Cada número se convierte en una línea de tu workspace, `ACTIVE` y pagada por su primer mes.
+
+<Note>
+  Requiere una clave **con alcance de tenant**. Con un token OAuth / MCP, solo el **Owner** del workspace puede comprar (`phone_lines:purchase`); de lo contrario, `403 PERMISSION_DENIED`. El titular de la cuenta debe verificarse primero, [mediante la API](/es/api/phone-lines/verification) o en el panel. Las líneas compradas mientras la verificación está en revisión manual se devuelven, y sus cargos se reembolsan a la billetera, si la revisión es rechazada: consulta [verificación de identidad](/es/api/phone-lines/overview#antes-de-la-primera-compra-verificar-la-identidad).
+</Note>
+
+<Warning>
+  **Efecto real: esto cobra dinero.** Cada número cuesta el precio mensual completo (R\$ 33,90 o US\$ 33.90, o el [precio propio de línea telefónica](/es/phone-lines-pricing#precio-propio-del-workspace) de tu workspace), descontado primero de los créditos de tu billetera y luego de tu tarjeta guardada.
+</Warning>
+
+## Endpoint
+
+`POST https://pilotstatus.com.br/v1/phone-lines`
+
+## Headers
+
+<ParamField header="Idempotency-Key" type="string" required>
+  Cualquier string de hasta **255 caracteres** sin caracteres de control; lo habitual es un UUID por compra. Ausente, vacío o solo con espacios → **400 `IDEMPOTENCY_KEY_REQUIRED`**; demasiado largo o con un carácter de control → **400 `IDEMPOTENCY_KEY_INVALID`**. Consulta [Idempotencia](#idempotencia).
+</ParamField>
+
+## Cuerpo de la solicitud
+
+<ParamField body="numbers" type="string[]" required>
+  De 1 a 10 números distintos, cada uno exactamente como `GET /v1/phone-lines/available` lo devolvió en `number`: dígitos E.164 **sin** `+`: `55`, un código de área de dos dígitos que empieza entre 1 y 9, y luego 8 dígitos (`551148637200`). Puedes incluir números de distintos códigos de área en la misma solicitud.
+</ParamField>
+
+`numbers` es el **único** campo aceptado. Cualquier otro se rechaza con **400 `UNKNOWN_FIELDS`**, indicando los campos; en particular, la clave de idempotencia **no** es un campo del cuerpo (el `requestId` del panel no existe aquí).
+
+## Ejemplo
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -H "Idempotency-Key: 6f1c2a0e-7b1d-4c2e-9a5f-3d8e1b2c4a70" \
+  -d '{ "numbers": ["551148637200", "551148637201"] }'
+```
+
+```json Respuesta (200)
+{
+  "results": [
+    {
+      "number": "551148637200",
+      "ok": true,
+      "lineId": "cmg5k2l1n0001pl8example9x"
+    },
+    {
+      "number": "551148637201",
+      "ok": false,
+      "code": "PAYMENT_FAILED",
+      "error": "The payment did not go through. Add balance or check your card. | O pagamento não foi concluído. Adicione saldo ou confira seu cartão."
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Respuesta: `200` con un resultado por número
+
+Los números son **independientes**. Cada uno se cobra y se adquiere por separado, en el orden en que los enviaste, y uno que falla **no** deshace los demás. Por eso ningún estado único describe la solicitud: responde **`200`** cuando fue procesada, y el resultado de cada número está en `results[i].ok`.
+
+<Warning>
+  **Un `200` no significa que hayas comprado algo.** Todos los ítems pueden haber fallado. Lee siempre `results`.
+</Warning>
+
+<ResponseField name="results" type="object[]">
+  Una entrada por número, en el orden enviado.
+</ResponseField>
+
+<ResponseField name="results[].number" type="string">
+  El número, tal como lo enviaste.
+</ResponseField>
+
+<ResponseField name="results[].ok" type="boolean">
+  `true` cuando esta solicitud compró la línea.
+</ResponseField>
+
+<ResponseField name="results[].lineId" type="string">
+  Solo cuando `ok: true`. El `id` de la nueva línea, para [`GET /v1/phone-lines/{id}`](/es/api/phone-lines/list#obtener-una-línea) y los [endpoints de códigos de activación](/es/api/phone-lines/activation-codes).
+</ResponseField>
+
+<ResponseField name="results[].code" type="string">
+  Solo cuando `ok: false`. Por qué falló este número: consulta la tabla de abajo.
+</ResponseField>
+
+<ResponseField name="results[].error" type="string">
+  Solo cuando `ok: false`. Mensaje bilingüe (`English | Portuguese`) para ese `code`.
+</ResponseField>
+
+| `code` del ítem | Qué ocurrió | ¿Se cobró? | Qué hacer |
+| --- | --- | --- | --- |
+| `REQUEST_ALREADY_PROCESSED` | Este `Idempotency-Key` ya se usó para este número en la última hora, sin importar el resultado de ese intento. | No por esta solicitud. | Revisa `GET /v1/phone-lines`. Para volver a intentar un número fallido, usa una clave **nueva**. |
+| `NUMBER_UNAVAILABLE` | El número ya está tomado (por otro workspace, o ya por el tuyo), se está comprando en otra solicitud en este momento (incluida una tuya), o el operador ya no lo tiene. | No, o, si ya se había cobrado, se reembolsó a la billetera. | Busca de nuevo y elige otro. |
+| `PAYMENT_FAILED` | Los créditos más la tarjeta guardada no cubrieron el precio, o el cargo a la tarjeta no se concretó. | No: los créditos descontados se devolvieron. | Recarga o corrige la tarjeta y luego reintenta con una clave **nueva**. |
+| `PAYMENT_PROVIDER_ERROR` | El procesador de tarjetas no respondió, así que la tarjeta **puede** haber sido cobrada. | Billetera: no. Tarjeta: desconocido. | Revisa el estado de cuenta de tu tarjeta **antes** de reintentar: un reintento con una clave nueva es un cargo nuevo. |
+| `PURCHASE_NOT_COMPLETED` | Se cobró y se adquirió, pero la línea no pudo registrarse de nuestro lado. | Reembolsado a la billetera. | Reintenta con una clave **nueva**. |
+| `SUPPLIER_UNAVAILABLE` | El operador falló al adquirir el número (o se agotó su presupuesto compartido de solicitudes). | Reembolsado a la billetera. | Reintenta en unos minutos con una clave **nueva**. |
+
+### Orden de las operaciones, por número
+
+1. **Reservar** el número bajo tu `Idempotency-Key` (ver abajo). Ya reservado → `REQUEST_ALREADY_PROCESSED`.
+2. **Verificar** que ninguna línea lo tenga (en ningún workspace, incluido el tuyo) y que no haya otra compra en curso del mismo número → de lo contrario `NUMBER_UNAVAILABLE`, **sin cobro**.
+3. **Cobrar** el precio mensual completo: primero los créditos de la billetera, el resto en la tarjeta guardada. Si falla el paso de la tarjeta, los créditos ya descontados se devuelven → `PAYMENT_FAILED`.
+4. **Adquirir** el número en el operador. Si eso falla, el precio completo se **reembolsa a tu billetera** (incluida cualquier parte pagada con tarjeta) → `NUMBER_UNAVAILABLE` o `SUPPLIER_UNAVAILABLE`.
+5. **Crear** la línea: `status: "ACTIVE"`, `currentPeriodEnd` un mes después, y el [evento de webhook](/es/api/phone-lines/webhooks) `phone_line.purchased`.
+
+El cobro ocurre antes de la adquisición a propósito: si el operador nos vende el número, no se puede deshacer, y un reembolso para ti es instantáneo.
+
+Aquí **no hay enlace de pago**: sin créditos y sin tarjeta guardada, el ítem falla con `PAYMENT_FAILED`. Primero agrega fondos a la billetera (en el panel, o mediante la API con Pix o tarjeta: [Billetera y tarjeta vía API](/es/api/wallet-and-card)) o guarda una tarjeta.
+
+## Errores de la solicitud completa
+
+Cualquier respuesta distinta de `200` significa que esta solicitud **no intentó ningún número**, con una excepción: `500`, ver abajo. Las verificaciones se ejecutan en este orden:
+
+| Estado | `code` | Cuándo | Campos extra |
+| --- | --- | --- | --- |
+| `401` | — | Credencial ausente o inválida. |  |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Clave con alcance de número, o permiso OAuth por número. |  |
+| `403` | `TENANT_REQUIRED` | La credencial no está vinculada a ningún workspace (`error` solo en inglés). |  |
+| `403` | `WORKSPACE_ARCHIVED` | El workspace fue archivado y su API está cerrada. |  |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | Token OAuth / MCP de un usuario que ya no es miembro activo. |  |
+| `403` | `PERMISSION_DENIED` | Token OAuth / MCP de un usuario que no es el Owner del workspace. |  |
+| `400` | `IDEMPOTENCY_KEY_REQUIRED` | Sin `Idempotency-Key`, o solo con espacios. |  |
+| `400` | `IDEMPOTENCY_KEY_INVALID` | Clave de más de 255 caracteres, o con un carácter de control (tabulación incluida). | `details.maxLength` (`255`) |
+| `400` | `INVALID_BODY` | El cuerpo no es un objeto JSON. |  |
+| `400` | `UNKNOWN_FIELDS` | El cuerpo tiene campos distintos de `numbers`. | `details.unknownFields` |
+| `400` | `INVALID_NUMBERS` | `numbers` ausente, no es un array o tiene una entrada que no es string. |  |
+| `400` | `INVALID_SELECTION` | Más de 10 números. |  |
+| `400` | `INVALID_NUMBERS` | Entradas que no tienen la forma de un número buscado: con `+`, sin `55`, longitud incorrecta. Se rechazan **antes de mover dinero**. | `details.invalidNumbers` |
+| `403` | `VERIFICATION_REJECTED` | La verificación del titular de la cuenta fue rechazada. |  |
+| `403` | `VERIFICATION_REQUIRED` | El titular de la cuenta no está verificado (o la verificación está incompleta): [verifícalo](/es/api/phone-lines/verification). |  |
+| `400` | `INVALID_SELECTION` | Cero números, o el mismo número dos veces. |  |
+| `503` | `SUPPLIER_UNAVAILABLE` | La integración con el operador no está disponible antes de intentar cualquier número. |  |
+| `500` | `INTERNAL_ERROR` | Falla inesperada. |  |
+
+```json
+{
+  "error": "Not a number from GET /v1/phone-lines/available: +551148637201, 11948637202. Use E.164 digits without \"+\", e.g. 551148637200. | Não é um número de GET /v1/phone-lines/available: +551148637201, 11948637202. Use os dígitos E.164 sem \"+\", ex.: 551148637200.",
+  "code": "INVALID_NUMBERS",
+  "details": { "invalidNumbers": ["+551148637201", "11948637202"] }
+}
+```
+
+<Warning>
+  **Un `500` o un timeout no prueban que no haya pasado nada.** Los números se procesan uno tras otro, y una falla a mitad de camino puede ocurrir después de que números anteriores ya se cobraron y compraron. Reintenta **la misma solicitud con el mismo `Idempotency-Key`** y luego lista tus líneas con [`GET /v1/phone-lines`](/es/api/phone-lines/list) para ver qué números son tuyos.
+</Warning>
+
+## Idempotencia
+
+El header `Idempotency-Key` es obligatorio porque un cliente al que esta solicitud le da timeout no tiene otra forma de saber si se movió dinero. Lo que garantiza, exactamente:
+
+- **La clave se registra por número, durante una hora.** Antes que nada, cada número se registra bajo _(tu workspace, la clave, el número)_. Durante la **hora** siguiente, enviar de nuevo la misma clave con ese número no cobra ni compra nada: el ítem responde `ok: false`, `REQUEST_ALREADY_PROCESSED`.
+- **Una repetición no devuelve el resultado original.** `REQUEST_ALREADY_PROCESSED` vuelve tanto si el primer intento compró el número como si falló. Para saber cuál fue, llama a [`GET /v1/phone-lines`](/es/api/phone-lines/list): un número comprado aparece en tu lista.
+- **Un número que falló queda bloqueado bajo esa clave durante la hora.** Después de un `PAYMENT_FAILED` recargas y reintentas, con una clave **nueva**, o el reintento responde `REQUEST_ALREADY_PROCESSED`.
+- **Pasada la hora, la clave se olvida.** Un número que compraste responde entonces `NUMBER_UNAVAILABLE` (es tuyo: no hay segundo cobro); un número que había fallado se intenta de nuevo. Para reintentar un número fallido, usa siempre una clave nueva.
+- **Solo se protegen los números, no la solicitud.** Enviar la misma clave con un número _distinto_ compra ese número.
+- **Una solicitud rechazada por completo no registra nada.** Después de cualquier `400` o `403` de arriba, corrige la solicitud y reenvíala con la misma clave.
+- **Duplicados concurrentes.** Si dos entregas de la misma solicitud están en curso al mismo tiempo, cada número avanza en una de ellas; la otra recibe `REQUEST_ALREADY_PROCESSED` para él.
+- **Limitada a tu workspace.** La misma clave enviada por otro workspace nunca choca con la tuya.
+
+<Note>
+  El registro se guarda en una caché. Si esa caché no está disponible, la protección se omite en lugar de bloquear las compras: dos entregas de la misma solicitud que lleguen durante esa caída podrían cobrar ambas. Envía cada compra una sola vez y reintenta solo ante un timeout, un `5xx` o un error de red.
+</Note>
+
+### Patrón de reintento recomendado
+
+<Steps>
+  <Step title="Una clave por compra">
+    Genera un UUID para cada compra que haga el usuario y envíalo como `Idempotency-Key`. Usa un timeout de cliente generoso: los números se procesan uno tras otro.
+  </Step>
+  <Step title="Ante timeout, 5xx o error de red">
+    Reenvía **el mismo cuerpo con la misma clave**. Los números ya procesados vuelven como `REQUEST_ALREADY_PROCESSED`; los números a los que el primer intento nunca llegó se procesan ahora.
+  </Step>
+  <Step title="Concilia">
+    Llama a `GET /v1/phone-lines` y compara por `number` para saber qué líneas tienes ahora.
+  </Step>
+  <Step title="Reintenta los fallos con una clave nueva">
+    Para los números que fallaron (`PAYMENT_FAILED`, `SUPPLIER_UNAVAILABLE`), corrige la causa y envíalos con una clave **nueva**.
+  </Step>
+</Steps>
+
+## Después de la compra
+
+- La línea está `ACTIVE` hasta `currentPeriodEnd` (un mes después de la compra) y luego se renueva mensualmente. Consulta el [ciclo de vida de la línea](/es/api/phone-lines/overview#ciclo-de-vida-de-la-línea).
+- Solicita el código de activación de WhatsApp con [`POST /v1/phone-lines/{id}/activations`](/es/api/phone-lines/activation-codes).

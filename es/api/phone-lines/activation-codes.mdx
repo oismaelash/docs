@@ -1,0 +1,272 @@
+---
+title: "POST /v1/phone-lines/{id}/activations: códigos de activación"
+sidebarTitle: "Códigos de activación"
+description: "Obtén el código de verificación de WhatsApp de una línea telefónica: abre una ventana de captura de 5 minutos, pide a WhatsApp que llame a la línea, consulta la solicitud hasta que llegue el código transcrito (o cancela la espera para pedirlo de nuevo) y descarga la grabación de la llamada."
+mode: "wide"
+---
+
+# Obtén el código de activación de WhatsApp
+
+<Tip>
+  Pruébalo con tu key en el Playground: [`POST /v1/phone-lines/{id}/activations`](/es/playground/phone-lines/request-activation-code), [`GET /v1/phone-lines/activations/{activationId}`](/es/playground/phone-lines/get-activation), [`GET …/activations/{activationId}/audio`](/es/playground/phone-lines/download-call-recording), [`GET /v1/phone-lines/{id}/activations`](/es/playground/phone-lines/list-activations), [`POST …/activations/{activationId}/cancel`](/es/playground/phone-lines/cancel-activation-wait).
+</Tip>
+
+WhatsApp verifica una línea fija **llamándola** y diciendo un código de 6 dígitos. Estos endpoints capturan esa llamada por ti: abres una ventana de captura en la línea, pides a WhatsApp que llame y lees el código (transcrito de la llamada) desde la API.
+
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| `POST` | `/v1/phone-lines/{id}/activations` | Abre una nueva solicitud de código en la línea (ventana de 5 minutos). |
+| `GET` | `/v1/phone-lines/activations/{activationId}` | Consulta una solicitud: su `status` y, cuando esté listo, el `code`. |
+| `GET` | `/v1/phone-lines/activations/{activationId}/audio` | Descarga la grabación de la llamada de una solicitud. |
+| `GET` | `/v1/phone-lines/{id}/activations` | El historial de códigos de la línea, del más reciente al más antiguo. |
+| `POST` | `/v1/phone-lines/{id}/activations/{activationId}/cancel` | Deja de esperar la llamada, para pedir un código nuevo de inmediato. |
+
+<Note>
+  Requiere una key **con alcance de tenant**. Con un token OAuth / MCP, el usuario debe ser **Owner o Admin** (`phone_lines:read`); si no, `403 PERMISSION_DENIED`. Cada respuesta que lleva una activación se envía con `Cache-Control: no-store` (la grabación con `private, no-store`): **el código es una credencial**: quien lo tenga puede registrar una cuenta de WhatsApp en la línea, y la grabación lo dice en voz alta.
+</Note>
+
+## Cómo funciona
+
+<Steps>
+  <Step title="Abre una solicitud antes de que WhatsApp llame">
+    `POST /v1/phone-lines/{id}/activations`. La línea se reinicia en la operadora, así que la grabación de una llamada anterior nunca puede leerse como el código de esta, y se abre una solicitud en `WAITING` hasta `pollDeadline`, **5 minutos** después. Una llamada que llega antes de que exista esta solicitud no se captura.
+  </Step>
+  <Step title="Pide a WhatsApp que llame a la línea">
+    Registra el número en WhatsApp Business y, cuando te pregunte cómo recibir el código, elige la opción de **llamada telefónica** ("Call me", Llamarme). La línea es fija y no recibe SMS: esperar un SMS solo consume la ventana.
+  </Step>
+  <Step title="Capturamos y transcribimos">
+    Revisamos la línea **aproximadamente cada 15 segundos** mientras la ventana está abierta, y una vez más justo después de que se cierra. Cuando aparece una grabación la guardamos (`CAPTURED`), la transcribimos y extraemos el código (`TRANSCRIBED`). Una transcripción fallida se reintenta a partir de la grabación guardada (hasta **3 intentos** en total), así que leer el código suele tardar segundos, pero puede tardar algunos minutos.
+  </Step>
+  <Step title="Lee el código">
+    Consulta `GET /v1/phone-lines/activations/{activationId}` cada pocos segundos (o escucha el webhook [`phone_line.code_received`](/es/api/phone-lines/webhooks)) y escribe el `code` en WhatsApp.
+  </Step>
+</Steps>
+
+## Solicitar un código
+
+`POST https://pilotstatus.com.br/v1/phone-lines/{id}/activations`, sin body. Responde **`201`** con la nueva solicitud.
+
+- Permitido mientras la línea está `ACTIVE` o `PAYMENT_PENDING` (incluida una línea `ACTIVE` cancelada al final del período). Una línea `SUSPENDED`, `RETURNED` o `CANCELED` recibe **409 `LINE_NOT_ACTIVE`**.
+- **Una solicitud en espera por línea.** Mientras una solicitud está en `WAITING` y su `pollDeadline` todavía no llega, otro `POST` responde **409 `ACTIVATION_IN_PROGRESS`**: consulta la que ya tienes, o [cancélala](#cancelar-una-espera) para pedir de nuevo de inmediato.
+- **Sin límite de solicitudes a lo largo del tiempo.** Pide de nuevo cuando lo necesites (volver a registrar WhatsApp, una ventana que expiró); cada solicitud que se abre incrementa el `activationCount` de la línea.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activations" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Response (201)
+{
+  "activation": {
+    "id": "cmg5k3a7c0002ac8example4q",
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "status": "WAITING",
+    "requestedAt": "2026-10-01T14:10:00.000Z",
+    "pollDeadline": "2026-10-01T14:15:00.000Z",
+    "code": null,
+    "capturedAt": null,
+    "transcribedAt": null,
+    "failureReason": null,
+    "hasAudio": false
+  }
+}
+```
+
+</CodeGroup>
+
+## Consultar la solicitud
+
+`GET https://pilotstatus.com.br/v1/phone-lines/activations/{activationId}` devuelve `{ "activation": { … } }`. Una solicitud de otro workspace responde **404 `ACTIVATION_NOT_FOUND`**, igual que una que no existe.
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Response (200)
+{
+  "activation": {
+    "id": "cmg5k3a7c0002ac8example4q",
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "status": "TRANSCRIBED",
+    "requestedAt": "2026-10-01T14:10:00.000Z",
+    "pollDeadline": "2026-10-01T14:15:00.000Z",
+    "code": "123456",
+    "capturedAt": "2026-10-01T14:11:42.000Z",
+    "transcribedAt": "2026-10-01T14:11:51.000Z",
+    "failureReason": null,
+    "hasAudio": true
+  }
+}
+```
+
+</CodeGroup>
+
+Consultar cada pocos segundos es más que suficiente: el estado solo puede cambiar después de nuestra próxima revisión de la línea, cada 15 segundos.
+
+### Estados
+
+| `status` | `code` | `failureReason` | `hasAudio` | Qué significa | Siguiente paso |
+| --- | --- | --- | :-: | --- | --- |
+| `WAITING` | `null` | `null` | `false` | La ventana está abierta y todavía no se capturó ninguna llamada. | Sigue consultando. Asegúrate de haber pedido a WhatsApp que **llame**. |
+| `CAPTURED` | `null` | `null` | `false`, luego `true` | La llamada llegó. Estamos guardando su grabación (`hasAudio` pasa a `true` una vez guardada) y leyendo el código, reintentos incluidos. | Sigue consultando. |
+| `CAPTURED` | `null` | `transcription_failed` | `true` | Grabada, pero los 3 intentos de transcripción fallaron. **Final.** | [Descarga la grabación](#descargar-el-audio) y escúchala. |
+| `TRANSCRIBED` | `"123456"` | `null` | `true` | El código fue leído. **Final.** | Escríbelo en WhatsApp. |
+| `TRANSCRIBED` | `null` | `no_code_in_transcript` | `true` | La llamada fue transcrita pero no se encontró un código de 6 dígitos. **Final.** | [Escucha la grabación](#descargar-el-audio), o solicita un código nuevo. |
+| `TIMED_OUT` | `null` | `no_call_in_window` | `false` | No llegó ninguna llamada antes de `pollDeadline`. **Final.** | Solicita un código nuevo y luego pide a WhatsApp que llame de nuevo. |
+| `TIMED_OUT` | `null` | `canceled_by_customer` | `false` | La espera fue [cancelada](#cancelar-una-espera), por la API o con **Cancel wait** en el dashboard. **Final.** | Solicita un código nuevo; está permitido de inmediato. |
+| `FAILED` | `null` | `audio_download_failed`, `audio_store_failed` | `false` | Apareció una grabación pero no se pudo descargar ni guardar. **Final.** | Solicita un código nuevo. |
+| `FAILED` | `null` | `poll_not_scheduled` | `false` | No pudimos empezar a vigilar la línea (el `POST` respondió `503`). **Final.** | Solicita un código nuevo; está permitido de inmediato. |
+
+<Warning>
+  **No dejes de consultar en el primer estado que no sea `WAITING`.** `CAPTURED` también es el estado intermedio mientras se lee el código: sigue consultando mientras `status` sea `WAITING`, o `CAPTURED` con `failureReason: null`. Y `TRANSCRIBED` no garantiza un código: revisa `code`. Leer el código suele tardar segundos, pero una transcripción fallida se reintenta a partir de la grabación guardada (hasta 3 intentos en total), así que una solicitud puede quedarse en `CAPTURED` con `failureReason: null` durante algunos minutos. Luego termina con el código (`TRANSCRIBED`) o con `transcription_failed`.
+</Warning>
+
+- `TIMED_OUT` se registra en la primera revisión después de `pollDeadline`, así que puede aparecer hasta unos 15 segundos después del plazo. Esa revisión todavía lee la línea una última vez: una llamada que llega en los últimos segundos de la ventana se captura, no se pierde; por eso una solicitud también puede pasar de `WAITING` a `CAPTURED` justo después de su `pollDeadline`. Si una solicitud sigue en `WAITING` bastante después de su `pollDeadline`, trátala como expirada: un `POST` nuevo ya está permitido, porque la regla de una a la vez solo cuenta las solicitudes cuyo `pollDeadline` todavía no llegó.
+- `failureReason` siempre es uno de los valores fijos de la tabla (`no_call_in_window`, `canceled_by_customer`, `no_code_in_transcript`, `transcription_failed`, `audio_download_failed`, `audio_store_failed`, `poll_not_scheduled`) o `null`. Puedes tomar decisiones según él; trata un valor desconocido como un fallo, ya que pueden agregarse nuevos.
+- **El código viene de una conversión de voz a texto.** WhatsApp dice el código durante la llamada; transcribimos la grabación y conservamos la secuencia de 6 dígitos que más se escucha. Si WhatsApp rechaza el código, [escucha la grabación](#descargar-el-audio).
+- **La grabación se sirve por separado.** `hasAudio: true` te indica que existe una: [descárgala](#descargar-el-audio) desde `GET /v1/phone-lines/activations/{activationId}/audio`, o reprodúcela en el dashboard (**Phone lines** → la línea). La transcripción sin procesar nunca se devuelve.
+
+## Descargar el audio
+
+`GET https://pilotstatus.com.br/v1/phone-lines/activations/{activationId}/audio` devuelve la grabación de la llamada de una solicitud cuyo `hasAudio` es `true`: el propio archivo guardado, no JSON.
+
+- **Las mismas credenciales que para consultar:** una key **con alcance de tenant**, o un token OAuth / MCP de un **Owner o Admin** (`phone_lines:read`).
+- **Headers:** `Content-Type` es el formato propio de la grabación, normalmente `audio/wav` o `audio/mpeg`, ya que el formato de la operadora varía de una llamada a otra, con su `Content-Length`. `Content-Disposition: attachment; filename="activation-{activationId}.wav"` (`.mp3` para un MP3; sin extensión para cualquier otro formato). `Cache-Control: private, no-store`: la grabación dice el código de activación.
+- **404 `ACTIVATION_NOT_FOUND`** responde, en todos los casos por igual: una solicitud de otro workspace o un id desconocido; una solicitud **sin grabación** (`hasAudio: false`: la espera expiró o se canceló antes de cualquier llamada, o la llamada no se pudo descargar ni guardar); y cualquier solicitud de una línea `RETURNED` o `CANCELED`: a una línea que sale de tu workspace se le eliminan las grabaciones.
+- **Rara vez necesitas construir esta URL.** Los [webhooks `phone_line.audio_received`, `phone_line.code_received` y `phone_line.code_failed`](/es/api/phone-lines/webhooks#la-url-del-audio) la incluyen como `audioUrl` siempre que la solicitud tenga una grabación. La URL no contiene ninguna credencial: envía tu key con ella.
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/phone-lines/activations/cmg5k3a7c0002ac8example4q/audio" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -o activation-cmg5k3a7c0002ac8example4q.wav
+```
+
+```text Response headers (200)
+HTTP/2 200
+content-type: audio/wav
+content-length: 221228
+content-disposition: attachment; filename="activation-cmg5k3a7c0002ac8example4q.wav"
+cache-control: private, no-store
+```
+
+</CodeGroup>
+
+## Cancelar una espera
+
+`POST https://pilotstatus.com.br/v1/phone-lines/{id}/activations/{activationId}/cancel`, sin body. Termina una solicitud que sigue en `WAITING`, para que el siguiente `POST /v1/phone-lines/{id}/activations` se acepte de inmediato en lugar de responder `409 ACTIVATION_IN_PROGRESS` hasta que se cierre la ventana. Las mismas credenciales y el mismo permiso que los demás endpoints de activación (`phone_lines:read`).
+
+Responde **`200`** con `{ "activation": { … } }`, ahora en `TIMED_OUT` con `failureReason: "canceled_by_customer"`, enviado con `Cache-Control: no-store`. La línea deja de vigilarse para esa solicitud. Como cualquier solicitud que termina sin código, envía [`phone_line.code_failed`](/es/api/phone-lines/webhooks#payloads) y [`phone_line.code_received`](/es/api/phone-lines/webhooks#payloads) (con `code: null`) una sola vez, con `canceled_by_customer`, así que una integración que espera el webhook también se entera de una espera cancelada desde el dashboard.
+
+- **Una llamada que ya llegó nunca se descarta.** Una vez capturada la llamada, la solicitud ya no está en `WAITING`, y la cancelación responde **409 `ACTIVATION_NOT_WAITING`**: sigue consultando, su código se está leyendo. El mismo 409 responde a una solicitud que ya terminó. En ningún caso cambia nada.
+- `{id}` debe ser la línea a la que pertenece la solicitud. Una línea que no está en tu workspace responde **404 `LINE_NOT_FOUND`**; una solicitud que no está en esa línea (o no está en tu workspace) responde **404 `ACTIVATION_NOT_FOUND`**.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activations/cmg5k3a7c0002ac8example4q/cancel" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json Response (200)
+{
+  "activation": {
+    "id": "cmg5k3a7c0002ac8example4q",
+    "lineId": "cmg5k2l1n0001pl8example9x",
+    "status": "TIMED_OUT",
+    "requestedAt": "2026-10-01T14:10:00.000Z",
+    "pollDeadline": "2026-10-01T14:15:00.000Z",
+    "code": null,
+    "capturedAt": null,
+    "transcribedAt": null,
+    "failureReason": "canceled_by_customer",
+    "hasAudio": false
+  }
+}
+```
+
+</CodeGroup>
+
+## Historial de códigos
+
+`GET https://pilotstatus.com.br/v1/phone-lines/{id}/activations` devuelve las solicitudes de la línea, **de la más reciente a la más antigua**, con los códigos incluidos: `{ "activations": [ … ] }`. También funciona en líneas suspendidas: conservan su historial.
+
+A una línea que salió de tu workspace (`RETURNED` o `CANCELED`) se le **elimina** el historial: sus solicitudes siguen listadas (`id`, `status`, fechas, `failureReason`) y su `activationCount` se conserva, pero `code` es `null`, `hasAudio` pasa a `false` a medida que se eliminan las grabaciones, y descargar una grabación responde `404`.
+
+<ParamField query="limit" default="20" type="integer">
+  De 1 a 100. Cualquier otro valor (0, 101, un decimal, texto, vacío) → **400 `INVALID_LIMIT`**.
+</ParamField>
+
+Una línea de otro workspace responde **404 `LINE_NOT_FOUND`**, nunca una lista vacía.
+
+```bash
+curl "https://pilotstatus.com.br/v1/phone-lines/cmg5k2l1n0001pl8example9x/activations?limit=5" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+## Campos del objeto de activación
+
+<ResponseField name="id" type="string">
+  El id de la solicitud (`activationId`).
+</ResponseField>
+
+<ResponseField name="lineId" type="string">
+  La línea a la que pertenece la solicitud.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  `WAITING`, `CAPTURED`, `TRANSCRIBED`, `TIMED_OUT` o `FAILED`; consulta [Estados](#estados).
+</ResponseField>
+
+<ResponseField name="requestedAt" type="string">
+  ISO 8601: cuándo se abrió la solicitud.
+</ResponseField>
+
+<ResponseField name="pollDeadline" type="string">
+  ISO 8601: fin de la ventana de captura, 5 minutos después de la solicitud.
+</ResponseField>
+
+<ResponseField name="code" type="string | null">
+  El código de 6 dígitos, una vez en `TRANSCRIBED` y encontrado. `null` en otro caso.
+</ResponseField>
+
+<ResponseField name="capturedAt" type="string | null">
+  ISO 8601: cuándo se guardó la grabación de la llamada.
+</ResponseField>
+
+<ResponseField name="transcribedAt" type="string | null">
+  ISO 8601: cuándo terminó la transcripción.
+</ResponseField>
+
+<ResponseField name="failureReason" type="string | null">
+  Por qué una solicitud final no tiene código; consulta [Estados](#estados).
+</ResponseField>
+
+<ResponseField name="hasAudio" type="boolean">
+  Si hay una grabación de la llamada guardada, descargable desde [`GET /v1/phone-lines/activations/{activationId}/audio`](#descargar-el-audio) y reproducible en el dashboard.
+</ResponseField>
+
+## Errores
+
+| Status | `code` | Dónde | Significado |
+| --- | --- | --- | --- |
+| `400` | `INVALID_LIMIT` | historial | `limit` no es un entero de 1 a 100. |
+| `401` | — | todos | Credencial ausente o inválida. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | todos | Key con alcance de número (o grant OAuth por número). Usa la key con alcance de tenant. |
+| `403` | `TENANT_REQUIRED` | todos | La credencial no está vinculada a ningún workspace (`error` solo en inglés). |
+| `403` | `WORKSPACE_ARCHIVED` | todos | El workspace fue archivado y su API está cerrada. |
+| `401` | `OAUTH_MEMBERSHIP_REVOKED` | todos | Token OAuth / MCP de un usuario que ya no es miembro activo: inicia sesión de nuevo. |
+| `403` | `PERMISSION_DENIED` | todos | Token OAuth / MCP de un usuario que no es Owner ni Admin. |
+| `404` | `LINE_NOT_FOUND` | `POST`, historial, cancelación | No existe esa línea en tu workspace. |
+| `404` | `ACTIVATION_NOT_FOUND` | consulta, cancelación, grabación | No existe esa solicitud en tu workspace (para la cancelación: en esa línea). Para la grabación, también una solicitud sin grabación (`hasAudio: false`) o de una línea `RETURNED` / `CANCELED`. |
+| `409` | `LINE_NOT_ACTIVE` | `POST` | La línea está `SUSPENDED`, `RETURNED` o `CANCELED`. No se creó nada. |
+| `409` | `ACTIVATION_IN_PROGRESS` | `POST` | Una solicitud en esta línea sigue esperando la llamada. Consúltala, o cancélala para pedir de nuevo ahora. |
+| `409` | `ACTIVATION_NOT_WAITING` | cancelación | La llamada ya fue capturada (su código se está leyendo) o la solicitud ya terminó. No cambió nada. |
+| `503` | `SUPPLIER_UNAVAILABLE` | `POST` | La operadora no pudo reiniciar la línea (no se creó nada), o no pudimos empezar a vigilarla (una solicitud `FAILED` con `poll_not_scheduled` queda en el historial). Reintenta: un `POST` nuevo está permitido de inmediato. |
+| `500` | `INTERNAL_ERROR` | todos | Fallo inesperado. |

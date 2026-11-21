@@ -1,0 +1,303 @@
+---
+title: "POST /v1/numbers: crear un número"
+sidebarTitle: "Crear y conectar"
+description: "Crea un número de WhatsApp mediante la API: código QR / código de vinculación para números no oficiales, flujos con provider META, regenerar el QR y eliminar."
+mode: "wide"
+---
+
+# Crear, conectar y eliminar números
+
+Crea un número de WhatsApp mediante la API pública, conéctalo (código QR o código de vinculación) y elimínalo cuando ya no lo necesites.
+
+<Note>
+  Usa una clave de API **limitada al tenant** (recomendada para plataformas SaaS que gestionan varios números). Autentícate con `x-api-key: ps_...`.
+
+  **Una clave de número no puede crear números.** Una clave de número (`ps_number_`, o una clave `ps_` heredada limitada a un número) en `POST /v1/numbers`, `POST /v1/numbers/meta` o `POST /v1/numbers/remote-pairing` recibe `403 NUMBER_KEY_CANNOT_CREATE_NUMBER`, antes de que se busque o se cree nada. Usa una clave de workspace (también cuando la restringes con `x-whatsapp-number-id`) o una clave de cuenta con `x-workspace-id`. Consulta [Tipos de clave de API](/es/api/key-types).
+
+  Con un token OAuth / MCP o una clave de cuenta (`ps_account_`), se verifica el rol en el workspace: crear, conectar y cerrar la sesión de un número requieren `numbers:connect`, eliminar requiere `numbers:delete` y restaurar requiere `numbers:restore` (**Admin u Owner**), y purgar requiere `numbers:purge` (solo **Owner**). De lo contrario, la respuesta es `403 PERMISSION_DENIED`. Las claves de workspace y de número (`ps_workspace_`, `ps_number_`) no tienen rol y no están sujetas a esta verificación.
+</Note>
+
+## POST /v1/numbers: crear un número
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_token_here" \
+  -d '{
+    "name": "My WhatsApp",
+    "number": "+5511999999999"
+  }'
+```
+
+<ParamField body="name" type="string" required>
+  Nombre visible del número (de 1 a 60 caracteres).
+</ParamField>
+
+<ParamField body="number" type="string" required>
+  El número de teléfono en formato E.164 (por ejemplo, `+5511999999999`): solo dígitos, `+` inicial opcional, al menos 10 caracteres.
+</ParamField>
+
+<ParamField body="settings" type="object">
+  Opcional: el mismo bloque `settings` de [`PATCH /v1/numbers/{id}`](/es/api/numbers/settings), aplicado antes de que el número se conecte. Aquí es donde se tiene que decidir `historyImportEnabled`. Un bloque inválido responde `400 INVALID_SETTINGS` y no se crea nada.
+</ParamField>
+
+<ParamField body="piiMode" type="string" default="STORE_INDEFINITE">
+  Política opcional de retención de datos: `STORE_INDEFINITE`, `STORE_X_DAYS` o `RELAY_ONLY`; consulta [Configuración del número](/es/api/numbers/settings). Cualquier otro valor responde `400` `{ "error": "Invalid piiMode" }`.
+</ParamField>
+
+<ParamField body="piiRetentionDays" type="integer">
+  Obligatorio con `piiMode: "STORE_X_DAYS"`: un entero de 1 a 3650. Se ignora en los demás modos.
+</ParamField>
+
+<ParamField body="linkToApiKey" type="boolean" deprecated>
+  **Retirado: se acepta pero no hace nada.** Enviarlo no es un error, y no se toca ninguna clave de API: `linkedApiKeyId` en la respuesta es **siempre `null`**. Antes redirigía una clave limitada a un número hacia el número que acababas de crear, desvinculándola en silencio del número al que estaba asociada.
+</ParamField>
+
+La respuesta incluye `qrcodeBase64` y `pairingCode` (código de vinculación por letras de WhatsApp; puede ser `null` si el proveedor no devuelve uno). Muestra el código QR a la persona dueña del teléfono, o deja que escriba el código de vinculación.
+
+```json Response (201)
+{
+  "numberId": "cmm0abc123",
+  "instance": {
+    "id": "cmm0inst456",
+    "number": "5511999999999",
+    "name": "My WhatsApp",
+    "provider": "PILOT_STATUS",
+    "status": "CONNECTING"
+  },
+  "qrcodeBase64": "data:image/png;base64,iVBORw0KGgo...",
+  "pairingCode": "ABCD-1234",
+  "linkedApiKeyId": null
+}
+```
+
+<ResponseField name="numberId" type="string">
+  El **id del número**: el mismo `id` que devuelve [`GET /v1/numbers`](/es/api/numbers/list), que recibe `DELETE /v1/numbers/{id}` y que todo webhook lleva en `data.numberId`. Guárdalo ahora: ya no necesitas listar los números para encontrar el id del que acabas de crear.
+</ResponseField>
+
+`instance` no cambia, e `instance.id` sigue siendo el id de la **instancia**, no el id del número. Indexa tus registros por `numberId`.
+
+El `201` también trae `settings` (la [configuración](/es/api/numbers/settings) con la que se creó el número, incluidos los valores predeterminados) y, cuando el cuerpo definió alguno de los campos de número no oficial, `settingsSync` (`applied` / `failed` / `skipped`) que informa el envío al proveedor.
+
+<Warning>
+  Llama a estos endpoints solo desde tu **backend**: nunca expongas tu clave `ps_` en el navegador.
+</Warning>
+
+### Números de Meta (Cloud API oficial)
+
+`POST /v1/numbers` crea un número **no oficial (vinculado por QR)**. Para números oficiales de Meta Cloud API, usa en su lugar uno de los flujos de Meta:
+
+- `POST /v1/numbers/meta`: BYO-WABA directo: trae tus propias credenciales de WABA, o
+- Meta Embedded Signup alojado mediante un [enlace de vinculación remota](/es/api/numbers/remote-pairing) con `metaFlow`.
+
+### POST /v1/numbers/meta: trae tu propia WABA
+
+Aprovisiona un **número oficial de Meta Cloud API** a partir de credenciales de WABA que ya tienes. Este flujo es para plataformas que ya controlan la WABA y tienen un **token de system user**. Si no tienes estas credenciales, usa en su lugar el Embedded Signup alojado mediante un [enlace de vinculación remota](/es/api/numbers/remote-pairing) con `provider=META`.
+
+Una clave de workspace puede llamarlo. Una clave de número se rechaza (`403 NUMBER_KEY_CANNOT_CREATE_NUMBER`), al igual que un token OAuth autorizado para números específicos (`403 NUMBERS_GRANT_NOT_ALLOWED`). Por OAuth o con una clave de cuenta requiere `numbers:connect` (Admin u Owner).
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/meta" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_token_here" \
+  -d '{
+    "name": "My Official Number",
+    "number": "+5511999999999",
+    "metaPhoneId": "123456789012345",
+    "metaWabaId": "987654321098765",
+    "metaAccessToken": "EAAG...",
+    "metaAppSecret": "your_meta_app_secret",
+    "metaAppId": "112233445566778"
+  }'
+```
+
+<ParamField body="name" type="string" required>
+  Nombre visible del número (de 1 a 60 caracteres).
+</ParamField>
+
+<ParamField body="number" type="string" required>
+  El número de teléfono en dígitos, con `+` inicial opcional (al menos 8 caracteres).
+</ParamField>
+
+<ParamField body="metaPhoneId" type="string" required>
+  El **phone number ID** de Meta del teléfono de la WABA.
+</ParamField>
+
+<ParamField body="metaWabaId" type="string" required>
+  El **ID de la WhatsApp Business Account (WABA)**.
+</ParamField>
+
+<ParamField body="metaAccessToken" type="string" required>
+  Un **token de acceso de system user** con acceso a la WABA.
+</ParamField>
+
+<ParamField body="metaAppSecret" type="string" required>
+  El app secret de tu app de Meta.
+</ParamField>
+
+<ParamField body="metaAppId" type="string" required>
+  El ID de tu app de Meta.
+</ParamField>
+
+<ParamField body="routeWebhooksToPilot" default="false" type="boolean">
+  Cuando es `true`, Pilot Status suscribe tu WABA a **su propio** callback de webhook (definiendo el `override_callback_uri` de Meta más un verify token por número), para que los mensajes entrantes lleguen a Pilot automáticamente: nunca pegas una URL de webhook en tu App Dashboard de Meta. La respuesta devuelve entonces `webhook.routedToPilot: true`.
+
+  **Predeterminado `false`.** La sobrescritura es un único valor por WABA, así que habilitarla **redirige todos los números de esa WABA** fuera del callback que use tu app actualmente (por ejemplo, tu propio backend o un Chatwoot existente). Defínelo solo cuando quieras que Pilot Status se encargue de la entrega de webhooks de esta WABA.
+</ParamField>
+
+<ParamField body="linkToApiKey" type="boolean" deprecated>
+  **Retirado: se acepta pero no hace nada**, exactamente como en `POST /v1/numbers` arriba. `linkedApiKeyId` en la respuesta es siempre `null`.
+</ParamField>
+
+Errores:
+
+- `400 INVALID_BODY`: el cuerpo de `POST /v1/numbers` o `POST /v1/numbers/meta` no es JSON válido; no se crea nada. Consulta [Cuerpo JSON mal formado](/es/api/overview#cuerpo-json-mal-formado).
+- `400`: `{ "error": "Validation error", "details": … }`: campos del cuerpo ausentes o inválidos. En `POST /v1/numbers` también `400 INVALID_SETTINGS` (bloque `settings` incorrecto) y `400` `{ "error": "Invalid piiMode" }` / el mensaje de `piiRetentionDays`.
+- `402 PLAN_NUMBER_LIMIT_REACHED`: la cuota de números propia de tu plan está llena. **En el plan Free**, agregar créditos **no** lo resuelve: libera un espacio, compra tú mismo un número adicional o sube de plan. **En un plan pago** se responde solo cuando nunca compraste un número adicional y el siguiente no se puede pagar.
+- `402 INSUFFICIENT_FUNDS`: solo planes pagos: el número sería un **adicional pago** y no hay saldo en la billetera ni tarjeta guardada.
+- `403 NUMBER_KEY_CANNOT_CREATE_NUMBER`: una clave de número (`ps_number_`, o una clave `ps_` heredada limitada a un número) no puede crear números. Usa una clave de workspace o una clave de cuenta. El cuerpo es `{ "error": "A number key cannot create WhatsApp numbers: use a workspace API key or an account API key (ps_account_…) to connect a new number | Uma chave de número não pode criar números de WhatsApp: use uma API key de workspace ou uma API key de conta (ps_account_…) para conectar um novo número", "code": "NUMBER_KEY_CANNOT_CREATE_NUMBER" }`.
+- `403 NUMBERS_GRANT_NOT_ALLOWED`: las autorizaciones OAuth por número no pueden aprovisionar números.
+- `403 PERMISSION_DENIED`: token OAuth o clave de cuenta de un usuario por debajo de Admin (`numbers:connect`).
+- `409`: "Number already exists" (el número ya existe).
+- `409 NUMBER_SOFT_DELETED`: solo `POST /v1/numbers`: el teléfono se eliminó en este workspace y está dentro de su ventana de 30 días; el cuerpo trae `numberId` y `restorableUntil`. Una clave de número nunca recibe esta respuesta: se rechaza antes con `403 NUMBER_KEY_CANNOT_CREATE_NUMBER`. Consulta la sección DELETE más abajo.
+- `502`: solo `POST /v1/numbers`: `{ "error": "Failed to create instance", "details": "Upstream provider returned …" }`. No se conserva nada.
+
+### Errores de capacidad y cómo resolverlos
+
+Ambas rutas de aprovisionamiento de esta página (`POST /v1/numbers` y `POST /v1/numbers/meta`) verifican la capacidad **antes** de que se escriba la fila del número, y ambas rechazan con **`402`**. El estado por sí solo no te dice qué hacer: el campo `error` sí. En estas dos rutas el discriminador llega **solo** en `error`; `POST /v1/numbers/remote-pairing` envía los mismos valores tanto en `error` como en `code`.
+
+| `error` | Qué significa | Cómo resolverlo |
+| --- | --- | --- |
+| `PLAN_NUMBER_LIMIT_REACHED` en el **plan Free** | La cuota propia del plan está llena. Free nunca compra un número adicional por sí solo, así que esta es la respuesta tengas o no créditos o una tarjeta guardada. | Libera un espacio (`DELETE /v1/numbers/{id}`), compra tú mismo un número adicional ([convierte la cuenta a On Demand y pide confirmación](/es/api/extra-numbers#plan-free)) o sube de plan. **El dinero por sí solo no resuelve este caso.** |
+| `PLAN_NUMBER_LIMIT_REACHED` en un **plan pago** | El tope es la cuota propia de tu plan, nunca se compró ni se otorgó un número adicional, y el siguiente no se puede pagar. | Libera un espacio o sube de plan, o agrega créditos o guarda una tarjeta: con fondos el número se crea, y el adicional se cobra en su [primera conexión](/es/api/extra-numbers#se-cobra-al-conectar-por-primera-vez). |
+| `INSUFFICIENT_FUNDS` (solo planes pagos) | El siguiente número es un **adicional pago** (ya sea un plan que factura por número, o una cuenta que ya compró adicionales) y no se puede pagar. | Agrega créditos o guarda una tarjeta, y vuelve a intentarlo. |
+
+El cuerpo trae los números detrás del rechazo, para que nunca tengas que adivinar:
+
+```json
+{
+  "error": "PLAN_NUMBER_LIMIT_REACHED",
+  "plan": "FREE",
+  "maxNumbers": 1,
+  "currentNumberCount": 1,
+  "extras": 1,
+  "proratedTotal": 14.95,
+  "walletBalance": 0,
+  "currency": "BRL"
+}
+```
+
+<Note>
+  **Cambió.** Un plan cuya cuota simplemente estaba llena antes también respondía `INSUFFICIENT_FUNDS`, así que a una cuenta con un número en un plan de un número se le decía que no tenía dinero, y se ponía a buscar un saldo que nunca fue el problema. El estado no cambia (`402`); lo nuevo es el valor en `error` y los campos que lo acompañan.
+</Note>
+
+#### Entrega de webhooks (entrantes)
+
+El envío funciona desde el momento en que se crea el número: no depende del webhook. Para que Pilot Status también **reciba** mensajes entrantes, Meta tiene que entregar los webhooks de esta WABA a Pilot. La respuesta trae un objeto `webhook` exactamente para esto:
+
+```json
+{
+  "webhook": {
+    "url": "https://webhook.pilotstatus.com.br/api/meta/webhook",
+    "verifyToken": "…",
+    "routedToPilot": false
+  }
+}
+```
+
+`webhook.verifyToken` se devuelve a toda clave `ps_`. En una conexión OAuth / MCP se devuelve solo después de que la revelación queda registrada en la auditoría del workspace; si ese registro no se puede escribir, el número se crea igual, pero `verifyToken` vuelve `null` junto con `secretWithheld: true`, `secretWithheldCode: "OAUTH_SECRET_AUDIT_UNAVAILABLE"` y un `secretWithheldReason` bilingüe.
+
+Dos formas de conectarlo:
+
+- **Automática**: envía `routeWebhooksToPilot: true` en la solicitud. Pilot suscribe la WABA por ti y la respuesta devuelve `webhook.routedToPilot: true`; no hay nada más que configurar.
+- **Manual**: en tu App Dashboard de Meta, define la **Callback URL** del producto WhatsApp como `webhook.url` y el **Verify token** como `webhook.verifyToken`.
+
+La página de conexión alojada `metaFlow: "credentials"` (consulta [vinculación remota](/es/api/numbers/remote-pairing)) ofrece la misma opción como una casilla.
+
+## GET /v1/numbers/{id}/connect: regenerar el código QR
+
+Genera un **nuevo código QR y código de vinculación** cuando la instancia no está `OPEN`.
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/wa_abc/connect" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+- La respuesta incluye `qrcodeBase64` y `pairingCode` nuevos.
+- Si el número ya está conectado (`OPEN`), el endpoint devuelve **409**: no hay nada que vincular.
+- **Plan Free:** cuando la cuota del plan ya está llena y este número nunca se conectó, el endpoint devuelve `402` con `{ "error": "PLAN_NUMBER_LIMIT_REACHED", "code": "PLAN_NUMBER_LIMIT_REACHED", "message": "…", "plan": "FREE", "maxNumbers": 1, "currentNumberCount": 1 }`, y no se genera ningún código QR. `message` es una frase bilingüe, `English | Português`. Volver a vincular un número que ya se había conectado nunca se rechaza. Consulta [Plan Free](/es/api/extra-numbers#plan-free).
+- No aplica a los números de **Meta** (no usan vinculación por QR): el endpoint responde `404` `{ "error": "Not found" }`, igual que para un id desconocido.
+- `502` `{ "error": "Failed to generate QR code", "code": "EMPTY_CONNECT_BUNDLE" }` cuando el proveedor no devolvió ni un código QR ni un código de vinculación: vuelve a intentarlo.
+- `{id}` puede ser el id del número o el id de la instancia. Por OAuth o con una clave de cuenta requiere `numbers:connect` (Admin u Owner).
+- Refleja el mismo estado de conexión que la página Numbers del panel.
+
+## DELETE /v1/numbers/{id}: eliminar un número
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wa_abc" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+```json
+{ "ok": true, "restorableUntil": "2026-10-23T12:33:06.604Z" }
+```
+
+`{id}` puede ser el id del número o el id de la instancia. Id desconocido: `404` `{ "error": "Number not found" }`.
+
+Es una **eliminación lógica de 30 días**, no un borrado:
+
+* El dispositivo vinculado **cierra sesión de inmediato**: el número deja de enviar y recibir.
+* El número en sí (id, claves de API, webhooks, historial de mensajes) se conserva hasta `restorableUntil`, y luego un proceso en segundo plano lo destruye definitivamente.
+* Mientras está en esa ventana, volver a crear el **mismo teléfono** con `POST /v1/numbers` devuelve **`409 NUMBER_SOFT_DELETED`** (el cuerpo trae el `numberId` anterior). Restáuralo, o púrgalo primero.
+
+<Note>
+  **Facturación:** en Pay As You Go un número eliminado no se cobra en el siguiente ciclo, purgado o no. En los demás planes eliminar **no** reduce tu capacidad pagada; para pagar menos números adicionales, [programa una reducción](/es/api/extra-numbers).
+</Note>
+
+## POST /v1/numbers/{id}/restore: deshacer una eliminación
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/wa_abc/restore" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json
+{ "ok": true, "requiresReconnect": true }
+```
+
+Recupera el número dentro de su ventana de 30 días, con el mismo id, claves de API, webhooks e historial. Restaura el **registro, no la conexión**: el dispositivo cerró sesión al eliminar, así que vuelve a conectarlo después con `GET /v1/numbers/{id}/connect` (o vuelve a aprovisionar un número de Meta). Una restauración exitosa emite `number.restored` a los webhooks del número.
+
+* **`404`** con `code: RESTORE_WINDOW_EXPIRED` una vez que pasaron los 30 días.
+* **`409 NUMBER_ALREADY_ACTIVE`** cuando el mismo teléfono se volvió a conectar mientras tanto: usa el número activo.
+* **Restaurar un número que ya se había conectado puede generar un cobro.** Ese número vuelve a contar en tu cantidad de números. Si eso lleva al workspace por encima de la capacidad que pagó, se cobra un número adicional al restaurar, prorrateado por el resto del ciclo. Cuando eso no se puede pagar, recibes **`422 INSUFFICIENT_FUNDS`** (o `PLAN_NUMBER_LIMIT_REACHED`) con `proratedTotal` y `walletBalance`, no se cobra nada y el número sigue eliminado. Reintentar la misma restauración nunca cobra dos veces.
+* **Restaurar un número que nunca se conectó no cuesta nada.** Todavía no cuenta, y se cobra en su [primera conexión](/es/api/extra-numbers#se-cobra-al-conectar-por-primera-vez), como cualquier otro.
+
+## DELETE /v1/numbers/{id}/purge: eliminar de forma permanente
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wa_abc/purge" \
+  -H "x-api-key: ps_your_tenant_scoped_key"
+```
+
+```json
+{ "ok": true }
+```
+
+<Warning>
+  **Irreversible.** Purgar destruye el número de inmediato, con todo lo que contiene (historial de mensajes, chats, plantillas, los webhooks y las claves de API del número) y da de baja un número de Meta en Meta. No hay restauración después.
+</Warning>
+
+* Funciona en un número ya eliminado con `DELETE /v1/numbers/{id}` (el flujo habitual es eliminar y luego purgar) o en uno activo.
+* Úsalo cuando el **mismo teléfono** tenga que volver a crearse de inmediato (el caso `409 NUMBER_SOFT_DELETED`).
+* No ahorra nada en la factura en comparación con `DELETE`.
+* Llámalo con una **clave limitada al tenant**. Una clave vinculada al número eliminado deja de autenticar en cuanto el número se elimina.
+* Con un token OAuth / MCP, solo el **OWNER** del workspace puede purgar (`403 PERMISSION_DENIED` en caso contrario).
+
+## Webhooks relacionados
+
+- `number.created`: se dispara cuando se crea la instancia.
+- `number.connected`: se dispara cuando el cliente completa la conexión por QR / código de vinculación (estado `OPEN`).
+- `number.removed`: se dispara al eliminar.
+- `number.restored`: se dispara cuando un número eliminado se restaura dentro de su ventana de 30 días (esta ruta o el panel). El número vuelve desconectado.
+
+Consulta la [referencia de eventos de webhook](/es/api/webhooks/events).

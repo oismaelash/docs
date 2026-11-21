@@ -1,0 +1,125 @@
+---
+title: "Autenticación de la API con x-api-key | Pilot Status"
+sidebarTitle: "Autenticación"
+description: "Autentícate con el header x-api-key o x-api-key-id, los prefijos de clave ps_number_, ps_workspace_ y ps_account_, claves con alcance de número vs. de tenant, claves de cuenta con x-workspace-id y rotación de claves."
+mode: "wide"
+---
+
+# Autenticación de la API
+
+Toda solicitud a la API de Pilot Status requiere una API key en uno de estos headers:
+
+- `x-api-key`: la clave en bruto (`ps_*`)
+- `x-api-key-id`: el ID de la API key (el backend la resuelve internamente)
+
+<Warning>
+  Nunca envíes una clave `ps_` como `Authorization: Bearer`. Un valor Bearer se interpreta como un token de acceso OAuth, así que una clave enviada ahí recibe `401` (`Invalid or expired access token`). `Authorization: Bearer` es solo para los tokens de acceso OAuth que Pilot Status emite a conectores MCP y apps OAuth ([Tipos de clave](/es/api/key-types#qué-puede-llamar-cada-credencial)); cuando `x-api-key` o `x-api-key-id` está presente, se ignora.
+</Warning>
+
+<Note>
+  **Prefiere `x-api-key`.** Un id de clave es un identificador, no un secreto: se muestra y se registra en lugares donde una clave nunca aparece. La autenticación **solo** con `x-api-key-id` puede ser desactivada por la plataforma; cuando lo esté, recibirá `401 API_KEY_ID_ONLY_NOT_ACCEPTED`. Enviar `x-api-key-id` junto con `x-api-key` sigue funcionando, siempre que ambos indiquen la misma clave; de lo contrario, `401` `API key headers mismatch`.
+</Note>
+
+## Prefijo de la clave
+
+Todas las claves en bruto empiezan con `ps_`. Las claves creadas a partir del 2026-10-28 también indican su tipo: `ps_number_` (clave de número), `ps_workspace_` (clave de workspace) o `ps_account_` (clave de cuenta). Las claves anteriores (`ps_` + hex) siguen funcionando sin cambios. Consulta [Tipos de clave](/es/api/key-types).
+
+## Dónde encontrar una API key
+
+- Clave **con alcance de número**: panel `/api-keys`. Cada número de WhatsApp tiene **una clave predeterminada** que puedes **regenerar** (no hay subclaves ni relación padre-hijo).
+- Clave **con alcance de tenant** (clave de workspace): panel **Workspace keys** (`/workspace-api-keys`). La **clave principal** del workspace, más **claves con nombre**, una por integración.
+- **Clave de cuenta** (`ps_account_`): panel **Profile → API**. Tu propia clave, que actúa en cualquier workspace del que seas miembro, elegido con el header `x-workspace-id`. Consulta [Claves de cuenta](/es/api/key-types#claves-de-cuenta).
+
+<Note>
+  La API key en bruto se muestra solo una vez al generarla o regenerarla. Guárdala de forma segura.
+</Note>
+
+## Alcance de la clave (número vs. tenant)
+
+Cada API key tiene un **alcance** que determina qué endpoints puede llamar. Ambos alcances se autentican de la misma forma (`x-api-key: ps_*` o `x-api-key-id`).
+
+| Alcance | Vinculada a | Puede llamar | Dónde encontrarla |
+| --- | --- | --- | --- |
+| **Con alcance de número** (predeterminada) | Un número de WhatsApp | Todos los endpoints de acción y datos de ese número: `POST /v1/messages/send`, estado del mensaje, cancelación, grupos, newsletters, plantillas, analytics, multimedia | Panel → página **API Keys** (una clave predeterminada por número; **Regenerate**) |
+| **Con alcance de tenant** (clave de workspace) | El tenant (sin número) | Todo. El ciclo de vida de los números (`/v1/numbers/*` y `/v1/remote-pairing/*`), los recursos de la cuenta (`/v1/api-keys`, `/v1/branding`, `/v1/subscription/extra-numbers`, `/v1/billing/checkout`, `/v1/webhooks/*`, `/v1/embed/sessions`) **y** cada endpoint por número de cualquier número del tenant, indicándolo en `x-whatsapp-number-id`. | Panel → **Workspace keys** |
+
+### Clave con alcance de número
+
+El tipo de clave predeterminado. Está vinculada a un único número de WhatsApp y se usa para todas las operaciones de acción y datos de ese número (enviar mensajes, consultar estados, grupos, newsletters, plantillas, analytics, multimedia). Registra cada acción realizada para ese número.
+
+### Clave con alcance de tenant
+
+Una clave con alcance de tenant (una **clave de workspace**, `ps_workspace_`) **no tiene un número asociado**. Está pensada para plataformas SaaS que conectan y gestionan varios números (incluidos los números de sus clientes) mediante la API pública. Cada workspace tiene una **clave principal** (la que usa el agente de IA dentro de la app) y puede agregar **claves con nombre**, una por integración, que se revocan de forma independiente. Consulta [Claves de workspace](/es/api/key-types#claves-de-workspace).
+
+- Gestiona números mediante `/v1/numbers/*` y `/v1/remote-pairing/*`, y gestiona recursos de la cuenta: `/v1/api-keys` (listar la clave de cada número y regenerarla), `/v1/branding`, `/v1/subscription/extra-numbers`, `/v1/billing/checkout`, `/v1/webhooks/*` y `/v1/embed/sessions` (connect).
+- Es el **único** alcance que puede gestionar API keys por número mediante `POST /v1/api-keys`; una clave con alcance de número no puede.
+- Puede llamar a cualquier endpoint **por número** (incluido el envío) indicando el número en el header `x-whatsapp-number-id`. No necesitas una clave separada por número.
+- Se genera y regenera en el panel, en **Workspace keys** (`/workspace-api-keys`). Antes del 2026-10-28 estaba en **Profile → API**, que ahora contiene tus claves de cuenta.
+
+### Actuar sobre un número específico con una clave de tenant
+
+Envía `x-whatsapp-number-id` con el id del número con el que quieres actuar. Acepta el `WhatsAppNumber.id` o el `WhatsAppInstance.id` principal devuelto por `GET /v1/numbers`.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_tenant_key" \
+  -H "x-whatsapp-number-id: <id from GET /v1/numbers>" \
+  -H "Content-Type: application/json" \
+  -d '{"destinationNumber":"5511999999999","text":"Hi"}'
+```
+
+Si omites el header en un endpoint por número, la API responde con **HTTP 403** y te pide indicar el número:
+
+```json
+{
+  "error": "This endpoint acts on a single WhatsApp number: send the x-whatsapp-number-id header naming the number to act on (its id or instance id from GET /v1/numbers) | Este endpoint atua sobre um único número de WhatsApp: envie o header x-whatsapp-number-id indicando o número desejado (o id dele ou o id da instância, obtidos em GET /v1/numbers)",
+  "code": "TENANT_SCOPE_NOT_ALLOWED"
+}
+```
+
+Un id que no pertenece a tu tenant se rechaza con **HTTP 404**: una clave de tenant nunca puede llegar al número de otro tenant. Cuerpo: `{"error":"x-whatsapp-number-id does not name a WhatsApp number of this account | …","code":"NUMBER_NOT_FOUND"}`.
+
+## Regenerar / rotar claves
+
+Regenera la clave predeterminada de un número desde la página **API Keys** del panel, o mediante la API:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/api-keys/regenerate" \
+  -H "x-api-key: ps_your_current_key"
+```
+
+Regenerar invalida la clave anterior de inmediato; la nueva clave en bruto se devuelve una sola vez. Llamado con una clave de workspace (la principal o una con nombre), rota la clave **principal** del workspace; las claves con nombre siguen funcionando.
+
+## Solicitudes de ejemplo
+
+<CodeGroup>
+
+```bash x-api-key
+curl "https://pilotstatus.com.br/v1/messages/msg_abc" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```bash x-api-key-id
+curl "https://pilotstatus.com.br/v1/messages/msg_abc" \
+  -H "x-api-key-id: ck_xxx"
+```
+
+</CodeGroup>
+
+## Errores comunes
+
+- `401`: credencial ausente o inválida. El cuerpo es `{ "error": "…" }` sin `code`: `Missing x-api-key, x-api-key-id or Authorization Bearer token`, `Invalid API key` (clave desconocida o revocada), `API key headers mismatch` (`x-api-key` y `x-api-key-id` indican claves distintas) o `Invalid or expired access token` (Bearer). La única excepción es `API_KEY_ID_ONLY_NOT_ACCEPTED`, mencionada arriba.
+- `403`: clave válida, pero operación bloqueada (por ejemplo, una clave con alcance de tenant llamando a un endpoint de acción por número → `code: "TENANT_SCOPE_NOT_ALLOWED"`, una clave con alcance de número llamando a un endpoint exclusivo de tenant → `code: "NUMBER_SCOPE_NOT_ALLOWED"`, o una clave con alcance de número intentando crear un número → `code: "NUMBER_KEY_CANNOT_CREATE_NUMBER"`).
+- `403 WORKSPACE_ARCHIVED`: el workspace de la clave fue archivado; su API está cerrada.
+- Los tokens OAuth / MCP siguen la membresía **en vivo** del usuario, verificada de nuevo en cada solicitud (en caché por un máximo de 30 segundos): un usuario que ya no es miembro activo recibe `401 OAUTH_MEMBERSHIP_REVOKED`, y un token por número cuyos números ya no están en el alcance del usuario recibe `401 OAUTH_GRANT_NUMBERS_REVOKED`. Ambos incluyen `WWW-Authenticate: Bearer error="invalid_token"`: vuelve a iniciar sesión. Un cambio de rol o de número se aplica en la siguiente solicitud: el token llega solo a lo que el usuario puede alcanzar hoy.
+- `404 NUMBER_NOT_FOUND`: el número al que pertenece esta clave fue eliminado o reconectado (reconectar crea un número nuevo): genera una clave nueva para el número actual.
+- Las claves de cuenta agregan `400 WORKSPACE_ID_REQUIRED`, `403 WORKSPACE_MEMBERSHIP_REQUIRED` y `403 ACCOUNT_KEY_REQUIRED`; consulta [Tipos de clave → Errores](/es/api/key-types#errores).
+
+## Buenas prácticas de seguridad
+
+<Warning>
+  Usa las API keys solo en el **backend**: nunca las expongas en código de frontend, apps móviles ni JavaScript del lado del cliente.
+</Warning>
+
+- Guarda la clave en variables de entorno o en un gestor de secretos.
+- Trata la respuesta de creación/regeneración como sensible (no registres la clave completa en logs).

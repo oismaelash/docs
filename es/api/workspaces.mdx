@@ -1,0 +1,291 @@
+---
+title: "API de Workspaces: Crea workspaces y sus claves"
+sidebarTitle: "Crear workspaces"
+description: "Lista los workspaces de los que formas parte, crea uno nuevo con POST /v1/workspaces (viene con su clave principal), lista, crea y revoca sus claves de workspace, y vincula o desvincula tu tarjeta de reserva por workspace, todo con una clave de cuenta (ps_account_). Cubre el tope por usuario, cómo nacen los workspaces de revendedor en Pay As You Go y shareCard."
+mode: "wide"
+---
+
+# API de Workspaces
+
+Estos endpoints funcionan a nivel de **tu usuario**, no de un workspace. Responden **solo a una [clave de cuenta](/es/api/key-types#claves-de-cuenta)** (`ps_account_`, creada en **Profile → API**).
+
+| Método | Endpoint | Qué hace |
+| --- | --- | --- |
+| `GET` | `/v1/workspaces` | Los workspaces de los que eres miembro activo, con tu rol en cada uno. |
+| `POST` | `/v1/workspaces` | Crea un workspace del que eres dueño, con su clave principal. |
+| `GET` | `/v1/workspaces/{workspaceId}/api-keys` | Las claves del workspace (principal y con nombre), enmascaradas. |
+| `POST` | `/v1/workspaces/{workspaceId}/api-keys` | Crea una clave de workspace con nombre. |
+| `DELETE` | `/v1/workspaces/{workspaceId}/api-keys/{keyId}` | Revoca una clave de workspace con nombre. |
+| `PUT` | `/v1/workspaces/{workspaceId}/shared-card` | Vincula tu tarjeta de reserva (tarjeta compartida) al workspace. |
+| `DELETE` | `/v1/workspaces/{workspaceId}/shared-card` | Desvincula tu tarjeta de reserva del workspace. |
+
+<Note>
+  **Solo claves de cuenta.** Una clave de workspace, una clave de número o un token OAuth/MCP recibe **403 `ACCOUNT_KEY_REQUIRED`**. Los tokens OAuth/MCP se rechazan a propósito: estos endpoints generan claves, y una clave generada a través de un conector seguiría funcionando después de revocar el conector. `x-workspace-id` se ignora aquí: el workspace, cuando lo hay, va en la ruta.
+</Note>
+
+Todas las respuestas se envían con `Cache-Control: no-store`. Los errores son `{ "error": "…", "code": "…" }`; decide en función de `code`. La mayoría de los mensajes `error` son bilingües (`English | Português`); `WORKSPACE_MEMBERSHIP_REQUIRED` y `PERMISSION_DENIED` en las rutas `…/{workspaceId}/api-keys`, y el `401`, vienen solo en inglés.
+
+## Listar tus workspaces
+
+`GET https://pilotstatus.com.br/v1/workspaces`
+
+```bash
+curl "https://pilotstatus.com.br/v1/workspaces" \
+  -H "x-api-key: ps_account_your_account_key"
+```
+
+```json Response (200)
+{
+  "data": [
+    {
+      "id": "cmh2a1b2c0001ws8example7k",
+      "name": "Acme Resale",
+      "role": "OWNER",
+      "plan": "PAY_AS_YOU_GO",
+      "createdAt": "2026-03-02T12:00:00.000Z",
+      "sharedCard": { "linked": false, "sourceWorkspaceId": null }
+    },
+    {
+      "id": "cmh2a9z8y0002ws8example1q",
+      "name": "Bakery Downtown",
+      "role": "OWNER",
+      "plan": "PAY_AS_YOU_GO",
+      "createdAt": "2026-10-28T09:15:00.000Z",
+      "sharedCard": { "linked": true, "sourceWorkspaceId": "cmh2a1b2c0001ws8example7k" }
+    }
+  ]
+}
+```
+
+- **Solo los workspaces donde tu membresía está activa.** Los workspaces archivados quedan fuera.
+- `role` es tu rol en ese workspace: `OWNER`, `ADMIN`, `AGENT` o `ANALYST`.
+- `plan` es el plan actual del workspace (`FREE`, `PAY_AS_YOU_GO`, `ON_DEMAND`, …).
+- `sharedCard` indica si el workspace está vinculado a una tarjeta compartida: `linked` y, cuando está vinculado, el `sourceWorkspaceId` cuya tarjeta lo respalda (`null` cuando no está vinculado). Consulta [Tarjeta compartida por workspace](#tarjeta-compartida-por-workspace).
+- Usa el `id` en `x-workspace-id` para actuar dentro de ese workspace con la misma clave de cuenta.
+
+## Crear un workspace
+
+`POST https://pilotstatus.com.br/v1/workspaces` con `{ "name": "…" }` y, opcionalmente, `"shareCard": true`. Te conviertes en el **Owner** del workspace, y la respuesta trae su **clave principal**, mostrada **solo esta vez**.
+
+<ParamField body="name" type="string" required>
+  De 1 a 60 caracteres, después de recortar espacios.
+</ParamField>
+
+<ParamField body="shareCard" type="boolean">
+  `true` vincula el nuevo workspace a **tu tarjeta de reserva** (la [tarjeta compartida](#tarjeta-compartida-por-workspace)), para que respalde las renovaciones de este cliente. `false` o **ausente**: el workspace **no** se comparte. Debe ser un booleano JSON: `"true"`, `1` o `null` reciben **400 `INVALID_SHARE_CARD`**.
+</ParamField>
+
+`name` y `shareCard` son los únicos campos aceptados. Cualquier otro campo recibe **400 `UNKNOWN_FIELDS`**. Un cuerpo que no es un objeto JSON (JSON mal formado incluido) se lee como vacío, así que recibe **400 `NAME_REQUIRED`**, no `INVALID_BODY`.
+
+<Warning>
+  **Cambio de comportamiento (2026-10-29): la tarjeta de reserva ya no se comparte automáticamente.** Antes, un workspace que un revendedor creaba mediante `POST /v1/workspaces` heredaba la tarjeta de reserva por sí solo. Ahora se comparte **solo cuando envías `"shareCard": true`**. Si tu integración dependía del comportamiento anterior, agrega el campo, o vincula los workspaces existentes con [`PUT …/shared-card`](#vincular-la-tarjeta-compartida).
+</Warning>
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/workspaces" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_account_your_account_key" \
+  -d '{ "name": "Bakery Downtown", "shareCard": true }'
+```
+
+```json Response (201)
+{
+  "id": "cmh2a9z8y0002ws8example1q",
+  "name": "Bakery Downtown",
+  "plan": "PAY_AS_YOU_GO",
+  "createdAt": "2026-10-28T09:15:00.000Z",
+  "role": "OWNER",
+  "apiKey": {
+    "id": "cmh2aa0010003ak8example4d",
+    "name": "Workspace API Key",
+    "key": "ps_workspace_9f3c1a7e5b2d8f4a6c0e9b1d7f3a5c8e2b4d6f8a0c1e3b5d",
+    "prefix": "ps_workspace_",
+    "last4": "3b5d",
+    "isPrimary": true,
+    "createdAt": "2026-10-28T09:15:00.000Z"
+  },
+  "sharedCard": { "linked": true, "sourceWorkspaceId": "cmh2a1b2c0001ws8example7k" }
+}
+```
+
+</CodeGroup>
+
+- **`apiKey.key` viene solo en esta respuesta.** Guárdala antes de hacer cualquier otra cosa. Las lecturas posteriores muestran solo `prefix` y `last4`.
+- **`apiKey` puede ser `null`.** Primero se guarda el workspace y luego se genera la clave. Si la generación falla, la respuesta sigue siendo `201`, para que un reintento no cree un segundo workspace. Rota la clave principal con `POST /v1/api-keys/regenerate` (clave de cuenta más `x-workspace-id`, rol Owner), o crea una clave con nombre con [`POST /v1/workspaces/{id}/api-keys`](#crear-una-clave-con-nombre).
+- **Crear no es idempotente.** Dos `POST` crean dos workspaces. Después de un timeout, consulta `GET /v1/workspaces` antes de intentar de nuevo.
+- **`sharedCard`** te dice cómo nació el workspace: `{ "linked": false, "sourceWorkspaceId": null }` sin `shareCard: true`.
+- **Con `shareCard: true`, la tarjeta se verifica antes de crear nada.** Si no tienes una tarjeta de reserva configurada (**409 `SHARED_CARD_NOT_CONFIGURED`**), el workspace de origen está archivado (**409 `SOURCE_ARCHIVED`**) o ya no eres un Owner activo de él (**409 `NO_SHARED_OWNER`**): **no se crea ningún workspace**, así que reintentar sin `shareCard` es seguro.
+
+### Cómo nace el nuevo workspace
+
+| Eres | Plan | Precios | Tarjeta |
+| --- | --- | --- | --- |
+| Un usuario común | **Free** | Los estándar | Ninguna |
+| Un **revendedor** (marcado por el equipo de Pilot Status) | **Pay As You Go**, cobrado desde la billetera | **Tus precios de revendedor**: el precio por número y el precio de línea telefónica acordados contigo | **Ninguna**, salvo que envíes `shareCard: true`; en ese caso, **tu tarjeta de reserva** (tarjeta compartida) |
+
+Los workspaces de revendedor empiezan sin ningún cargo: sin cuota de plan, sin números y sin saldo. El primer cargo es el primer número que se conecta, o la primera línea que compras. La **tarjeta compartida** es un respaldo: paga un cargo solo cuando la billetera del workspace no lo cubre **y** el workspace no tiene tarjeta propia. Consulta [Facturación para revendedores](/es/reseller-billing#tarjeta-compartida).
+
+<Note>
+  La marca de revendedor y los precios de revendedor los define el **equipo de Pilot Status**, no la API. El equipo también configura **cuál de tus workspaces contiene tu tarjeta de reserva**: eso es lo que te permite compartirla. Qué workspaces de clientes la usan es decisión **tuya**, por workspace: `shareCard` al crearlo, o [`PUT`/`DELETE …/shared-card`](#tarjeta-compartida-por-workspace) después. Habla con nosotros para configurarlos. Se aplican a los workspaces creados desde ese momento; los workspaces que ya tenías conservan su plan.
+</Note>
+
+### Cuántos workspaces puedes tener
+
+Cada usuario puede ser dueño de hasta **10 workspaces** por defecto, contando cada workspace donde eres el Owner activo, incluido el primero. Por encima del límite, la respuesta es **409 `WORKSPACE_LIMIT_REACHED`**, con el límite en `limit`:
+
+```json Response (409)
+{
+  "error": "You already own 10 workspaces, which is the limit | Você já é dono de 10 workspaces, que é o limite",
+  "code": "WORKSPACE_LIMIT_REACHED",
+  "limit": 10
+}
+```
+
+El límite es un freno contra el abuso, no una regla de plan. Si revendes y necesitas más, el equipo de Pilot Status lo aumenta para tu usuario.
+
+## Tarjeta compartida por workspace
+
+Tu **tarjeta de reserva** es la tarjeta guardada en uno de tus workspaces, el **workspace de origen**, elegido por el equipo de Pilot Status para tu usuario. Un workspace de cliente **vinculado** a ella recurre a esa tarjeta cuando su propia billetera no cubre un cargo de la plataforma y no tiene tarjeta propia (su propia tarjeta siempre va primero; el respaldo es de un solo salto: no se sigue la tarjeta compartida del propio origen). Tú decides qué workspaces de clientes quedan vinculados:
+
+- **Al crearlo:** `"shareCard": true` en [`POST /v1/workspaces`](#crear-un-workspace). Ausente o `false`, el workspace no queda vinculado.
+- **Después:** `PUT` vincula, `DELETE` desvincula (abajo). **Desvincula a un cliente que dejó de pagar** y tu tarjeta deja de pagar las renovaciones de ese cliente: una renovación fallida entonces suspende solo a ese cliente.
+
+Ambos endpoints requieren que seas el **Owner** de `{workspaceId}`: no ser miembro activo, o un workspace que no existe o está archivado, reciben **403 `WORKSPACE_MEMBERSHIP_REQUIRED`**, y un rol inferior a Owner recibe **403 `PERMISSION_DENIED`**. **No reciben cuerpo**. En `PUT`, cualquier campo recibe **400 `UNKNOWN_FIELDS`** (un cuerpo vacío o `{}` está bien); `DELETE` ignora el cuerpo.
+
+### Vincular la tarjeta compartida
+
+`PUT https://pilotstatus.com.br/v1/workspaces/{workspaceId}/shared-card`
+
+```bash
+curl -X PUT "https://pilotstatus.com.br/v1/workspaces/cmh2a9z8y0002ws8example1q/shared-card" \
+  -H "x-api-key: ps_account_your_account_key"
+```
+
+```json Response (200)
+{
+  "workspaceId": "cmh2a9z8y0002ws8example1q",
+  "sharedCard": { "linked": true, "sourceWorkspaceId": "cmh2a1b2c0001ws8example7k" },
+  "changed": true
+}
+```
+
+- **Idempotente.** Si ya está vinculado al mismo origen: `200` con `"changed": false`, y no se registra nada.
+- El vínculo se registra en el **History** del workspace como **Backup card linked**. No se envía ningún e-mail.
+- **409 `SHARED_CARD_NOT_CONFIGURED`**: el equipo de Pilot Status no configuró una tarjeta de reserva para ti.
+- **400 `SELF_SOURCE`**: `{workspaceId}` es el propio workspace de origen.
+- **409 `SOURCE_ARCHIVED`**: el workspace de origen está archivado.
+- **409 `NO_SHARED_OWNER`**: ya no eres un Owner activo del workspace de origen.
+
+### Desvincular la tarjeta compartida
+
+`DELETE https://pilotstatus.com.br/v1/workspaces/{workspaceId}/shared-card`
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/workspaces/cmh2a9z8y0002ws8example1q/shared-card" \
+  -H "x-api-key: ps_account_your_account_key"
+```
+
+```json Response (200)
+{
+  "workspaceId": "cmh2a9z8y0002ws8example1q",
+  "sharedCard": { "linked": false, "sourceWorkspaceId": null },
+  "changed": true
+}
+```
+
+- **Idempotente.** Si no está vinculado: `200` con `"changed": false`, y no se registra nada.
+- La desvinculación se registra en el **History** del workspace como **Backup card unlinked**. No se envía ningún e-mail.
+- A partir de ese momento, los cargos del workspace usan solo su propia billetera y su propia tarjeta. Si no cubren una renovación, se suspende **ese workspace**: tu tarjeta no se cobra.
+- **409 `NO_SHARED_OWNER`**: el workspace está vinculado a un workspace de origen del que no eres Owner activo. Consulta al equipo de Pilot Status.
+
+## Claves de workspace
+
+Estos tres endpoints administran las [claves de workspace](/es/api/key-types#claves-de-workspace) de un workspace, con tu **rol actual** en él. No ser miembro activo, o un workspace que no existe o está archivado, reciben todos el mismo **403 `WORKSPACE_MEMBERSHIP_REQUIRED`**.
+
+### Listar las claves
+
+`GET https://pilotstatus.com.br/v1/workspaces/{workspaceId}/api-keys`: **Owner o Admin**.
+
+```json Response (200)
+{
+  "data": [
+    {
+      "id": "cmh2aa0010003ak8example4d",
+      "name": "Workspace API Key",
+      "prefix": "ps_workspace_",
+      "last4": "3b5d",
+      "isPrimary": true,
+      "createdAt": "2026-10-28T09:15:00.000Z",
+      "lastUsedAt": "2026-10-28T09:20:11.000Z"
+    },
+    {
+      "id": "cmh2ab7770004ak8example9m",
+      "name": "Billing integration",
+      "prefix": "ps_workspace_",
+      "last4": "a1c0",
+      "isPrimary": false,
+      "createdAt": "2026-10-28T10:02:40.000Z",
+      "lastUsedAt": null
+    }
+  ]
+}
+```
+
+La clave sin enmascarar nunca vuelve aquí. Las claves de número no se listan: se administran en [`/v1/api-keys`](/es/api/api-keys).
+
+### Crear una clave con nombre
+
+`POST https://pilotstatus.com.br/v1/workspaces/{workspaceId}/api-keys` con `{ "name": "…" }`: **Owner o Admin**.
+
+<ParamField body="name" type="string" required>
+  De 1 a 60 caracteres, después de recortar espacios. Úsalo para saber qué integración tiene la clave.
+</ParamField>
+
+```json Response (201)
+{
+  "apiKey": {
+    "id": "cmh2ab7770004ak8example9m",
+    "name": "Billing integration",
+    "key": "ps_workspace_4e8b0d2f6a1c3e5b7d9f0a2c4e6b8d0f1a3c5e7b9d0fa1c0",
+    "prefix": "ps_workspace_",
+    "last4": "a1c0",
+    "isPrimary": false,
+    "createdAt": "2026-10-28T10:02:40.000Z"
+  }
+}
+```
+
+La `key` sin enmascarar se muestra **solo esta vez**. La clave queda registrada como creada por ti: si te eliminan del workspace, la eliminación se detiene con `409 MEMBER_HAS_API_KEYS` hasta que el Owner decida revocarla o conservarla ([Eliminar a un miembro que creó claves de API](/es/api/workspace#eliminar-un-miembro-que-creó-claves-de-api)). Igual que en `POST /v1/workspaces`, un cuerpo que no es un objeto JSON se lee como vacío (`400 NAME_REQUIRED`). Un workspace admite hasta **50** claves de workspace vigentes (las claves revocadas no cuentan); por encima de eso, **409 `WORKSPACE_KEY_LIMIT_REACHED`** con `limit`.
+
+### Revocar una clave con nombre
+
+`DELETE https://pilotstatus.com.br/v1/workspaces/{workspaceId}/api-keys/{keyId}`: **Owner o Admin**. Responde `{ "id": "…", "revokedAt": "…" }`. La clave deja de funcionar en la siguiente solicitud. Revocar una clave que ya está revocada también responde `200`, con su `revokedAt` original, así que un reintento es seguro.
+
+- **La clave principal no se puede revocar** (**409 `PRIMARY_KEY_NOT_REVOCABLE`**): la usa el agente de IA integrado en la app. En su lugar, rótala con `POST /v1/api-keys/regenerate`, enviando tu clave de cuenta y `x-workspace-id` (rol Owner). Solo cambia la principal; las claves con nombre siguen funcionando.
+- Un id que no es una clave de workspace de este workspace recibe **404 `API_KEY_NOT_FOUND`**. Las claves de número se administran en [`/v1/api-keys`](/es/api/api-keys).
+
+## Errores
+
+| Status | `code` | Dónde | Qué pasó |
+| --- | --- | --- | --- |
+| `400` | `NAME_REQUIRED` | `POST` | `name` ausente o en blanco. |
+| `400` | `NAME_TOO_LONG` | `POST` | `name` tiene más de 60 caracteres. `maxLength` indica el límite. |
+| `400` | `UNKNOWN_FIELDS` | `POST`, `PUT …/shared-card` | Campos distintos de `name` y `shareCard` en `POST /v1/workspaces`; cualquier campo en `PUT …/shared-card`. `unknownFields` los indica. |
+| `400` | `INVALID_SHARE_CARD` | `POST /v1/workspaces` | `shareCard` está presente pero no es un booleano JSON (`"true"`, `1`, `null`, …). |
+| `400` | `SELF_SOURCE` | `PUT …/shared-card` | El workspace es el origen de tu tarjeta de reserva. |
+| `401` | — | todos | Clave ausente, inválida o revocada. |
+| `403` | `ACCOUNT_KEY_REQUIRED` | todos | La credencial no es una clave de cuenta. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | `…/{workspaceId}/…` | No eres miembro activo de ese workspace, o no existe. |
+| `403` | `PERMISSION_DENIED` | `…/{workspaceId}/…` | Tu rol ahí es inferior a Admin (inferior a Owner en `…/shared-card`). |
+| `404` | `API_KEY_NOT_FOUND` | `DELETE` | No hay ninguna clave de workspace con ese id en ese workspace. |
+| `409` | `WORKSPACE_LIMIT_REACHED` | `POST /v1/workspaces` | Ya eres dueño de tantos workspaces como tu límite. `limit` indica cuántos. |
+| `409` | `WORKSPACE_KEY_LIMIT_REACHED` | `POST …/api-keys` | El workspace ya tiene 50 claves de workspace vigentes (no revocadas). |
+| `409` | `PRIMARY_KEY_NOT_REVOCABLE` | `DELETE` | El id es la clave principal. |
+| `409` | `SHARED_CARD_NOT_CONFIGURED` | `POST` con `shareCard: true`, `PUT …/shared-card` | No hay ninguna tarjeta de reserva configurada para ti. En `POST`, no se crea ningún workspace. |
+| `409` | `SOURCE_ARCHIVED` | `POST` con `shareCard: true`, `PUT …/shared-card` | El workspace de origen de tu tarjeta de reserva está archivado. En `POST`, no se crea ningún workspace. |
+| `409` | `NO_SHARED_OWNER` | `POST` con `shareCard: true`, `…/shared-card` | No eres un Owner activo del workspace de origen. En `POST`, no se crea ningún workspace. |
+| `500` | — | todos | Falla inesperada (`Internal server error`). |
+
+En `POST /v1/workspaces` las verificaciones se ejecutan en este orden: `UNKNOWN_FIELDS`, `INVALID_SHARE_CARD`, `NAME_REQUIRED` / `NAME_TOO_LONG`, `WORKSPACE_LIMIT_REACHED`, y solo después, con `shareCard: true`, las verificaciones de la tarjeta de reserva (`SHARED_CARD_NOT_CONFIGURED`, `SOURCE_ARCHIVED`, `NO_SHARED_OWNER`).

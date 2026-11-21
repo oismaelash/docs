@@ -1,0 +1,164 @@
+---
+title: "Capa de Meta Cloud API: referencia de la API"
+sidebarTitle: "Meta Cloud API"
+description: "Llama a la WhatsApp Cloud API (Graph API) a través de la capa Meta de Pilot Status. Apunta tu URL base a la capa y conserva tus solicitudes actuales a la Graph API: Pilot cambia tu clave ps_ por el system token real de Meta del número."
+mode: "wide"
+---
+
+La **capa de Meta Cloud API** de Pilot Status es un passthrough transparente hacia la WhatsApp Cloud API (Graph API). Apunta tu URL base a la capa y conserva tus solicitudes actuales a la Graph API exactamente como están: Pilot Status cambia tu clave `ps_` por el **system token** real de Meta del número antes de reenviarlas, así nunca manejas tokens de Meta tú mismo.
+
+## URL base
+
+```text
+https://pilotstatus.com.br/api/layer/meta/
+```
+
+Agrega cualquier nodo de la Graph API exactamente como lo harías en `graph.facebook.com/<version>/`. El segmento de versión `vNN.N` es **opcional**: omítelo y Pilot usa el valor predeterminado configurado (`v22.0`), o inclúyelo (por ejemplo, `v22.0/<phone-number-id>/messages`) para fijar una versión.
+
+## Autenticación
+
+Envía tu clave `ps_` de Pilot Status usando cualquiera de las tres formas siguientes. Pilot Status la cambia por el token real de Meta del número antes de reenviar: la clave `ps_` nunca llega a Meta:
+
+```text
+x-api-key: ps_your_key_here
+```
+
+```text
+Authorization: Bearer ps_your_key_here
+```
+
+```text
+?access_token=ps_your_key_here
+```
+
+La clave tiene que resolverse a **un número de Meta Cloud API**: usa la clave de ese número. Una clave de workspace solo funciona en `x-api-key`, junto con el header `x-whatsapp-number-id` que indica el número: `Authorization: Bearer` y `?access_token=` leen solo la clave, sin un header que la acote. Una clave que no se resuelve a ningún número de Meta responde `400` `{ "status": 400, "error": "Bad Request", "message": "API key is not bound to a Meta Cloud API number" }`; una clave inválida responde `401`.
+
+## Cómo funciona
+
+La capa Meta es un **passthrough con lista de bloqueo**: reenvía el tráfico de mensajería, medios, plantillas, perfil, grupos y llamadas, y **bloquea** la gestión de cuenta / negocio / autenticación y el (des)registro de números. El id del nodo de Graph (id de número de teléfono, id de WABA, id de medio, id de grupo, id de plantilla) es el **primer segmento de la ruta**. Pilot Status verifica que el id de número de teléfono / id de WABA de la ruta pertenezca al número de tu API key (`403` en caso contrario).
+
+<Note>
+  Los nodos de un solo segmento (`GET`/`POST`/`DELETE /{id}`) se resuelven por **tipo de id**: la misma forma cubre ids de medios, grupos, números de teléfono y plantillas, exactamente como lo hace la Graph API. Consulta la descripción de cada operación en el [Playground](/es/playground/meta-cloud-api/post-phonenumberid-messages).
+</Note>
+
+## Operaciones admitidas
+
+### Mensajes
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `POST` | `/{phone-number-id}/messages` | Envía cualquier mensaje: `type` selecciona text / image / audio / video / document / sticker / location / contacts / interactive / template / reaction. |
+| `POST` | `/{phone-number-id}/messages/status` | Confirmación de lectura (`status: read`) o indicador de escritura. |
+
+### Medios
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `POST` | `/{phone-number-id}/media` | Sube un medio (**multipart/form-data**: `messaging_product`, `type`, `file`). |
+| `POST` | `/{app-id}/uploads` | Crea una sesión de carga reanudable (`file_length`, `file_type`). |
+| `POST` | `/{upload-id}` | Agrega los bytes del archivo (binario sin procesar, header `file_offset`). |
+| `GET` | `/{media-id}` | URL del medio + metadatos: la `url` se reescribe a una URL de descarga firmada de Pilot. |
+| `DELETE` | `/{media-id}` | Elimina un medio subido. |
+
+### Plantillas
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `GET` | `/{waba-id}/message_templates` | Lista las plantillas (paginación/filtro por query). |
+| `POST` | `/{waba-id}/message_templates` | Crea una plantilla para aprobación. |
+| `DELETE` | `/{waba-id}/message_templates` | Elimina una plantilla por nombre (`?name=`). |
+| `GET` | `/{template-id}` | Lee una plantilla. |
+| `POST` | `/{template-id}` | Edita los `components` de una plantilla aprobada. |
+
+### Números de teléfono
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `GET` | `/{phone-number-id}` | Información del número: número visible, calificación de calidad, estado. |
+| `GET` | `/{waba-id}/phone_numbers` | Lista los números de teléfono de la WABA. |
+
+### Perfil de empresa
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `GET` | `/{phone-number-id}/whatsapp_business_profile` | Lee el perfil de empresa (`?fields=...`). |
+| `POST` | `/{phone-number-id}/whatsapp_business_profile` | Actualiza campos del perfil de empresa. |
+
+### Grupos (OBA)
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `POST` | `/{phone-number-id}/groups` | Crea un grupo. |
+| `GET` | `/{phone-number-id}/groups` | Lista los grupos. |
+| `GET` | `/{group-id}` | Información del grupo. |
+| `POST` | `/{group-id}/participants` | Agrega participantes. |
+| `DELETE` | `/{group-id}/participants` | Elimina participantes. |
+| `POST` | `/{group-id}/admins` | Promueve a administrador. |
+| `DELETE` | `/{group-id}/admins` | Quita un administrador. |
+| `GET` | `/{group-id}/invites` | Obtiene el enlace de invitación. |
+| `POST` | `/{group-id}/invites` | Restablece el enlace de invitación. |
+| `DELETE` | `/{group-id}` | Sale de un grupo / lo cierra. |
+| `POST` | `/{group-id}/pins` | Fija un mensaje del grupo. |
+
+### Llamadas (WhatsApp Business Calling)
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `POST` | `/{phone-number-id}/calls` | Control de llamadas: `action`: `connect` / `pre_accept` / `accept` / `reject` / `terminate`. |
+| `GET` | `/{phone-number-id}/settings` | Lee la configuración de llamadas. |
+| `POST` | `/{phone-number-id}/settings` | Activa/desactiva llamadas, horarios de llamadas, SIP, buzón de voz. |
+| `GET` | `/{phone-number-id}/call_permissions` | Verifica el permiso de llamada de un usuario (`?user_wa_id=`). |
+
+## Bloqueadas (denegadas)
+
+Estas **no** se exponen a través de la capa y devuelven **403**; gestiónalas en el panel de Pilot Status:
+
+- Ciclo de vida del número: `POST /{phone-number-id}/register`, `POST /{phone-number-id}/deregister`
+- Segmentos de autenticación / gestión en cualquier parte de la ruta: `oauth`, `debug_token`, `subscribed_apps`, `subscriptions`, `system_users`, `assigned_users`, `client_whatsapp_business_accounts`, `owned_whatsapp_business_accounts`
+- Eliminar tu propia WABA o tu id de número de teléfono
+
+## Los envíos quedan registrados en Logs
+
+Un mensaje que envías con `POST /{phone-number-id}/messages` a través de la capa se registra en el número una vez que Meta lo acepta (una respuesta `2xx` con un id de mensaje). Aparece como una fila saliente en **Logs** del panel, en [`GET /v1/messages`](/es/api/messages/list) y en [`GET /v1/messages/history`](/es/api/messages/history), con:
+
+- `origin: "CHATWOOT"` cuando el número está conectado a Chatwoot mediante un inbox nativo de WhatsApp Cloud (todo envío por la capa en ese número se atribuye entonces a Chatwoot), y `origin: "LAYER"` en cualquier otro número, incluido uno conectado a Chatwoot mediante un inbox espejo de API;
+- un `status` que sigue los estados que reporta Meta: `SENT`, `DELIVERED`, `READ` o `FAILED`;
+- sin `correlationId` y sin detalle de envío: [`GET /v1/messages/{messageId}`](/es/api/messages/status) responde `404` para estas filas.
+
+Estos envíos **no** cuentan en el consumo de mensajes de tu plan. El registro ocurre después de la respuesta y nunca la modifica: lo que recibes es la respuesta de Meta, sin cambios. La fila sigue el [modo de retención de PII](/es/api/messages/list#campos-de-la-respuesta) del número como cualquier otra.
+
+Lo que **no** se registra: confirmaciones de lectura e indicadores de escritura (solicitudes a `/messages` con un campo `status`), reacciones, mensajes de grupo y solicitudes que Meta rechaza.
+
+Lo que muestra la fila:
+
+- **Un medio enviado por `id` de medio de Meta** se vuelve a alojar, así que la fila muestra el medio.
+- **Un medio enviado por `link`** se registra solo con su tipo y su leyenda: Pilot Status no descarga la URL.
+- **Una plantilla** se lee `Template: <name>` en `content` (`text` en el endpoint de historial), sin su cuerpo renderizado; `template` queda en `null`.
+- **Un mensaje de ubicación o de contactos** recibe un texto corto generado de la misma forma (`Location: …`, `Contacts: …`).
+
+La forma completa, campo por campo, está en [Filas salientes sin solicitud de envío](/es/api/messages/list#filas-salientes-sin-solicitud-de-envío).
+
+Solo se listan los envíos hechos después de que empezó el registro para tu número. Los envíos anteriores no se recuperan.
+
+## Ejemplo: enviar un mensaje de texto
+
+```bash
+curl -X POST 'https://pilotstatus.com.br/api/layer/meta/<phone-number-id>/messages' \
+  -H 'x-api-key: ps_your_key_here' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messaging_product": "whatsapp",
+    "recipient_type": "individual",
+    "to": "5511999999999",
+    "type": "text",
+    "text": { "preview_url": false, "body": "Hello from Pilot Status 👋" }
+  }'
+```
+
+## Pruébalo
+
+Cada endpoint de arriba es interactivo en el **Playground → [Meta Cloud API](/es/playground/meta-cloud-api/post-phonenumberid-messages)**: envía una solicitud con tu clave `ps_` y mira la respuesta en vivo de la Graph API.
+
+<Note>
+  Para integraciones nuevas, considera la [API nativa de Pilot Status](/es/api/messages/send): un solo endpoint envía tanto por números de Meta como no oficiales, con un body más simple.
+</Note>
