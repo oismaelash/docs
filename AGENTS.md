@@ -38,3 +38,20 @@
 - Every page must also be in the `docs.json` navigation. A page outside it (the home page, until 31/10/2026) gets **Português (BR)** disabled too.
 - When renaming a slug, add a permanent entry to `redirects` in `docs.json`.
 - `node scripts/check-i18n-paths.mjs` checks both rules (files and `docs.json` navigation); the `i18n paths` workflow runs it on every PR and fails it on any mismatch.
+
+## OpenAPI specs per language
+
+Each spec exists in three languages, with the same paths, operation ids, schemas and examples; only the human-readable `summary`, `description` and `title` strings differ:
+
+| English (source of truth) | pt-BR | es |
+|---|---|---|
+| `openapi.json` | `openapi.pt.json` | `openapi.es.json` |
+| `openapi.meta.json` | `openapi.meta.pt.json` | `openapi.meta.es.json` |
+| `openapi.evolution-v2.json` | `openapi.evolution-v2.pt.json` | `openapi.evolution-v2.es.json` |
+| `openapi.evolution-go.json` | `openapi.evolution-go.pt.json` | `openapi.evolution-go.es.json` |
+
+Playground stubs point at their language's spec (`playground/` → English, `pt-BR/playground/` → `.pt.json`, `es/playground/` → `.es.json`).
+
+- **Change the English spec first.** Then update the translations in the same PR.
+- **es is generated.** Never edit `openapi*.es.json` by hand. The Spanish text lives in `i18n/openapi.es.strings.json` (English string → Spanish string). After changing an English spec, run `node scripts/sync-openapi-i18n.mjs --missing`, add the Spanish for each string it prints to the memory, then run `node scripts/sync-openapi-i18n.mjs` to regenerate. The `i18n paths` workflow runs `--check` and fails if a string is untranslated or a `.es.json` file is stale.
+- **pt-BR is edited by hand** (there is no generator for it; its examples were also localized, so it is not a pure string swap). Mirror every English change into the `.pt.json` file yourself.
