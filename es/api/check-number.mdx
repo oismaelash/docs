@@ -1,0 +1,120 @@
+---
+title: "Verificar si un número está en WhatsApp"
+description: "Verifica si los números de teléfono están registrados en WhatsApp usando la sesión del número conectado."
+mode: "wide"
+---
+
+Verifica si uno o más números de teléfono están registrados en WhatsApp, usando la propia sesión del número conectado. Es útil para validar una lista antes de enviar, o para resolver los dígitos registrados exactos (parte local del jid) a los que WhatsApp realmente entregará.
+
+## Endpoint
+
+`POST https://pilotstatus.com.br/v1/numbers/check`
+
+## Disponibilidad (solo números no oficiales)
+
+<Warning>
+  Esta consulta solo está disponible para **números no oficiales (Pilot Status web)**. La Meta Cloud API **no** tiene consulta de existencia de números, así que un número de **Meta** devuelve:
+
+  ```json
+  HTTP 400
+  { "error": "…", "code": "NOT_SUPPORTED_FOR_META" }
+  ```
+</Warning>
+
+## Encabezados obligatorios
+
+- `x-api-key: <your_number_scoped_key>`: una clave **con alcance de número** (`ps_*`), o una clave de toda la cuenta junto con el encabezado `x-whatsapp-number-id: <numberId>`, que selecciona el número contra el cual verificar. Una clave de toda la cuenta sin ese encabezado recibe `403 TENANT_SCOPE_NOT_ALLOWED`.
+- **Los tokens OAuth / MCP y las claves de cuenta** (`ps_account_`) también necesitan el permiso `contacts:read` (roles `AGENT`, `ADMIN`, `OWNER`); el rol `ANALYST` recibe `403 PERMISSION_DENIED`.
+
+## Cuerpo de la solicitud
+
+Envía **o bien** una lista **o bien** un solo número:
+
+<ParamField body="numbers" type="string[]">
+  Números de teléfono a verificar (1 a 20 elementos). Cada uno puede estar en cualquier formato común (E.164, con o sin `+`, con separadores).
+</ParamField>
+
+<ParamField body="number" type="string">
+  Un solo número: se trata como `numbers: [number]`.
+</ParamField>
+
+Un cuerpo vacío o inválido (sin números, más de 20, tipos incorrectos, ninguna entrada con forma de número de teléfono) devuelve **`400 VALIDATION_ERROR`**, igual que un cuerpo que no es JSON válido. Si se envían ambos, `numbers` prevalece y `number` se ignora. Las entradas que no parecen un número de teléfono se descartan de los resultados.
+
+```json
+{ "numbers": ["+5511955554444", "5511888888888"] }
+```
+
+```json
+{ "number": "+5511955554444" }
+```
+
+## Doble verificación del 9.º dígito en Brasil (\+55)
+
+Los números móviles brasileños son ambiguos: la misma línea puede estar registrada en WhatsApp **con o sin** el `9` adicional después del código de área. Para evitar falsos negativos, cada entrada móvil `+55` se verifica **tanto** con como sin el 9.º dígito, y la entrada cuenta como existente si **alguna** variante está registrada.
+
+El `number` devuelto son los dígitos **registrados** de la variante que coincidió, que pueden diferir de lo que enviaste.
+
+**Ejemplo:** enviar `"+5511955554444"` (con el 9.º dígito) puede resolverse al número registrado `"551155554444"` (sin él):
+
+```json
+{
+  "results": [
+    { "input": "+5511955554444", "exists": true, "number": "551155554444", "name": "Maria Souza" }
+  ]
+}
+```
+
+## Ejemplo
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/numbers/check" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "numbers": ["+5511955554444", "5511888888888"] }'
+```
+
+```json Response (200)
+{
+  "results": [
+    { "input": "+5511955554444", "exists": true,  "number": "551155554444", "name": "Maria Souza" },
+    { "input": "5511888888888",  "exists": false, "number": null,           "name": null }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Campos del objeto de resultado
+
+<ResponseField name="input" type="string" required>
+  La cadena original que enviaste, devuelta tal cual para que puedas correlacionar los resultados.
+</ResponseField>
+
+<ResponseField name="exists" type="boolean" required>
+  `true` si **alguna** variante candidata de la entrada está registrada en WhatsApp; si no, `false`.
+</ResponseField>
+
+<ResponseField name="number" type="string | null" required>
+  Los dígitos de WhatsApp **registrados** (parte local del jid) de la variante que coincidió; `null` cuando no está registrado. Para móviles `+55` esto puede omitir el 9.º dígito (consulta arriba).
+</ResponseField>
+
+<ResponseField name="name" type="string | null" required>
+  El nombre público de WhatsApp cuando el proveedor lo devuelve; si no, `null`.
+</ResponseField>
+
+## Errores comunes (códigos estables de la API)
+
+- `400 VALIDATION_ERROR`: cuerpo ausente o inválido (sin números, más de 20 o tipos incorrectos).
+- `400 NOT_SUPPORTED_FOR_META`: el número es de la Meta Cloud API (no hay consulta de existencia en Meta).
+- `400 NUMBER_NOT_FOUND`: la credencial no resuelve a ningún número de WhatsApp con una instancia conectada.
+- `409 WHATSAPP_INSTANCE_NOT_CONNECTED`: la sesión no está `OPEN`.
+- `409 LINKED_WHATSAPP_INSTANCE_NOT_FOUND`: la instancia a la que apunta la clave fue eliminada.
+- `503 WHATSAPP_SESSION_KEY_MISSING`: la clave de sesión del proveedor no oficial no está configurada para la instancia.
+- `401`: credencial ausente o inválida (`{"error": "Invalid API key"}`).
+- `403 TENANT_SCOPE_NOT_ALLOWED`: una clave de toda la cuenta sin `x-whatsapp-number-id`.
+- `403 PERMISSION_DENIED`: token OAuth/MCP o clave de cuenta cuyo rol no tiene `contacts:read`.
+- Las fallas del proveedor upstream aparecen como `WHATSAPP_UPSTREAM_ERROR` (con el estado del proveedor, `details.status` y `details.body`) / `502 WHATSAPP_INVALID_JSON` (mismo formato que los endpoints de grupos).
+
+Pruébalo en el Playground: [Verificar números en WhatsApp](/es/playground/numbers/check-numbers).

@@ -1,0 +1,101 @@
+---
+title: "GET /v1/phone-lines/available: Buscar números"
+sidebarTitle: "Buscar números"
+description: "Busca los números fijos brasileños que puedes comprar ahora mismo en un código de área (DDD), con el precio mensual que una línea le cuesta a tu workspace. Cada resultado es exactamente lo que recibe POST /v1/phone-lines."
+mode: "wide"
+---
+
+# Buscar números disponibles
+
+<Tip>
+  Pruébalo con tu clave en el Playground: [`GET /v1/phone-lines/available`](/es/playground/phone-lines/search-available-numbers).
+</Tip>
+
+`GET /v1/phone-lines/available` lista los números fijos que se pueden comprar ahora mismo en un código de área brasileño (DDD). Es el primer paso de una compra: el `number` de cada resultado es exactamente lo que recibe [`POST /v1/phone-lines`](/es/api/phone-lines/purchase).
+
+<Note>
+  Requiere una clave **con alcance de tenant**. Con un token OAuth / MCP, solo el **Owner** del workspace puede buscar (`phone_lines:purchase`, el mismo permiso que para comprar); de lo contrario, `403 PERMISSION_DENIED`.
+</Note>
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/phone-lines/available?ddd=11`
+
+## Parámetros de consulta
+
+<ParamField query="ddd" type="string" required>
+  El código de área de dos dígitos, con el primer dígito entre 1 y 9 (por ejemplo, `11`, `21`, `31`). Si falta o tiene un formato incorrecto → **400 `INVALID_AREA_CODE`**, y no se llama al operador.
+</ParamField>
+
+## Ejemplo
+
+<CodeGroup>
+  ```bash cURL
+  curl "https://pilotstatus.com.br/v1/phone-lines/available?ddd=11" \
+    -H "x-api-key: ps_your_tenant_scoped_key"
+  ```
+
+  ```json Response (200)
+  {
+    "ddd": "11",
+    "totalAvailable": 2,
+    "numbers": [
+      { "number": "551148637200", "display": "(11) 4863-7200" },
+      { "number": "551148637201", "display": "(11) 4863-7201" }
+    ],
+    "price": 33.9,
+    "currency": "BRL"
+  }
+  ```
+</CodeGroup>
+
+## Campos de la respuesta
+
+<ResponseField name="ddd" type="string">
+  El código de área que buscaste, devuelto tal cual.
+</ResponseField>
+
+<ResponseField name="totalAvailable" type="integer">
+  Cuántos números informa el operador como disponibles en este código de área. No supongas que es igual a la longitud de `numbers`: los números que ya tiene una línea de Pilot Status se quitan de `numbers` sin cambiar este conteo, y ambos provienen de una lista que puede tener algunos minutos de antigüedad.
+</ResponseField>
+
+<ResponseField name="numbers" type="object[]">
+  Los números devueltos por esta búsqueda. Sin paginación.
+</ResponseField>
+
+<ResponseField name="numbers[].number" type="string">
+  Dígitos E.164 **sin** `+`: `55` + código de área + 8 dígitos, por ejemplo `551148637200`. Envía este valor a `POST /v1/phone-lines`.
+</ResponseField>
+
+<ResponseField name="numbers[].display" type="string">
+  El mismo número con formato para personas: `(11) 4863-7200`.
+</ResponseField>
+
+<ResponseField name="price" type="number">
+  Lo que **una** línea nueva le cuesta a este workspace por mes, antes de comprarla. Respeta el [precio propio de línea telefónica](/es/phone-lines-pricing#precio-propio-del-workspace) del workspace, cuando el equipo de Pilot Status definió uno, y es el mismo monto que la compra cobra y registra en la línea. Multiplícalo por la cantidad de números que vas a comprar para mostrar el total.
+</ResponseField>
+
+<ResponseField name="currency" type="string">
+  La moneda del workspace, `BRL` o `USD`: la moneda de `price` y de la compra.
+</ResponseField>
+
+## Bueno saber
+
+* **Una búsqueda no es una reserva.** Otra persona puede comprar un número listado antes de que tu compra llegue a él; ese número vuelve entonces en los resultados de la compra como `NUMBER_UNAVAILABLE`, sin cobro o, cuando el operador ya lo había vendido fuera de Pilot Status, con el precio reembolsado a tu billetera. Busca de nuevo y elige otro.
+* **La lista puede tener algunos minutos de antigüedad.** La respuesta del operador para cada código de área se guarda en caché y la comparten todos los workspaces: una lista con menos de un minuto se sirve sin consultar al operador, y una más antigua (hasta unas 2 horas) se sirve de inmediato (o tras una breve espera por el operador) mientras se actualiza en segundo plano. Los números que ya tiene una línea de Pilot Status siempre se excluyen; un número vendido en otro lugar desde que se obtuvo la lista vuelve de la compra como `NUMBER_UNAVAILABLE`, reembolsado.
+* **Las búsquedas que sí llegan al operador consumen un presupuesto de solicitudes compartido por toda la plataforma.** Busca una vez, muestra la lista y reutilízala: no hagas polling a este endpoint. Cuando el operador no puede responder y no hay una lista reciente en caché, el endpoint responde `503 SUPPLIER_UNAVAILABLE`.
+* La verificación de identidad **no** es necesaria para buscar, solo para comprar. Consulta [Descripción general → verificación de identidad](/es/api/phone-lines/overview#antes-de-la-primera-compra-verificar-la-identidad).
+
+## Errores
+
+| Estado | `code`                     | Significado                                                                     |
+| ------ | -------------------------- | ------------------------------------------------------------------------------- |
+| `400`  | `INVALID_AREA_CODE`        | Falta `ddd`, o no tiene dos dígitos que empiecen entre 1 y 9. Cuerpo: `{ "error": "Invalid area code. \| DDD inválido.", "code": "INVALID_AREA_CODE" }` |
+| `401`  | —                          | Credencial ausente o inválida.                                                  |
+| `403`  | `NUMBER_SCOPE_NOT_ALLOWED` | Clave con alcance de número (o concesión OAuth por número). Usa la clave con alcance de tenant. |
+| `403` | `TENANT_REQUIRED` | La credencial no está vinculada a ningún workspace (`error` solo en inglés). |
+| `403` | `WORKSPACE_ARCHIVED` | El workspace fue archivado y su API está cerrada. |
+| `403`  | `WORKSPACE_MEMBERSHIP_REQUIRED` | Token OAuth / MCP de un usuario que ya no es miembro activo.               |
+| `403`  | `PERMISSION_DENIED`        | Token OAuth / MCP de un usuario que no es el Owner del workspace.               |
+| `503`  | `SUPPLIER_UNAVAILABLE`     | El operador no pudo responder, o se agotó el presupuesto compartido de solicitudes. Reintenta en unos minutos. |
+| `500`  | `INTERNAL_ERROR`           | Falla inesperada.                                                               |

@@ -1,0 +1,152 @@
+---
+title: "Envía imágenes, videos y archivos con la API de WhatsApp"
+sidebarTitle: "Mensajes multimedia"
+description: "Envía imágenes, audio, video y documentos por WhatsApp usando POST /v1/messages/send con media + mediaType. Admite URL públicas y base64 (según el proveedor)."
+mode: "wide"
+---
+
+Envía imágenes, videos, documentos y audio por WhatsApp con el mismo endpoint que usas para todo lo demás: `POST /v1/messages/send`. No hay un endpoint de multimedia separado; la multimedia es uno de los tres modos de envío mutuamente excluyentes:
+
+1. **Envío con plantilla**: `templateId` (\+ override opcional de `media`)
+2. **Envío de texto libre**: `text`
+3. **Envío de multimedia directa**: `media` \+ `mediaType`, sin `templateId` y sin `text`
+
+## Envío de multimedia directa
+
+Proporciona `media` \+ `mediaType` sin `templateId` ni `text`. En este modo **no se permiten** `buttons`, `header`, `footer` ni `variables`. Se admite un `caption` opcional para `image`, `video` y `document`, pero **no** para `audio`, `voice` ni `sticker` (consulta [Audio y notas de voz](#audio-y-notas-de-voz)).
+
+<CodeGroup>
+
+```bash Imagen con caption
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/photo.png",
+    "mediaType": "image",
+    "caption": "Check this out"
+  }'
+```
+
+```bash Nota de voz (voice)
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/voice.ogg",
+    "mediaType": "voice"
+  }'
+```
+
+```bash Imagen en base64
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "data:image/png;base64,iVBORw0...",
+    "mediaType": "image"
+  }'
+```
+
+```bash Sticker
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/sticker.webp",
+    "mediaType": "sticker"
+  }'
+```
+
+</CodeGroup>
+
+## Campos `media` y `mediaType`
+
+- `media`: una **URL pública http(s)** o un **data URI en base64** (`data:<mime>;base64,...`). El base64 tiene un límite por tamaño decodificado: **50 MiB** cuando `mediaType` es `document` y **16 MiB** para cualquier otro tipo (y cuando se omite `mediaType`); por encima de eso, la solicitud se rechaza con `400 Validation error`. Envía archivos más grandes por URL; en números de Meta Cloud API, una URL queda sujeta a los límites propios de Meta (documento 100 MB, video y audio 16 MB, imagen 5 MB).
+- `mediaType`: `image`, `video`, `document`, `audio`, `voice` o `sticker`. Defínelo explícitamente cuando la extensión de la URL no sea obvia (por ejemplo, un PDF cuya URL no termina en `.pdf`).
+- `mediaFilename`: para `document`, el nombre de archivo que ve el destinatario (1 a 240 caracteres). Si se omite en un envío directo, el nombre se toma del último segmento de la URL. También es válido en una plantilla con encabezado `DOCUMENT`; consulta [Nombrar el documento de una plantilla](#nombrar-el-documento-de-una-plantilla).
+
+### Base64 vs. URL según el proveedor
+
+| Proveedor | URL pública | Data URI en base64 |
+| --- | --- | --- |
+| Meta Cloud API | ✓ | ✓ |
+| No oficial (Pilot Status web) | ✓ | ✓, se vuelve a alojar en el almacenamiento de Pilot Status y se envía como URL (falla de carga → `MEDIA_REHOST_FAILED`); para stickers, usa una URL pública |
+
+## Audio y notas de voz
+
+Cómo llegan `audio` y `voice` depende del número:
+
+| `mediaType` | Número oficial (Meta Cloud API) | Número no oficial (Pilot Status web) |
+| --- | --- | --- |
+| `voice` | Nota de voz (PTT) | Nota de voz (PTT) |
+| `audio` | Archivo de audio (un reproductor, no una nota de voz) | Nota de voz (PTT) |
+
+**Para enviar una nota de voz en cualquier número, usa `voice`.** Usa `audio` solo cuando quieras un archivo de audio en un número oficial. En números oficiales, [`PLAYED`](/es/api/messages/status) (el destinatario lo escuchó) solo se informa para notas de voz; un envío `audio` ahí no llega a `PLAYED`.
+
+El audio se convierte antes de enviarse: a AAC en MP4 (`audio/mp4`) en números oficiales y a Ogg/Opus en números no oficiales.
+
+Ninguno de los dos tipos admite caption. `audio` con `caption` devuelve `400`. Con `voice`, el caption no se rechaza, pero se descarta en números no oficiales y su visualización en números oficiales no está garantizada: no lo envíes.
+
+Justo antes de la entrega, el contacto ve un indicador de presencia: **"grabando audio…"** en números no oficiales y **"escribiendo…"** en números oficiales. La Cloud API no tiene indicador de grabación, y muestra "escribiendo" solo cuando la conversación tiene un mensaje reciente del contacto al cual asociarlo.
+
+## Stickers
+
+`mediaType: "sticker"` envía un **sticker** de WhatsApp. Es solo un envío de multimedia directa: nunca con `templateId`, y no acepta `caption` ni `mediaFilename` (ambos devuelven `400`), porque un sticker no lleva texto.
+
+El archivo debe ser **`image/webp`** y medir **exactamente 512×512 píxeles**:
+
+| Sticker | Dimensiones | Tamaño máximo |
+| --- | --- | --- |
+| `.webp` estático | **512×512** | **100 KB** |
+| `.webp` animado | **512×512** | **500 KB** |
+
+512×512 es un requisito estricto, no una recomendación: cualquier otro tamaño se rechaza, incluso uno casi cuadrado como 361×363.
+
+Cualquier otro formato o un archivo demasiado grande lo rechaza **WhatsApp**, no esta API: el envío se acepta con `202` y la falla llega después en el webhook `message.failed`. Convierte antes de enviar en lugar de esperar que la API lo detecte.
+
+## Multimedia con plantillas
+
+Agrega `media` (\+ `mediaType`) a un envío con plantilla para adjuntar o sobrescribir la multimedia; tiene prioridad sobre cualquier URL de multimedia incluida en la plantilla:
+
+```json
+{
+  "templateId": "promo-template",
+  "destinationNumber": "+5511999999999",
+  "variables": { "name": "John" },
+  "media": "https://example.com/promo.png",
+  "mediaType": "image"
+}
+```
+
+Ten en cuenta que `media`/`mediaType` no se pueden combinar con un envío de texto libre `text`. La API sí acepta `buttons` junto con `mediaType: "video"` o `"document"`, aunque Meta puede rechazar botones en algunos mensajes de video/PDF según el cliente del destinatario.
+
+### Nombrar el documento de una plantilla
+
+Cuando la plantilla aprobada tiene un **encabezado `DOCUMENT`**, agrega `mediaFilename` para definir el nombre de archivo que ve el destinatario. Funciona con un `media` por envío (el documento que reemplaza el ejemplo de la plantilla) o sin él (cambia el nombre del documento guardado en la plantilla). Si también envías `mediaType`, debe ser `document`.
+
+```json
+{
+  "templateId": "invoice-issued",
+  "destinationNumber": "+5511999999999",
+  "variables": { "name": "John" },
+  "media": "https://cdn.example.com/files/8f3a1c.pdf",
+  "mediaType": "document",
+  "mediaFilename": "Invoice 123.pdf"
+}
+```
+
+Sin él, el documento llega sin un título adecuado en números oficiales (Meta Cloud API), donde WhatsApp muestra el genérico "Documento", y con un nombre inferido de la URL en números no oficiales. Funciona en Meta Cloud API, Evolution v2 y Evolution GO.
+
+- De 1 a 240 caracteres; `/` y `\` se reemplazan por `_`.
+- En una plantilla cuyo encabezado es `IMAGE`, `VIDEO`, `TEXT` o no existe, el envío se rechaza con `422` `MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER` (`details.templateName`, `details.headerType`) en lugar de descartar el nombre.
+- En un envío de texto libre `text` devuelve `400`. En un envío de multimedia directa solo se acepta con `mediaType: "document"`.
+
+## Relacionado
+
+- [Enviar mensajes](/es/guides/send-messages)
+- [Plantillas](/es/concepts/templates)

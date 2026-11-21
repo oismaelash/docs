@@ -1,0 +1,1111 @@
+---
+title: "Eventos de webhook de Pilot Status: referencia completa"
+sidebarTitle: "Eventos"
+description: "Referencia de todos los eventos de webhook de Pilot Status: mensaje recibido, enviado, entregado, leído, fallido y eventos de conexión del número, con los esquemas de payload."
+mode: "wide"
+---
+
+# Referencia de eventos de webhook
+
+Los webhooks entregan eventos en tiempo real a la URL de tu sistema. Esta página documenta cada evento, su payload y cómo correlacionar los eventos con tus llamadas a la API. Para crear y administrar webhooks, consulta [Configurar webhooks](/es/api/webhooks/configure).
+
+## Qué eventos envía tu número
+
+**El vocabulario de eventos depende de cómo se conectó el número.** Un número vinculado por código QR usa el vocabulario canónico de Pilot Status documentado en esta página; un número de Meta Cloud API, en cambio, reenvía **el sobre nativo de Meta**. Son formatos distintos con nombres distintos, y ninguna configuración de suscripción convierte uno en el otro.
+
+| Cómo se conectó el número | Vocabulario que recibes | Lista completa |
+| --- | --- | --- |
+| **Web nativo (no oficial)**: vinculado por código QR | Eventos canónicos de Pilot Status: `message.received`, `message.sent`, … | [Eventos canónicos](#eventos-disponibles) (esta página) |
+| **Meta Cloud API (oficial)**: Embedded Signup o credenciales | El **sobre nativo** de Meta, identificado por `entry[].changes[].field` | [Eventos de Meta Cloud API](#eventos-de-meta-cloud-api-sobre-nativo) |
+| **Migrado mediante la capa Evolution GO** | Los nombres nativos de Evolution GO en **PascalCase**: `Message`, `Receipt`, … | [Números de capas de compatibilidad](#eventos-de-las-capas-de-compatibilidad-evolution-go-y-v2) |
+| **Migrado mediante la capa Evolution v2** | Los nombres nativos de Evolution v2 **con puntos**: `messages.upsert`, … | [Números de capas de compatibilidad](#eventos-de-las-capas-de-compatibilidad-evolution-go-y-v2) |
+
+<Warning>
+  **Cambió el 2026-09-17 para los números oficiales.** Hasta esa fecha, `message.sent` y `message.failed` sí llegaban a los webhooks de un número de Meta Cloud API suscrito al comodín `"*"`, aunque allí el sobre nativo ya era el vocabulario documentado. Ya no llegan: **no se despacha ningún evento canónico `message.*` en un número oficial**, sea cual sea la causa.
+
+  En su lugar, lee `value.statuses[]` del sobre nativo o consulta periódicamente [`GET /v1/messages?status=FAILED`](/es/api/messages/list): el registro del mensaje llega a `FAILED` en ambos tipos de conexión, incluso cuando la falla la reportó la propia Meta. Los números no oficiales no se ven afectados.
+</Warning>
+
+Cuatro cosas son iguales en todos los vocabularios:
+
+- **Ciclo de vida del número**: `number.created`, `number.connected`, `number.disconnected`, `number.removed` y `number.restored` se pueden suscribir en cualquier número, sea cual sea su proveedor. (`number.disconnected` solo se *dispara* en números web nativos; consulta [`number.disconnected`](#number-disconnected).)
+- **Eventos de llamada normalizados**: `call.ringing`, `call.connected`, `call.ended` y `call.missed` en cualquier número con capacidad de llamadas.
+- **Meta Lead Ads**: `lead.received`, en el sobre canónico `{ event, data }`, en cualquier número con una Página de Facebook vinculada. Es **opcional (opt-in)**: debes indicarlo por nombre, porque `"*"` no lo incluye. Consulta [Payload `lead.*`](#payload-lead).
+- **`events` nunca es opcional.** Un webhook guardado con un arreglo `events` vacío no entrega **nada**, en ningún vocabulario, y no lo avisa: es un `201` silencioso. Suscríbete a los nombres que quieras o al comodín `"*"`.
+
+<Note>
+  ¿No sabes de qué tipo es tu número? `GET /v1/numbers` devuelve `provider` por número: `PILOT_STATUS` para web nativo, `META` para Cloud API. Consulta [Oficial vs no oficial](/es/concepts/official-vs-unofficial).
+</Note>
+
+## Formato del payload
+
+Cada evento llega como JSON:
+
+```json
+{
+  "event": "message.sent",
+  "data": {}
+}
+```
+
+**Esquema v3 (camelCase).** Todos los campos de `data` están en camelCase. Los números de teléfono siempre van en **E.164 con `+`** (sin sufijo de dispositivo, sin `@s.whatsapp.net` / `@lid`). Las marcas de tiempo siempre están en **ISO 8601** en el único campo `createdAt` (cuándo ocurrió el mensaje, según el proveedor, no cuándo lo ingerimos).
+
+<Note>
+  **Siguen apareciendo nombres de eventos nuevos: ignora los que no conozcas.** Una suscripción `"*"` recibe un evento nuevo en cuanto existe (`number.restored` es uno), con una excepción: el opcional `lead.received`, que `"*"` nunca entrega. Responde con un `2xx` a cualquier evento que tu código no maneje y sigue adelante. A partir de `@pilot-status/sdk` 0.12.0 (Node) y `pilot-status` 1.10.0 (Python), `parseCustomerWebhook` y `parse_customer_webhook` ya no lanzan error con un nombre de evento que no conocen: devuelven `{ type: "unknown", event, data, raw }` (en Python, un dict con las mismas claves), así que un evento nuevo nunca rompe tu integración. Un payload que no sea un objeto con un `event` de tipo string, o un evento conocido con campos inválidos, sigue lanzando error. El trigger de n8n ya deja pasar cualquier evento cuando está seleccionado **All Events**. Consulta [SDKs y n8n](/es/integrations/sdks#eventos-de-webhook-que-el-sdk-no-conoce).
+</Note>
+
+<Note>
+**Los mensajes antiguos no se reenvían.** Cuando un número se conecta, WhatsApp le entrega al proveedor el historial del dispositivo. Esos mensajes se importan al chat, pero **no** se entregan a tu webhook; de lo contrario, cada reconexión volvería a entregar hasta 30 días de conversación y nada en el payload te permitiría distinguirlo del tráfico que acaba de llegar.
+
+Actívalo por número con `settings.webhookHistoricalMessages` en [`PATCH /v1/numbers/{id}`](/es/api/numbers/settings). Para leer el historial, usa [`GET /v1/messages/history`](/es/api/messages/history).
+</Note>
+
+## Eventos disponibles
+
+**Salientes (entrega/estado):** `message.sent`, `message.delivered`, `message.read`, `message.failed`
+
+**Entrantes (mensajes recibidos):**
+
+- `message.reply`: respuesta que cita otro mensaje
+- `message.received`: mensaje recibido en el número conectado
+
+<Warning>
+  **`message.reply` es exclusivo: NO dispara también `message.received`.**
+
+  Cuando un contacto responde citando un mensaje anterior (deslizar para responder en WhatsApp),
+  el evento es `message.reply` y **solo** ese. Si tu webhook está suscrito a
+  `message.received` pero no a `message.reply`, esos mensajes nunca te llegan,
+  y nada reporta un error, así que parece que el cliente nunca escribió.
+
+  Suscríbete a **ambos**, o usa el comodín `*`, si quieres todos los mensajes entrantes.
+</Warning>
+- `message.group`: mensaje recibido en un grupo
+- `message.newsletter`: mensaje recibido en un canal (`@newsletter`)
+- `message.stories`: Estado de WhatsApp (historia) publicado por un contacto
+
+**Ciclo de vida del número:**
+
+- `number.created`: número creado en Pilot Status
+- `number.connected`: conectado a WhatsApp (estado OPEN)
+- `number.disconnected`: caída de conexión confirmada por la transición de salud del número, en números **web nativos (no oficiales)** (un evento por caída confirmada, no uno por cada microcorte de conectividad).
+- `number.removed`: número eliminado
+- `number.restored`: un número eliminado se restauró dentro de su ventana de 30 días; vuelve desconectado (consulta [`number.restored`](#number-restored))
+- `number.recovered`: número recuperado de un estado degradado/bloqueado
+
+**Eventos de salud:** los eventos de transición de salud (`number.health_blocked`, `number.health_degraded`, `number.health_shadowban`), `number.recovered`, `number.inbound_stalled` y `number.inbound_recovered` están en el selector de eventos y se pueden suscribir por nombre en todos los proveedores desde el 2026-09-15; también llegan a los webhooks suscritos con el comodín `"*"`. Como todo evento `number.*`, solo van a los webhooks suscritos a ese número.
+
+**Llamadas de voz** (WhatsApp Business Calling, consulta [Llamadas de voz](/es/api/calls/overview)):
+
+Los eventos de llamada normalizados (`call.ringing`, `call.connected`, `call.ended`, `call.missed`) están disponibles en **cualquier número con capacidad de llamadas** (web nativo (no oficial) y Meta Cloud API). `call.permission_updated` y el sobre nativo `calls` son **solo de Meta Cloud API**.
+
+- `call.ringing`: la llamada está sonando (transición UIC entrante o BIC saliente)
+- `call.connected`: llamada contestada/conectada
+- `call.ended`: llamada finalizada (`status`: `COMPLETED` | `FAILED` | `REJECTED`; `duration` en segundos cuando se contestó)
+- `call.missed`: llamada entrante que terminó sin ser contestada
+- `call.permission_updated`: (**solo Meta Cloud API**) respuesta a una solicitud de permiso de llamada (`status`: `NO_PERMISSION` | `TEMPORARY` | `PERMANENT`)
+- `calls`: (**solo Meta Cloud API**) el sobre **nativo** `calls` de Meta (`entry[].changes[].value` sin procesar, con los SDP) para señalización WebRTC personalizada
+
+**WhatsApp Flows** (solo números de Meta Cloud API, consulta [Flows](/es/concepts/flows)):
+
+- `flow.response_received`: un cliente envió un Flow, con las respuestas. Consulta [Payload `flow.*`](#payload-flow).
+
+**Meta Lead Ads** (cualquier número con una Página de Facebook vinculada, consulta [Leads](/es/api/leads)):
+
+- `lead.received`: alguien envió un Formulario instantáneo de Meta Lead Ads, con el lead. **Opcional: una suscripción `"*"` no lo recibe.** Consulta [Payload `lead.*`](#payload-lead).
+
+## Identificadores y correlación
+
+Cada evento de mensaje lleva dos IDs distintos:
+
+- `messageId`: ID del mensaje de WhatsApp/proveedor (por ejemplo, `key.id`). Excepción: en un `message.failed` enviado por el worker o por el límite del plan lleva el id interno, y el cuerpo plano del reconciliador no tiene `messageId`; consulta `message.failed` más abajo.
+- `id`: ID interno del mensaje en Pilot Status. Mismo valor que el `id` del `HTTP 202` de `POST /v1/messages/send`.
+- `numberId`: el ID **público** del número que manejó el evento. En todo evento `number.*` ahora siempre es el ID del **número** de WhatsApp (consulta el [cambio incompatible](#payload-number) en la familia `number.*`).
+- `correlationId`: presente cuando el evento se correlaciona con un envío previo (mismo valor que el `correlationId` del `202`).
+- `quotedMessageId`: en `message.reply`, el `messageId` del mensaje original citado (igual al `messageId` del `message.sent` original).
+
+### Correlación con `POST /v1/messages/send`
+
+Después de un envío aceptado, la API devuelve **HTTP 202** con **`id`** y **`correlationId`**:
+
+| Campo del `202` | Equivalente en el webhook |
+| --- | --- |
+| **`id`** | **`id`** en `message.sent` / `message.delivered` / `message.read` / `message.failed` (mismo valor). |
+| **`correlationId`** | Puede repetirse en los eventos de estado salientes y en **`message.reply`** / **`message.received`** cuando se correlacionan con el envío. |
+| _(no está en el `202`)_ | El **`messageId`** de WhatsApp: solo aparece a partir de `message.sent`. |
+
+En **`message.reply`**: **`quotedMessageId`** = el **`messageId`** del **`message.sent`** original; el **`messageId`** propio de la respuesta es el **nuevo** mensaje entrante. Usa `quotedMessageId` (y `correlationId` cuando esté presente) para vincular la respuesta con tu envío previo.
+
+## Payload `message.*`
+
+### Campos comunes
+
+| Campo | Presencia | Descripción |
+| --- | --- | --- |
+| `event` | siempre | nombre del evento |
+| `from` | siempre | remitente en E.164 |
+| `to` | siempre | destinatario en E.164 |
+| `numberId` | siempre | ID público del número que manejó el mensaje |
+| `messageId` | siempre | ID del mensaje de WhatsApp/proveedor (`null` antes de que el proveedor devuelva uno) |
+| `id` | siempre | ID interno de Pilot Status (= `id` del `HTTP 202`) |
+| `type` | siempre | `text`, `image`, `audio`, `video`, `document`, `location`, `contacts`, `sticker` o `reaction` |
+| `fromMe` | siempre | booleano: `true` en eventos salientes, `false` en entrantes |
+| `createdAt` | siempre | ISO 8601: cuándo ocurrió el **mensaje**, según lo reporta el proveedor (no cuándo lo ingerimos) |
+| `content` | condicional | texto del mensaje (o leyenda) |
+| `participantName` | condicional | nombre de WhatsApp del remitente (recibido / grupo / canal) |
+| `correlationId` | condicional | cuando se correlaciona con un envío previo |
+| `contentReplied` | condicional | texto del mensaje citado (solo `message.reply`) |
+| `quotedMessageId` | condicional | `messageId` del mensaje citado (solo `message.reply`) |
+| `buttonId` | condicional | solo `message.reply`: el `id` de la fila de lista tocada (`rows[].id`) y, cuando WhatsApp lo reporta, del botón tocado. Ausente en una respuesta de texto citada simple. Presente en todas las respuestas desde el 2026-10-23 |
+| `mediaLink` | condicional | URL duradera y de acceso público al multimedia realojado; presente en los eventos entrantes con multimedia para todos los proveedores |
+| `mediaType` | condicional | categoría del multimedia (`image`/`video`/`audio`/`document`/`sticker`) |
+| `mediaCaption` | condicional | leyenda del multimedia |
+| `mediaFilename` | condicional | nombre del archivo multimedia |
+| `groupName` | condicional | nombre del grupo (solo `message.group`) |
+| `groupId` | condicional | JID del grupo (solo `message.group`) |
+| `newsletterName` | condicional | nombre del canal (solo `message.newsletter`) |
+| `newsletterId` | condicional | JID del canal (solo `message.newsletter`) |
+| `error` | condicional | mensaje de error: solo `message.failed`, y no en todas sus formas (consulta `message.failed` más abajo) |
+| `errorCode` | condicional | solo `message.failed`: el mismo código público que [`GET /v1/messages`](/es/api/messages/log-error-codes) devuelve para el mensaje (por ejemplo, `WEB_SHADOWBAN`, `PLAN_LIMIT_REACHED`, `SEND_FAILED`) |
+
+⚠️ `message.failed` es la excepción: dos de sus tres formas de cuerpo no siguen esta tabla; consulta `message.failed` más abajo.
+
+**Semántica de dirección de `from`/`to`:**
+
+- **Salientes** (`sent`/`delivered`/`read`/`failed`): `to` = número de destino (E.164); `from` = número propio (presente cuando se puede resolver sin costo, de lo contrario se omite); `fromMe` = `true`.
+- **Entrantes** (`received`/`reply`): `from` = contacto/remitente (E.164); `to` = número propio (E.164); `fromMe` = `false`.
+- **Grupo / canal** (`group`/`newsletter`): `from` = participante (E.164); `to` = número propio; además `groupId`/`groupName` o `newsletterId`/`newsletterName`.
+- **Estado** (`stories`): `from` = el contacto que publicó la historia (E.164). No hay `to`: un Estado se difunde a la lista de contactos de quien lo publica, no va dirigido a tu número.
+
+### message.sent
+
+```json
+{
+  "event": "message.sent",
+  "data": {
+    "to": "+5511999999999",
+    "from": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "A52298BB1619CB5EC464BEFB8A3ACB94",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": true,
+    "content": "sent text",
+    "correlationId": "corr_123",
+    "createdAt": "2026-02-24T15:00:05.000Z"
+  }
+}
+```
+
+### message.delivered
+
+```json
+{
+  "event": "message.delivered",
+  "data": {
+    "to": "+5511999999999",
+    "from": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "A52298BB1619CB5EC464BEFB8A3ACB94",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": true,
+    "content": "sent text",
+    "createdAt": "2026-02-24T15:00:06.000Z"
+  }
+}
+```
+
+### message.read
+
+<Note>
+  `message.read` solo se dispara cuando el destinatario tiene activadas las **confirmaciones de lectura de WhatsApp**.
+</Note>
+
+```json
+{
+  "event": "message.read",
+  "data": {
+    "to": "+5511999999999",
+    "from": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "A52298BB1619CB5EC464BEFB8A3ACB94",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": true,
+    "content": "sent text",
+    "createdAt": "2026-02-24T15:00:10.000Z"
+  }
+}
+```
+
+### message.failed
+
+`message.failed` se envía solo para números no oficiales (web); un número oficial reporta una falla en el `statuses[]` nativo de Meta. Su cuerpo **no es uniforme**: depende de dónde se detectó la falla, y se deja así a propósito, porque los suscriptores existentes ya lo interpretan. Te llegan tres formas. **Desde el 2026-10-21 todas llevan `errorCode`, y es el `errorCode` de la API**: el mismo valor que [`GET /v1/messages`](/es/api/messages/list), [`GET /v1/messages/{messageId}`](/es/api/messages/status) y la pantalla de Logs muestran para ese mensaje, del [catálogo de códigos de error](/es/api/messages/log-error-codes). Ramifica tu lógica según ese código en lugar de interpretar el texto del motivo en portugués. Dónde aparece depende de la forma: `data.errorCode` en las formas 1 y 2, `errorCode` en el nivel superior en la forma 3. [Códigos de error del webhook vs códigos de error de la API](/es/api/messages/log-error-codes#códigos-de-error-del-webhook-vs-códigos-de-error-de-la-api) indica qué código envía cada ruta de falla.
+
+**1. Forma de estado: `error` y `errorCode`.** Se envía cuando el proveedor reporta el mensaje como fallido y cuando el límite de mensajes del plan detiene un envío (`errorCode: "PLAN_LIMIT_REACHED"`). Para una falla del proveedor, `errorCode` se deriva del error del proveedor exactamente como lo deriva la API: `WEB_SHADOWBAN` (error 463 de WhatsApp), `WEB_PROVIDER_REJECTED` (otro número de error de WhatsApp) y, en otros casos, normalmente `SEND_FAILED`. Hasta el 2026-10-21 esta ruta siempre enviaba `SEND_FAILED`: si comparas con el literal `SEND_FAILED`, agrega los códigos más específicos. Una falla de un mensaje sin registro en Pilot Status (enviado desde el teléfono, o ya depurado) sigue enviando `SEND_FAILED`. Sigue los campos comunes de arriba; `messageId` es el id del proveedor.
+
+```json
+{
+  "event": "message.failed",
+  "data": {
+    "event": "message.failed",
+    "messageId": "3EB0A52298BB1619CB5E",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "internalMessageId": "cmm04obm46zz0qv4ycjp8x6r2",
+    "numberId": "cmm0abc123",
+    "whatsappNumberId": "cmm0num456",
+    "from": "+5511888888888",
+    "to": "+5511999999999",
+    "type": "text",
+    "fromMe": true,
+    "createdAt": "2026-02-24T15:00:05.000Z",
+    "correlationId": "corr_123",
+    "content": "sent text",
+    "error": "Falha ao enviar mensagem pela Pilot Status.",
+    "errorCode": "SEND_FAILED"
+  }
+}
+```
+
+La variante del límite del plan no tiene `data.event`, `internalMessageId` ni `whatsappNumberId`, y su `messageId` es el id interno, porque nada llegó al proveedor.
+
+**2. Forma del worker: `errorMessage` y `data.errorCode`.** La envía el worker de envío por sus propias fallas: el destino no está en WhatsApp, un shadowban, una conexión inexistente, no conectada o eliminada, una tarjeta de orden de pago que falló después de que salió el texto, el último intento fallido o un error inesperado. `data` lleva `messageId`, `internalMessageId`, `correlationId`, `environment`, `destinationNumber`, `content`, `status`, `failedAt`, el motivo en `errorMessage` y, desde el 2026-10-21, `errorCode`: el código de la API para el mensaje (por ejemplo, `WHATSAPP_NOT_EXIST`, `WEB_SHADOWBAN`, `WHATSAPP_INSTANCE_NOT_CONNECTED`, `PAYMENT_ORDER_PARTIAL_SEND`). **No hay `error`, `id`, `from`, `to`, `type`, `fromMe` ni `createdAt`**. Aquí `messageId` es el id interno, el mismo valor que `internalMessageId`. Las dos fallas de conexión (ninguna conexión conectada, ninguna asignada) omiten `internalMessageId` y `correlationId`; la ruta de error inesperado agrega `sourceNumber`.
+
+```json
+{
+  "event": "message.failed",
+  "data": {
+    "messageId": "cmm04obm46zz0qv4ycjp8x6r2",
+    "internalMessageId": "cmm04obm46zz0qv4ycjp8x6r2",
+    "correlationId": "corr_123",
+    "environment": "LIVE",
+    "destinationNumber": "+5511999999999",
+    "content": "sent text",
+    "status": "FAILED",
+    "failedAt": "2026-02-24T15:00:05.000Z",
+    "errorMessage": "O WhatsApp bloqueou o envio por esta conexão (shadowban). Envie pelo app do WhatsApp e reduza o volume/velocidade.",
+    "errorCode": "WEB_SHADOWBAN"
+  }
+}
+```
+
+**3. Forma plana: `code` y `errorCode` en el nivel superior.** El reconciliador de mensajes, que marca como fallido un mensaje cuyo plazo de entrega pasó, y la verificación de ese plazo que hace el worker de envío antes de un reintento envían un cuerpo **sin `event` y sin `data`**: los campos están en el nivel superior. Tampoco hay un encabezado que nombre el evento, así que reconoce esta forma por `status: "FAILED"` con un `internalMessageId` en el nivel superior. El reconciliador envía `code`: `NUMBER_BLOCKED` cuando el número estaba bloqueado, `MESSAGE_RECOVERY_FAILED` cuando marcó como fallido un mensaje que no pudo devolver íntegro a la cola de envío, y `DELIVER_UNTIL_EXPIRED` en los demás casos. Desde el 2026-10-21 también envía un `errorCode` en el nivel superior **junto a** `code`: `code` es el veredicto propio del reconciliador, de tres valores, y se mantiene para las integraciones que ya ramifican según él; `errorCode` es el código más fino de la API para el mismo mensaje (`EXPIRED_WHILE_NUMBER_BLOCKED`, `EXPIRED_WHILE_INSTANCE_NOT_OPEN`, `NEVER_ATTEMPTED_MAX_AGE_EXCEEDED`, `EXPIRED_AFTER_ATTEMPTS`, `EXPIRED_DEFERRED_TOO_LONG`, `MESSAGE_RECOVERY_FAILED`). La verificación del reintento no envía `code`, agrega `messageId` (el id interno) y envía `errorCode` (`EXPIRED_AFTER_ATTEMPTS` o `EXPIRED_DEFERRED_TOO_LONG`). La verificación de entrega de mensajes enviados también usa esta forma cuando marca un mensaje como fallido con `MESSAGE_RECOVERY_FAILED` (consulta la advertencia de abajo).
+
+```json
+{
+  "internalMessageId": "cmm04obm46zz0qv4ycjp8x6r2",
+  "correlationId": "corr_123",
+  "destinationNumber": "+5511999999999",
+  "status": "FAILED",
+  "code": "NUMBER_BLOCKED",
+  "errorCode": "EXPIRED_WHILE_NUMBER_BLOCKED",
+  "error": "Mensagem expirou enquanto o envio do número estava bloqueado pelo WhatsApp.",
+  "timestamp": "2026-02-24T15:00:05.000Z"
+}
+```
+
+Las tres formas también reciben el `idempotencyKey` de nivel superior descrito en [Deduplicar reintentos](/es/api/webhooks/configure#eliminar-reintentos-duplicados-idempotency-key).
+
+<Warning>
+  **`MESSAGE_RECOVERY_FAILED` en un número oficial no llega a ningún webhook.** Además del reconciliador (forma 3), el worker de envío también marca mensajes como fallidos con este código: cuando el job de envío de un número oficial (Meta Cloud API) llega al worker sin su identidad de Meta mientras el número todavía tiene credenciales de Meta vigentes, el worker se niega a enviarlo por cualquier otra ruta y marca el mensaje como fallido en ese intento, sin reintento. Nada llegó a Meta, así que no llega ningún `statuses[]` y, como en todo número oficial, tampoco se despacha ningún `message.failed`. Un `MESSAGE_RECOVERY_FAILED` del reconciliador en un número oficial es igual de silencioso.
+
+  **Desde el 2026-10-21 la verificación de entrega de mensajes enviados también falla con este código.** Cuando un mensaje está `SENT` pero su entrega nunca se confirma, Pilot Status lo reenvía. Ahora solo reenvía texto libre en un número no oficial, que puede reconstruir íntegro. Un mensaje de un número oficial, o una plantilla, se marca como fallido con `MESSAGE_RECOVERY_FAILED` en lugar de reenviarse incompleto. En un número no oficial (una plantilla) eso envía `message.failed` en la forma plana, con `code` y `errorCode` ambos `MESSAGE_RECOVERY_FAILED`; en un número oficial no llega a ningún webhook.
+
+  La falla solo es visible mediante [`GET /v1/messages`](/es/api/messages/list) y [`GET /v1/messages/{messageId}`](/es/api/messages/status) (`status: "FAILED"`, `errorCode: "MESSAGE_RECOVERY_FAILED"` y el motivo, en portugués, en `errorMessage`) y en la pantalla de Logs. Consulta periódicamente `GET /v1/messages?status=FAILED` para detectarla. Tu número no tiene ningún problema: vuelve a enviar el mensaje.
+</Warning>
+
+### message.received
+
+```json
+{
+  "event": "message.received",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Hi",
+    "participantName": "WhatsApp name",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+Ejemplo con multimedia. En los eventos entrantes (`message.received` / `message.reply`) que llevan multimedia, `mediaLink` es una URL duradera y de acceso público al multimedia realojado en el almacenamiento de Pilot Status, para **todos** los proveedores (Evolution GO, Evolution v2 y Meta Cloud API), incluido el multimedia cifrado de extremo a extremo de WhatsApp, que se descifra en el servidor antes de realojarlo. Los campos `media*` se omiten en los mensajes que solo tienen texto.
+
+```json
+{
+  "event": "message.received",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "image",
+    "fromMe": false,
+    "content": "Check this photo",
+    "mediaLink": "https://...",
+    "mediaType": "image",
+    "mediaCaption": "Check this photo",
+    "mediaFilename": "photo.jpg",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+### message.reply
+
+El texto **nuevo** del contacto está en `content`; el texto del mensaje original **citado** está en `contentReplied`. Usa `quotedMessageId` para vincularlo con el `messageId` de tu `message.sent` saliente original.
+
+```json
+{
+  "event": "message.reply",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_12345",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Yes, I confirm",
+    "contentReplied": "Hi! Do you confirm your appointment?",
+    "quotedMessageId": "msg_original_123",
+    "correlationId": "corr_123",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+### message.group
+
+```json
+{
+  "event": "message.group",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Message in the group",
+    "participantName": "WhatsApp name",
+    "groupId": "120363123456789012@g.us",
+    "groupName": "My Group",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+### message.newsletter
+
+```json
+{
+  "event": "message.newsletter",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Text in the channel",
+    "participantName": "WhatsApp name",
+    "newsletterId": "120363123456789012@newsletter",
+    "newsletterName": "My Channel",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+### message.stories
+
+Estados de WhatsApp (historias) publicados por un contacto que el teléfono conectado puede ver.
+
+<Warning>
+  **Solo se entregan mientras haya alguien suscrito.** El tráfico de Estados está desactivado
+  en el proveedor de forma predeterminada (`ignoreStatus`); suscribir un webhook a
+  `message.stories`, o al comodín `"*"`, es lo que lo activa para ese
+  número. Si eliminas la última suscripción, el proveedor deja de enviar Estados
+  otra vez.
+</Warning>
+
+<Note>
+  Un Estado **no se guarda**. No crea una conversación ni un mensaje en
+  tu historial de chat, y no aparece en `GET /v1/messages`. WhatsApp hace expirar
+  las historias después de 24 h; el `mediaLink` que realojamos es duradero, la historia no.
+</Note>
+
+```json
+{
+  "event": "message.stories",
+  "data": {
+    "from": "+5511999999999",
+    "numberId": "cmm0abc123",
+    "whatsappNumberId": "cmm0num456",
+    "messageId": "msg_in_id",
+    "id": null,
+    "type": "image",
+    "fromMe": false,
+    "content": "Caption of the story",
+    "participantName": "WhatsApp name",
+    "mediaLink": "https://media.pilotstatus.com.br/public/tenants/.../story.jpg",
+    "mediaType": "image",
+    "mediaCaption": "Caption of the story",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+## Payload `number.*`
+
+Campos de `number.created` / `number.connected` / `number.disconnected` / `number.removed` / `number.restored` / `number.recovered` (y de los eventos `number.health_blocked` / `number.health_degraded` / `number.health_shadowban`):
+
+<Warning>
+  **Cambio incompatible: `data.numberId` siempre es el ID del número.** En todo evento `number.*`, `data.numberId` ahora es el ID del **número** de WhatsApp. Antes, `number.created`, `number.connected` y `number.removed` llevaban el ID interno de la **instancia**, mientras que los eventos de salud ya llevaban el ID del número: dos IDs opacos en el mismo campo, así que cruzar ambas familias nunca coincidía, sin ningún aviso. **Si tu consumidor vinculaba los eventos de ciclo de vida por ID de instancia, dejará de coincidir: usa el ID del número como clave.** Es el mismo `id` que devuelve `GET /v1/numbers`.
+</Warning>
+
+| Campo | Presencia | Descripción |
+| --- | --- | --- |
+| `event` | siempre | nombre del evento |
+| `id` | siempre | **nivel superior**, junto a `event`: id único (UUID) de este evento. Es el mismo en cada reintento y reenvío del evento, y en cada webhook que lo recibe: úsalo para **deduplicar** |
+| `numberId` | siempre | ID público del número: siempre el ID del número de WhatsApp, nunca el ID de instancia |
+| `phone` | siempre | número en E.164 con `+` |
+| `displayName` | siempre | nombre visible del número |
+| `createdAt` | siempre | ISO 8601: cuándo ocurrió el **mensaje**, según lo reporta el proveedor (no cuándo lo ingerimos) |
+| `profileName` | condicional | nombre del perfil de WhatsApp, cuando está disponible |
+| `error` | condicional | mensaje de error (eventos de salud / falla) |
+| `errorCode` | condicional | código de error estable, cuando está presente |
+| `connectedAt` | `number.connected` | ISO 8601: cuándo se estableció la conexión |
+| `routedToPilot` | `number.connected`, conexiones de Meta Cloud API | booleano: si los mensajes entrantes de este número realmente llegan a Pilot Status (la suscripción de webhook de la WABA se aplicó y Meta la aceptó). **Disponible después del próximo deploy.** |
+| `webhookUrl` | con `routedToPilot` | string o `null`: la URL de callback que todavía falta configurar en los ajustes de webhook de la app de Meta; `null` cuando `routedToPilot` es `true`. **Disponible después del próximo deploy.** |
+
+**Deduplica por `id`.** Una entrega puede reintentarse y un webhook puede reenviarse: el evento es el mismo, así que su `id` es el mismo. Guarda los `id` que ya procesaste e ignora los que ya hayas visto. Los demás campos no cambian; `id` y `connectedAt` son aditivos. `id` viene en **todo** evento `number.*`, incluidos los eventos de salud, `number.inbound_stalled` y `number.inbound_recovered`.
+
+### number.created
+
+```json
+{
+  "id": "3f1c2a9e-7b4d-4e8a-9c21-5d6f0a1b2c3d",
+  "event": "number.created",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:00:05.000Z"
+  }
+}
+```
+
+### number.connected
+
+```json
+{
+  "id": "8a2e4c6b-1d3f-4a5b-8c7d-9e0f1a2b3c4d",
+  "event": "number.connected",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "profileName": "Main Store Official",
+    "createdAt": "2026-02-24T15:00:05.000Z",
+    "connectedAt": "2026-02-24T15:00:05.000Z"
+  }
+}
+```
+
+**Las conexiones de Meta Cloud API** (disponible después del próximo deploy) agregan `routedToPilot` y `webhookUrl`: en una conexión mediante un enlace alojado con credenciales pegadas, en un Embedded Signup recuperado y en un Embedded Signup que reconecta un número existente:
+
+```json
+{
+  "id": "8a2e4c6b-1d3f-4a5b-8c7d-9e0f1a2b3c4d",
+  "event": "number.connected",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:00:05.000Z",
+    "routedToPilot": false,
+    "webhookUrl": "https://webhook.pilotstatus.com.br/api/meta/webhook"
+  }
+}
+```
+
+`routedToPilot: false` significa que los mensajes entrantes no llegarán hasta que el webhook se configure en la app de Meta o, en una conexión por credenciales, que el cliente eligió conservar su propio callback. El token de verificación nunca forma parte de este evento. Ambos campos son aditivos: nada más cambió.
+
+### number.disconnected
+
+Se emite desde la **transición de salud del número**, que controla la ventana anti-oscilación y la deduplicación de una alerta por transición: recibes **un** evento por caída confirmada, no uno por cada microcorte del socket.
+
+- Números **web nativos (no oficiales)**: este evento se dispara ante una caída de conexión confirmada. Antes, un número no oficial que se desconectaba no producía ningún evento suscribible, solo los eventos de salud exclusivos de `"*"`.
+- Números de **Meta Cloud API**: nunca emiten `number.disconnected`. Una transición de calidad/estado de Meta solo emite su evento de salud del número (`number.health_blocked` / `number.health_degraded` / `number.health_shadowban`), que llega a los webhooks suscritos a él por nombre o a `"*"`.
+
+`error` y `errorCode` se incluyen cuando la transición de salud trae un motivo.
+
+```json
+{
+  "id": "c5d7e9f1-2a4b-4c6d-8e0f-1a3b5c7d9e1f",
+  "event": "number.disconnected",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:10:00.000Z"
+  }
+}
+```
+
+### number.removed
+
+```json
+{
+  "id": "1b3d5f7a-9c2e-4f6a-8b1d-3e5f7a9c1b2d",
+  "event": "number.removed",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:10:00.000Z"
+  }
+}
+```
+
+### number.restored
+
+La contraparte de `number.removed`: un número eliminado se recuperó dentro de su ventana de 30 días.
+
+- Se dispara en todas las rutas de restauración: el panel, `POST /v1/numbers/{id}/restore` y la reconexión del mismo teléfono en Meta (Embedded Signup o credenciales de Cloud API) mientras su número eliminado todavía se puede restaurar. Esa reconexión trae de vuelta el número anterior, así que `number.restored` va seguido de `number.created` / `number.connected`.
+- Restaura el **registro, no la conexión**: el número vuelve desconectado y hay que reconectarlo antes de que pueda enviar.
+- Mismo payload y alcance que `number.removed`: el mismo `numberId` (el id que devuelve `GET /v1/numbers`), entregado solo a los webhooks suscritos a ese número, incluidas las suscripciones `"*"`. Se puede suscribir por nombre en todos los proveedores.
+- Si tu integración deja de aceptar un número cuando recibe `number.removed`, vuelve a aceptarlo con `number.restored`. De lo contrario, seguirás rechazando sus eventos después de la restauración.
+
+```json
+{
+  "id": "6e8f0a2c-4b6d-4e8f-a1c3-5d7e9f1a3c5e",
+  "event": "number.restored",
+  "data": {
+    "numberId": "cmm0abc123",
+    "phone": "+5511999999999",
+    "displayName": "Main store",
+    "createdAt": "2026-02-24T15:20:00.000Z"
+  }
+}
+```
+
+## Payload `call.*`
+
+A diferencia de `message.*` / `number.*`, los eventos normalizados `call.*` son **planos** (sin envoltorio `data`):
+
+```json
+{
+  "event": "call.ended",
+  "callId": "call_01HZX...",
+  "externalCallId": "wacid.ABGG...",
+  "direction": "OUTBOUND",
+  "status": "COMPLETED",
+  "from": "5511888888888",
+  "to": "5511999999999",
+  "timestamp": "2026-07-03T15:02:05.000Z",
+  "duration": 120
+}
+```
+
+| Campo | Presencia | Descripción |
+| --- | --- | --- |
+| `event` | siempre | `call.ringing` / `call.connected` / `call.ended` / `call.missed` / `call.permission_updated` |
+| `callId` | siempre (`null` en `call.permission_updated`) | id de la llamada en Pilot Status (úsalo con `GET /v1/calls/{callId}`) |
+| `externalCallId` | condicional | id de la llamada en Meta (`wacid...`): se correlaciona con el sobre nativo `calls` |
+| `direction` | siempre (`null` en `call.permission_updated`) | `INBOUND` (iniciada por el usuario) u `OUTBOUND` (iniciada por la empresa) |
+| `status` | siempre | estado de la llamada (`RINGING`/`ACCEPTED`/`COMPLETED`/`FAILED`/`MISSED`/`REJECTED`) o estado del permiso (`NO_PERMISSION`/`TEMPORARY`/`PERMANENT`) |
+| `from` / `to` | siempre (puede ser null) | las dos partes (dígitos) |
+| `timestamp` | siempre | ISO 8601: hora del evento |
+| `duration` | condicional | duración de la llamada en segundos (`call.ended`, solo cuando se contestó) |
+
+Consulta el [flujo completo de llamadas](/es/api/calls/overview).
+
+## Payload `flow.*`
+
+`flow.response_received` se dispara cuando un cliente envía un [Flow](/es/concepts/flows). Usa el sobre canónico `{ event, data }` incluso en un número de Meta, y está disponible **solo** en números de Meta Cloud API, porque los Flows solo existen allí.
+
+```json Flow simple: sin endpoint, respuestas en response
+{
+  "event": "flow.response_received",
+  "data": {
+    "event": "flow.response_received",
+    "flowId": "flw_local_1",
+    "metaFlowId": "1122334455",
+    "flowToken": "a1b2c3d4e5f6...",
+    "messageId": "wamid.HBgNNTU2Nzk5...",
+    "whatsappNumberId": "cmm0abc123",
+    "from": "+5567999999999",
+    "receivedAt": "2026-09-03T14:21:07.000Z",
+    "response": {
+      "resolucao": "resolvido",
+      "nota_atendimento": "9",
+      "comentario": "Teste"
+    },
+    "responseRaw": null,
+    "submitted": null,
+    "flowMedia": null
+  }
+}
+```
+
+```json Flow data_exchange: respuestas en submitted, adjunto aún en transferencia
+{
+  "event": "flow.response_received",
+  "data": {
+    "event": "flow.response_received",
+    "flowId": "flw_local_2",
+    "metaFlowId": "1122334455",
+    "flowToken": "2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM",
+    "messageId": "wamid.HBgNNTU2Nzk5...",
+    "whatsappNumberId": "cmm0abc123",
+    "from": "+5567999999999",
+    "receivedAt": "2026-09-06T16:10:44.000Z",
+    "response": {
+      "flow_token": "2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM"
+    },
+    "responseRaw": null,
+    "submitted": [
+      {
+        "screen": "WELCOME_SCREEN",
+        "at": "2026-09-06T16:08:12.616Z",
+        "data": { "observacao": "Aobaaa" },
+        "omitted": null
+      }
+    ],
+    "flowMedia": [
+      {
+        "field": "foto",
+        "fileName": "comprovante.jpg",
+        "mimeType": null,
+        "status": "PENDING",
+        "url": "https://pilotstatus.com.br/api/flows/media/eyJ0IjoiY21xc2N4MXczIiwiayI6ImZvdG8ifQ.9f2c1a4b8e0d6c73"
+      }
+    ]
+  }
+}
+```
+
+| Campo | Presencia | Descripción |
+| --- | --- | --- |
+| `event` | siempre | `flow.response_received`: se repite dentro de `data` además de en el sobre |
+| `flowId` | puede ser null | id **local** del Flow en Pilot Status, cuando el envío se puede asociar a un Flow que conocemos |
+| `metaFlowId` | puede ser null | el id del Flow en Meta |
+| `flowToken` | puede ser null | el token de un solo uso generado cuando se envió el Flow, cuando se puede leer |
+| `messageId` | siempre | el **wamid** del mensaje que lleva el envío |
+| `whatsappNumberId` | siempre | id en Pilot Status del número que lo recibió |
+| `from` | siempre | quién respondió, en E.164 |
+| `receivedAt` | siempre | ISO 8601 |
+| `response` | puede ser null | el payload `nfm_reply` de Meta, **ya interpretado**. En un Flow sin endpoint, aquí están las respuestas; en un Flow `data_exchange` lleva el `flow_token` y nada más |
+| `responseRaw` | puede ser null | los bytes sin procesar: **solo** cuando la interpretación falló |
+| `submitted` | puede ser null | los intercambios `data_exchange` capturados mientras se llenaba el formulario, del más antiguo al más reciente: **aquí están las respuestas de un Flow `data_exchange`**. `null`, **nunca `[]`** |
+| `flowMedia` | puede ser null, y puede estar ausente | los archivos adjuntados dentro del formulario. `null` significa que no listamos nada, **nunca `[]`**; una clave *ausente* indica un deploy anterior al campo. Interpreta ambos casos igual y no exijas que la clave esté presente |
+
+<Warning>
+  **En un Flow `data_exchange`, `data.response` es el lugar vacío.** Es el `nfm_reply` de Meta, y cuando el Flow lo atiende un endpoint, esa respuesta lleva el token y nada más: se midió tres veces en producción como `{"flow_token":"2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM"}`, mientras el mismo envío ya le había entregado al endpoint del propio cliente `{"observacao":"Aobaaa","foto":[…]}`. Lo que la persona escribió está en **`data.submitted`**; un handler que lo busque en `response` reporta un formulario vacío en cada Flow que conectes a una API.
+
+  **En un Flow simple (sin endpoint), los componentes de texto libre sí llegan en `response`.** Nada intercepta esas pantallas, así que no hay nada que capturar en el camino y `submitted` es `null`. Qué campo contiene las respuestas lo decide el Flow que enviaste, no el payload: lee `submitted` en un Flow `data_exchange` y `response` en uno simple. Consulta [Conecta tu API a un Flow](/es/guides/flow-data-exchange).
+</Warning>
+
+<Note>
+  **`submitted` es la lista de intercambios `data_exchange`, del más antiguo al más reciente.** Cada entrada tiene `screen` (un string, o `null`), `at` (ISO 8601), `data` (el objeto interpretado, o `null`) y `omitted`. El campo es `null` (**nunca `[]`**) tanto cuando no hay nada que mostrar como cuando el contenido se ocultó, porque `[]` se leería como "hubo respuestas y las ocultamos".
+
+  **Solo se capturan los intercambios `data_exchange`.** Un `INIT` devuelve el estado que *nosotros* sembramos cuando se envió el Flow, y un `BACK` es navegación; ninguno de los dos es algo que la persona respondió, así que no se guardan. Por eso la lista es legítimamente **más corta** que los registros de tu endpoint para la misma sesión: un `INIT` que falte en ella no es un intercambio perdido.
+
+  **Captura la solicitud que Meta nos envía, nunca lo que tu endpoint respondió.** El `extension_message_response` que tu API devuelve para terminar el Flow sigue sin aparecer en ninguna parte de Pilot Status, y este campo no cambia eso; consulta [Conecta tu API a un Flow](/es/guides/flow-data-exchange).
+
+  **Solo se agregan entradas, sin deduplicación.** Alguien que vuelve a una pantalla y la envía de nuevo produce una segunda entrada genuina en lugar de sobrescribir la primera; `at` es lo que separa dos recorridos con el mismo token.
+</Note>
+
+<Warning>
+  **Nunca se trunca nada en silencio: una entrada que no pudo conservar su contenido lo indica, en su lugar.** Una entrada tiene `data` con `omitted: null`, o `data: null` y un motivo en `omitted`. No hay una tercera forma, y `omitted` es exactamente uno de tres valores.
+
+  | `omitted` | Qué significa |
+  | --- | --- |
+  | `DATA_TOO_LARGE` | ese intercambio superó el límite. Conserva su fila **y su posición** en la lista, así que las entradas de alrededor siguen alineadas |
+  | `LIMIT_REACHED` | se alcanzó el límite por formulario de **50 intercambios**. Es la última entrada de la lista, y no se guardó nada después |
+  | `UNREADABLE` | no se pudo leer el contenido de ese intercambio |
+  | `null` | `data` está presente |
+
+  El límite se cuenta en **bytes, no en caracteres**: una respuesta escrita con acentos, o que lleva emojis, lo alcanza antes de lo que sugiere su longitud en pantalla.
+</Warning>
+
+<Note>
+  **Los intercambios se conservan 30 días + 1, y el día extra no es decorativo.** Un intercambio se captura mientras la persona todavía está llenando el formulario, minutos *antes* del envío que crea la fila de respuesta. Con 30 días exactos, los intercambios expirarían primero, y una respuesta todavía dentro de su propia ventana publicaría una lista vacía durante sus últimos minutos.
+</Note>
+
+<Warning>
+  **`flowMedia` lleva una URL desde la primera entrega, incluso mientras el archivo todavía viene en camino.** Cada entrada tiene `field` (el nombre que el **autor** del Flow le dio al componente: no es una palabra reservada ni un tipo), `fileName`, `mimeType`, `status` y `url`. Los bytes están en la CDN de Meta y una cola los realoja: el evento se emite en cuanto se guarda el envío, y esa transferencia corre después, así que normalmente un envío se anuncia mientras el archivo todavía está en tránsito. Ese orden es la razón de que exista el enlace, no una salvedad que haya que esquivar: `url` está presente también en `PENDING`.
+
+  **Si lo descargas, espera al archivo.** La ruta retiene la solicitud mientras termina el realojamiento y luego sirve el archivo; cada descarga posterior es una redirección. Una espera que se agota responde `404` con un encabezado `Retry-After`, y el mismo enlace sigue funcionando después. El valor no cambia una vez que llegan los bytes, así que es seguro guardarlo al recibirlo; `status` (`PENDING` / `STORED` / `FAILED`) sigue siendo lo que te dice si ya llegaron. Trata el enlace como opaco: descárgalo, nunca lo construyas. Es `null` en tres casos, y *"todavía en transferencia"* no es ninguno de ellos: no hay secreto de firma en el deploy, que en ese caso recurre a la URL directa del objeto una vez `STORED`; no hay `media_id` de Meta sobre el cual firmar una identidad; o es un número `RELAY_ONLY`, donde no se guardó nada.
+
+  **`null` significa cuatro cosas distintas, y solo una de ellas es "no se adjuntó nada".** También es lo que recibes cuando Meta no devolvió ningún `flow_token` con el envío; cuando falló la propia búsqueda de adjuntos, que es de mejor esfuerzo y cuesta un campo en lugar del evento; y antes de que empiece el job de realojamiento, porque la fila que llevaría `PENDING` solo se escribe cuando la transferencia realmente empieza, por el backend que la ejecuta, y no en el momento en que el archivo entra en la cola, así que hasta entonces no hay nada que listar. **Por lo tanto, `null` no prueba que no se haya enviado ningún archivo.** Un Flow que recopila archivos se consulta en [`GET /v1/flows/{id}/responses`](/es/api/flows#leer-respuestas-de-formularios), nunca se deduce de este campo.
+
+  El campo **nunca es `[]`**. Y el evento **no lleva `cdn_url` ni `encryption_metadata`**: Meta deriva una clave AES por archivo, y reenviarla pondría la clave que abre el documento del cliente en tu webhook y en tus logs.
+</Warning>
+
+<Warning>
+  **El lado `message.*` de un envío no lleva respuestas, y es deliberado.** Meta entrega un Flow enviado como una respuesta interactiva de tipo `nfm_reply`, cuyo `body` legible es solo una etiqueta: `Sent` / `Enviado`. Esa etiqueta es lo que llega a `content`, a `chat_messages.text` y a `GET /v1/messages`; las respuestas nunca van ahí, porque `content` promete ser *texto* del mensaje y un bloque JSON en él rompería a todo consumidor que lo muestre o lo compare.
+
+  Suscríbete a `flow.response_received`: un webhook cuya lista `events` solo contiene `messages` recibe la etiqueta y nada más, sin ningún error en ninguna parte. Consulta [Recibir respuestas de Flows](/es/guides/flow-responses).
+</Warning>
+
+<Warning>
+  **Aquí el campo del número es `whatsappNumberId`, y `numberId` en todos los demás eventos.** Contiene el mismo valor (el id que devuelve `GET /v1/numbers`) y solo cambia el nombre, pero cambia **en el payload**: un handler que lea `data.numberId` en este evento obtiene `undefined`, en silencio, y envía las respuestas a ninguna parte. El nombre se copia del emisor, no se eligió en este punto, y por eso no se renombró simplemente para que coincidiera.
+</Warning>
+
+<Note>
+  **`response` o `responseRaw`, nunca ambos.** Meta envía el cuerpo de `nfm_reply` como un *string* JSON. Cuando se puede interpretar, recibes `response`; cuando no, recibes `responseRaw` con los bytes tal como llegaron. El envío nunca se descarta por no poder interpretarse, así que revisa cuál recibiste, y recuerda que en un Flow `data_exchange` lo que hay ahí es el `flow_token`, no las respuestas.
+</Note>
+
+<Warning>
+  **Una opción elegida llega como su `id`, no como la etiqueta que leyó la persona.** `RadioButtonsGroup`, `Dropdown` y `ChipsSelector` declaran sus opciones en el JSON del Flow como un `data-source` de pares `id` + `title`. Con `[{"id":"5","title":"Otimo"}, {"id":"3","title":"Razoavel"}, {"id":"1","title":"Ruim"}]`, alguien que toca **Otimo** envía `{"nota":"5","comentario":"AOBA","flow_token":"..."}`. La pantalla "Tu respuesta" de WhatsApp muestra `Otimo` porque el teléfono todavía tiene el JSON del Flow; tu endpoint recibe `5`, y nada en el payload dice qué significaba `5`.
+
+  Resolver la etiqueta después puede darte la etiqueta **equivocada**: el `id` es estable, el `title` no, así que un Flow republicado con `{"id":"5","title":"Excelente"}` hace que una consulta posterior nombre una palabra que el cliente nunca vio. Captura la etiqueta en el momento en que llega el envío y guárdala junto al `id`. Consulta [Recibir respuestas de Flows](/es/guides/flow-responses).
+</Warning>
+
+<Note>
+  **Sin respuestas no hay evento.** Un envío que no lleva nada en absoluto no se dispara: un cuerpo vacío sería indistinguible, de tu lado, de un formulario enviado en blanco.
+
+  El evento también se dispara solo para un envío que se **guardó**. Una reentrega de Meta de uno ya guardado es silenciosa, que es la deduplicación que quieres; también lo es un segundo envío distinto que colisionó con el mismo literal de `flow_token`, que es el único caso en que el silencio te cuesta una respuesta. Los tokens generados por Pilot Status nunca colisionan; un Flow creado en el Flow Manager de Meta con un `flow_token` fijo sí puede.
+</Note>
+
+<Warning>
+  **En un número configurado para no conservar contenido del cliente, la entrega es completa y la copia guardada no.** Tu endpoint recibe el cuerpo completo; en el payload que se conserva en el log del webhook, `response`, `responseRaw`, `submitted` y `flowMedia` pasan a `null`, y `from` pasa a ser el string de reemplazo `conteúdo indisponível`: un string, no un `null`, así que no lo compares con `null`. Una entrada de log que parece vacía junto a un `200` es esa ocultación, no una entrega fallida.
+
+  **Esa copia oculta es lo que guarda una entrega EXITOSA.** Una entrega que falló conserva el payload **real**, para que un operador pueda inspeccionar y reenviar lo que realmente se envió; un proceso de limpieza reemplaza el payload de esas filas (completo, con un objeto marcador, no campo por campo) cuando tienen más de 24 horas. Dentro de esa ventana, `GET /v1/webhooks/{id}/logs` puede devolver el envío completo en un número cuya configuración dice que no conserva nada.
+
+  **En un número así, los adjuntos nunca se realojan**, de modo que `flowMedia` también es `null` en la entrega: no hay copia guardada a la cual apuntar, y la referencia se queda donde estaba. **Tampoco se captura ningún intercambio**: `submitted` también es `null` en la entrega, y no como una fila oculta, sino sin fila alguna. Es la configuración del número haciendo lo que dice, no una falla.
+</Warning>
+
+## Payload `lead.*`
+
+`lead.received` se dispara cuando alguien envía un **Formulario instantáneo de Meta Lead Ads** (Facebook o Instagram) en una Página de Facebook vinculada a uno de tus números en el panel: los mismos leads que [`GET /v1/leads`](/es/api/leads) devuelve. Usa el sobre canónico `{ event, data }` en **todos** los proveedores, incluidos los números de Meta Cloud API: el lead llega a través de la Página de Facebook, no de la conexión de WhatsApp, así que el vocabulario de webhook del número no se aplica.
+
+<Warning>
+  **`lead.received` es opcional: una suscripción `"*"` NO lo recibe.** Solo se entrega a un webhook cuya lista `events` lo nombra, por ejemplo `["*", "lead.received"]` para conservar también todo lo demás. Mediante la API, pon `"lead.received"` en `events` en [`POST /v1/webhooks`](/es/api/webhooks/configure) o `PATCH /v1/webhooks/{id}` (un `PATCH` reemplaza la lista completa, así que envía también los eventos que ya tenías). En el panel, marca **Lead received (Meta Ads)** (Lead recibido) en el formulario del webhook: seleccionar todos los eventos no lo marca. Como todo evento, solo va a los webhooks suscritos al número del lead.
+</Warning>
+
+```json
+{
+  "event": "lead.received",
+  "data": {
+    "leadId": "cmg1lead0001",
+    "leadgenId": "1234567890123456",
+    "whatsappNumberId": "cmm0abc123",
+    "pageId": "1029384756",
+    "pageName": "Salão Exemplo",
+    "formId": "5647382910",
+    "formName": "Agendamento",
+    "adId": "120210000000000001",
+    "adsetId": "120210000000000002",
+    "campaignId": "120210000000000003",
+    "adName": null,
+    "adsetName": null,
+    "campaignName": null,
+    "platform": "ig",
+    "isOrganic": false,
+    "createdAt": "2026-10-05T12:00:00.000Z",
+    "fullName": "Maria Silva",
+    "email": "maria@example.com",
+    "phone": "5511987654321",
+    "fields": [
+      { "key": "full_name", "label": "full_name", "values": ["Maria Silva"] },
+      { "key": "Qual serviço?", "label": "Qual serviço?", "values": ["Corte"] }
+    ],
+    "consentGiven": null,
+    "conversationId": null
+  }
+}
+```
+
+| Campo | Notas |
+| --- | --- |
+| `leadId` | El id del lead en Pilot Status: el que recibe [`GET /v1/leads/{id}`](/es/api/leads). |
+| `leadgenId` | El `leadgen_id` de Meta. Uno por lead: deduplica por él. |
+| `whatsappNumberId` | El número al que está vinculada la Página: el id que devuelve `GET /v1/numbers`. Como en `flow.response_received`, el campo es `whatsappNumberId`, no `numberId`. |
+| `pageId` · `pageName` | La Página de Facebook en la que se envió el formulario. |
+| `formId` · `formName` | El Formulario instantáneo. `formName` es `null` cuando no se pudo leer. |
+| `adId` · `adsetId` · `campaignId` | El anuncio del que vino el lead, tal como lo envió Meta; `null` cuando Meta no envió ninguno (un lead orgánico). |
+| `adName` · `adsetName` · `campaignName` | Solo se llenan cuando Pilot Status ya había resuelto los nombres del anuncio. El evento nunca los espera, así que en el primer lead de un anuncio nuevo suelen ser `null`; `GET /v1/leads` los devuelve una vez resueltos. |
+| `platform` | `fb` o `ig`, o `null`. |
+| `isOrganic` | `true`, `false` o `null`. |
+| `createdAt` | Cuándo la persona envió el formulario (el `created_time` de Meta), no cuándo lo recibió Pilot Status. |
+| `fullName` · `email` | Tal como los llenó la persona; `null` cuando el formulario no los pedía. |
+| `phone` | Dígitos internacionales sin `+` (por ejemplo, `5511987654321`) cuando la respuesta se pudo leer como número de teléfono; de lo contrario, exactamente lo que escribió la persona. `null` cuando el formulario no lo pedía. |
+| `fields` | Todas las respuestas del formulario, como `{ key, label, values }`. `key` es el nombre del campo de Meta tal cual; para una pregunta personalizada, su texto. |
+| `consentGiven` | `true`, `false` o `null`: `null` significa desconocido, nunca una negativa. Consulta [Leads](/es/api/leads). |
+| `conversationId` | La conversación con este teléfono en el número, cuando ya existe una; de lo contrario, `null`. |
+
+<Note>
+  **Cuándo se dispara y cuándo no.**
+
+  - Solo para un lead recibido **en vivo**, mediante el webhook leadgen de Meta. Los leads importados después (backfill) no lo disparan. Si un backfill guardó un lead primero y la entrega en vivo de Meta llega después, el evento se dispara en ese momento, una vez.
+  - Una vez por lead: una reentrega de Meta de un lead ya guardado es silenciosa.
+  - No para un lead que se borró, o cuya Página se desvinculó mientras se guardaba el lead.
+  - Se entrega por la misma cola con reintentos que todos los demás eventos. **No lleva encabezado `Idempotency-Key`** ni campo `idempotencyKey` (no hay id de mensaje en el payload): deduplica por `data.leadgenId`.
+</Note>
+
+<Warning>
+  **En un número `RELAY_ONLY`, tu endpoint igual recibe el lead real.** Solo se oculta la copia que se conserva en el log del webhook: `fullName`, `email` y `phone` se borran y cada entrada de `fields[].values` se vacía, mientras que `key` y `label` se mantienen. El lead en sí se guarda sin datos personales, así que `GET /v1/leads` lo devuelve oculto: la entrega del webhook es el único lugar por donde te llegan esas respuestas.
+</Warning>
+
+## Eventos de Meta Cloud API (sobre nativo)
+
+Un número conectado mediante Meta Cloud API ([Embedded Signup](/es/guides/embedded-signup) o credenciales pegadas) **no** envía los eventos canónicos de arriba. Reenvía **el sobre de webhook de Meta tal cual**, identificado por el nombre de campo que Meta pone en `entry[].changes[].field`.
+
+<Warning>
+  **`message.received` nunca se dispara en un número de Meta, y `events: ["*"]` no convierte el formato.** El nombre de evento al que te suscribes es el nombre de campo de Meta (`messages`) y el cuerpo que recibes es el sobre de Meta. Un receptor escrito para el esquema canónico (`{ event, data }`) lee `undefined` de un payload de Meta y no reporta nada, lo que se ve exactamente como "el cliente nunca escribió". Escribe el parser para la forma nativa o ramifica según el `provider` del número.
+</Warning>
+
+```json Sobre nativo (tal como se entrega)
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "987654321098765",
+      "time": 1771000000,
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "5511999999999",
+              "phone_number_id": "123456789012345"
+            },
+            "contacts": [{ "profile": { "name": "João" }, "wa_id": "5585984387245" }],
+            "messages": [
+              {
+                "from": "5585984387245",
+                "id": "wamid.HBgNNTU4NTk4NDM4NzI0NRUCABIYIDc...",
+                "timestamp": "1771000000",
+                "type": "text",
+                "text": { "body": "Oi" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+`entry[].changes[].value` es el payload de Meta para ese campo, sin modificar: la misma forma que documenta la referencia de Meta. No se le agrega ni se le quita nada, así que un receptor ya escrito para los webhooks de Meta sigue funcionando.
+
+**Un cambio por entrega.** Meta puede agrupar varios cambios en una `entry`; cada uno se compara con las suscripciones y se entrega por separado, así que `entry` y `entry[0].changes` siempre tienen exactamente **un** elemento. Conserva los bucles que tu parser de Meta ya tiene (simplemente se ejecutarán siempre una vez) y nunca supongas que dos cambios en una solicitud están relacionados.
+
+### Campos suscribibles
+
+Estos son los nombres de campo que puedes poner en `events` en [`POST /v1/webhooks`](/es/api/webhooks/configure) para un número de Meta. También son los nombres que llegan como evento entregado.
+
+| Campo | Qué reporta |
+| --- | --- |
+| `messages` | **Mensajes entrantes y estados de entrega**: el campo que quieres para las conversaciones. Los estados (`sent` / `delivered` / `read` / `failed`) van en `value.statuses`, no en un campo aparte. |
+| `message_echoes` | Copia de los mensajes **enviados por la empresa** mediante cualquier otra herramienta en la misma WABA. |
+| `smb_message_echoes` | Lo mismo, para los envíos hechos desde la **app** WhatsApp Business (coexistencia). |
+| `message_template_status_update` | Una plantilla fue aprobada, rechazada, pausada o deshabilitada. |
+| `message_template_quality_update` | Cambió la puntuación de calidad de una plantilla. |
+| `message_template_components_update` | Meta cambió los componentes de una plantilla. |
+| `template_category_update` | Cambió la categoría de una plantilla (`MARKETING` ⇄ `UTILITY` …). |
+| `template_correct_category_detection` | Meta detectó que la categoría declarada de una plantilla es incorrecta. |
+| `phone_number_name_update` | Terminó la revisión del nombre visible del número. |
+| `phone_number_quality_update` | Cambió la calificación de calidad o el nivel de mensajería del número. |
+| `account_review_update` | Terminó la revisión de tu WABA. |
+| `account_update` | Cambio a nivel de cuenta (bloqueo, restricción, verificación …). |
+| `account_settings_update` | Cambió un ajuste de la cuenta. |
+| `business_capability_update` | Cambiaron el throughput o los límites (por ejemplo, el máximo de conversaciones diarias). |
+| `business_status_update` | Cambió el estado de verificación de la empresa. |
+| `calls` | El sobre **nativo** `calls` de Meta, con los SDP, para señalización WebRTC personalizada. Los eventos normalizados `call.*` de abajo son más fáciles de leer. |
+| `flows` | El sobre **nativo** `flows` de Meta: señales del ciclo de vida del Flow (limitación, una clave pública desactualizada). **No** es donde llegan las respuestas enviadas; eso es `flow.response_received`, más abajo. |
+| `payment_configuration_update` | Cambió una configuración de pago. |
+| `user_preferences` | Un usuario aceptó o rechazó los mensajes de marketing. |
+| `group_lifecycle_update` | Grupo creado / eliminado. **Plan de pago.** |
+| `group_participants_update` | Participantes que entraron / salieron / fueron promovidos. **Plan de pago.** |
+| `group_settings_update` | Cambiaron los ajustes del grupo. **Plan de pago.** |
+| `group_status_update` | Cambió el estado del grupo. **Plan de pago.** |
+
+Además, las familias que **no** son el sobre de Meta:
+
+- **Respuestas de Flows**: `flow.response_received`, solo números de Meta, en la forma canónica `{ event, data }`. Consulta [Payload `flow.*`](#payload-flow).
+- **Eventos de llamada normalizados**: `call.ringing`, `call.connected`, `call.ended`, `call.missed` y `call.permission_updated` (solo Meta). Son eventos planos de Pilot Status, no el sobre de Meta; consulta [Payload `call.*`](#payload-call).
+- **Ciclo de vida del número**: `number.created`, `number.connected`, `number.removed`, `number.restored`. `number.disconnected` se puede suscribir pero **nunca se dispara en un número de Meta**: una transición de calidad/estado de Meta emite en su lugar un evento de salud del número, y esos solo llegan a las suscripciones `"*"`.
+
+<Note>
+  **Nueve de los campos de Meta nunca se entregan**, ni siquiera a una suscripción `"*"`: `account_alerts`, `automatic_events`, `history`, `messaging_handovers`, `partner_solutions`, `security`, `smb_app_state_sync`, `standby` y `tracking_events`. Son internos (backfill masivo del historial, sincronización de estado de coexistencia) o tráfico de administración/seguridad, y tampoco se ofrecen en el selector de eventos. Todo lo demás que Meta envía para un campo suscrito se reenvía.
+</Note>
+
+<Warning>
+  **Un nombre de evento que el proveedor del número no puede emitir se descarta en silencio, no se rechaza.** `POST`/`PATCH` filtran `events` al conjunto suscribible del proveedor antes de guardar, así que suscribir un número de **Meta** a `message.received` devuelve `201`, guarda una lista vacía y no entrega nada. Vuelve a leer los `events` del webhook creado y compáralos con lo que enviaste.
+</Warning>
+
+### Salud del número: suscribible desde el 2026-09-15
+
+Un número de Meta nunca emite `number.disconnected`. Lo que emite en su lugar es la **familia de salud del número**, y estos nombres ahora están en el selector de eventos: suscríbete a ellos por nombre, como a cualquier otro evento:
+
+| Evento | Se dispara cuando |
+| --- | --- |
+| `number.health_degraded` | La calidad bajó a `RED`, o Meta puso el número en `FLAGGED` / `RATE_LIMITED`. El envío se detiene de nuestro lado. |
+| `number.health_blocked` | El `status` del teléfono en Meta pasó a `RESTRICTED` / `BANNED` / `DISABLED` / `DELETED` / `PENDING_DELETION`. |
+| `number.health_shadowban` | Solo números web nativos (no oficiales). |
+| `number.recovered` | El número volvió a estar sano en el eje de envío. |
+| `number.inbound_stalled` | El número todavía **envía** bien, pero su canal de entrada dejó de recibir en origen. Es deliberadamente distinto de una desconexión: tu propio panel muestra la conexión en verde. |
+| `number.inbound_recovered` | Se reanudó la entrada. |
+
+<Note>
+  **Eran exclusivos de `"*"` hasta el 2026-09-15.** El despachador siempre los comparaba, pero no estaban en el selector, así que un webhook suscrito exactamente a lo que quería no recibía ninguna señal de salud, y nada lo avisaba. Si usabas `"*"` solo para obtenerlos, ahora puedes acotar la suscripción.
+</Note>
+
+Usan la forma canónica `{ event, data }` (`data`: `numberId`, `phone`, `displayName`, `createdAt`, y `error` / `errorCode` cuando están presentes), **no** el sobre de Meta. Así que una suscripción que mezcla estos con campos de Meta entrega **dos formas de cuerpo distintas a la misma URL**: el `{ object, entry }` de Meta para los campos suscritos, y `{ event, data }` para estos más `call.*`, `flow.response_received` y `number.*`. Ramifica según la presencia de `entry` antes de interpretar.
+
+<Note>
+  Si quieres el tráfico de conversaciones y el de salud en endpoints **distintos**, crea dos webhooks en el número: uno con los campos de Meta que necesites y otro con `"*"`. Consulta [cuántos webhooks por número](/es/api/webhooks/configure#cuántos-webhooks-por-número).
+</Note>
+
+### Ecos: mensajes de la empresa enviados desde otra herramienta
+
+`message_echoes` y `smb_message_echoes` llevan una copia de un mensaje **que envió la empresa**: el primero para los envíos hechos mediante cualquier otra herramienta en la misma WABA, el segundo para los envíos hechos desde la **app WhatsApp Business en el teléfono** (coexistencia). En un número de coexistencia, `smb_message_echoes` es la única forma en que una respuesta de un agente escrita en el dispositivo llega a tu sistema.
+
+El mensaje en eco tiene **la misma forma por tipo que un mensaje entrante** (`text` / `image` / `video` / `audio` / `document` / `sticker` / `location` / `contacts` / `reaction`), más el destinatario:
+
+| Campo | Notas |
+| --- | --- |
+| `to` | Teléfono del destinatario, dígitos E.164. **Condicional** desde la introducción de los nombres de usuario: ausente en un eco dirigido a un BSUID. |
+| `to_user_id` | Business-Scoped User ID del destinatario, cuando el eco se dirigió a uno. |
+| `group_id` | Presente en un eco de grupo en lugar de `to` / `to_user_id`. |
+
+<Warning>
+  **La clave del arreglo no es estable.** Meta pone los mensajes en eco en `value.message_echoes` en algunos payloads y reutiliza `value.messages` en otros. Lee ambos:
+
+  ```js
+  const echoes = value.message_echoes ?? value.messages ?? [];
+  ```
+
+  Un parser que solo lee uno de ellos pierde la mitad de los ecos sin ningún error en ninguna parte.
+</Warning>
+
+### `statuses[]`: aquí está la categoría facturada
+
+En el campo `messages`, los estados de entrega van en `value.statuses`, y cada uno lleva el veredicto de facturación de la propia Meta. Es la respuesta autorizada a "cuánto cobró Meta por este mensaje": no hace falta deducirla de la plantilla.
+
+```json
+{
+  "id": "wamid.HBg…",
+  "status": "delivered",
+  "timestamp": "1771000000",
+  "recipient_id": "5585984387245",
+  "conversation": {
+    "id": "b1f2…",
+    "expiration_timestamp": "1771086400",
+    "origin": { "type": "marketing" }
+  },
+  "pricing": { "pricing_model": "PMP", "category": "marketing", "type": "regular" }
+}
+```
+
+| Campo | Qué indica |
+| --- | --- |
+| `pricing.category` | La categoría que Meta facturó: `marketing`, `utility`, `authentication`, `service`, `referral_conversion`. |
+| `pricing.type` | Si se facturó o no. `regular` = facturado. `free_entry_point` = gratis (una ventana de clic en anuncio CTWA). `free_customer_service` = gratis (dentro de la asignación de servicio). |
+| `pricing.pricing_model` | `PMP` en la producción actual. |
+| `conversation.origin.type` | Cómo se abrió la ventana de facturación de 24 h: mismo conjunto de valores que `pricing.category`. `referral_conversion` significa que la abrió un clic en un anuncio, y así se reconoce el tráfico originado en anuncios del lado **saliente**. |
+| `conversation.id` | El id de ventana de Meta. Un id **nuevo** es una ventana **nueva**. |
+| `conversation.expiration_timestamp` | Cuándo se cierra esa ventana. |
+
+Las combinaciones observadas realmente en producción (relevadas en 30 días de entregas):
+
+| `pricing_model` | `category` | `type` |
+| --- | --- | --- |
+| `PMP` | `marketing` | `regular` |
+| `PMP` | `utility` | `regular` |
+| `PMP` | `utility` | `free_customer_service` |
+| `PMP` | `service` | `free_customer_service` |
+| `PMP` | `referral_conversion` | `free_entry_point` |
+
+<Note>
+  `conversation.id` y `conversation.expiration_timestamp` también son la forma honesta de responder "¿un segundo clic en un anuncio abrió una ventana nueva o extendió la anterior?": compara los ids en lugar de suponer. Luego `pricing.type` dice si Meta lo cobró.
+</Note>
+
+### Vincular un estado con tu envío: `biz_opaque_callback_data`
+
+Un mensaje enviado desde un número oficial con [`POST /v1/messages/send`](/es/api/messages/send) va a Meta con el **`id` del `HTTP 202`** en `biz_opaque_callback_data`, y Meta lo devuelve dentro de cada elemento de `statuses[]` de ese mensaje. Eso vincula tu solicitud con el estado de Meta directamente: sin búsquedas y sin esperar el wamid.
+
+```json
+{
+  "id": "wamid.HBg…",
+  "status": "delivered",
+  "timestamp": "1771000000",
+  "recipient_id": "5585984387245",
+  "biz_opaque_callback_data": "msg_abc",
+  "pricing": { "pricing_model": "PMP", "category": "utility", "type": "regular" }
+}
+```
+
+- **Es el `id`, nunca el `correlationId`.** El `correlationId` es un valor tuyo y no tiene por qué ser único. El `id` es único.
+- **Observado en `sent`, `delivered` y `read`**, tanto en plantillas como en mensajes de forma libre.
+- **Solo en mensajes enviados mediante Pilot Status desde el 2026-09-17, 17:23 UTC.** La clave está **ausente**, no vacía, en los estados de mensajes enviados antes de esa fecha, enviados directamente por la Graph API o enviados desde la app WhatsApp Business (consulta [ecos](#ecos-mensajes-de-la-empresa-enviados-desde-otra-herramienta)).
+- **Si falta el campo, usa el wamid.** [`GET /v1/messages/{messageId}`](/es/api/messages/status) acepta el wamid (`statuses[].id`) y devuelve el `id` y el `correlationId` del mensaje.
+
+### Referral de CTWA: dónde llega un clic en un anuncio
+
+No hay un campo `referral` aparte al cual suscribirse. El bloque llega dentro del sobre `messages`, en `entry[0].changes[0].value.messages[0].referral`, tal cual.
+
+```json
+"referral": {
+  "source_type": "ad",
+  "source_id": "120249791471690207",
+  "source_url": "https://fb.me/…",
+  "headline": "…",
+  "body": "…",
+  "media_type": "video",
+  "video_url": "https://…",
+  "thumbnail_url": "https://…",
+  "ctwa_clid": "…",
+  "welcome_message": { "text": "…" }
+}
+```
+
+<Warning>
+  **`referral` solo está en el PRIMER mensaje de la conversación.** Meta no lo repite en mensajes posteriores, así que un consumidor que lo lee por mensaje lo ve una sola vez y debe arrastrarlo por su cuenta.
+</Warning>
+
+- `source_id` es el id del anuncio (`source_type: "ad"`) o el id de la publicación (`source_type: "post"`). Trátalo como una **clave de agrupación opaca**: resolverlo a un nombre de campaña/anuncio mediante la Graph requiere `ads_read` en la cuenta publicitaria del anunciante, que un token de system user de WhatsApp no tiene (devuelve `GraphMethodException` código 100 / subcódigo 33).
+- **No hay UTM** en un referral de Meta. Si necesitas los nombres de las campañas, usa [`GET /v1/referrals`](/es/api/referrals): devuelve la fila de inmediato, con los nombres resueltos de forma asíncrona (`namesResolvedAt: null` significa "todavía no resuelto, vuelve a consultar").
+
+<Warning>
+  **Meta puede entregar el mismo `wamid` dos veces, con contenido distinto.** Medido en producción: primero llega un marcador (`type: "unsupported"`, `errors[].code 131060` *"This message is unavailable."*, sin texto y sin `referral`) y el mensaje real llega unos **425 ms** después con el texto, el multimedia y el `referral`.
+
+  Ambos se entregan a tu webhook. **Deduplicar solo por el wamid descarta el real** y te deja con una burbuja vacía y sin atribución del anuncio. Usa `(wamid, type)` como clave, y trata una llegada `unsupported` + `131060` como un marcador que nunca debe sobrescribir contenido que ya guardaste.
+</Warning>
+
+## Eventos de las capas de compatibilidad (Evolution GO y v2)
+
+Un número que trajiste mediante una capa de compatibilidad conserva el vocabulario de eventos **propio** de ese proveedor; el objetivo de la capa es que tus handlers existentes no cambien:
+
+- **Evolution GO**: PascalCase nativo (`Message`, `SendMessage`, `Receipt`, `Presence`, …), y también se aceptan los alias en UPPER\_SNAKE. Lista completa en la página de la [capa Evolution GO](/es/api/layer/evolution-go#eventos).
+- **Evolution v2**: nombres nativos con puntos (`messages.upsert`, `messages.update`, `connection.update`, …). Lista completa en la página de la [capa Evolution V2](/es/api/layer/evolution-v2#eventos).
+
+Ambas también llevan las familias normalizadas compartidas `call.*` y `number.*` descritas arriba.
+
+<Note>
+  **Los eventos de grupos y canales en estas dos requieren un plan de pago**: `groups.upsert`, `groups.update`, `group-participants.update` (v2) y `GroupInfo`, `JoinedGroup`, `NewsletterJoin`, `NewsletterLeave` (GO) están ocultos en el selector de eventos en una cuenta gratuita. Los canónicos `message.group` y `message.newsletter` **no** tienen restricción.
+</Note>
+
+## Notas importantes
+
+- **`message.newsletter`:** `newsletterName` es el nombre visible del canal cuando está disponible; de lo contrario puede omitirse. El identificador del canal es `newsletterId` (JID completo `...@newsletter`). `participantName` es el autor del mensaje en el canal.
+- **Multimedia:** en los eventos entrantes con multimedia, `mediaLink` es una URL duradera y de acceso público al multimedia realojado, para **todos** los proveedores (Evolution GO, Evolution v2, Meta Cloud API), incluido el multimedia cifrado de extremo a extremo de WhatsApp descifrado en el servidor. `mediaType` es la categoría (`image`/`video`/`audio`/`document`/`sticker`), `mediaCaption` el texto que lo acompaña y `mediaFilename` el nombre de archivo original (documentos). Los cuatro se omiten en los mensajes que solo tienen texto y cuando la ocultación de PII de un número borra el contenido.
+- Los eventos `number.*` no se correlacionan con `POST /v1/messages/send`; úsalos para aprovisionamiento/monitoreo. `data.numberId` siempre es el ID del número de WhatsApp en todos ellos; consulta el [cambio incompatible](#payload-number).
+- `number.disconnected` se emite desde la transición de salud del número (un evento por caída confirmada, no uno por cada oscilación de la conexión), y solo para números web nativos (no oficiales); los números de Meta Cloud API señalan los problemas mediante los eventos de salud del número.
+- La entrega de campos sensibles puede depender de la configuración de retención. Con la retención desactivada, campos condicionales como `content` pueden venir vacíos; los IDs y las marcas de tiempo siguen existiendo.
+- El evento `message.read` (y el estado **Read** en la API/Logs) solo ocurre cuando el destinatario tiene activadas las **confirmaciones de lectura de WhatsApp**.

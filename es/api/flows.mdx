@@ -1,0 +1,689 @@
+---
+mode: "wide"
+title: "Referencia de la API de Flows"
+sidebarTitle: "Flows"
+description: "Endpoints REST para crear, editar, publicar, clonar y dar de baja WhatsApp Flows, leer respuestas de formularios y configurar la clave del endpoint data_exchange."
+---
+
+Cada endpoint de abajo actúa sobre **un número**, y ese número debe ser un número de **Meta (Cloud API)**. La WABA se deriva de él: no existe un parámetro para indicarla, a propósito.
+
+| Credencial | Cómo indica el número |
+| --- | --- |
+| Key de número (`ps_number_`) | Ya está vinculada a un número. |
+| Key de workspace (`ps_workspace_`), key de cuenta (`ps_account_`, más `x-workspace-id`) o token OAuth | Envía el header `x-whatsapp-number-id`. Sin él, la solicitud se rechaza con `403` `TENANT_SCOPE_NOT_ALLOWED`. |
+
+Un número que no es de Meta, o que no tiene WABA, responde `422` `FLOW_REQUIRES_META_NUMBER`.
+
+| Permiso | Cubre | Rol |
+| --- | --- | --- |
+| `flows:read` | Listar Flows, leer el JSON de un Flow, leer respuestas de formularios y trazas del endpoint | AGENT, ADMIN, OWNER (no ANALYST) |
+| `flows:manage` | Toda escritura (crear, actualizar, subir JSON, vista previa, publicar, dar de baja, eliminar, sincronizar desde Meta) **y toda la superficie de `data_exchange` (la clave del endpoint y el endpoint del Flow), lecturas incluidas** | ADMIN, OWNER |
+
+<Note>
+  La columna de rol se aplica a las credenciales que llevan un **usuario** (tokens OAuth y keys de cuenta) y se verifica contra el rol actual de ese usuario en el workspace: un permiso faltante es `403` `PERMISSION_DENIED`, y un usuario que ya no es miembro es `403` `WORKSPACE_MEMBERSHIP_REQUIRED`. Las keys de número y de workspace no llevan usuario y no dependen de roles.
+</Note>
+
+<Warning>
+  **Leer la clave del endpoint o el endpoint del Flow requiere `flows:manage`, no `flows:read`**, aunque ambos sean `GET`. Sus respuestas llevan `endpointUrl` / `endpointUri` / `metaEndpointUri`, y el token dentro de esas URL es una **credencial**: Meta se autentica ante el endpoint descifrando, y la clave pública correspondiente es pública por definición. Quien tenga ambas puede falsificar una solicitud que Pilot Status descifrará y reenviará a tu webhook con nuestra firma. Una credencial de solo lectura sigue siendo una credencial, y por eso el valor tampoco aparece nunca en `GET /v1/flows`.
+</Warning>
+
+<Note>
+  `flows:read` es un slug propio y **no** es `templates:read`. Un listado de plantillas devuelve texto que escribió tu workspace; una respuesta de Flow devuelve lo que un **cliente** escribió en un formulario: un nombre, un teléfono, a veces un número de documento. Los dos se controlan por separado a propósito.
+</Note>
+
+## Listar Flows
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows?page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json
+{
+  "flows": [
+    {
+      "id": "flw_local_1",
+      "metaFlowId": "1122334455",
+      "name": "Agendamento",
+      "metaStatus": "PUBLISHED",
+      "categories": ["APPOINTMENT_BOOKING"],
+      "jsonVersion": "7.1",
+      "healthStatus": "AVAILABLE",
+      "clonedFromFlowId": null,
+      "supersededByFlowId": null,
+      "createdAt": "2026-08-30T12:00:00.000Z",
+      "updatedAt": "2026-09-01T09:12:00.000Z"
+    }
+  ],
+  "total": 1, "page": 1, "pageSize": 30, "totalPages": 1
+}
+```
+
+`page` empieza en 1; `pageSize` es 30 por defecto y tiene un máximo de 100. `page` × `pageSize` por encima de 10.000 es `400` `INVALID_PAGINATION`.
+
+<Note>
+  `id` es el **ID local** y es el único ID que nos devuelves. `metaFlowId` es el propio de Meta y es de solo lectura: es `null` mientras un Flow existe aquí pero todavía no llegó a Meta.
+</Note>
+
+## Crear o clonar
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Agendamento v2",
+    "categories": ["APPOINTMENT_BOOKING"],
+    "cloneFromFlowId": "flw_local_1"
+  }'
+```
+
+Devuelve `201` con el nuevo Flow en `DRAFT`. Omite `cloneFromFlowId` para empezar desde cero.
+
+```json
+{ "id": "flw_local_2", "metaFlowId": "9988776655" }
+```
+
+`name` (string no vacío, sin espacios en los extremos) y `categories` (array no vacío, cada valor uno de `SIGN_UP`, `SIGN_IN`, `APPOINTMENT_BOOKING`, `LEAD_GENERATION`, `CONTACT_US`, `CUSTOMER_SUPPORT`, `SURVEY`, `OTHER`) son obligatorios. Solo se aceptan `name`, `categories` y `cloneFromFlowId`: cualquier otro campo es `400` `FLOW_UNKNOWN_FIELDS`, y `whatsappNumberId` / `wabaId` / `metaWabaId` son `400` `FLOW_NUMBER_FROM_KEY`. Un cuerpo que no es un objeto JSON es `400` `FLOW_BODY_INVALID`.
+
+<Warning>
+  `cloneFromFlowId` es el **ID local** del Flow de origen (el campo `id`, no `metaFlowId`). Clonar es la única forma de cambiar un Flow que ya fue publicado.
+</Warning>
+
+## Renombrar y recategorizar
+
+```bash
+curl -X PATCH "https://pilotstatus.com.br/v1/flows/flw_local_1" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "Agendamento (matriz)", "categories": ["APPOINTMENT_BOOKING"] }'
+```
+
+Acepta **solo** `name` y `categories`, al menos uno de ellos (de lo contrario, `400` `FLOW_PATCH_EMPTY`). Esto nunca publica ni da de baja: esas acciones tienen sus propios endpoints, para que un error en un formulario no pueda llegar a una operación irreversible. Responde `200`:
+
+```json
+{ "ok": true, "id": "flw_local_1" }
+```
+
+## Subir el JSON del Flow
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/flw_local_1/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "flowJson": "{\"version\":\"7.1\",\"screens\":[...]}" }'
+```
+
+Solo un Flow en `DRAFT` acepta un documento (de lo contrario, `409` `FLOW_NOT_DRAFT`). Un `200` significa que el documento compiló, y entonces `validationErrors` siempre está vacío:
+
+```json
+{ "id": "flw_local_1", "validationErrors": [] }
+```
+
+Un documento que Meta rechaza vuelve como **`422` `FLOW_JSON_INVALID`**, con la lista propia de Meta adjunta:
+
+```json
+{
+  "error": "A Meta recusou este Flow JSON. Veja validationErrors.",
+  "errorEN": "Meta rejected this Flow JSON. See validationErrors.",
+  "code": "FLOW_JSON_INVALID",
+  "validationErrors": [ { "error": "...", "line_start": 12, "message": "..." } ]
+}
+```
+
+<Warning>
+  **Esto deliberadamente NO es como se comporta la API propia de Meta, y la diferencia es justamente el punto.**
+
+  Meta responde `200` con los problemas listados _dentro_ del payload, así que allí un éxito aparente sobre un documento inválido es el caso normal, y un cliente que solo revisa el estado publica un Flow que nunca compiló.
+
+  Esta ruta lee la lista en lugar del estado de la Graph, y responde `422` siempre que no esté vacía. Por lo tanto, un `200` nuestro significa lo que un `200` debería significar. Lee `validationErrors` en el `422`: es la respuesta propia de Meta, textual.
+
+  **Y un rechazo aquí es NUESTRO, no de Meta**: consulta `FLOW_JSON_DEAD_FORM_PREFIX` más abajo. Meta habría aceptado ese documento.
+
+  `flowJson` es un **string**, nunca un objeto anidado: Meta compila los bytes exactos, y volver a serializarlo reordenaría en silencio lo que escribiste.
+</Warning>
+
+### El único rechazo que es nuestro: `FLOW_JSON_DEAD_FORM_PREFIX`
+
+Un valor de formulario se referencia con la **palabra clave literal `form`**: `${form.quantity}`. El `name` del componente `Form` que lo contiene nunca aparece en la referencia: con un `Form` llamado `form_product` sigue siendo `${form.quantity}`.
+
+Meta acepta un documento con el prefijo incorrecto, informa `validation_errors: []`, lo publica, y luego envía a tu endpoint `"data": {}` en tiempo de ejecución, donde el único síntoma es que el teléfono de la persona dice _"Could not complete this step. Please try again."_ Desde el 12 de septiembre de 2026, esta ruta rechaza ese documento en lugar de subirlo:
+
+```json
+{
+  "error": "Este Flow JSON referencia valores pelo NOME DO FORM …",
+  "errorEN": "This Flow JSON references values by the FORM'S NAME …",
+  "code": "FLOW_JSON_DEAD_FORM_PREFIX",
+  "deadRefs": [
+    { "ref": "${form_product.quantity}", "suggestion": "${form.quantity}" }
+  ]
+}
+```
+
+Cada entrada de `deadRefs` trae el reemplazo listo, así que la corrección es pegar en lugar de aplicar una regla a mano.
+
+<Note>
+  **Acotado a propósito, y un `200` aquí no significa "el documento es válido".** La verificación se dispara solo cuando la raíz de una referencia coincide con el `name` de un `Form` declarado en el mismo documento: ese caso no puede resolverse nunca. Una raíz que no reconocemos se deja tal cual: nuestra ignorancia no debe convertirse en tu error. Todo lo demás lo sigue juzgando Meta, y sigue llegando como `FLOW_JSON_INVALID`.
+</Note>
+
+<Note>
+  Cada entrada de `validationErrors` es de Meta, textual: `error`, `error_type`, `message` y `pointers` que señalan los componentes problemáticos. Uno que vas a encontrar si un Flow recoge archivos es `COMPONENT_TYPE_MAX_NUMBER_PER_SCREEN`: como máximo un `PhotoPicker` **o** `DocumentPicker` por pantalla. Consulta [Flows](/es/concepts/flows) para verlo citado completo. El SDK de Node lee el array con `flowJsonValidationErrors(err)`.
+</Note>
+
+## Leer el JSON del Flow
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows/flw_local_1/json" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json
+{ "id": "flw_local_1", "flowJson": "{\"version\":\"7.1\",\"screens\":[...]}" }
+```
+
+Lee el documento que Meta tiene actualmente para el Flow, en vivo desde la Graph. `flowJson` es un **string**, devuelto byte por byte tal como lo sirve Meta (sin interpretar, sin reformatear), así que se puede editar y enviar de vuelta a `POST /v1/flows/{id}/json` sin cambios. Permiso `flows:read`; la respuesta es `Cache-Control: no-store`.
+
+Un Flow que todavía no llegó a Meta (`metaFlowId: null`) es `404` `FLOW_NOT_FOUND`. Cuando Meta no devuelve ningún documento (un Flow que nunca recibió uno, o una falla transitoria), la respuesta es `502` `FLOW_JSON_UNAVAILABLE`. Indicar el número en la query (`whatsappNumberId`, `numberId`, `wabaId`, `metaWabaId`) es `400` `FLOW_NUMBER_FROM_KEY`.
+
+## Enlace de vista previa
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/flw_local_1/preview" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "invalidate": false }'
+```
+
+```json
+{
+  "flowId": "flw_local_1",
+  "previewUrl": "https://business.facebook.com/wa/manage/flows/1122334455/preview/?token=...",
+  "expiresAt": "2026-09-08T12:00:00+0000",
+  "invalidated": false,
+  "requiresLogin": false,
+  "warning": "Este link é público: ...",
+  "warningEN": "This link is public: ..."
+}
+```
+
+Pide a Meta el enlace de vista previa web del Flow. El cuerpo es opcional; `invalidate` (un boolean real) es el único campo aceptado, y `true` hace vencer el enlace anterior y genera uno nuevo. `expiresAt` es el valor de Meta, textual, o `null` cuando Meta no envía ninguno. Permiso `flows:manage`; la respuesta es `Cache-Control: no-store`.
+
+<Warning>
+  **El enlace es público: cualquiera que tenga la URL abre el Flow sin iniciar sesión** (`requiresLogin: false`), así que reenviarlo comparte el formulario. **Y la vista previa no es un sandbox:** en un Flow `data_exchange`, Meta llama a tu endpoint de verdad, y lo que escriba queda escrito.
+</Warning>
+
+`"invalidate": "true"` (un string) se rechaza con `400` `FLOW_PREVIEW_INVALIDATE_INVALID` en lugar de convertirse. Cuando Meta no devuelve un enlace de vista previa, la respuesta es `502` `FLOW_PREVIEW_UNAVAILABLE`.
+
+## Publicar
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/flw_local_1/publish" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "confirm": true }'
+```
+
+<Warning>
+  **Irreversible en Meta.** Un Flow publicado nunca se puede editar ni despublicar: solo clonar en uno nuevo. `"confirm": true` (el boolean, exactamente) es obligatorio; sin él, la solicitud se rechaza con `400` `FLOW_PUBLISH_REQUIRES_CONFIRMATION`.
+</Warning>
+
+Solo se acepta `confirm`. Responde `200`:
+
+```json
+{ "flowId": "flw_local_1", "published": true }
+```
+
+## Dar de baja
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/flw_local_1/deprecate" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "supersededByFlowId": "flw_local_2" }'
+```
+
+Retira el Flow sin eliminarlo, y sin eliminar las respuestas que las personas ya enviaron. `supersededByFlowId` es opcional y es el ID **local** del sucesor; pero si lo envías, debe indicar un Flow real tuyo: un string vacío se rechaza con `400` `FLOW_DEPRECATE_INVALID_SUCCESSOR` en lugar de ignorarse en silencio, porque una cadena de versiones rota es invisible después, y un ID que no existe en tu workspace es `404` `FLOW_NOT_FOUND`. El cuerpo es opcional, pero uno que no es JSON válido es `400` `FLOW_BODY_INVALID`: nunca se interpreta como "sin sucesor".
+
+```json
+{ "flowId": "flw_local_1", "deprecated": true, "supersededBy": "flw_local_2" }
+```
+
+## Eliminar
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/flows/flw_local_1" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+Solo se puede eliminar un `DRAFT`. Cualquier otra cosa devuelve `409` `FLOW_NOT_DRAFT`. Responde `200`:
+
+```json
+{ "ok": true, "id": "flw_local_1", "deleted": true }
+```
+
+## Sincronizar desde Meta
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/flows/meta/sync" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json
+{ "created": 1, "updated": 4, "seen": 5, "truncated": false }
+```
+
+Trae ahora el catálogo de la WABA de la key desde Meta a Pilot Status, en lugar de esperar la sincronización horaria; útil después de crear o editar Flows directamente en el Business Manager de Meta. **No acepta campos**: no envíes cuerpo o envía `{}`. Cualquier campo es `400` `FLOW_UNKNOWN_FIELDS` (`whatsappNumberId` / `wabaId` / `metaWabaId` son `400` `FLOW_NUMBER_FROM_KEY`). Permiso `flows:manage`.
+
+`truncated: true` significa que la WABA tiene más Flows de los que lee una sincronización (20 páginas de 100); el resto llega en la próxima ejecución. No es un error.
+
+<Note>
+  **Una sincronización por número a la vez.** Una segunda solicitud mientras otra está en curso responde `429` `FLOW_SYNC_IN_PROGRESS` con `Retry-After: 120`.
+</Note>
+
+## Leer respuestas de formularios
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows/flw_local_1/responses?page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+Devuelve lo que enviaron los clientes, unido al contacto que respondió, dentro de la ventana de retención. Las respuestas vencidas nunca se sirven.
+
+En un Flow `data_exchange`, las respuestas llegan **pantalla por pantalla**, y `submitted` es donde se guardan: una entrada por intercambio, de la más antigua a la más reciente:
+
+```json
+{
+  "submitted": [
+    {
+      "screen": "WELCOME_SCREEN",
+      "at": "2026-09-06T16:08:12.616Z",
+      "data": { "observacao": "Aobaaa" },
+      "omitted": null
+    }
+  ]
+}
+```
+
+| Campo | Significado |
+| --- | --- |
+| `screen` | La pantalla de la que vino ese intercambio, tal como la nombró Meta. Un string, o `null` cuando Meta no nombró ninguna. |
+| `at` | ISO 8601: cuándo desciframos ese intercambio, minutos antes del envío que creó la respuesta que lo contiene. |
+| `data` | El objeto interpretado que la persona envió en esa pantalla. `null` exactamente cuando `omitted` dice por qué. |
+| `omitted` | `"DATA_TOO_LARGE"`, `"LIMIT_REACHED"`, `"UNREADABLE"` o `null`: **tres** motivos, no dos. Una entrada lleva `data` con `omitted: null`, o `data: null` y el motivo. No hay una tercera forma. |
+
+<Warning>
+  **En un Flow `data_exchange`, `response` es el lugar vacío: lo que la persona escribió está aquí.** `response` es el `nfm_reply` de Meta, interpretado, y en un Flow con endpoint esa respuesta lleva **solo el `flow_token`** (`{"flow_token":"a1b2c3…"}`), mientras tu propio endpoint recibió `{"observacao":"Aobaaa"}` del mismo envío. Si lees `response` ahí, encuentras un token y concluyes que la persona no envió nada.
+
+  En un Flow **sin** endpoint pasa lo contrario: no hay intercambios que capturar, `submitted` es `[]`, y los componentes de texto libre llegan en `response` exactamente como siempre.
+</Warning>
+
+<Warning>
+  **Aquí `submitted` es siempre un array: `[]` cuando no hay nada, nunca `null`.** ⛔ En el webhook `flow.response_received`, el mismo campo es lo opuesto: `null`, nunca `[]`. No es una inconsistencia pendiente de arreglo, y "el mismo campo se comporta igual en ambas superficies" es la suposición que más probablemente te cueste una noche. Las dos resuelven problemas distintos.
+
+  **En esta superficie de lectura**, el valor viene de una búsqueda que responde *nada* para un envío sin intercambios capturados, y un campo con valor nada **desaparece del JSON** en lugar de llegar vacío. `[]` es lo que mantiene la key presente, y lo que separa "no se capturó nada" de "no pudimos buscar".
+
+  **En el evento**, el payload también se guarda, y el censor vacía un campo solo cuando contiene algo. Un array vacío ahí volvería como el marcador de "contenido no disponible" y se leería como *"había respuestas y las ocultamos"*, así que `null` es el valor honesto ahí.
+
+  Entonces, ramifica con `submitted.length` aquí y con `submitted !== null` en el evento. Ninguna de las dos formas es nunca prueba de que la persona no escribió nada. `media`, más abajo, sigue también la regla de esta superficie: siempre un array, `[]` cuando no se adjuntó nada.
+</Warning>
+
+<Note>
+  **La lista es más corta que los intercambios que respondió tu endpoint, y eso es correcto.** Solo se capturan los intercambios `data_exchange`. `INIT` lleva el estado que sembramos **nosotros** (los parámetros enviados al momento del envío, devueltos tal cual) y `BACK` es navegación; ninguno de los dos es algo que haya escrito una persona. Contar entradas contra tus propias trazas e informar la diferencia como pérdida es el error que este párrafo existe para evitar.
+
+  **Es la solicitud que Meta nos envía, nunca lo que respondió tu endpoint.** El `data` que devuelves en `SUCCESS`, `extension_message_response` incluido, se cifra de vuelta hacia Meta y no se anota en ningún lugar de Pilot Status: ni aquí, ni en ninguna otra superficie.
+
+  **Solo se agrega, sin deduplicación.** Alguien que vuelve una pantalla atrás y la envía de nuevo produce una segunda entrada genuina en lugar de reemplazar la primera, y `at` es lo que separa dos recorridos bajo un mismo `flow_token`.
+</Note>
+
+<Warning>
+  **Nada se trunca nunca en silencio: una entrada sin su contenido dice por qué.** Un intercambio demasiado grande conserva su fila y su lugar en el orden y dice `DATA_TOO_LARGE`; uno que no se pudo leer dice `UNREADABLE`. El límite de **50 intercambios** por formulario cierra la lista con una entrada final que dice `LIMIT_REACHED`, y nada posterior se guardó. Ese límite de tamaño (el que está detrás de `DATA_TOO_LARGE`) se mide en **bytes**, no en caracteres, así que el texto con acentos lo alcanza antes de lo que sugiere su longitud.
+</Warning>
+
+<Note>
+  **Un número en `RELAY_ONLY` no guarda nada aquí**: ni una entrada censurada, ninguna entrada: no hay copia guardada que censurar.
+
+  **Estas entradas se depuran a los 30 días + 1, y el día extra no es un redondeo.** Un intercambio se captura mientras la persona todavía está completando el formulario, minutos antes del envío que crea la respuesta a su lado. Con 30 días idénticos, los intercambios vencerían primero, y una respuesta que todavía se sirve contestaría `submitted: []`, indistinguible de un formulario en el que nadie escribió.
+</Note>
+
+Cada respuesta lleva un array `media`: los archivos adjuntados dentro del formulario, vueltos a alojar por nosotros:
+
+```json
+{
+  "media": [
+    {
+      "field": "documento",
+      "mediaId": "1DC6DF81-E889-4A15-91EB-80753FB6E11B",
+      "fileName": "carteira.jpg",
+      "mimeType": "image/jpeg",
+      "sizeBytes": 184320,
+      "status": "STORED",
+      "url": "https://media.pilotstatus.com.br/public/tenants/.../flow-media/....jpg"
+    }
+  ]
+}
+```
+
+| Campo | Significado |
+| --- | --- |
+| `field` | La key bajo la que se listó el archivo: el nombre que el **autor del Flow** le dio al componente. No es una palabra reservada ni un tipo. |
+| `mediaId` | El ID de Meta para este archivo: **la única forma de distinguir dos adjuntos de un mismo selector**, y lo que une esta entrada con `submitted[].data.<field>[].media_id` en el mismo envío. `null` cuando Meta no envió ninguno, y `url` es `null` en el mismo caso. Nunca hagas coincidir por posición en el array: los dos arrays se arman desde fuentes distintas. |
+| `fileName` | El nombre que informó el dispositivo del remitente, y **nunca `null`**. Una foto tomada con la cámara no informa nombre, y se usa en su lugar el **nombre del propio campo**, así que un `fileName` igual a `field` puede ser cualquiera de los dos y son indistinguibles. |
+| `mimeType` | Detectado a partir de los **bytes** descifrados, nunca del nombre del archivo. `null` hasta que se guarda. |
+| `sizeBytes` | Tamaño del archivo descifrado. `null` hasta que se guarda. |
+| `status` | `PENDING` mientras la transferencia está en curso, luego `STORED` o `FAILED`. |
+| `url` | Un enlace estable nuestro, **presente desde que existe la fila**, incluso mientras `status` es `PENDING`. Opaco: consúltalo, nunca construyas uno. |
+
+<Note>
+  **Aquí `media` es siempre un array (vacío cuando no se adjuntó nada), y eso deliberadamente no es lo que hace el webhook.** `flowMedia` en `flow.response_received` es `null` en lugar de `[]`, porque el censor del almacenamiento reemplaza un campo solo cuando contiene algo, y un array vacío se leería como "había adjuntos y los ocultamos". También lleva `sizeBytes`, que el evento no trae.
+
+  **`[]` no es prueba de que no hubiera archivo.** La unión de adjuntos es de mejor esfuerzo a propósito (un adjunto que no podemos leer cuesta un *campo*, nunca la página), así que una unión que falla deja **todas las filas de esa página con `media: []`**, que es "no pudimos buscar" servido como "no había nada". Concilia un Flow que recoge archivos contra algo que hayas guardado tú.
+
+  **Aquí es donde el *registro* es definitivo; la URL ya era definitiva en el evento.** El realojamiento es asíncrono: el evento se emite en cuanto se guarda el envío, y la transferencia corre después, así que normalmente el evento llega antes de que los bytes estén en su lugar. `url` es un enlace a una ruta nuestra y está presente durante todo el proceso, también en una fila `PENDING`: consultarlo espera el archivo y luego lo sirve, y responde `404` con un header `Retry-After` solo si esa espera se agota. Así que vuelve a leer este endpoint para obtener `status`, `mimeType` y `sizeBytes`, no para obtener una URL que el evento ya te entregó. `url` es `null` solo cuando el despliegue no tiene secreto de firma (entonces cae a la URL directa del objeto una vez `STORED`), cuando Meta no envió `media_id`, o en un número `RELAY_ONLY`.
+</Note>
+
+<Warning>
+  **El objeto guardado está en una URL pública: quien tenga el enlace lee el archivo.** Es una decisión explícita del responsable, y la misma propiedad que tiene el `mediaLink` entrante. No hay `cdn_url` ni `encryption_metadata` en esta superficie ni en ninguna otra: Meta deriva una clave AES por archivo, y ni la clave ni la referencia de CDN se guardan ni se publican.
+
+  El content type viene de los bytes y nunca es `text/html` ni `image/svg+xml`, se parezcan a lo que se parezcan los bytes: ambos ejecutarían scripts en el origen que los sirve.
+
+  **Y la copia nunca vence.** Las respuestas, sesiones y trazas del endpoint se depuran según una ventana de retención; el archivo no. `flow_media_assets` no tiene columna de vencimiento y nada en la plataforma elimina la fila ni el objeto, así que el enlace sigue funcionando después de que la respuesta a la que pertenecía dejó de servirse aquí.
+</Warning>
+
+<Note>
+  **Esta es la copia guardada, no la de en vivo.** Para recibir los envíos a medida que llegan, suscríbete al evento de webhook `flow.response_received`: las respuestas llegan con él, ya interpretadas. El mensaje de chat que lleva un envío contiene solo la etiqueta de Meta (`Sent` / `Enviado`), así que un webhook suscrito solo a `messages` no ve nada. Consulta [Recibir respuestas de Flow](/es/guides/flow-responses).
+</Note>
+
+<Warning>
+  **Una página corta puede ser una página truncada, y lo dice.** `FlowResponse` no tiene columna `flowId` (el único vínculo de un Flow con sus respuestas pasa por el token de sesión), así que una solicitud correlaciona como máximo **10.000** envíos de ese Flow. Por encima de ese límite, el payload lleva `"notice": "FLOW_RESPONSES_WINDOW_TRUNCATED"` junto a los normales `responses`/`total`/`page`/`pageSize`/`totalPages`.
+
+  Es un **`200`**, no un error, y el campo no aparece cuando no se cortó nada. Léelo: quien concilia contra una página corta sin revisar `notice` concluye que se perdieron envíos.
+</Warning>
+
+## Trazas del endpoint
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows/flw_local_1/traces" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json
+{
+  "traces": [
+    {
+      "id": "cmf7t1r2a3c4e5s6",
+      "action": "data_exchange",
+      "screen": "WELCOME_SCREEN",
+      "outcome": "CUSTOMER_ERROR",
+      "httpStatus": 500,
+      "durationMs": 812,
+      "failureReason": "...",
+      "forwardedBody": "{...}",
+      "customerBody": "...",
+      "createdAt": "2026-09-06T16:08:12.616Z"
+    }
+  ]
+}
+```
+
+Lo que vio **nuestro** proxy en las llamadas `data_exchange` de este Flow: la `action` de Meta, la pantalla, el `outcome` (`FORWARDED`, `CUSTOMER_ERROR` o `NO_DESTINATION`; trata el conjunto como abierto), el estado HTTP que respondió tu webhook (`null` cuando no hubo ninguna respuesta), cuánto tardó y, en el camino de falla, los cuerpos que se intercambiaron. Es la superficie que prueba que "el problema es tu backend, no tu Flow". Permiso `flows:read`; la respuesta es `Cache-Control: no-store`.
+
+- **Sin paginación.** Devuelve las **50** trazas más recientes. Enviar `page` o `pageSize` es `400` `FLOW_TRACES_NOT_PAGINATED`, porque cada página devolvería las mismas filas.
+- **De vida corta.** Una traza se sirve durante **24 horas**. Una lista vacía lleva `"notice": "FLOW_TRACES_RETENTION_WINDOW"`, porque `[]` puede significar "nunca se llamó" o "se llamó y venció".
+- **Los cuerpos se censuran por número.** `forwardedBody` y `customerBody` son `null` en caso de éxito. En un número en `RELAY_ONLY` (o cuando ya no se puede resolver el número detrás de una traza) se reemplazan por `"conteúdo indisponível"`; `outcome`, `httpStatus`, `durationMs` y `failureReason` quedan intactos.
+- El Flow se resuelve dentro de la WABA de la key; un Flow de otra WABA es `404` `FLOW_NOT_FOUND`.
+
+## Clave del endpoint `data_exchange`
+
+<Note>
+  Solo hace falta para Flows cuyas pantallas llaman a tu backend; consulta [Conecta tu API a un Flow](/es/guides/flow-data-exchange) para el panorama completo. `{numberId}` es el número al que está vinculada tu API key. La clave privada nunca sale de Pilot Status y ningún endpoint la devuelve; `endpointUrl` es la base que debes registrar en tu Flow, con el ID del Flow agregado como último segmento.
+
+  **La clave es por número; la URL de reenvío es por Flow.** Ambas tienen una superficie aquí (la clave abajo, la URL en [Endpoint del Flow](#endpoint-del-flow)) y ninguna aparece en `GET /v1/flows`, deliberadamente: una API key puede ser una aplicación de terceros, y la dirección de tu webhook interno no es algo que se le deba a una integración de solo lectura.
+</Note>
+
+<Note>
+  **Ambos endpoints actúan sobre el propio número de la key, y `{numberId}` en la ruta debe coincidir con él.** Una key asociada a un número indica su número por sí misma; una key de toda la cuenta debe acotarlo con `x-whatsapp-number-id`. Un ID de ruta que no coincide responde `404` `FLOW_NUMBER_NOT_FOUND` (nunca `403`, y con el mismo cuerpo tanto si el ID pertenece a otro tenant como a otro de tus propios números), para que un intento equivocado no revele nada.
+
+  `uploadedAt` es `null` cuando se generó un par aquí pero Meta nunca lo aceptó. No es lo mismo que no tener clave, y es el estado que un `POST` repetido retoma en lugar de reemplazar.
+</Note>
+
+### Leer el estado actual
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json
+{
+  "configured": true,
+  "publicKey": "-----BEGIN PUBLIC KEY-----\n...",
+  "uploadedAt": "2026-09-02T10:00:00.000Z",
+  "endpointUrl": "https://pilotstatus.com.br/api/flows/endpoint/AbC123...",
+  "metaStatus": "VALID"
+}
+```
+
+| `metaStatus` | Significado |
+| --- | --- |
+| `VALID` | Meta tiene la misma clave que nosotros. No hay nada que hacer. |
+| `MISMATCH` | Meta tiene una clave **distinta**. Todos los Flows `data_exchange` de este número están fallando: rota la clave. |
+| `NOT_SET` | Meta todavía no tiene ninguna clave para este número. |
+| `UNKNOWN` | No pudimos leer el lado de Meta. |
+
+<Warning>
+  **`UNKNOWN` no es `NOT_SET`, y confundirlos sale caro.** Una llamada a la Graph que falló no dice nada sobre lo que tiene Meta. Tratarlo como "sin clave" significa rotar, y rotar reemplaza una clave que probablemente estaba bien.
+</Warning>
+
+### Generar, rotar o importar
+
+Un `POST`, dos verbos. **La presencia de `privateKey` decide cuál**, y no son intercambiables: generar registra una nueva clave pública en Meta y reemplaza lo que hubiera; importar no registra nada.
+
+| Cuerpo | Qué hace |
+| --- | --- |
+| `{}` | **Generar**: crea un par RSA-2048, guarda la mitad privada cifrada y registra la mitad pública en Meta. |
+| `{"privateKey": "-----BEGIN PRIVATE KEY-----\n…"}` | **Importar**: guarda la clave que ya tienes. No se registra nada en Meta. |
+| `{"privateKey": "…", "passphrase": "…"}` | Importa un PEM protegido con frase de contraseña. |
+| `{…, "confirm": true}` | Obligatorio cuando cualquiera de los dos verbos reemplazaría una clave que está **activa** en Meta. |
+
+Solo se aceptan `confirm`, `privateKey` y `passphrase`; cualquier otra cosa se rechaza, nunca se ignora. La respuesta es la forma de lectura de arriba más `"replaced"`, que indica si se acaba de desplazar una clave que estaba activa; un `200` por sí solo no lo indica.
+
+```bash
+# Generar
+curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+```bash
+# Importar
+curl -X POST "https://pilotstatus.com.br/v1/numbers/{numberId}/flow-endpoint-key" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "privateKey": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN...\n-----END PRIVATE KEY-----\n" }'
+```
+
+<Warning>
+  **Reemplazar una clave ACTIVA requiere `{"confirm": true}`, en ambos verbos.**
+
+  Generar es destructivo en Meta: Meta tiene exactamente una clave pública por número de teléfono, así que registrar una nueva reemplaza la anterior, y la mitad privada anterior se sobrescribe aquí en el mismo momento. No se puede restaurar, y todo intercambio `data_exchange` en curso en ese número deja de descifrarse.
+
+  Importar es destructivo **aquí**: nada cambia en Meta, pero la mitad privada guardada se reemplaza, y si Meta no puede confirmar la nueva, el número queda con una clave que tal vez no descifre nada. Por eso los dos se rechazan con códigos distintos (`FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` y `FLOW_ENDPOINT_KEY_IMPORT_REQUIRES_CONFIRMATION`): quien leyera "esto reemplaza tu registro en Meta" después de una importación iría a buscar en Meta un cambio que nunca ocurrió.
+
+  ⚠️ La **primera** configuración no lo pide, y tampoco reintentar una clave que Meta nunca aceptó (`uploadedAt: null`): en ninguno de los dos casos hay nada que destruir. Una confirmación exigida donde no se puede perder nada entrena el reflejo que la desactiva justo en el caso en que protege.
+</Warning>
+
+<Note>
+  **Una importación se verifica antes de guardarse.** Derivamos la mitad pública de la clave que enviaste y la comparamos con la de Meta: si coincide, se guarda y se marca (`metaStatus: "VALID"`); si **no coincide, se rechaza de plano** con `FLOW_ENDPOINT_KEY_IMPORT_MISMATCH` y no se escribe nada; si no pudimos hacer la llamada a la Graph, la clave queda guardada con `uploadedAt: null` y `metaStatus` `UNKNOWN`/`NOT_SET`, que es el estado "no confirmado", no una falla.
+</Note>
+
+<Warning>
+  **`passphrase` se usa una vez y no se guarda.** Abre el PEM; después la clave se guarda normalizada y cifrada en reposo, y la frase de contraseña ya no tiene quién la lea. Guarda tu propia copia: no podemos devolvértela. Envíala solo cuando la clave tenga una (un string vacío es una frase de contraseña, no su ausencia), y nunca sola: `passphrase` sin `privateKey` se rechaza con `FLOW_ENDPOINT_KEY_PASSPHRASE_ORPHAN`, porque de lo contrario esa misma solicitud **generaría** un par y reemplazaría tu registro en Meta.
+</Warning>
+
+## Endpoint del Flow
+
+A dónde se reenvían los intercambios descifrados de un Flow `data_exchange`. Es por **Flow**, requiere `flows:manage` en todos los verbos, incluido el `GET`, y `{flowId}` es el ID **local** de `GET /v1/flows`.
+
+Una ruta, dos actos distintos. `GET` lee ese estado y `PUT` / `PATCH` guardan **tu** destino; ninguno de los tres habla con Meta. `POST` registra **nuestro** proxy como el `endpoint_uri` del Flow **en Meta**.
+
+```bash
+curl "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```bash
+curl -X PUT "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://api.your-company.com/flows/booking" }'
+```
+
+```bash
+# Registrar NUESTRO proxy como el endpoint_uri de este Flow en Meta
+curl -X POST "https://pilotstatus.com.br/v1/flows/{flowId}/endpoint" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json
+{
+  "flowId": "flw_local_1",
+  "url": "https://api.your-company.com/flows/booking",
+  "hasSecret": true,
+  "endpointUri": "https://pilotstatus.com.br/api/flows/endpoint/AbC123.../1122334455",
+  "metaEndpointUri": null,
+  "drift": false,
+  "numberHasKey": true,
+  "numberKeyUploadedAt": "2026-09-02T10:00:00.000Z",
+  "warnings": ["FLOW_ENDPOINT_META_URI_UNKNOWN"],
+  "secret": "9f2c…"
+}
+```
+
+| Campo | Significado |
+| --- | --- |
+| `url` | Tu destino. `null` cuando el Flow no tiene ninguno. |
+| `hasSecret` | Si existe un secreto de firma. El secreto en sí nunca se puede leer. |
+| `endpointUri` | La URL de **nuestro** proxy para este Flow: el valor que debe tener el `endpoint_uri` de Meta. |
+| `metaEndpointUri` | Lo que Meta tiene registrado, según lo leyó por última vez la sincronización horaria. |
+| `drift` | `true` solo cuando ambos se conocen y son distintos: Meta está llamando a otro. |
+| `numberHasKey` / `numberKeyUploadedAt` | El estado de la clave del número al que está vinculada esta credencial. |
+| `warnings` | Cada motivo por el que este Flow no va a funcionar. Trata el conjunto como abierto. |
+| `secret` | **Solo en la respuesta que lo creó**, y nunca más. |
+
+<Note>
+  Campos del cuerpo: `url` (obligatorio, `https://` o un `null` explícito para borrarlo; nunca omitido) y `rotateSecret` (boolean). `PUT` y `PATCH` son la misma operación. El número viene de la credencial y se rechaza en el cuerpo (`FLOW_NUMBER_FROM_KEY`).
+
+  **Guardar la URL no registra nada en Meta**: eso es un acto separado contra un sistema separado, para que un cambio de nombre no pueda secuestrar en silencio un Flow que ya apunta al endpoint de otra persona. `metaEndpointUri`, `drift` y `warnings` son la forma de ver la diferencia.
+</Note>
+
+### Registrar `endpoint_uri` en Meta
+
+Un `POST` a la misma ruta escribe `endpointUri` en el `endpoint_uri` del Flow en Meta. El cuerpo es opcional; `confirmOverwrite` (boolean) es el único campo que acepta, y el número viene de la credencial como en todos los demás casos. La respuesta es la forma de estado de arriba **sin** `secret`: `POST` nunca crea uno.
+
+<Warning>
+  **Un Flow `data_exchange` no se puede publicar hasta hacer esto.** Meta rechaza `publish` con *"Publishing without specifying 'endpoint_uri' is forbidden"*.
+</Warning>
+
+<Note>
+  **Idempotente.** Un Flow que ya apunta a nosotros responde `200` sin escribir en Meta. La verificación lee Meta en vivo en lugar del `metaEndpointUri` sincronizado cada hora, porque esa columna no sabe nada de un URI registrado en la última hora: justo la ventana en la que dos personas configuran el mismo Flow.
+</Note>
+
+La respuesta del `POST` agrega dos campos a la forma de estado: `republished` y `finalStatus`.
+
+<Warning>
+  **Escribir `endpoint_uri` en un Flow `PUBLISHED` hace que Meta lo devuelva a `DRAFT`.** Cuando eso pasa, lo publicamos de nuevo en la misma solicitud y respondemos `republished: true` con `finalStatus: "PUBLISHED"`. Si esa republicación falla, o Meta no informa `PUBLISHED` después, la respuesta es `502` `FLOW_REPUBLISH_FAILED` con `finalStatus` en el cuerpo: el endpoint **sí** se registró y el Flow queda en `DRAFT`; publícalo de nuevo. Cuando no se escribió nada, `republished` es `false` y `finalStatus` es el estado que informó Meta.
+</Warning>
+
+<Warning>
+  **`409 FLOW_ENDPOINT_URI_WOULD_OVERWRITE` indica el endpoint que estás por desplazar**, en `currentEndpointUri`. El nuestro no se repite: incluye el token del endpoint del número, que es la credencial del proxy.
+
+  Reenviar con `{"confirmOverwrite": true}` toma el control del Flow, y **eso le quita todos sus intercambios a quien responde hoy**. La escritura de Meta es una sobrescritura simple: sin combinación, sin deshacer y sin aviso al endpoint desplazado.
+</Warning>
+
+<Warning>
+  **`secret` se muestra exactamente una vez, en la solicitud que lo creó.** Se guarda cifrado sin ningún camino de lectura de vuelta. `secret: null` en un guardado posterior significa que ya existía uno y se mantuvo; `hasSecret` es lo que dice si existe o no. `{"rotateSecret": true}` crea uno nuevo, y es la única salida ante un secreto filtrado.
+</Warning>
+
+<Note>
+  **Con un token OAuth, cada secreto que crea esta ruta se registra en una pista de auditoría** (usuario, cliente OAuth, workspace, Flow, IP, user agent; nunca el secreto), con la misma regla de rol que el resto de la ruta (`flows:manage`: ADMIN y OWNER).
+
+  - `rotateSecret: true` se registra **antes** de rotar. Si no se puede escribir la fila de auditoría, no se rota nada y la respuesta es `500` `OAUTH_SECRET_AUDIT_UNAVAILABLE`.
+  - Un secreto creado por el primer guardado se registra **después** del guardado. Si no se puede escribir la fila de auditoría, el destino igual se guarda pero el secreto se retiene: `secret: null`, más `secretWithheld: true`, `secretWithheldReason` y `secretWithheldCode: "OAUTH_SECRET_AUDIT_UNAVAILABLE"`. Envía `rotateSecret: true` para obtener uno nuevo.
+
+  Las API keys nunca pasan por esta pista.
+</Note>
+
+Guía completa, incluido el contrato que debe cumplir tu endpoint: [Conecta tu API a un Flow](/es/guides/flow-data-exchange).
+
+## Errores
+
+Cada falla de esta superficie responde con el mismo envoltorio: hay exactamente una forma que leer, y una sola grafía:
+
+```json
+{ "error": "<Portuguese>", "errorEN": "<English>", "code": "<CODE>" }
+```
+
+`FLOW_JSON_INVALID` agrega un array `validationErrors`; `FLOW_JSON_DEAD_FORM_PREFIX` agrega `deadRefs`; `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` agrega `currentEndpointUri`; `FLOW_REPUBLISH_FAILED` agrega `finalStatus`. `FLOW_UNKNOWN_FIELDS` indica las keys problemáticas solo **en el mensaje**. Nunca supongas que el conjunto de códigos está cerrado: ramifica por los que manejas y usa `code` para el resto.
+
+Cuando la Graph de Meta rechaza una llamada, la respuesta es `400` con el mismo envoltorio, el motivo de Meta traducido a ambos idiomas y un `code` derivado del error de Meta. Las fallas de autenticación y autorización (`401`, `403` `TENANT_SCOPE_NOT_ALLOWED` / `PERMISSION_DENIED` / `WORKSPACE_MEMBERSHIP_REQUIRED`) usan el envoltorio estándar de `/v1`, `{ "error", "code" }`.
+
+| Código | Estado | Significado |
+| --- | --- | --- |
+| `FLOW_NOT_FOUND` | 404 | No hay ningún Flow con ese ID dentro de la WABA de tu key o, en las rutas que llaman a Meta, un Flow que todavía no llegó a Meta (`metaFlowId: null`) |
+| `FLOW_NOT_DRAFT` | 409 | El Flow salió de `DRAFT`: clónalo para empezar una nueva versión |
+| `FLOW_REQUIRES_META_NUMBER` | 422 | El número de la key no es un número de Meta, o no tiene WABA |
+| `FLOW_NUMBER_FROM_KEY` | 400 | La solicitud indicó el número o la WABA (`whatsappNumberId`, `numberId`, `wabaId` o `metaWabaId`, en el cuerpo, o en la query en `PATCH`/`DELETE /v1/flows/{id}` y `GET /v1/flows/{id}/json`): viene de la key y nunca se acepta junto a ella |
+| `FLOW_JSON_INVALID` | 422 | Meta rechazó el documento: lee `validationErrors` |
+| `FLOW_JSON_DEAD_FORM_PREFIX` | 422 | **Nuestro.** El documento referencia valores de formulario por el nombre propio del `Form`: lee `deadRefs` |
+| `FLOW_JSON_REQUIRED` | 400 | `flowJson` ausente o vacío |
+| `FLOW_NAME_REQUIRED` | 400 | Falta `name` al crear |
+| `FLOW_NAME_INVALID` | 400 | `name` presente pero no es un string utilizable |
+| `FLOW_CATEGORY_INVALID` | 400 | Una categoría fuera del conjunto que acepta Meta |
+| `FLOW_CLONE_SOURCE_INVALID` | 400 | `cloneFromFlowId` no es un ID local utilizable |
+| `FLOW_PATCH_EMPTY` | 400 | `PATCH` sin `name` ni `categories` |
+| `INVALID_BODY` | 400 | Cuerpo de `PATCH` que no es JSON válido (un cuerpo vacío responde `FLOW_PATCH_EMPTY`). Este usa el envoltorio estándar de `/v1`: `error` lleva ambos idiomas, sin `errorEN`. Consulta [Cuerpo JSON mal formado](/es/api/overview#cuerpo-json-mal-formado) |
+| `FLOW_UNKNOWN_FIELDS` | 400 | El cuerpo llevaba un campo que la ruta no acepta |
+| `FLOW_PUBLISH_REQUIRES_CONFIRMATION` | 400 | `publish` sin `"confirm": true` |
+| `FLOW_DEPRECATE_INVALID_SUCCESSOR` | 400 | `supersededByFlowId` presente pero no es un string no vacío. Un ID que no existe es `404` `FLOW_NOT_FOUND` |
+| `FLOW_JSON_UNAVAILABLE` | 502 | `GET /v1/flows/{id}/json`: Meta no devolvió ningún documento para este Flow |
+| `FLOW_PREVIEW_INVALIDATE_INVALID` | 400 | `invalidate` no es un boolean. `"true"` no se convierte |
+| `FLOW_PREVIEW_UNAVAILABLE` | 502 | Meta no devolvió un enlace de vista previa |
+| `FLOW_TRACES_NOT_PAGINATED` | 400 | Se envió `page` o `pageSize` a `GET /v1/flows/{id}/traces`, que no tiene paginación |
+| `FLOW_SYNC_IN_PROGRESS` | 429 | Ya hay una sincronización de este número en curso. Reintenta después de `Retry-After` segundos (120) |
+| `FLOW_REPUBLISH_FAILED` | 502 | `endpoint_uri` se registró, pero el Flow que Meta pasó a `DRAFT` no se pudo publicar de nuevo: lee `finalStatus` y publícalo |
+| `OAUTH_SECRET_AUDIT_UNAVAILABLE` | 500 | Solo OAuth: la rotación del secreto no se pudo registrar en la pista de auditoría, así que no se realizó. Envoltorio estándar de `/v1` |
+| `FLOW_ENDPOINT_KEY_REQUIRES_CONFIRMATION` | 400 | Generar sobre una clave ACTIVA sin `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_IMPORT_REQUIRES_CONFIRMATION` | 400 | Importar sobre una clave ACTIVA sin `"confirm": true` |
+| `FLOW_ENDPOINT_KEY_IMPORT_MISMATCH` | 400 | La clave importada no es la que Meta tiene registrada. **No se escribió nada** |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_REQUIRED` | 400 | El PEM está protegido con frase de contraseña y no se envió ninguna |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_WRONG` | 400 | La frase de contraseña no abre la clave; la clave en sí no fue rechazada |
+| `FLOW_ENDPOINT_KEY_PASSPHRASE_ORPHAN` | 400 | `passphrase` sin `privateKey`. Se rechaza, no se ignora: sin la clave, esta solicitud **generaría** un par |
+| `FLOW_ENDPOINT_KEY_PEM_INVALID` | 400 | `privateKey` no se puede leer como PEM, no es RSA o tiene menos de 2048 bits |
+| `FLOW_ENDPOINT_KEY_IMPORT_INVALID` | 400 | `privateKey` o `passphrase` presente pero no es un string |
+| `FLOW_ENDPOINT_KEY_UNAVAILABLE` | 500 | Nuestro. La mitad privada no se puede guardar cifrada, y nos negamos a generar antes que guardarla en claro |
+| `FLOW_ENDPOINT_URL_REQUIRED` | 400 | `url` ausente o inutilizable. Puede ser `null` **explícitamente**, nunca por omisión |
+| `FLOW_ENDPOINT_URL_NOT_HTTPS` | 400 | El destino no es `https://`. La URL rechazada no se devuelve |
+| `FLOW_ENDPOINT_ROTATE_INVALID` | 400 | `rotateSecret` no es un boolean. `"true"` no se convierte |
+| `FLOW_ENDPOINT_CONFIRM_INVALID` | 400 | `confirmOverwrite` no es un boolean. `"false"` es un string verdadero y se rechaza, nunca se lee como consentimiento |
+| `FLOW_ENDPOINT_URI_WOULD_OVERWRITE` | 409 | Meta ya apunta este Flow a otro endpoint, indicado en `currentEndpointUri`. Reenvía con `confirmOverwrite: true` para tomar el control |
+| `FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` | 422 | El número no tiene clave de endpoint de Flow, así que no hay URL que registrar en Meta. Genera la clave primero |
+| `FLOW_ENDPOINT_SECRET_UNAVAILABLE` | 500 | Nuestro. El secreto de firma no se puede guardar cifrado, y reenviar sin firma no es una opción |
+| `FLOW_NUMBER_WABA_MISMATCH` | 422 | El número de la key no está en la WABA dueña de este Flow y nunca podrá enviarlo |
+| `FLOW_NUMBER_NOT_FOUND` | 404 | El número de la ruta no es el número al que está vinculada esta key |
+| `FLOW_BODY_INVALID` | 400 | Cuerpo mal formado, o falta un campo obligatorio |
+| `INVALID_PAGINATION` | 400 | `page` × `pageSize` por encima del límite de desplazamiento |
+| `INTERNAL_ERROR` | 500 | Nuestro. Reintenta y luego informa el código a soporte |
+
+<Note>
+  Los dos últimos **no llevan el prefijo `FLOW_`**: se comparten en toda la API pública y mantienen su grafía global. Un cliente que filtre con `code.startsWith("FLOW_")` se perdería ambos.
+</Note>
+
+## Relacionado
+
+- [Flows](/es/concepts/flows)
+- [Recibir respuestas de Flow](/es/guides/flow-responses)
+- [Conecta tu API a un Flow](/es/guides/flow-data-exchange)
+- [Flows con datos en vivo](/es/guides/flow-live-data)
+- [Plantillas](/es/concepts/templates)
+- [Descripción general de la API](/es/api/overview)

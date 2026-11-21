@@ -1,0 +1,1333 @@
+---
+title: "Capa de compatibilidad Evolution GO: referencia de la API"
+sidebarTitle: "Evolution GO"
+description: "Usa la API Layer Evolution GO de Pilot Status para ejecutar solicitudes compatibles con Evolution GO. Reemplaza tu URL base por el endpoint de la capa de Pilot Status para migrar."
+mode: "wide"
+---
+
+La API Layer Evolution GO de Pilot Status te da un reemplazo directo para tu servidor Evolution GO. Mantienes cada cuerpo de solicitud, header y ruta exactamente como están hoy: el único cambio que haces es reemplazar tu URL base. Pilot Status traduce tus solicitudes compatibles con Evolution GO a su API nativa y devuelve las respuestas en el formato que tu código ya maneja.
+
+## URL base
+
+Apunta tu cliente HTTP o tu variable de entorno a la siguiente URL base para empezar a usar la capa Evolution GO:
+
+```text
+https://pilotstatus.com.br/api/layer/evolution-go/
+```
+
+Todas las rutas que usas actualmente con tu servidor Evolution GO se agregan directamente a esta URL. No se requieren otros cambios.
+
+## Autenticación
+
+Envía el **token de la instancia** en el header `apikey`, el mismo header que usa Evolution GO:
+
+```text
+apikey: YOUR_INSTANCE_TOKEN
+```
+
+La capa **no** acepta una API key `ps_` de Pilot Status. Busca el valor de `apikey` como token de instancia, en este orden:
+
+1. el token de la instancia Evolution GO que **migraste** en el panel (**Numbers → Connect → Migrate**, donde ingresas el nombre y el token de la instancia anterior), para que el token que tu código ya envía siga funcionando;
+2. si no, el token de la propia instancia de Pilot Status.
+
+Un token que no coincide con ninguno responde `404` `{ "status": 404, "error": "Not Found", "message": "Instance not found" }`. Una solicitud sin `apikey` responde `401`.
+
+Este es el único header que lee la capa. `Authorization: Bearer` y `x-api-key` **no** se aceptan: una solicitud que lleva la clave solo en uno de ellos recibe `401 Unauthorized`.
+
+## Operaciones admitidas
+
+Cada solicitud es una llamada a `<METHOD> https://pilotstatus.com.br/api/layer/evolution-go<PATH>`. La instancia se resuelve a partir del token `apikey`, así que las rutas de Evolution GO que normalmente llevan un segmento de instancia **no** lo necesitan aquí. Las operaciones de envío se balancean automáticamente entre las instancias conectadas de tu número.
+
+<Note>
+  Cualquier ruta que no aparezca abajo devuelve **404**. Las rutas globales o exclusivas de administración devuelven **403**: nunca se exponen a través de la capa (consulta [Rutas bloqueadas](#bloqueadas-adminglobal)).
+</Note>
+
+### Instancia (sesión)
+
+| Método | Ruta |
+| --- | --- |
+| POST | `/instance/connect` |
+| GET | `/instance/status` |
+| GET | `/instance/qr` |
+| POST | `/instance/pair` |
+| POST | `/instance/disconnect` |
+| POST | `/instance/reconnect` |
+| DELETE | `/instance/logout` |
+| GET | `/instance/{id}/advanced-settings` |
+| PUT | `/instance/{id}/advanced-settings` |
+
+### Envío (con balanceo de carga)
+
+Estos endpoints envían mensajes a través de la capa Evolution GO; el número se selecciona por la API key, así que la ruta no tiene segmento de instancia y `number` en el cuerpo es el destinatario.
+
+<AccordionGroup>
+<Accordion title="POST /send/text: enviar mensaje de texto">
+Envía un mensaje de texto simple; cuando `linkPreview` es true, el servidor enriquece la primera URL de `text` con una tarjeta de vista previa OpenGraph.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario (por ejemplo, `5511999999999` o `5511999999999@s.whatsapp.net`, grupo `...@g.us`). |
+| `text` | string | Sí | Cuerpo del mensaje. |
+| `linkPreview` | boolean | No | Obtiene los metadatos OpenGraph de la primera URL de `text` y adjunta una vista previa. |
+| `id` | string | No | Id de mensaje proporcionado por el cliente para rastreo/idempotencia. |
+| `delay` | integer | No | Milisegundos de espera (como "escribiendo") antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`); usa `false` para enviar el valor tal cual. |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "text": "Hello from Pilot Status! https://pilotstatus.com.br",
+  "linkPreview": true,
+  "delay": 1200,
+  "quoted": {
+    "messageId": "3EB0C767D097B7C7A0A1",
+    "participant": "5511988888888@s.whatsapp.net"
+  }
+}
+```
+</Accordion>
+<Accordion title="POST /send/link: enviar vista previa de enlace">
+Envía un mensaje de texto con una tarjeta de enlace enriquecida; el servidor obtiene automáticamente `title`, `description` e `imgUrl` de la URL encontrada en `text`, así que esos campos son opcionales y cualquier valor que pases puede ser reemplazado.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario. |
+| `text` | string | Sí | Cuerpo del mensaje con la URL a previsualizar. |
+| `title` | string | No | Título de la vista previa (se completa desde OpenGraph si se omite). |
+| `description` | string | No | Descripción de la vista previa (se completa si se omite). |
+| `url` | string | No | URL de destino de la vista previa. |
+| `imgUrl` | string | No | URL de la imagen miniatura (se completa si se omite). |
+| `id` | string | No | Id de mensaje proporcionado por el cliente. |
+| `delay` | integer | No | Milisegundos de espera antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`). |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "text": "Check this out: https://pilotstatus.com.br",
+  "title": "Pilot Status",
+  "description": "WhatsApp API platform",
+  "url": "https://pilotstatus.com.br",
+  "imgUrl": "https://pilotstatus.com.br/og.png"
+}
+```
+</Accordion>
+<Accordion title="POST /send/media: enviar mensaje multimedia">
+Envía una imagen, video, audio o documento por URL (cuerpo JSON), o como una subida `multipart/form-data` con un campo `file`; `type` selecciona el tipo de multimedia.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario. |
+| `url` | string | Sí | URL del archivo multimedia (modo JSON). En `multipart/form-data`, envía el binario en un campo `file` en su lugar. |
+| `type` | string | Sí | Tipo de multimedia: `image`, `video`, `audio`, `document` (también `ptv`). |
+| `caption` | string | No | Texto del pie (imagen/video/documento). |
+| `filename` | string | No | Nombre de archivo mostrado para documentos. |
+| `id` | string | No | Id de mensaje proporcionado por el cliente. |
+| `delay` | integer | No | Milisegundos de espera antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`). |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "type": "image",
+  "url": "https://example.com/photo.jpg",
+  "caption": "Look at this"
+}
+```
+</Accordion>
+<Accordion title="POST /send/poll: enviar encuesta">
+Envía una encuesta con una pregunta y una lista de opciones; requiere al menos dos opciones.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario. |
+| `question` | string | Sí | Pregunta de la encuesta. |
+| `options` | string[] | Sí | Opciones de respuesta (mínimo 2). |
+| `maxAnswer` | integer | No | Máximo de opciones que puede elegir quien vota (`1` = opción única). |
+| `id` | string | No | Id de mensaje proporcionado por el cliente. |
+| `delay` | integer | No | Milisegundos de espera antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`). |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "question": "Best day for the meeting?",
+  "options": ["Monday", "Tuesday", "Wednesday"],
+  "maxAnswer": 1
+}
+```
+</Accordion>
+<Accordion title="POST /send/sticker: enviar sticker">
+Envía un sticker a partir de la URL de una imagen; el servidor la descarga y la convierte a WebP antes de enviarla.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario. |
+| `sticker` | string | Sí | URL `http(s)` de la imagen a convertir en sticker. |
+| `id` | string | No | Id de mensaje proporcionado por el cliente. |
+| `delay` | integer | No | Milisegundos de espera antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`). |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "sticker": "https://example.com/sticker.png"
+}
+```
+</Accordion>
+<Accordion title="POST /send/location: enviar ubicación">
+Envía un pin de ubicación geográfica con una etiqueta de nombre y dirección.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario. |
+| `name` | string | Sí | Nombre/título de la ubicación. |
+| `address` | string | Sí | Etiqueta de la dirección. |
+| `latitude` | number | Sí | Latitud en grados decimales. |
+| `longitude` | number | Sí | Longitud en grados decimales. |
+| `id` | string | No | Id de mensaje proporcionado por el cliente. |
+| `delay` | integer | No | Milisegundos de espera antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`). |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "name": "Pilot Status HQ",
+  "address": "Av. Paulista, 1000, Sao Paulo",
+  "latitude": -23.561414,
+  "longitude": -46.655881
+}
+```
+</Accordion>
+<Accordion title="POST /send/contact: enviar tarjeta de contacto">
+Envía una tarjeta de contacto vCard; `fullName` y `phone` son obligatorios dentro de `vcard`.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario. |
+| `vcard` | object | Sí | Objeto de la tarjeta de contacto (ver los campos anidados). |
+| `vcard.fullName` | string | Sí | Nombre completo del contacto. |
+| `vcard.phone` | string | Sí | Número de teléfono del contacto. |
+| `vcard.organization` | string | No | Organización del contacto. |
+| `id` | string | No | Id de mensaje proporcionado por el cliente. |
+| `delay` | integer | No | Milisegundos de espera antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`). |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "vcard": {
+    "fullName": "Joao Silva",
+    "organization": "Acme Ltda",
+    "phone": "5511988888888"
+  }
+}
+```
+</Accordion>
+<Accordion title="POST /send/button: enviar botones interactivos">
+Envía un mensaje interactivo con botones tocables; el comportamiento de cada botón se define por elemento mediante `type` (reply, url, call, copy, etc.).
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario. |
+| `title` | string | Sí | Texto del encabezado/título. |
+| `description` | string | Sí | Texto del cuerpo. |
+| `footer` | string | No | Texto del pie. |
+| `imageUrl` | string | No | URL de la imagen del encabezado. |
+| `buttons` | array | Sí | Objetos de botón: `{ type, displayText, id, url, phoneNumber, copyCode, currency, name, keyType, key }`. |
+| `id` | string | No | Id de mensaje proporcionado por el cliente. |
+| `delay` | integer | No | Milisegundos de espera antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`). |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "title": "Order #123",
+  "description": "Your order is ready.",
+  "footer": "Pilot Status",
+  "buttons": [
+    { "type": "reply", "displayText": "Confirm", "id": "confirm_1" },
+    { "type": "url", "displayText": "Track", "url": "https://track.example.com/123" }
+  ]
+}
+```
+</Accordion>
+<Accordion title="POST /send/list: enviar menú de lista">
+Envía un mensaje de menú en el que el destinatario toca `buttonText` para abrir secciones con filas seleccionables.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario. |
+| `title` | string | Sí | Texto del encabezado/título. |
+| `description` | string | Sí | Texto del cuerpo. |
+| `buttonText` | string | Sí | Etiqueta del botón que abre la lista. |
+| `footerText` | string | Sí | Texto del pie. |
+| `sections` | array | Sí | Objetos de sección: `{ title, rows: [{ title, description, rowId }] }`. |
+| `id` | string | No | Id de mensaje proporcionado por el cliente. |
+| `delay` | integer | No | Milisegundos de espera antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`). |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "title": "Menu",
+  "description": "Choose an option",
+  "buttonText": "Open menu",
+  "footerText": "Pilot Status",
+  "sections": [
+    {
+      "title": "Drinks",
+      "rows": [
+        { "title": "Coffee", "description": "Hot brewed", "rowId": "drink_coffee" },
+        { "title": "Tea", "description": "Green tea", "rowId": "drink_tea" }
+      ]
+    }
+  ]
+}
+```
+</Accordion>
+<Accordion title="POST /send/carousel: enviar tarjetas en carrusel">
+Envía un carrusel con desplazamiento horizontal; cada tarjeta tiene su propia imagen, texto y botones.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | MSISDN o JID del destinatario. |
+| `title` | string | Sí | Texto del encabezado/título. |
+| `description` | string | Sí | Texto del cuerpo. |
+| `footerText` | string | Sí | Texto del pie. |
+| `cards` | array | Sí | Objetos de tarjeta: `{ text, thumbnailUrl, footerText, buttons: [Button] }`. |
+| `delay` | integer | No | Milisegundos de espera antes de enviar. |
+| `mentionedJid` | string | No | JID(s) a mencionar. |
+| `mentionAll` | boolean | No | Menciona a todos los participantes (grupos). |
+| `formatJid` | boolean | No | Formatea automáticamente `number` como JID (predeterminado `true`). |
+| `quoted` | object | No | Referencia de respuesta: `{ "messageId", "participant" }`. |
+
+```json
+{
+  "number": "5511999999999",
+  "title": "Featured products",
+  "description": "Swipe to browse",
+  "footerText": "Pilot Status",
+  "cards": [
+    {
+      "text": "Product A",
+      "thumbnailUrl": "https://example.com/a.jpg",
+      "footerText": "In stock",
+      "buttons": [
+        { "type": "url", "displayText": "Buy", "url": "https://shop.example.com/a" }
+      ]
+    }
+  ]
+}
+```
+</Accordion>
+</AccordionGroup>
+
+### Usuario / Contactos
+
+La apikey selecciona el número, así que no aparece ningún segmento de instancia en la ruta ni en el cuerpo.
+
+<AccordionGroup>
+<Accordion title="POST /user/info: obtener información del usuario">
+Obtiene los detalles de la cuenta de WhatsApp (JID, nombre, nombre de la empresa) de uno o más números de teléfono.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string[] | Sí | Números de teléfono en formato internacional a consultar. |
+| `formatJid` | boolean | No | Cuando es true, devuelve cada resultado indexado por el JID formateado. |
+
+```json
+{
+  "number": ["5511999999999"],
+  "formatJid": true
+}
+```
+</Accordion>
+<Accordion title="POST /user/check: verificar en WhatsApp">
+Verifica si los números de teléfono indicados están registrados en WhatsApp.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string[] | Sí | Números de teléfono en formato internacional a verificar. |
+| `formatJid` | boolean | No | Cuando es true, devuelve cada resultado indexado por el JID formateado. |
+
+```json
+{
+  "number": ["5511999999999", "5511888888888"],
+  "formatJid": false
+}
+```
+</Accordion>
+<Accordion title="POST /user/avatar: obtener el avatar del usuario">
+Devuelve la URL de la foto de perfil de un número de teléfono.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | Número de teléfono en formato internacional. |
+| `preview` | boolean | No | Cuando es true, devuelve la imagen de vista previa en baja resolución en lugar de la foto en tamaño completo. |
+
+```json
+{
+  "number": "5511999999999",
+  "preview": false
+}
+```
+</Accordion>
+<Accordion title="GET /user/contacts: listar contactos">
+Devuelve todos los contactos almacenados para el número conectado.
+
+**Sin cuerpo de solicitud.**
+</Accordion>
+<Accordion title="GET /user/privacy: obtener la configuración de privacidad">
+Devuelve la configuración de privacidad actual del número conectado.
+
+**Sin cuerpo de solicitud.**
+</Accordion>
+<Accordion title="POST /user/privacy: definir la configuración de privacidad">
+Actualiza la configuración de privacidad del número conectado. Cada campo recibe un alcance de privacidad como `all`, `contacts`, `contact_blacklist`, `known`, `match_last_seen` o `none`.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `groupAdd` | string | Sí | Quién puede agregarte a grupos (`all`, `contacts`, `contact_blacklist`, `none`). |
+| `lastSeen` | string | Sí | Quién puede ver tu última conexión (`all`, `contacts`, `contact_blacklist`, `none`). |
+| `status` | string | Sí | Quién puede ver tu estado (`all`, `contacts`, `contact_blacklist`, `none`). |
+| `profile` | string | Sí | Quién puede ver tu foto de perfil (`all`, `contacts`, `contact_blacklist`, `none`). |
+| `readReceipts` | string | Sí | Configuración de confirmaciones de lectura (`all`, `none`). |
+| `callAdd` | string | Sí | Quién puede llamarte (`all`, `known`). |
+| `online` | string | Sí | Quién puede ver cuándo estás en línea (`all`, `match_last_seen`). |
+
+```json
+{
+  "groupAdd": "contacts",
+  "lastSeen": "contacts",
+  "status": "contacts",
+  "profile": "all",
+  "readReceipts": "all",
+  "callAdd": "known",
+  "online": "match_last_seen"
+}
+```
+</Accordion>
+<Accordion title="POST /user/block: bloquear un contacto">
+Bloquea el contacto indicado para el número conectado.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | Número de teléfono en formato internacional a bloquear. |
+
+```json
+{
+  "number": "5511999999999"
+}
+```
+</Accordion>
+<Accordion title="POST /user/unblock: desbloquear un contacto">
+Quita el contacto indicado de la lista de bloqueados.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | Número de teléfono en formato internacional a desbloquear. |
+
+```json
+{
+  "number": "5511999999999"
+}
+```
+</Accordion>
+<Accordion title="GET /user/blocklist: listar contactos bloqueados">
+Devuelve la lista de bloqueados del número conectado.
+
+**Sin cuerpo de solicitud.**
+</Accordion>
+<Accordion title="POST /user/profilePicture: definir la foto de perfil">
+Define la foto de perfil del número conectado.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `image` | string | Sí | Imagen como URL o datos codificados en base64. |
+
+```json
+{
+  "image": "https://media.pilotstatus.com.br/avatar.jpg"
+}
+```
+</Accordion>
+<Accordion title="POST /user/profileName: definir el nombre de perfil">
+Actualiza el nombre visible del número conectado.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `name` | string | Sí | Nuevo nombre visible del perfil. |
+
+```json
+{
+  "name": "Pilot Status Support"
+}
+```
+</Accordion>
+<Accordion title="POST /user/profileStatus: definir el estado del perfil">
+Actualiza el texto de estado (info) del número conectado.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `status` | string | Sí | Nuevo texto de estado del perfil. |
+
+```json
+{
+  "status": "Available"
+}
+```
+</Accordion>
+</AccordionGroup>
+
+### Mensaje
+
+Acciones a nivel de mensaje en el número conectado: la apikey selecciona el número, así que nunca incluyas una instancia en la ruta ni en el cuerpo.
+
+<AccordionGroup>
+<Accordion title="POST /message/react: reaccionar a un mensaje">
+Envía una reacción con emoji a un mensaje existente; admite `fromMe` y (para mensajes de grupo) el autor `participant`.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | Chat destinatario, como teléfono en dígitos E.164 o como JID |
+| `reaction` | string | Sí | Emoji con el que reaccionar (envía una cadena vacía para quitar la reacción) |
+| `id` | string | Sí | ID del mensaje al que reaccionar |
+| `fromMe` | boolean | No | Si el mensaje objetivo lo enviaste tú |
+| `participant` | string | No | JID del autor del mensaje (necesario para mensajes de grupo) |
+
+```json
+{
+  "number": "5511999999999",
+  "reaction": "👍",
+  "id": "3EB0A1B2C3D4E5F6A7B8",
+  "fromMe": false,
+  "participant": "5511988888888@s.whatsapp.net"
+}
+```
+</Accordion>
+<Accordion title="POST /message/presence: enviar presencia en el chat">
+Emite un indicador de presencia de escribiendo o grabando en un chat.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | Chat objetivo, como teléfono en dígitos E.164 o como JID |
+| `state` | string | Sí | Estado de presencia: `composing` (escribiendo) o `paused` |
+| `isAudio` | boolean | No | Cuando es true, muestra "grabando audio" en lugar de escribiendo |
+
+```json
+{
+  "number": "5511999999999",
+  "state": "composing",
+  "isAudio": false
+}
+```
+</Accordion>
+<Accordion title="POST /message/markread: marcar mensajes como leídos">
+Marca uno o más mensajes de un chat como leídos.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | Chat cuyos mensajes se están leyendo, como teléfono en dígitos E.164 o como JID |
+| `id` | string[] | Sí | Arreglo de IDs de mensajes a marcar como leídos |
+
+```json
+{
+  "number": "5511999999999",
+  "id": ["3EB0A1B2C3D4E5F6A7B8", "3EB0F9E8D7C6B5A43210"]
+}
+```
+</Accordion>
+<Accordion title="POST /message/downloadmedia: descargar multimedia">
+Descarga y descifra el archivo multimedia adjunto a un mensaje recibido y lo devuelve como data URL en base64.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `message` | object | Sí | Payload completo del mensaje que contiene el nodo multimedia a descargar (uno de `imageMessage`, `audioMessage`, `videoMessage`, `documentMessage` o `stickerMessage`) con su `url`, `directPath`, `mediaKey`, `fileEncSHA256`, `fileSHA256`, `mimetype` y `fileLength` |
+
+```json
+{
+  "message": {
+    "imageMessage": {
+      "url": "https://mmg.whatsapp.net/d/f/AbCdEf123456.enc",
+      "directPath": "/v/t62.7118-24/12345_67890.enc",
+      "mediaKey": "sPqT2bXyZ0aBcDeFgHiJkLmNoPqRsTuVwXyZ012345=",
+      "mimetype": "image/jpeg",
+      "fileEncSHA256": "9dJkLmNoPqRsTuVwXyZ0123456789AbCdEfGhIjKlMno=",
+      "fileSHA256": "Q1w2E3r4T5y6U7i8O9p0AsDfGhJkLzXcVbNmQwErTyU=",
+      "fileLength": 24576
+    }
+  }
+}
+```
+</Accordion>
+<Accordion title="POST /message/status: obtener el estado del mensaje">
+Consulta el estado de entrega almacenado de un mensaje por su ID.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `id` | string | Sí | ID del mensaje a consultar |
+
+```json
+{
+  "id": "3EB0A1B2C3D4E5F6A7B8"
+}
+```
+</Accordion>
+<Accordion title="POST /message/delete: eliminar para todos">
+Revoca un mensaje para todos en el chat.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `chat` | string | Sí | Chat donde está el mensaje, como JID o teléfono en dígitos E.164 |
+| `messageId` | string | Sí | ID del mensaje a revocar |
+
+```json
+{
+  "chat": "5511999999999@s.whatsapp.net",
+  "messageId": "3EB0A1B2C3D4E5F6A7B8"
+}
+```
+</Accordion>
+<Accordion title="POST /message/edit: editar un mensaje">
+Reemplaza el contenido de texto de un mensaje enviado anteriormente.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `chat` | string | Sí | Chat donde está el mensaje, como JID o teléfono en dígitos E.164 |
+| `message` | string | Sí | Nuevo contenido de texto del mensaje |
+| `messageId` | string | Sí | ID del mensaje a editar |
+
+```json
+{
+  "chat": "5511999999999@s.whatsapp.net",
+  "message": "Corrected text",
+  "messageId": "3EB0A1B2C3D4E5F6A7B8"
+}
+```
+</Accordion>
+</AccordionGroup>
+
+### Chat
+
+Gestiona el estado de los chats (fijar, archivar, silenciar) y solicita el historial de mensajes del número seleccionado por tu API key.
+
+<AccordionGroup>
+<Accordion title="POST /chat/pin: fijar un chat">
+Fija un chat en la parte superior de la lista.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `chat` | string | Sí | JID del chat a fijar (individual `...@s.whatsapp.net` o grupo `...@g.us`). |
+
+```json
+{
+  "chat": "5511999999999@s.whatsapp.net"
+}
+```
+</Accordion>
+
+<Accordion title="POST /chat/unpin: desfijar un chat">
+Quita un chat de la lista de fijados.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `chat` | string | Sí | JID del chat a desfijar. |
+
+```json
+{
+  "chat": "5511999999999@s.whatsapp.net"
+}
+```
+</Accordion>
+
+<Accordion title="POST /chat/archive: archivar un chat">
+Archiva un chat y lo oculta de la lista principal.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `chat` | string | Sí | JID del chat a archivar. |
+
+```json
+{
+  "chat": "5511999999999@s.whatsapp.net"
+}
+```
+</Accordion>
+
+<Accordion title="POST /chat/unarchive: desarchivar un chat">
+Devuelve un chat archivado a la lista principal.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `chat` | string | Sí | JID del chat a desarchivar. |
+
+```json
+{
+  "chat": "5511999999999@s.whatsapp.net"
+}
+```
+</Accordion>
+
+<Accordion title="POST /chat/mute: silenciar un chat">
+Silencia las notificaciones de un chat.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `chat` | string | Sí | JID del chat a silenciar. |
+
+```json
+{
+  "chat": "120363000000000000@g.us"
+}
+```
+</Accordion>
+
+<Accordion title="POST /chat/unmute: quitar el silencio de un chat">
+Vuelve a activar las notificaciones de un chat silenciado.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `chat` | string | Sí | JID del chat al que quitar el silencio. |
+
+```json
+{
+  "chat": "120363000000000000@g.us"
+}
+```
+</Accordion>
+
+<Accordion title="POST /chat/history-sync: solicitar sincronización del historial">
+Solicita el historial de mensajes anterior a un mensaje de referencia. El objeto `messageInfo` identifica el mensaje ancla (su JID `Chat`, el `ID` del mensaje, los indicadores de dirección y el `Timestamp`); los campos se deserializan desde el tipo `MessageInfo` de whatsmeow, así que las claves están en PascalCase y `Chat` es una **cadena** JID.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `messageInfo` | object | Sí | Mensaje de referencia antes del cual sincronizar el historial. Contiene `Chat` (cadena JID), `ID` (id del mensaje), `IsFromMe` (boolean), `IsGroup` (boolean) y `Timestamp` (RFC 3339). |
+| `count` | integer | No | Cantidad de mensajes a obtener antes del mensaje de referencia. |
+
+```json
+{
+  "messageInfo": {
+    "Chat": "5511999999999@s.whatsapp.net",
+    "ID": "3EB0C767D82B0A1B2C3D",
+    "IsFromMe": false,
+    "IsGroup": false,
+    "Timestamp": "2026-07-09T12:00:00Z"
+  },
+  "count": 50
+}
+```
+</Accordion>
+</AccordionGroup>
+
+### Grupo
+
+Gestiona los grupos de WhatsApp del número conectado: listar, consultar, crear, actualizar, unirse o salir. La apikey selecciona el número, así que no se usa ningún segmento de instancia.
+
+<AccordionGroup>
+<Accordion title="GET /group/list: listar los grupos a los que perteneces">
+Devuelve todos los grupos a los que se unió el número conectado.
+
+**Sin cuerpo de solicitud.**
+</Accordion>
+<Accordion title="POST /group/info: obtener información del grupo">
+Obtiene los metadatos (nombre, participantes, propietario) de un único grupo.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `groupJid` | string | Sí | JID del grupo (`<id>@g.us`). |
+
+```json
+{
+  "groupJid": "120363012345678901@g.us"
+}
+```
+</Accordion>
+<Accordion title="POST /group/invitelink: obtener el enlace de invitación">
+Devuelve el enlace de invitación del grupo, revocando opcionalmente el anterior primero.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `groupJid` | string | Sí | JID del grupo (`<id>@g.us`). |
+| `reset` | boolean | No | Cuando es `true`, revoca el enlace actual y genera uno nuevo. |
+
+```json
+{
+  "groupJid": "120363012345678901@g.us",
+  "reset": false
+}
+```
+</Accordion>
+<Accordion title="POST /group/photo: definir la foto del grupo">
+Define la foto de perfil del grupo a partir de una URL pública o un data URI en base64.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `groupJid` | string | Sí | JID del grupo (`<id>@g.us`). |
+| `image` | string | Sí | Imagen como URL `http(s)` o como data URI `data:image/jpeg;base64,` / `data:image/png;base64,`. |
+
+```json
+{
+  "groupJid": "120363012345678901@g.us",
+  "image": "https://example.com/group-photo.jpg"
+}
+```
+</Accordion>
+<Accordion title="POST /group/name: definir el nombre del grupo">
+Actualiza el asunto (nombre) del grupo.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `groupJid` | string | Sí | JID del grupo (`<id>@g.us`). |
+| `name` | string | Sí | Nuevo nombre del grupo. |
+
+```json
+{
+  "groupJid": "120363012345678901@g.us",
+  "name": "Sales Team"
+}
+```
+</Accordion>
+<Accordion title="POST /group/description: definir la descripción del grupo">
+Actualiza la descripción (tema) del grupo.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `groupJid` | string | Sí | JID del grupo (`<id>@g.us`). |
+| `description` | string | Sí | Nueva descripción del grupo. |
+
+```json
+{
+  "groupJid": "120363012345678901@g.us",
+  "description": "Team coordination and announcements"
+}
+```
+</Accordion>
+<Accordion title="POST /group/create: crear grupo">
+Crea un grupo nuevo con el nombre y los participantes iniciales indicados.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `groupName` | string | Sí | Nombre del grupo nuevo. |
+| `participants` | string[] | Sí | Números de teléfono o JIDs a agregar (al menos uno). |
+
+```json
+{
+  "groupName": "Sales Team",
+  "participants": [
+    "5511999999999",
+    "5511888888888"
+  ]
+}
+```
+</Accordion>
+<Accordion title="POST /group/participant: actualizar participantes">
+Agrega, elimina, asciende o degrada participantes de un grupo.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `groupJid` | string | Sí | JID del grupo (`<id>@g.us`). |
+| `participants` | string[] | Sí | Números de teléfono o JIDs sobre los que actuar (al menos uno). |
+| `action` | string | Sí | Uno de `add`, `remove`, `promote`, `demote`. |
+
+```json
+{
+  "groupJid": "120363012345678901@g.us",
+  "participants": [
+    "5511999999999"
+  ],
+  "action": "add"
+}
+```
+</Accordion>
+<Accordion title="GET /group/myall: listar los grupos propios">
+Devuelve solo los grupos de los que el número conectado es propietario (admin/owner).
+
+**Sin cuerpo de solicitud.**
+</Accordion>
+<Accordion title="POST /group/join: unirse por invitación">
+Se une a un grupo usando un código de invitación (el token de un enlace de invitación).
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `code` | string | Sí | Código de invitación (el segmento después de `chat.whatsapp.com/`). |
+
+```json
+{
+  "code": "AbCdEfGhIjKlMnOpQrStUv"
+}
+```
+</Accordion>
+<Accordion title="POST /group/leave: salir del grupo">
+Sale del grupo indicado.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `groupJid` | string | Sí | JID del grupo (`<id>@g.us`). |
+
+```json
+{
+  "groupJid": "120363012345678901@g.us"
+}
+```
+</Accordion>
+</AccordionGroup>
+
+### Llamada (voz)
+
+Realiza, contesta, rechaza, cuelga y transmite audio en llamadas de voz de WhatsApp. La apikey selecciona el número, así que no va ninguna instancia en la ruta ni en el cuerpo.
+
+<AccordionGroup>
+
+<Accordion title="POST /call/start: iniciar llamada saliente">
+Realiza una llamada de voz saliente de WhatsApp al número indicado y devuelve la sesión de llamada creada.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `number` | string | Sí | Teléfono del destinatario en formato DDI+DDD+número (por ejemplo, `5511999999999`) o un JID completo. |
+
+```json
+{
+  "number": "5511999999999"
+}
+```
+</Accordion>
+
+<Accordion title="GET /call/list: listar llamadas activas">
+Devuelve todas las sesiones de llamada rastreadas actualmente para el número.
+
+**Sin cuerpo de solicitud.**
+</Accordion>
+
+<Accordion title="POST /call/get: obtener llamada por id">
+Devuelve el estado actual de una única sesión de llamada rastreada.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `callId` | string | No | Identificador de la llamada a obtener. Se acepta un cuerpo vacío (devuelve la última llamada rastreada). |
+
+```json
+{
+  "callId": "3EB0C767D26A8B4E7F1A"
+}
+```
+</Accordion>
+
+<Accordion title="POST /call/answer: contestar llamada entrante">
+Contesta una llamada entrante que está sonando; omite `callId` para contestar la última llamada entrante.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `callId` | string | No | Identificador de la llamada entrante a contestar. Si se omite, se contesta la llamada entrante más reciente. |
+
+```json
+{
+  "callId": "3EB0C767D26A8B4E7F1A"
+}
+```
+</Accordion>
+
+<Accordion title="POST /call/reject: rechazar llamada">
+Rechaza una llamada; si la llamada ya no está rastreada, recurre a rechazarla mediante `callCreator`.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `callId` | string | Sí | Identificador de la llamada a rechazar. |
+| `callCreator` | string | No | JID de quien llama, usado como alternativa cuando la llamada no está rastreada (por ejemplo, `5511999999999@s.whatsapp.net`). |
+
+```json
+{
+  "callId": "3EB0C767D26A8B4E7F1A",
+  "callCreator": "5511999999999@s.whatsapp.net"
+}
+```
+</Accordion>
+
+<Accordion title="POST /call/reject/by-id: rechazar llamada rastreada">
+Rechaza una llamada rastreada actualmente por su identificador.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `callId` | string | Sí | Identificador de la llamada rastreada a rechazar. |
+
+```json
+{
+  "callId": "3EB0C767D26A8B4E7F1A"
+}
+```
+</Accordion>
+
+<Accordion title="POST /call/reject/latest: rechazar la última oferta">
+Rechaza la llamada entrante ofrecida más recientemente para el número.
+
+**Sin cuerpo de solicitud.**
+</Accordion>
+
+<Accordion title="POST /call/hangup: colgar llamada">
+Termina una llamada activa por su identificador.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `callId` | string | Sí | Identificador de la llamada activa a colgar. |
+
+```json
+{
+  "callId": "3EB0C767D26A8B4E7F1A"
+}
+```
+</Accordion>
+
+<Accordion title="POST /call/media/play: reproducir audio en la llamada">
+Transmite un archivo de audio a una llamada activa. Acepta este cuerpo JSON (`filePath` del lado del servidor) o una subida `multipart/form-data` con los campos `callId`, `audio` (o `file`) y `hangupAfterPlay`.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `callId` | string | Sí | Identificador de la llamada activa en la que reproducir. |
+| `filePath` | string | Sí | Ruta del archivo de audio en el servidor (`.mp3`, `.wav` u `.opus`). |
+| `hangupAfterPlay` | boolean | No | Cuando es `true`, termina la llamada automáticamente al finalizar la reproducción. Predeterminado `false`. |
+
+```json
+{
+  "callId": "3EB0C767D26A8B4E7F1A",
+  "filePath": "/audios/greeting.mp3",
+  "hangupAfterPlay": true
+}
+```
+</Accordion>
+
+<Accordion title="POST /call/media/realtime/session: crear sesión en tiempo real">
+Crea un token de corta duración y una URL de WebSocket para transmitir audio PCM en tiempo real hacia/desde una llamada activa.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `callId` | string | Sí | Identificador de la llamada activa a la que adjuntar el audio. |
+| `mode` | string | No | `talk` (enviar y recibir audio, predeterminado) o `listen` (solo recibir). |
+
+```json
+{
+  "callId": "3EB0C767D26A8B4E7F1A",
+  "mode": "talk"
+}
+```
+</Accordion>
+
+</AccordionGroup>
+
+### Comunidad
+
+Gestiona las comunidades de WhatsApp y sus grupos vinculados. La API key selecciona el número, así que no se incluye ninguna instancia en la ruta ni en el cuerpo.
+
+<AccordionGroup>
+<Accordion title="POST /community/create: crear comunidad">
+Crea una comunidad nueva con el nombre indicado.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `communityName` | string | Sí | Nombre visible de la comunidad a crear. |
+
+```json
+{
+  "communityName": "Pilot Status Community"
+}
+```
+</Accordion>
+<Accordion title="POST /community/add: agregar grupos">
+Vincula uno o más grupos existentes a una comunidad.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `communityJid` | string | Sí | JID de la comunidad objetivo. |
+| `groupJid` | string[] | Sí | Arreglo de JIDs de grupos a agregar a la comunidad. |
+
+```json
+{
+  "communityJid": "120363000000000000@g.us",
+  "groupJid": [
+    "120363111111111111@g.us",
+    "120363222222222222@g.us"
+  ]
+}
+```
+</Accordion>
+<Accordion title="POST /community/remove: quitar grupos">
+Desvincula uno o más grupos de una comunidad.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `communityJid` | string | Sí | JID de la comunidad objetivo. |
+| `groupJid` | string[] | Sí | Arreglo de JIDs de grupos a quitar de la comunidad. |
+
+```json
+{
+  "communityJid": "120363000000000000@g.us",
+  "groupJid": [
+    "120363111111111111@g.us"
+  ]
+}
+```
+</Accordion>
+</AccordionGroup>
+
+### Etiqueta
+
+Gestiona las etiquetas de WhatsApp: agrégalas o quítalas de chats y mensajes, edita una etiqueta y lista todas las etiquetas. La apikey selecciona el número, así que no se incluye ninguna instancia en la ruta ni en el cuerpo.
+
+<AccordionGroup>
+<Accordion title="POST /label/chat: agregar etiqueta a un chat">
+Agrega una etiqueta existente a un chat.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `jid` | string | Sí | JID del chat a etiquetar. |
+| `labelId` | string | Sí | ID de la etiqueta a agregar. |
+
+```json
+{
+  "jid": "5511999999999@s.whatsapp.net",
+  "labelId": "1"
+}
+```
+</Accordion>
+<Accordion title="POST /label/message: agregar etiqueta a un mensaje">
+Agrega una etiqueta existente a un mensaje específico de un chat.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `jid` | string | Sí | JID del chat que contiene el mensaje. |
+| `labelId` | string | Sí | ID de la etiqueta a agregar. |
+| `messageId` | string | Sí | ID del mensaje objetivo. |
+
+```json
+{
+  "jid": "5511999999999@s.whatsapp.net",
+  "labelId": "1",
+  "messageId": "3EB0C767D26A8A4E8F1B"
+}
+```
+</Accordion>
+<Accordion title="POST /label/edit: editar etiqueta">
+Crea o actualiza el nombre, el color o el estado de eliminación de una etiqueta.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `labelId` | string | Sí | ID de la etiqueta a editar. |
+| `name` | string | Sí | Nombre visible de la etiqueta. |
+| `color` | integer | No | Índice de color de la etiqueta. |
+| `deleted` | boolean | No | Marca la etiqueta como eliminada cuando es true. |
+
+```json
+{
+  "labelId": "1",
+  "name": "Priority",
+  "color": 3,
+  "deleted": false
+}
+```
+</Accordion>
+<Accordion title="GET /label/list: listar todas las etiquetas">
+Devuelve todas las etiquetas definidas en el número conectado.
+
+**Sin cuerpo de solicitud.**
+</Accordion>
+<Accordion title="POST /unlabel/chat: quitar etiqueta de un chat">
+Quita una etiqueta de un chat.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `jid` | string | Sí | JID del chat del que quitar la etiqueta. |
+| `labelId` | string | Sí | ID de la etiqueta a quitar. |
+
+```json
+{
+  "jid": "5511999999999@s.whatsapp.net",
+  "labelId": "1"
+}
+```
+</Accordion>
+<Accordion title="POST /unlabel/message: quitar etiqueta de un mensaje">
+Quita una etiqueta de un mensaje específico de un chat.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `jid` | string | Sí | JID del chat que contiene el mensaje. |
+| `labelId` | string | Sí | ID de la etiqueta a quitar. |
+| `messageId` | string | Sí | ID del mensaje objetivo. |
+
+```json
+{
+  "jid": "5511999999999@s.whatsapp.net",
+  "labelId": "1",
+  "messageId": "3EB0C767D26A8A4E8F1B"
+}
+```
+</Accordion>
+</AccordionGroup>
+
+### Newsletter / Canales
+
+Gestiona los newsletters (canales) de WhatsApp: crear, listar, consultar, resolver invitaciones, suscribirse y obtener mensajes. La apikey selecciona el número, así que no aparece ningún segmento de instancia en la ruta.
+
+<AccordionGroup>
+<Accordion title="POST /newsletter/create: crear newsletter">
+Crea un newsletter (canal) nuevo con un nombre y una descripción opcional.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `name` | string | Sí | Nombre visible del newsletter (canal). |
+| `description` | string | No | Descripción del newsletter que ven los suscriptores. |
+
+```json
+{
+  "name": "Pilot Status Updates",
+  "description": "Official channel for product news and status."
+}
+```
+</Accordion>
+<Accordion title="GET /newsletter/list: listar newsletters">
+Devuelve todos los newsletters a los que está suscrito el número conectado.
+
+**Sin cuerpo de solicitud.**
+</Accordion>
+<Accordion title="POST /newsletter/info: obtener newsletter">
+Obtiene los metadatos de un único newsletter por su JID.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `jid` | string | Sí | JID del newsletter (termina en `@newsletter`). |
+
+```json
+{
+  "jid": "120363012345678901@newsletter"
+}
+```
+</Accordion>
+<Accordion title="POST /newsletter/link: resolver invitación">
+Resuelve los metadatos de un newsletter a partir de una clave de invitación (la parte del código de un enlace de invitación al canal).
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `key` | string | Sí | Clave de invitación del enlace del canal (por ejemplo, la parte después de `whatsapp.com/channel/`). |
+
+```json
+{
+  "key": "0029VaAbCdEfGhIjKlMnOpQr"
+}
+```
+</Accordion>
+<Accordion title="POST /newsletter/subscribe: suscribirse a actualizaciones en vivo">
+Suscribe el número conectado a las actualizaciones en vivo del JID de newsletter indicado.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `jid` | string | Sí | JID del newsletter (termina en `@newsletter`). |
+
+```json
+{
+  "jid": "120363012345678901@newsletter"
+}
+```
+</Accordion>
+<Accordion title="POST /newsletter/messages: obtener mensajes del newsletter">
+Obtiene mensajes de un newsletter, con cantidad opcional y paginación por before-id.
+
+| Campo | Tipo | Obligatorio | Descripción |
+| --- | --- | --- | --- |
+| `jid` | string | Sí | JID del newsletter (termina en `@newsletter`). |
+| `count` | integer | No | Cantidad máxima de mensajes a devolver. |
+| `before_id` | integer | No | Devuelve mensajes más antiguos que este id de mensaje (cursor de paginación). |
+
+```json
+{
+  "jid": "120363012345678901@newsletter",
+  "count": 50,
+  "before_id": 100
+}
+```
+</Accordion>
+</AccordionGroup>
+
+### Bloqueadas (admin/global)
+
+Estas rutas globales y exclusivas de administración de Evolution GO **no** se exponen a través de la capa y devuelven **403**:
+
+`GET /server/ok` · `/swagger/*` · `POST /instance/create` · `GET /instance/all` · `GET /instance/info/{id}` · `DELETE /instance/delete/{id}` · `POST /instance/proxy/{id}` · `DELETE /instance/proxy/{id}` · `POST /instance/forcereconnect/{id}` · `GET /instance/logs/{id}`
+
+## Las URLs de la solicitud deben ser públicas
+
+Algunas operaciones hacen que el proveedor descargue o llame a una URL que envías. Desde el 2026-09-28, Pilot Status verifica cada una de esas URLs antes de reenviar la solicitud. Si alguna apunta a una dirección de red interna o privada (`localhost`, una IP de loopback o privada, un nombre de host sin punto, o un nombre que resuelve a una de esas), la solicitud se rechaza con **400** y no se reenvía nada:
+
+```json
+{
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Refused: a URL in the request points to an internal or private network address, which we never fetch. Use a public address."
+}
+```
+
+Las URLs que se verifican:
+
+- **Multimedia enviada por URL:** `/send/media` (`url`), `/send/sticker` (`sticker`), `/send/button` (`imageUrl`) y `/send/carousel` (el `thumbnailUrl` de cada tarjeta).
+- **Enlaces:** `/send/link` (`imgUrl`, y el enlace en `text`), y el enlace en el `text` de `/send/text` cuando envías `linkPreview: true`.
+- **Imágenes:** `/user/profilePicture` y `/group/photo` (`image`).
+- **Webhook:** `/instance/connect` (`webhookUrl`).
+
+Solo se verifican los valores `http(s)`: la multimedia en base64 y `data:` pasa sin cambios, y una subida multipart se reenvía tal cual. Un nombre de host que no resuelve no se rechaza aquí.
+
+## Eventos
+
+La capa reenvía los eventos a tu webhook configurado en el formato **nativo (PascalCase)** de Evolution GO, así que tus manejadores de eventos existentes siguen funcionando sin cambios:
+
+`Message` · `SendMessage` · `Receipt` · `Presence` · `ChatPresence` · `Archive` · `CallOffer` · `CallAccept` · `CallTerminate` · `Connected` · `PairSuccess` · `TemporaryBan` · `LoggedOut` · `ConnectFailure` · `Disconnected` · `LabelEdit` · `LabelAssociationChat` · `LabelAssociationMessage` · `Contact` · `PushName` · `GroupInfo` · `JoinedGroup` · `NewsletterJoin` · `NewsletterLeave` · `QRCode` · `QRSuccess`
+
+También se aceptan los alias modernos en **UPPER\_SNAKE**:
+
+`MESSAGES_UPSERT` · `SEND_MESSAGE` · `CONNECTION_UPDATE` · `QRCODE_UPDATED` · `PRESENCE_UPDATE` · `CHATS_UPSERT` · `CHATS_UPDATE` · `CHATS_DELETE` · `GROUPS_UPSERT` · `GROUPS_UPDATE` · `GROUP_PARTICIPANTS_UPDATE` · `CALL` · `CONTACTS_UPSERT` · `CONTACTS_UPDATE` · `NEWSLETTER_UPDATE` · `LABEL_EDIT` · `LABEL_ASSOCIATION`
+
+Además, Pilot Status puede entregar sus propios eventos **normalizados** junto con los nativos:
+
+- **Ciclo de vida de la llamada:** `call.ringing`, `call.connected`, `call.ended`, `call.missed`
+- **Ciclo de vida del número:** `number.created`, `number.connected`, `number.disconnected`, `number.removed`, `number.restored`
+
+## Ejemplo: enviar texto a través de la capa Evolution GO
+
+La solicitud de abajo es una llamada real a la capa Evolution GO: un `POST /send/text` estándar, en el que solo cambia la URL base para enrutar a través de Pilot Status. No hay segmento de instancia en la ruta: el header `apikey` selecciona la instancia.
+
+```bash
+curl -X POST 'https://pilotstatus.com.br/api/layer/evolution-go/send/text' \
+  -H 'apikey: YOUR_INSTANCE_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{ "number": "5511999999999", "text": "Hello from Pilot Status! 👋" }'
+```
+
+Los campos del cuerpo son los mismos que tu código de Evolution GO ya envía a `POST /send/text`: `number` y `text`, más campos opcionales como `delay`, `quoted` y `mentionedJid`. El formato de la respuesta es idéntico al que consume tu código actual.
+
+<Note>
+  Si alguna operación de Evolution GO no es compatible con la capa, usa la API nativa de Pilot Status en su lugar. Para preguntas específicas de compatibilidad, contacta a soporte por WhatsApp: [+55 85 98438-7245](https://wa.me/5585984387245).
+</Note>

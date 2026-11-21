@@ -1,0 +1,82 @@
+---
+title: "POST /v1/messages/read: marcar mensajes como leídos"
+sidebarTitle: "Marcar como leído"
+description: "Envía una confirmación de lectura de WhatsApp (palomitas azules) para el último mensaje entrante de un contacto, sin enviar un mensaje."
+mode: "wide"
+---
+
+# Marcar mensajes como leídos
+
+```text
+POST https://pilotstatus.com.br/v1/messages/read
+```
+
+Envía una **confirmación de lectura** de WhatsApp (doble palomita azul) para el **último mensaje entrante** de la conversación con `to`, marcando ese mensaje y todos los anteriores como leídos **sin enviar un mensaje**.
+
+<Note>
+  Mejor esfuerzo: la solicitud se acepta (`200`) incluso cuando no hay nada que confirmar. Revisa el campo `acked` en la respuesta.
+</Note>
+
+## Encabezados
+
+- `Content-Type: application/json`
+- `x-api-key: ps_...` (o `x-api-key-id: <api_key_id>`): una clave **con alcance de número**, o una clave de toda la cuenta que indique el número en el encabezado [`x-whatsapp-number-id`](/es/api/authentication) (sin él: `403 TENANT_SCOPE_NOT_ALLOWED`)
+
+**Los tokens OAuth / MCP y las claves de cuenta** (`ps_account_`) también necesitan el permiso `chat:read` (roles `AGENT`, `ADMIN`, `OWNER`); el rol `ANALYST` recibe `403 PERMISSION_DENIED`.
+
+## Cuerpo
+
+<ParamField body="to" type="string" required>
+  Teléfono de destino en **E.164** o solo dígitos (por ejemplo, `+5511999999999` o `5511999999999`): el contacto cuyos mensajes entrantes quieres marcar como leídos.
+</ParamField>
+
+## Ejemplo
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/read" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "to": "5511999999999" }'
+```
+
+## Respuesta (200)
+
+```json
+{ "ok": true, "acked": true }
+```
+
+<ResponseField name="ok" type="boolean">
+  Siempre `true` cuando la solicitud fue aceptada.
+</ResponseField>
+
+<ResponseField name="acked" type="boolean">
+  `true` cuando se despachó una confirmación de lectura al proveedor; `false` cuando no había nada que confirmar (consulta `reason`).
+</ResponseField>
+
+<ResponseField name="reason" type="string">
+  Presente solo cuando `acked` es `false`:
+
+  - `NO_INBOUND_MESSAGE`: la conversación no tiene ningún mensaje entrante que confirmar.
+  - `PII_RELAY_ONLY`: el modo de privacidad del número es RELAY\_ONLY, así que no se almacena ningún id entrante.
+</ResponseField>
+
+## Comportamiento por proveedor
+
+| Proveedor | Cómo funciona |
+| --- | --- |
+| **Meta Cloud API** | `status:"read"` de la Cloud API sobre el último mensaje entrante (lo marca a él y a todos los mensajes anteriores como leídos). |
+| **Evolution (Pilot Status web / GO)** | `POST /message/markread` nativo a través de una instancia conectada. Evolution V2 no tiene endpoint de confirmación de lectura → `acked:false`. |
+
+## Errores comunes
+
+| Estado | Significado |
+| --- | --- |
+| `400` | Cuerpo que no es JSON válido, incluido el vacío (`code: INVALID_BODY`, consulta [Cuerpo JSON malformado](/es/api/overview#cuerpo-json-mal-formado)), falta `to`, o la clave no está vinculada a un número (`code: NUMBER_NOT_FOUND`) |
+| `400` | `to` que no se normaliza a un número de teléfono (`code: INVALID_DESTINATION`) |
+| `401` | Credencial ausente o inválida (`{"error": "Invalid API key"}`) |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED`: una clave de toda la cuenta sin `x-whatsapp-number-id`; `PERMISSION_DENIED`: token OAuth/MCP o clave de cuenta cuyo rol no tiene `chat:read` |
+| `404` | No hay conversación con `to` (`code: CONVERSATION_NOT_FOUND`), o el número de la clave ya no existe (`code: NUMBER_NOT_FOUND`) |
+
+La ausencia de `to` devuelve `400 {"error": "Validation failed", "details": {…}}`, sin `code`.
+
+Pruébalo en el Playground: [Marcar como leído](/es/playground/messages/mark-as-read).

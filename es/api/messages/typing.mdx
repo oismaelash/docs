@@ -1,0 +1,97 @@
+---
+title: "POST /v1/messages/typing: indicador de escritura / grabación"
+sidebarTitle: "Indicador de escritura"
+description: "Muestra a un contacto un indicador en vivo de 'escribiendo' o 'grabando', sin enviar un mensaje."
+mode: "wide"
+---
+
+# Indicador de escritura / grabación
+
+```text
+POST https://pilotstatus.com.br/v1/messages/typing
+```
+
+Muestra al contacto un indicador en vivo de **"typing" (escribiendo)** o **"recording" (grabando)** **sin enviar un mensaje**. El indicador desaparece solo cuando se envía un mensaje, o tras un timeout del proveedor (~25 s en Meta).
+
+<Note>
+  El indicador de escritura **también se muestra automáticamente** antes de cada envío conversacional (tanto en números de Meta como de Evolution). Usa este endpoint solo para mostrar el indicador de forma independiente de un envío.
+</Note>
+
+## Headers
+
+- `Content-Type: application/json`
+- `x-api-key: ps_...` (o `x-api-key-id: <api_key_id>`): una key **con alcance de número**, o una key de toda la cuenta que indique el número en el header [`x-whatsapp-number-id`](/es/api/authentication) (sin él: `403 TENANT_SCOPE_NOT_ALLOWED`)
+
+Los **tokens OAuth / MCP y las keys de cuenta** (`ps_account_`) también necesitan el permiso `messages:send` (roles `AGENT`, `ADMIN`, `OWNER`); el rol `ANALYST` recibe `403 PERMISSION_DENIED`.
+
+## Body
+
+<ParamField body="to" type="string" required>
+  Teléfono de destino en **E.164** o solo dígitos: el contacto al que se le muestra el indicador.
+</ParamField>
+
+<ParamField body="state" default="typing" type="string">
+  `typing` (predeterminado), `recording` o `paused`.
+</ParamField>
+
+## Ejemplo
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/typing" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "to": "5511999999999", "state": "typing" }'
+```
+
+## Respuesta (200)
+
+```json
+{ "ok": true, "sent": true, "provider": "META", "effectiveState": "typing" }
+```
+
+<ResponseField name="ok" type="boolean">
+  Siempre `true` cuando la solicitud fue aceptada: revisa `sent`.
+</ResponseField>
+
+<ResponseField name="sent" type="boolean">
+  `true` cuando el indicador fue enviado al contacto.
+</ResponseField>
+
+<ResponseField name="provider" type="string">
+  `META` o `EVOLUTION`.
+</ResponseField>
+
+<ResponseField name="effectiveState" type="string">
+  El indicador que realmente se mostró. Meta convierte `recording` en `typing`.
+</ResponseField>
+
+<ResponseField name="note" type="string">
+  Presente cuando el indicador fue adaptado o no se pudo mostrar (por ejemplo, una conversación de Meta sin un mensaje entrante al cual asociarlo).
+</ResponseField>
+
+## Comportamiento por proveedor
+
+<Warning>
+  **Meta Cloud API** no tiene un endpoint de presencia independiente. El indicador se emite como confirmación de lectura \+ indicador de escritura sobre el **último mensaje entrante** del contacto, así que en números de Meta:
+
+  - requiere un **mensaje entrante reciente** al cual asociarse (si no, `sent:false`);
+  - **no existe la variante "recording"**: `recording` se muestra como `typing`;
+  - `paused` **no hace nada**;
+  - la conversación queda **leída** (palomitas azules) para el contacto. Si debe permanecer sin leer (un agente automatizado que responde para que una persona lea después), no llames a este endpoint y envía con [`markRead: false`](/es/api/messages/send#confirmación-de-lectura-e-indicador-de-escritura).
+</Warning>
+
+Los números de **Evolution** (Pilot Status web / GO) transmiten `composing` / `recording` / `paused` de forma nativa.
+
+## Errores comunes
+
+| Status | Significado |
+| --- | --- |
+| `400` | Body que no es JSON válido, incluido el vacío (`code: INVALID_BODY`, consulta [Malformed JSON body](/es/api/overview#cuerpo-json-mal-formado)), `state` inválido, o la key no está vinculada a un número (`code: NUMBER_NOT_FOUND`) |
+| `400` | `to` que no se normaliza a un número de teléfono (`code: INVALID_DESTINATION`) |
+| `401` | Credencial ausente o inválida (`{"error": "Invalid API key"}`) |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED`: una key de toda la cuenta sin `x-whatsapp-number-id`; `PERMISSION_DENIED`: token OAuth/MCP o key de cuenta cuyo rol no tiene `messages:send` |
+| `404` | No hay conversación con `to` (`code: CONVERSATION_NOT_FOUND`), o el número de la key ya no existe (`code: NUMBER_NOT_FOUND`) |
+
+Si falta `to`, la respuesta es `400 {"error": "Validation failed", "details": {…}}`, sin `code`.
+
+Pruébalo en el Playground: [Indicador de escritura](/es/playground/messages/typing-indicator).

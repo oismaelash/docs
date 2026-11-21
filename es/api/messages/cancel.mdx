@@ -1,0 +1,71 @@
+---
+title: "DELETE /v1/messages/cancel: cancelar envíos programados"
+sidebarTitle: "Cancelar envíos programados"
+description: "Cancela la programación de mensajes que siguen en cola para un envío futuro."
+mode: "wide"
+---
+
+# Cancelar envíos programados
+
+```text
+DELETE https://pilotstatus.com.br/v1/messages/cancel
+```
+
+Cancela la **programación** de uno o más mensajes que todavía están **en cola** para un envío futuro (`QUEUED` con `deliverAt` / `deliverBy` en el futuro). La fila del mensaje **no** se elimina: el estado pasa a **`CANCELED`**, y los Logs \+ el historial de trazas se conservan.
+
+<Note>
+  `CANCELED` **no** es `FAILED` y no es uno de los valores de `errorCode` de error de entrega listados en [Códigos de error de logs](/es/api/messages/log-error-codes).
+</Note>
+
+## Encabezados
+
+- `Content-Type: application/json`
+- `x-api-key: ps_...` (o `x-api-key-id`): la misma clave que `POST /v1/messages/send`: una clave **limitada a un número**, o una clave de toda la cuenta con [`x-whatsapp-number-id`](/es/api/authentication)
+
+**Los tokens OAuth / MCP y las claves de cuenta** (`ps_account_`) también necesitan el permiso `messages:cancel_scheduled` (roles `AGENT`, `ADMIN`, `OWNER`).
+
+## Cuerpo
+
+<ParamField body="messageIds" type="string[]" required>
+  De 1 a **100** `id`s internos de mensaje (el `id` devuelto por el envío) por solicitud. Solo se encuentran los mensajes del número de la clave.
+</ParamField>
+
+```json
+{ "messageIds": ["<id1>", "<id2>"] }
+```
+
+## Ejemplo
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/messages/cancel" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{ "messageIds": ["msg_abc", "msg_def"] }'
+```
+
+<Note>
+  Este endpoint usa `DELETE` con un **cuerpo JSON**; `curl`, `fetch` y la mayoría de los clientes HTTP lo admiten.
+</Note>
+
+## Respuesta (200)
+
+```json
+{
+  "cancelled": ["msg_abc"],
+  "failed": [{ "id": "msg_def", "reason": "Not queued" }]
+}
+```
+
+- Solo los mensajes que todavía se pueden programar aparecen en `cancelled`; los demás se listan en `failed` con un `reason`: `Message not found`, `Not queued`, `Not scheduled (no future deliverBy)`, `Missing WhatsApp instance` o `Could not cancel (state changed)`. La respuesta es `200` incluso cuando no se canceló nada.
+- Después de cancelar, `GET /v1/messages/{messageId}` devuelve `"status": "CANCELED"`.
+- La página **Logs** admite el mismo flujo mediante la selección masiva de filas programadas.
+
+## Errores comunes
+
+- `400 INVALID_BODY`: el cuerpo no es JSON válido, incluido el vacío. Consulta [Cuerpo JSON mal formado](/es/api/overview#cuerpo-json-mal-formado).
+- `400`: `{"error": "Validation failed", "details": {…}}`: `messageIds` ausente o vacío, más de 100 IDs, una cadena vacía.
+- `401`: credencial ausente o inválida (`{"error": "Invalid API key"}`).
+- `403 TENANT_SCOPE_NOT_ALLOWED`: una clave de toda la cuenta sin `x-whatsapp-number-id`.
+- `403 PERMISSION_DENIED`: token OAuth/MCP o clave de cuenta cuyo rol no tiene `messages:cancel_scheduled`.
+
+Pruébalo en el Playground: [Cancelar mensajes programados](/es/playground/messages/cancel-scheduled-messages).

@@ -1,0 +1,351 @@
+---
+title: "Meta Embedded Signup en tu app | Pilot Status"
+sidebarTitle: "Embedded Signup"
+description: "Conecta el número oficial de WhatsApp Cloud API de tu cliente incrustando en un iframe el botón Connect alojado de Pilot Status: sin SDK de Facebook, sin app de Meta propia y sin configuración que servir."
+mode: "wide"
+---
+
+# Embedded Signup en tu app
+
+La forma recomendada de ejecutar **Meta Embedded Signup** dentro de tu producto es incrustar en un iframe el **botón Connect alojado** de Pilot Status. Tu cliente hace clic en **Continue with Facebook**, completa el popup de Meta, y su número oficial de WhatsApp Cloud API llega a **tu** cuenta de Pilot Status.
+
+El SDK de Facebook y el popup de login viven **dentro de la página alojada** en `connect.pilotstatus.com.br`. Tu app no carga ningún SDK de Facebook, no ejecuta código de login de Facebook y nunca toca las APIs de Meta: no te toca configurar nada de la conexión con Meta. Hace exactamente dos cosas:
+
+1. Tu **backend** genera el enlace de conexión (`POST /v1/numbers/remote-pairing` con tu clave `ps_` de tenant).
+2. Tu **página** incrusta el enlace devuelto en un iframe y escucha el mensaje `connect:paired`.
+
+Esa es toda la integración. Sin app de Meta propia, sin App Review, sin credenciales de Meta que servir, sin dominio que registrar.
+
+<Note>
+  ¿Prefieres empezar con algo funcionando? Descarga la demo con licencia MIT (un backend Node y un frontend React conectados exactamente a este flujo, con presets de botón listos): [**embedded-signup-demo.zip**](https://pilotstatus.com.br/downloads/embedded-signup-demo.zip). Descomprime, configura tu clave `ps_`, `npm run dev` (o `docker compose up`).
+</Note>
+
+<Info>
+  **Esta página es el paso a paso**: sigue los cuatro pasos en orden y tendrás una integración funcionando. Su página hermana, [**Incrustar la página de conexión**](/es/integrations/embed-connect), es la _referencia_: cada opción, ambos proveedores (Cloud API y QR), el protocolo postMessage completo y la tabla completa de campos de `branding.button`. Esta página enlaza allí en lugar de repetirlo, así siempre lees una sola copia.
+</Info>
+
+## Arquitectura
+
+```text
+Browser (your page)
+   │ 1. POST /api/onboarding/start  → { connectUrl }   (your backend generated the link)
+   │ 2. <iframe src="connect.pilotstatus.com.br/connect/<token>?embed=1&mode=button">
+   │       ↑ the Facebook SDK and the popup live HERE, inside the hosted page
+   │ 3. window "message" → connect:paired → { numberId, externalRef, ... }
+   ▼
+Your backend ── x-api-key: ps_ ──►  https://pilotstatus.com.br/v1/numbers/remote-pairing
+```
+
+(En el diagrama: el navegador ejecuta tu página; tu backend generó el enlace; el SDK de Facebook y el popup viven dentro de la página alojada.)
+
+Solo tu backend llama a la API de Pilot Status, y lo hace por un único motivo: generar el enlace. El navegador solo incrusta el iframe; nunca llama a la API de Pilot Status, así que tu app no tiene ninguna superficie de CORS de la que preocuparse.
+
+## Qué necesitas
+
+**Una credencial: una clave de API con alcance de tenant.** Cópiala del dashboard en **`/profile`**, en la pestaña **API**. Empieza con `ps_`.
+
+Debe tener **alcance de tenant**, no alcance de número: generar un enlace crea un número placeholder totalmente nuevo, así que una clave atada a un número existente no puede autorizarlo.
+
+<Note>
+  No hay nada más que aprovisionar. **No** registras una app de Meta, no envías App Review ni creas una clave con alcance de número: no hay ninguna conexión con una app de Meta de tu lado. Todo lo que necesita el popup ya vive en la página alojada. Si tu clave se emitió por OAuth con concesiones de consentimiento por número, la ruta devuelve `403 NUMBERS_GRANT_NOT_ALLOWED`; usa una clave de tenant en su lugar.
+</Note>
+
+Mantén la clave `ps_` en tu servidor. El navegador nunca la ve: solo incrusta el iframe.
+
+## El flujo
+
+<Steps>
+  <Step title="Tu backend genera el enlace de conexión">
+    Llama a `POST /v1/numbers/remote-pairing` con `provider: "META"` y `metaFlow: "embedded"`, usando tu clave de tenant. Pasa `branding.button` para darle estilo al botón que se muestra dentro del iframe.
+
+    ```bash cURL
+    curl -X POST "https://pilotstatus.com.br/v1/numbers/remote-pairing" \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -d '{
+        "provider": "META",
+        "metaFlow": "embedded",
+        "name": "Acme Corp",
+        "externalRef": "crm-customer-4211",
+        "branding": {
+          "button": {
+            "variant": "whatsapp",
+            "label": "Connect my WhatsApp",
+            "icon": "whatsapp",
+            "radius": "pill",
+            "size": "lg",
+            "height": 56,
+            "fullWidth": true
+          }
+        }
+      }'
+    ```
+
+    La respuesta es **201** con exactamente tres campos:
+
+    ```json
+    {
+      "provider": "META",
+      "remotePairingUrl": "https://connect.pilotstatus.com.br/connect/eyJhbGciOi...",
+      "expiresAt": "2026-07-20T18:30:00.000Z"
+    }
+    ```
+
+    Pasa `remotePairingUrl` a la página donde lo vas a incrustar: es el `connectUrl` del diagrama de arriba. `externalRef` (tu propio id de cliente) va firmado en el enlace y te lo devuelven en `connect:paired`, para que puedas relacionar el resultado con tus registros.
+
+    <Tip>
+      **Compruébalo en cinco segundos: pega `remotePairingUrl` en un navegador.** Como enviaste `branding.button`, ese enlace no muestra **nada más que tu botón con estilo**: el botón verde de WhatsApp de 56 px del ejemplo de arriba. Es exactamente lo que tu cliente ve dentro del iframe en el paso 2. (En el nivel superior también aparece el pequeño indicador "secured by pilotstatus.com.br"; dentro de un iframe real se oculta solo.)
+
+      ¿Ves en cambio una tarjeta completa con encabezado y texto explicativo? Entonces el enlace **no** trae `branding.button`: verifica que lo anidaste dentro de `branding`, no en el nivel superior del cuerpo.
+    </Tip>
+
+    Esta es la parte en la que vale la pena ser preciso, porque las dos mitades viven en lugares distintos:
+
+    - **Esta llamada decide el _estilo_ y la _forma_.** `branding.button` va firmado en el token, y enviarlo es también lo que hace que el enlace muestre solo el botón en lugar de la página completa. Un objeto, ambos efectos.
+    - **Los parámetros `?embed=1&parentOrigin=…` del paso 2 deciden la _plomería_.** Son los que activan el canal `postMessage` de vuelta a tu página. Sin ellos, el botón igual se muestra y funciona; simplemente nunca te enteras del resultado.
+
+    **Qué acepta `branding.button`.** Los diez campos son opcionales, y la tabla completa (valores, valores predeterminados, rangos, más `hideProvenance`) está en la referencia: [Estilo del botón](/es/integrations/embed-connect#estilo-del-botón-solo-por-token). Los tres que confunden a la gente:
+
+    - **`icon` sigue a `variant` cuando lo omites.** `facebook` → glifo de Facebook, `whatsapp` → glifo de WhatsApp, **cualquier otra variante → ningún glifo**. Pasa `"none"` para quitarlo a propósito.
+    - **`width` tiene prioridad sobre `fullWidth`.** Si envías un ancho, `fullWidth` se ignora, sin importar su valor.
+    - **Un valor incorrecto se rechaza, no se corrige.** Fuera de rango o fuera del enum te da `400 Validation error` con un objeto `details`, y **ningún enlace ni placeholder**. `height: 1000` no vuelve al valor predeterminado; hace fallar toda la llamada.
+
+    <Note>
+      `branding.button` **solo** se puede definir aquí, al generar el enlace, nunca mediante un query param en la URL del iframe. Es deliberado: un extraño que ve la URL del iframe no puede cambiar el estilo de tu botón, y cada página con estilo sigue siendo atribuible a un tenant.
+    </Note>
+
+    **El id del placeholder no está en el cuerpo de la respuesta.** Vive en el claim `numberId` del token, el último segmento de la ruta de `remotePairingUrl`. Decodifica el payload base64url para leerlo (es una lectura de metadatos; no hace falta verificar la firma) y guárdalo junto al registro de tu cliente, porque ese id es lo que necesitas para la limpieza por abandono del paso 3, y te permite registrar el webhook (paso 4) antes de que el cliente termine. El mismo id vuelve a llegar en `connect:paired`. Esas dos (el claim decodificado y el evento) son las formas admitidas de obtenerlo.
+
+    ```js Your backend
+    // token = el último segmento de la ruta de remotePairingUrl
+    const numberId = JSON.parse(
+      Buffer.from(token.split(".")[1], "base64url").toString("utf8")
+    ).numberId;
+    ```
+
+    <Note>
+      El enlace lleva un token firmado con un TTL de **30 minutos**. En el modelo alojado, este token viaja en la URL del iframe (es inherente a incrustar una página alojada), así que genera el enlace **justo antes** de que el cliente haga clic en conectar, no horas antes.
+    </Note>
+
+    <Warning>
+      **Generar el enlace no ocupa un lugar del plan ni cobra nada.** La llamada crea de inmediato un `WhatsAppNumber` placeholder, pero un placeholder no es un número: no cuenta para tu capacidad y no se factura. El número empieza a contar (y, cuando supera la capacidad que pagaste, se cobra su número extra) en su **activación**: cuando el signup se completa y el número queda activo con nosotros. Esa es la primera conexión de un número de Meta: consulta [Cobrado en la primera conexión](/es/api/extra-numbers#se-cobra-al-conectar-por-primera-vez). Si ese cobro se rechaza, el número sigue activo pero el envío desde él queda bloqueado hasta que se pague.
+
+      Un placeholder abandonado permanece en tu lista de números como "awaiting connection" (esperando conexión) hasta que se elimina automáticamente, 24 horas después de su creación. Para mantener la lista limpia, genera el enlace solo después de que el cliente haga clic en conectar, y configura la limpieza por abandono que se muestra en el paso 3.
+
+      En este paso queda un único rechazo posible: la llamada responde **`402`** y no se crea ningún enlace ni placeholder. Lee el `code` junto con tu plan. **En el plan Free**, un número por encima de lo que permite el plan siempre responde `PLAN_NUMBER_LIMIT_REACHED`, y los créditos no lo resuelven, porque Free nunca compra un número extra por sí solo: libera un lugar en `/numbers`, compra tú un número extra o sube de plan. **En un plan pago**, el rechazo solo ocurre cuando el número sería un extra que el workspace no puede financiar (el saldo de la billetera no cubre el precio prorrateado y no hay tarjeta guardada): `PLAN_NUMBER_LIMIT_REACHED` cuando lo que permite tu plan está completo y nunca compraste un extra, `INSUFFICIENT_FUNDS` cuando es un extra pago más. Agrega créditos o guarda una tarjeta y ambos se resuelven. El cuerpo trae `plan`, `maxNumbers` y `currentNumberCount` para que puedas decirle a tu cliente cuál es el caso. Consulta [errores de capacidad](/es/api/numbers/create#errores-de-capacidad-y-cómo-resolverlos).
+    </Warning>
+  </Step>
+  <Step title="Incrusta el botón alojado en un iframe">
+    Agrega `?embed=1&mode=button&parentOrigin=<origen de tu página>` al enlace y colócalo en un iframe. `parentOrigin` es el `location.origin` de tu página: solo el navegador lo conoce, así que construye el `src` en el navegador.
+
+    | Parámetro | Por qué está ahí |
+    | --- | --- |
+    | `embed=1` | **Obligatorio.** Activa el canal `postMessage` hacia tu página. Si lo omites, el botón funciona pero nunca recibes `connect:paired`. |
+    | `parentOrigin` | **Obligatorio con `embed=1`.** El único origen al que el iframe enviará mensajes. Debe ser exactamente el `location.origin` de tu página. |
+    | `mode=button` | **Opcional aquí**, porque el enlace ya trae `branding.button` del paso 1. Mantenlo de todos modos: es una palabra que hace explícita la forma y sigue funcionando si más adelante generas un enlace _sin_ estilo personalizado. Su opuesto, `mode=page`, fuerza la tarjeta completa incluso para un enlace con estilo. |
+
+    ```html
+    <div id="wa-connect"></div>
+    <script>
+      // connectUrl es el remotePairingUrl que tu backend devolvió en el paso 1.
+      const connectUrl = "https://connect.pilotstatus.com.br/connect/eyJhbGciOi...";
+    
+      const iframe = document.createElement("iframe");
+      iframe.src =
+        connectUrl +
+        "?embed=1&mode=button&parentOrigin=" +
+        encodeURIComponent(location.origin);
+      iframe.style.width = "100%";
+      iframe.style.border = "0";
+      iframe.style.height = "60px"; // crece con el mensaje resize del paso 3
+      iframe.setAttribute(
+        "sandbox",
+        "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+      );
+      document.getElementById("wa-connect").appendChild(iframe);
+    </script>
+    ```
+
+    <Note>
+      El SDK de Facebook y el popup de login se ejecutan **dentro de este iframe**, en `connect.pilotstatus.com.br`, un dominio ya registrado en la app de Meta de Pilot Status. Tu app no carga ningún SDK de Facebook, no ejecuta código de login de Facebook y no registra ningún dominio propio: no te toca aprovisionar nada de la app de Meta.
+    </Note>
+
+    <Note>
+      **El modo botón muestra solo el botón y deja transparente el fondo de la página**: es una propiedad del propio `mode=button`, así que se ve lo que haya detrás del frame. No tienes que pedirlo.
+
+      El pequeño indicador **"secured by pilotstatus.com.br"** es una regla aparte e independiente: está **oculto por defecto cuando la página realmente está dentro de un iframe**, y sí aparece cuando el mismo enlace se abre en el nivel superior, a propósito: un botón de login con estilo, aislado, en una URL `*.pilotstatus.com.br` sin procedencia visible es exactamente lo que Safe Browsing marca como engañoso.
+    </Note>
+
+    <Warning>
+      **El sandbox debe incluir `allow-popups` y `allow-popups-to-escape-sandbox`.** La ventana de login de Facebook se abre desde dentro del frame; sin ambos flags el navegador la bloquea y **no pasa nada**: sin error, sin callback, sin mensaje en la consola. Copia exactamente el valor completo de `sandbox` de arriba.
+    </Warning>
+  </Step>
+  <Step title="Escucha connect:paired">
+    El iframe envía mensajes a tu página. Valida `event.origin` en cada uno: debe ser igual a `https://connect.pilotstatus.com.br`.
+
+    ```html
+    <script>
+      const CONNECT_ORIGIN = "https://connect.pilotstatus.com.br";
+    
+      window.addEventListener("message", (event) => {
+        // Dos verificaciones obligatorias. El origen debe ser el host de connect, y cada
+        // mensaje lleva el marcador `source: "pilot-status-embed"`: sin la
+        // segunda verificación, cualquier script de tu propia página podría falsificar un connect:paired.
+        if (event.origin !== CONNECT_ORIGIN) return;
+        const msg = event.data;
+        if (!msg || msg.source !== "pilot-status-embed") return;
+    
+        // Envoltorio: { source, v, type, payload }. Solo `type` está en el nivel superior;
+        // todo lo demás vive en `payload`.
+        const p = msg.payload || {};
+        switch (msg.type) {
+          case "connect:paired": {
+            const { numberId, phone, displayName, provider, externalRef, redirectUrl } = p;
+            // Relaciona externalRef con tu propio registro de cliente y luego guarda numberId.
+            console.log("Connected", numberId, "for", externalRef);
+            break;
+          }
+          case "connect:expired":
+            // El enlace de 30 minutos venció. Genera un enlace nuevo y vuelve a incrustarlo.
+            break;
+          case "connect:error":
+            // También se dispara cuando el cliente cancela o cierra el popup de Facebook.
+            // El botón sigue en pantalla, así que déjalo reintentar antes de limpiar.
+            console.error("Connect failed or was cancelled:", p.message);
+            break;
+          case "resize":
+            iframe.style.height = p.height + "px";
+            break;
+        }
+      });
+    </script>
+    ```
+
+    En `connect:paired` recibes `{ numberId, phone, displayName, provider, externalRef, redirectUrl }`. Todos los campos están siempre presentes: un flujo que no puede conocer alguno envía `null` en lugar de omitirlo, así que nunca necesitas ramificar por ruta.
+
+    - `numberId` es el id que usas en todo el resto de la API (`GET /v1/numbers/{id}`, webhooks, envíos). Guárdalo.
+    - `externalRef` es lo que pasaste al generar el enlace: relaciónalo con tu propio registro de cliente.
+    - `redirectUrl`, cuando está definido, se te entrega en lugar de seguirse: tu página decide si navegar y a dónde.
+
+    También maneja `connect:expired` (genera un enlace nuevo), `connect:error` (muestra el mensaje) y `resize` (ajusta la altura del iframe, que empieza pequeña y crece una vez que se muestra el botón).
+
+    ### Cancelar, reintentar y el placeholder
+
+    `connect:error` llega ante una falla definitiva **y** cuando el cliente cancela o cierra el popup de Facebook: Facebook no distingue entre ambos, así que los dos te llegan igual, con el mismo payload `{ message }`. El botón **sigue en pantalla** en ambos casos, así que la persona puede simplemente volver a hacer clic.
+
+    Eso importa para tu lista de números, no para el costo: el placeholder creado en el paso 1 no ocupa un lugar del plan y no se factura, pero sigue listado como "awaiting connection" hasta que se elimina automáticamente, 24 horas después de su creación. Así que ejecuta una limpieza **por abandono** cada vez que la sesión termina sin un `connect:paired` (cerraste el modal, el cliente se fue a otra página, o te diste por vencido), y no en el primer `connect:error`, que todavía puede superar reintentando. El navegador le avisa a _tu_ backend que la sesión terminó (el navegador no tiene clave `ps_`), y tu backend elimina el placeholder con `DELETE /v1/numbers/{id}`, quitándolo de inmediato en lugar de dejarlo para la limpieza automática.
+
+    **De dónde sale el id:** es el `numberId` que decodificaste del token en el paso 1 y guardaste junto al registro de tu cliente; eso es lo que tu página envía aquí a tu propio backend. (Si el flujo llegó hasta `connect:paired`, el mismo id llegó en ese payload.) Pásale al navegador ese id cuando le pases el `connectUrl`, y la limpieza no necesita ninguna búsqueda.
+
+    ```js Browser
+    case "connect:paired":
+      connected = true; // ahora es un número real: nunca lo elimines.
+      break;
+    
+    case "connect:error":
+      // Cancelar no es irse: el botón sigue ahí para un reintento.
+      console.error("Connect failed or was cancelled:", p.message);
+      break;
+    
+    // ...en otra parte, cuando el cliente realmente se fue: cerraste el modal,
+    // se fue a otra página, o te diste por vencido con la sesión:
+    if (!connected) {
+      // Tu backend tiene la clave ps_ y llama a DELETE /v1/numbers/{id}.
+      await fetch("/api/onboarding/abandon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // numberId: decodificado del token en el paso 1 y guardado con el cliente.
+        body: JSON.stringify({ numberId, externalRef: "crm-customer-4211" }),
+      });
+    }
+    ```
+
+    ```js Your backend
+    // POST /api/onboarding/abandon { numberId }: la clave ps_ nunca sale de aquí.
+    const r = await fetch(`https://pilotstatus.com.br/v1/numbers/${numberId}`, {
+      method: "DELETE",
+      headers: { "x-api-key": process.env.PILOT_TENANT_KEY },
+    });
+    // 200 { ok: true }: placeholder eliminado. 404: ya no existe, no hay nada que hacer.
+    ```
+
+    Consulta [Limpiar un enlace abandonado](#limpiar-un-enlace-abandonado) más abajo para ver la llamada de eliminación completa.
+
+    <Warning>
+      **No elimines en el primer `connect:error`.** El botón sigue en pantalla para un reintento, y eliminar **no** revoca el enlace: el token de emparejamiento se verifica sin estado (solo firma, tipo y vencimiento, sin consultar la base de datos), así que un cliente que vuelve a hacer clic después de tu limpieza igual completa el flujo. Lo que obtiene entonces es un **número totalmente nuevo**, creado desde cero: la verificación de capacidad se vuelve a ejecutar en ese momento, y el número cuenta (y se cobra, cuando es un extra) en su activación. Ese es el costo real de eliminar demasiado pronto, no un enlace roto. Dispara la limpieza cuando estés seguro de que se fue: cerró tu modal, se fue a otra página, o te diste por vencido con la sesión.
+    </Warning>
+  </Step>
+  <Step title="Registra un webhook para el número conectado">
+    Con el `numberId` en mano (decodificado del token en el paso 1, o recibido en `connect:paired`), suscribe tu endpoint con `POST /v1/webhooks`, usando la misma clave de tenant. Como el id ya es definitivo al momento de generar el enlace, puedes registrar el webhook **antes** de que el cliente termine y no perderte los primeros mensajes entrantes. Consulta [Configurar webhooks](/es/api/webhooks/configure) para ver todo el CRUD.
+
+    ```bash cURL
+    curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: ps_your_tenant_key" \
+      -d '{
+        "url": "https://your-crm.example.com/hooks/pilot",
+        "whatsappNumberId": "wn_9f3c21ab",
+        "events": ["*"]
+      }'
+    ```
+
+    <Warning>
+      **La lista `events` es obligatoria.** Una lista `events` vacía u omitida no despacha **nada**: no existe un "suscribirse a todo" implícito. Pasa una lista explícita, o `["*"]` para todos los eventos.
+    </Warning>
+
+    <Warning>
+      **Un número META entrega el envoltorio nativo de Meta, no eventos de Pilot Status.** Los mensajes entrantes llegan con `field: "messages"` dentro de `entry[].changes[]`, exactamente como los envía Meta. Un número META **nunca** emite `message.received`; ese vocabulario pertenece a los números no oficiales (web de Pilot Status). Suscribirse con `events: ["*"]` **no** traduce el payload: entrega el envoltorio crudo. Parsea `body.entry[0].changes[0].field` y ramifica según su valor.
+
+      Todos los nombres de campo a los que te puedes suscribir en un número de Meta están listados en [Eventos de Meta Cloud API](/es/api/webhooks/events#eventos-de-meta-cloud-api-sobre-nativo); `messages` es el que necesitas para las conversaciones.
+    </Warning>
+
+    <Warning>
+      **Hoy no existe el encabezado `x-pilot-status-signature`.** Los webhooks creados mediante la API pública nunca reciben un `secret`, así que nada se firma. No construyas una verificación de firma asumiendo que te protege. Autentica las entregas de otra forma: una ruta de URL imposible de adivinar, mTLS o una lista de IPs permitidas.
+    </Warning>
+
+    La entrega se encola y se reintenta **5 veces** con backoff exponencial a partir de 5 segundos. Devuelve `2xx` rápido y procesa de forma asíncrona.
+  </Step>
+</Steps>
+
+## Limpiar un enlace abandonado
+
+Si un cliente nunca termina, el placeholder permanece en tu lista de números como "awaiting connection". No ocupa un lugar del plan ni se factura, y se elimina automáticamente 24 horas después de su creación. Para quitarlo antes, llama a `DELETE /v1/numbers/{id}`, usando tu clave de tenant. El id es el `numberId` que decodificaste del token al generar el enlace (paso 1), o el que llegó en `connect:paired`; sirve tanto un id de número como un id de instancia. Esta es la llamada detrás del patrón de limpieza por abandono del paso 3.
+
+```bash cURL
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wn_9f3c21ab" \
+  -H "x-api-key: ps_your_tenant_key"
+```
+
+El éxito es **200**:
+
+```json
+{ "ok": true }
+```
+
+Un id que no existe devuelve `404` con `"Number not found"`. También puedes eliminar placeholders huérfanos desde el dashboard en `/numbers`.
+
+<Note>
+  Eliminar el placeholder **no** invalida el enlace: el token se verifica solo por firma, tipo y vencimiento. Hasta que venza, un cliente que reintenta igual completará el flujo y, sin el placeholder, se crea un número **nuevo**, que cuenta y se cobra como cualquier otro en su activación. Así que elimina cuando estés seguro de que nadie va a volver, o prepárate para un segundo número inesperado.
+</Note>
+
+## ¿Prefieres tu propio markup?
+
+Si tienes un dominio fijo y quieres que el botón se muestre en tu propia página, puedes ejecutar Meta Embedded Signup tú mismo cargando el SDK de JavaScript de Facebook y manejando `FB.login` en el navegador, pero eso implica registrar la configuración de tu propia app de Meta, conectar los dos canales de mensajes del popup y hacerte cargo de la configuración de CORS. Para casi todos, el **botón alojado de esta guía es el camino recomendado**: cero SDK, cero app de Meta, cero configuración.
+
+<CardGroup cols={2}>
+  <Card title="Prompts para constructores con IA" icon="wand-magic-sparkles" href="/es/guides/embedded-signup-ai-builders">
+    Prompts para copiar y pegar que arman exactamente este flujo de botón alojado.
+  </Card>
+
+  <Card title="Referencia de Embed Connect" icon="window" href="/es/integrations/embed-connect">
+    Toda la superficie de incrustación: modo página vs. modo botón, el protocolo postMessage y el branding.
+  </Card>
+
+  <Card title="Referencia de emparejamiento remoto" icon="link" href="/es/api/numbers/remote-pairing">
+    Cuerpo completo y opciones del endpoint que genera el enlace.
+  </Card>
+
+  <Card title="Configurar webhooks" icon="webhook" href="/es/api/webhooks/configure">
+    Suscripciones por número, listas de eventos y logs de entrega.
+  </Card>
+</CardGroup>

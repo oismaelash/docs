@@ -1,0 +1,414 @@
+---
+title: "API de workspace: miembros, roles e invitaciones"
+sidebarTitle: "Workspace"
+description: "Lee, renombra y configura tu workspace, transfiere su propiedad o archívalo, lista miembros, invita, reenvía, cambia roles, elige qué números ve un miembro y elimina, mediante /v1/workspace. Incluye por qué las escrituras requieren un usuario en la llamada (un token OAuth o una clave de cuenta) y nunca una clave de workspace."
+mode: "wide"
+---
+
+Doce endpoints en `/v1/workspace` replican lo que hace el panel con el workspace en sí (nombre, configuración, propiedad, archivado) y con los miembros y las invitaciones. Los miembros son ilimitados en todos los planes.
+
+## Qué credencial funciona en cada caso
+
+Esta es la parte que debes leer antes que nada.
+
+| Endpoint | Clave de workspace (`x-api-key`) ¹ | Clave de cuenta (`ps_account_`) | Token OAuth |
+|---|:---:|:---:|:---:|
+| `GET /v1/workspace` | ✅ | ✅ | ✅ |
+| `PATCH /v1/workspace` | ✅ | ✅ ² | ✅ ² |
+| `GET /v1/workspace/settings` | ✅ | ✅ | ✅ |
+| `PATCH /v1/workspace/settings` | ✅ | ✅ ² | ✅ ² |
+| `POST /v1/workspace/transfer-ownership` | ❌ | ✅ ³ | ✅ ³ |
+| `POST /v1/workspace/archive` | ❌ | ✅ ³ | ✅ ³ |
+| `GET /v1/workspace/members` | ✅ | ✅ ² | ✅ ² |
+| `POST /v1/workspace/members` | ❌ | ✅ ² | ✅ ² |
+| `POST /v1/workspace/members/{id}/resend` | ❌ | ✅ ² | ✅ ² |
+| `PATCH /v1/workspace/members/{id}` | ❌ | ✅ ³ | ✅ ³ |
+| `PATCH /v1/workspace/members/{id}/numbers` | ❌ | ✅ ² | ✅ ² |
+| `DELETE /v1/workspace/members/{id}` | ❌ | ✅ ³ | ✅ ³ |
+
+¹ **Las claves de número nunca pasan aquí.** Todo en esta página pertenece a la cuenta entera, así que una clave limitada a un número recibe `403 NUMBER_SCOPE_NOT_ALLOWED` en cada endpoint de arriba; en las escrituras marcadas con ❌ recibe primero el `403` de credencial de máquina descrito abajo. El mismo `403 NUMBER_SCOPE_NOT_ALLOWED` lo recibe un token OAuth autorizado solo para números específicos, y una clave de cuenta cuyo usuario está restringido a algunos números. Una clave de workspace restringida con `x-whatsapp-number-id` sigue pasando.
+² El usuario debe ser `ADMIN` u `OWNER`; por debajo de eso, `403 PERMISSION_DENIED`.
+³ El usuario debe ser el `OWNER`; cualquier otro recibe `403 PERMISSION_DENIED`.
+
+<Warning>
+**Las escrituras requieren un usuario en la llamada, a propósito.** Una clave de workspace o de número no tiene un usuario detrás: la clave pertenece al workspace, no a una persona. Si se permitiera invitar con una clave limitada al tenant, quien tuviera *cualquier* clave del workspace podría invitarse a sí mismo como Admin, y la clave se convertiría en una vía para apoderarse de la cuenta. Una clave así recibe **403 `MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`** en las escrituras de miembros.
+</Warning>
+
+Un token OAuth y una [clave de cuenta](/es/api/key-types#claves-de-cuenta) (con `x-workspace-id`) llevan ambos un usuario, y actúan con el **rol actual** de ese usuario en el workspace, que se vuelve a leer en cada solicitud: se aplican las mismas reglas que en el panel.
+
+Transferir la propiedad y archivar son las dos acciones que cambian quién paga la factura o dejan a todos sin acceso, así que exigen al **OWNER en la llamada**: un token OAuth/MCP o una clave de cuenta cuyo usuario sea el owner. **Ninguna credencial de máquina llega a ellas**: cualquier clave `ps_` de workspace o de número recibe **403 `MACHINE_CREDENTIAL_CANNOT_MANAGE_WORKSPACE`**.
+
+Las respuestas exitosas llevan `Cache-Control: no-store`. Un usuario que ya no es miembro activo recibe `401 OAUTH_MEMBERSHIP_REVOKED` detrás de un token OAuth (vuelve a iniciar sesión) y `403 WORKSPACE_MEMBERSHIP_REQUIRED` detrás de una clave de cuenta. Los errores llevan un mensaje `error` y un `code` estable: ramifica según `code`. La mayoría de los mensajes son bilingües (`English | Português`); los conflictos de gestión de miembros (`ALREADY_MEMBER`, `NOT_FOUND`, `OWNER_IMMUTABLE`, …), `RATE_LIMITED` y los rechazos de rol llegan por ahora en un solo idioma. Un cuerpo que no es un objeto JSON es `400 INVALID_BODY`, y en los endpoints de workspace, settings, archive y transfer, una clave que el endpoint no acepta es `400 UNKNOWN_FIELDS` con las claves problemáticas en `unknownFields`.
+
+## Leer el workspace
+
+```bash
+curl https://pilotstatus.com.br/v1/workspace \
+  -H "x-api-key: ps_..."
+```
+
+```json
+{
+  "id": "tn_...",
+  "name": "Acme",
+  "plan": "PREMIUM",
+  "seatsUsed": 4,
+  "seatLimit": null
+}
+```
+
+`seatLimit` es siempre `null`: los miembros son **ilimitados en todos los planes**. El campo se mantiene en la respuesta por compatibilidad con integraciones y SDKs existentes.
+
+`seatsUsed` es **solo informativo**: cuenta los miembros activos y las invitaciones pendientes que no vencieron, y nunca bloquea nada.
+
+## Renombrar el workspace
+
+```bash
+curl -X PATCH https://pilotstatus.com.br/v1/workspace \
+  -H "x-api-key: ps_..." \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Holdings"}'
+```
+
+```json
+{ "id": "tn_...", "name": "Acme Holdings" }
+```
+
+`name` se recorta y debe tener **de 1 a 60 caracteres**; de lo contrario, `400 INVALID_NAME`. El nombre es una etiqueta: no necesita ser único, y el `id` del workspace nunca cambia. Funciona con una clave limitada al tenant, o con un usuario que sea `ADMIN` u `OWNER`. Herramienta MCP: `workspace_update`.
+
+## Configuración del workspace
+
+### Leer
+
+```bash
+curl https://pilotstatus.com.br/v1/workspace/settings \
+  -H "x-api-key: ps_..."
+```
+
+```json
+{
+  "settings": {
+    "mainCurrency": "BRL",
+    "mainTimezone": "America/Sao_Paulo",
+    "mainLanguage": "pt",
+    "billingMode": "SUBSCRIPTION",
+    "currencyLocked": false
+  },
+  "phoneLinePrice": { "currency": "BRL", "price": 49.9 }
+}
+```
+
+| Campo | Significado |
+|---|---|
+| `mainCurrency` | La moneda en la que se cobra toda la cuenta |
+| `mainTimezone` | Zona horaria IANA del workspace |
+| `mainLanguage` | `pt`, `en` o `es` |
+| `billingMode` | `SUBSCRIPTION` o `WALLET`. Lo define la plataforma |
+| `currencyLocked` | `true` una vez que la billetera tuvo su primer movimiento: a partir de entonces la moneda ya no puede cambiar |
+| `phoneLinePrice` | Lo que cuesta al mes una línea telefónica **nueva** para este workspace, en su moneda |
+
+Cualquier rol la lee, incluido `ANALYST`, al igual que una clave limitada al tenant. Herramienta MCP: `workspace_settings_get`.
+
+### Actualizar
+
+```bash
+curl -X PATCH https://pilotstatus.com.br/v1/workspace/settings \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"mainTimezone":"America/Manaus","mainLanguage":"en"}'
+```
+
+Una actualización parcial que acepta **solo** `mainTimezone` y `mainLanguage`: envía al menos uno. La respuesta es `{ "settings": { ... } }`, con la misma forma que la lectura. Mismas credenciales que para renombrar: una clave limitada al tenant, o un usuario que sea `ADMIN` u `OWNER`. Herramienta MCP: `workspace_settings_update`.
+
+A diferencia del panel, un valor inválido nunca se omite en silencio:
+
+| Estado | `code` | Qué pasó |
+|---|---|---|
+| `400` | `NO_FIELDS` | No se envió ni `mainTimezone` ni `mainLanguage` |
+| `400` | `INVALID_TIMEZONE` | `mainTimezone` no es una zona IANA; `field` la indica |
+| `400` | `INVALID_LANGUAGE` | `mainLanguage` no es `pt`, `en` ni `es`; `field` lo indica y `accepted` lista los valores |
+| `400` | `CURRENCY_NOT_HERE` | Se envió `mainCurrency`. El **owner** cambia la moneda en la configuración de facturación del panel, y se bloquea después del primer movimiento de la billetera |
+| `400` | `BILLING_MODE_NOT_HERE` | Se envió `billingMode`. Lo define la plataforma |
+| `400` | `UNKNOWN_FIELDS` | Cualquier otra clave; `unknownFields` las indica |
+
+No se escribe nada cuando se devuelve alguno de estos.
+
+## Listar miembros
+
+```bash
+curl https://pilotstatus.com.br/v1/workspace/members \
+  -H "x-api-key: ps_..."
+```
+
+Devuelve los miembros activos y las invitaciones en una sola lista, diferenciados por `status`. Una clave de workspace la lee; un usuario necesita `ADMIN` u `OWNER`. El sobre también trae el mismo `seatsUsed` informativo y `seatLimit: null`:
+
+```json
+{
+  "members": [
+    {
+      "id": "mb_...",
+      "email": "someone@acme.com",
+      "name": "Someone",
+      "role": "AGENT",
+      "status": "ACTIVE",
+      "allowedNumberIds": [],
+      "invitedAt": "2026-08-01T12:00:00.000Z",
+      "joinedAt": "2026-08-01T12:30:00.000Z",
+      "inviteExpiresAt": null,
+      "inviteExpired": false,
+      "inviteEmailSentAt": "2026-08-01T12:00:04.000Z",
+      "inviteEmailStatus": null
+    }
+  ],
+  "seatsUsed": 4,
+  "seatLimit": null
+}
+```
+
+| Campo | Significado |
+|---|---|
+| `id` | Id de la membresía: el `{id}` que reciben los demás endpoints de miembros. **No** es el id del usuario |
+| `status` | `ACTIVE`, `PENDING` (invitado, todavía no aceptó) o `DECLINED` |
+| `allowedNumberIds` | Números a los que está limitado un `AGENT`/`ANALYST`. `[]` = todos los números (siempre `[]` para `OWNER` y `ADMIN`) |
+| `inviteExpired` | `true` cuando una invitación pendiente pasó de `inviteExpiresAt` |
+| `inviteEmailStatus` | Para una invitación pendiente: `SENT`, `QUEUED` (con menos de 5 minutos) o `NOT_SENT`. `null` para quien no está pendiente |
+
+<Warning>
+La lista **nunca contiene un enlace ni un token de invitación**, y nunca lo hará: solo se almacena un hash del token, así que el enlace no se puede derivar después. Si necesitas un enlace para una invitación pendiente, llama a `resend`.
+</Warning>
+
+## Invitar
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/workspace/members \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"someone@acme.com","role":"AGENT","sendEmail":true}'
+```
+
+| Campo | Significado |
+|---|---|
+| `email` | Se recorta y se normaliza a minúsculas. Una invitación por dirección por workspace |
+| `role` | Opcional, predeterminado `AGENT`. Un `OWNER` puede asignar `ADMIN`, `AGENT` o `ANALYST`; un `ADMIN` solo `AGENT` o `ANALYST`. **`OWNER` nunca se puede asignar** |
+| `allowedNumberIds` | Opcional. Limita a un Agent o Analyst a números específicos; se ignora para los Admins |
+| `sendEmail` | Predeterminado `true`. Con `false` (el booleano JSON), no se envía ningún correo y la respuesta trae `inviteUrl` |
+
+Un rol que quien llama no puede asignar (incluido `OWNER`, o `ADMIN` cuando quien llama es Admin) es **`403 ROLE_NOT_ASSIGNABLE`**, con los roles que puedes asignar en `assignableRoles`.
+
+```json Response (201)
+{
+  "member": { "id": "mb_...", "email": "someone@acme.com", "role": "AGENT", "status": "PENDING", ... },
+  "resent": false,
+  "emailSent": false,
+  "inviteUrl": "https://pilotstatus.com.br/invite/..."
+}
+```
+
+`sendEmail: false` es la vía para entregar la invitación a tu manera. **La respuesta es el único lugar donde aparece el enlace**: si lo pierdes, llama a `resend`, que emite uno nuevo y anula el anterior. Con `sendEmail: true`, `inviteUrl` no viene en la respuesta.
+
+Invitar a una dirección que ya tiene una invitación pendiente (o rechazada) no es un error: rota el token en el lugar y devuelve `200` con `"resent": true` en lugar de `201`. Una falla en la entrega del correo nunca hace fallar la llamada: la invitación ya está guardada.
+
+**Límites de frecuencia.** Las invitaciones, con o sin correo, están limitadas a **30 por hora por workspace** (compartido con `resend`), **3 por hora por dirección destinataria** y **60 por hora por IP**. Por encima de un límite: `429` con `code: "RATE_LIMITED"`, `retryAfterSeconds` y un encabezado `Retry-After`. No se escribe nada.
+
+Si las invitaciones están desactivadas para la cuenta, invitar y reenviar responden `403 FEATURE_DISABLED`; listar, cambiar y eliminar miembros siguen funcionando.
+
+## Reenviar una invitación
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/workspace/members/mb_.../resend \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"sendEmail":false}'
+```
+
+Emite un nuevo enlace de invitación para una invitación pendiente (el enlace anterior deja de funcionar en el acto) y, salvo que `sendEmail` sea `false`, lo vuelve a enviar por correo. El cuerpo es opcional (`sendEmail` es `true` de forma predeterminada). `ADMIN` u `OWNER`.
+
+```json
+{ "member": { "id": "mb_...", "status": "PENDING", ... }, "emailSent": false, "inviteUrl": "https://pilotstatus.com.br/invite/..." }
+```
+
+`inviteUrl` viene solo con `sendEmail: false`. Solo un reenvío que envía correo tiene límite de frecuencia: cuenta contra los límites por workspace y por IP de la invitación y contra **3 reenvíos por hora por invitación** (`429 RATE_LIMITED`). Un id que no está en este workspace es `404 NOT_FOUND`; un miembro que ya aceptó es `409 ALREADY_MEMBER`.
+
+## Cambiar el rol de un miembro
+
+```bash
+curl -X PATCH https://pilotstatus.com.br/v1/workspace/members/mb_... \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"role":"ANALYST"}'
+```
+
+Cambiar el rol es **solo para el OWNER** y siempre necesita `role` (`ADMIN`, `AGENT` o `ANALYST`); un rol ausente, u `OWNER`, es `400 ROLE_NOT_ASSIGNABLE` con `assignableRoles`. El `allowedNumberIds` opcional define el alcance de números en la misma llamada; **si se omite, se mantiene el alcance actual**. Promover a `ADMIN` borra el alcance de números, porque los Admins abarcan todo el workspace. Se revocan los refresh tokens OAuth del miembro. La respuesta es `{ "member": { ... } }`. El rol del propio owner no se puede cambiar aquí (`409 OWNER_IMMUTABLE`): usa [Transferir la propiedad](#transferir-la-propiedad).
+
+Para cambiar **solo los números** que ve un Agent o Analyst, sin tocar el rol, usa `PATCH /v1/workspace/members/{id}/numbers` más abajo: los Admins también pueden llamarlo.
+
+## Cambiar qué números ve un miembro
+
+```bash
+curl -X PATCH https://pilotstatus.com.br/v1/workspace/members/mb_.../numbers \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"allowedNumberIds":["wa_...","wa_..."]}'
+```
+
+Define qué números de WhatsApp del workspace ve y opera un `AGENT` o `ANALYST`. El rol no cambia. También funciona en invitaciones pendientes.
+
+| Campo | Significado |
+|---|---|
+| `allowedNumberIds` | **Obligatorio.** Arreglo de ids de números. **Reemplaza la lista completa**: envía cada id que el miembro deba conservar |
+
+<Warning>
+**`[]` significa TODOS los números, no ninguno**, incluidos los números conectados después. Un miembro restringido a números específicos **no** gana números nuevos automáticamente: cuando conectes un número, agrégalo aquí para cada miembro restringido que lo necesite.
+</Warning>
+
+- **Quién puede llamarlo:** un token OAuth/MCP o una clave de cuenta cuyo usuario sea `ADMIN` u `OWNER` del workspace. Una clave `ps_` de workspace o de número recibe `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`; un `AGENT` o `ANALYST` recibe `403 PERMISSION_DENIED`.
+- **Corta de inmediato:** se revocan los refresh tokens OAuth del miembro, así que un alcance más restringido se aplica en su siguiente llamada en lugar de sobrevivir en un token autorizado con el alcance más amplio. Es posible que sus conectores MCP tengan que volver a iniciar sesión.
+- **Los Owners y Admins siempre ven todos los números**, así que la llamada los rechaza con `409 SCOPE_NOT_APPLICABLE`.
+
+La respuesta es el miembro actualizado, con la misma forma que devuelve la lista:
+
+```json
+{
+  "member": {
+    "id": "mb_...",
+    "role": "AGENT",
+    "status": "ACTIVE",
+    "allowedNumberIds": ["wa_...", "wa_..."],
+    ...
+  }
+}
+```
+
+| Estado | `code` | Qué pasó |
+|---|---|---|
+| `400` | `INVALID_SCOPE` | `allowedNumberIds` falta o no es un arreglo de cadenas |
+| `400` | `UNKNOWN_FIELDS` | El cuerpo tiene cualquier otra clave (incluido `role`); `details.unknownFields` las indica |
+| `403` | `MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS` | Se llamó con una clave `ps_` de workspace o de número |
+| `403` | `PERMISSION_DENIED` | Quien llama es `AGENT` o `ANALYST` |
+| `401` | `OAUTH_MEMBERSHIP_REVOKED` | Token OAuth cuyo usuario ya no es miembro activo del workspace: vuelve a iniciar sesión |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | Clave de cuenta cuyo usuario ya no es miembro activo del workspace |
+| `404` | `NOT_FOUND` | Ese id de membresía no está en este workspace |
+| `409` | `SCOPE_NOT_APPLICABLE` | El destino es `OWNER` o `ADMIN` |
+
+## Eliminar un miembro o revocar una invitación
+
+```bash
+curl -X DELETE https://pilotstatus.com.br/v1/workspace/members/mb_... \
+  -H "Authorization: Bearer <oauth-token>"
+```
+
+Una sola llamada para ambos casos: una invitación y una membresía son la misma fila. **Solo para el OWNER.** El owner no se puede eliminar (`409 OWNER_IMMUTABLE`).
+
+```json
+{ "removed": true, "email": "someone@acme.com", "apiKeysRevoked": 0, "apiKeysReassigned": 0, "oauthTokensRevoked": 1 }
+```
+
+Se revocan los refresh tokens OAuth del usuario eliminado (`oauthTokensRevoked`).
+
+## Errores que vale la pena manejar
+
+| Estado | `code` | Qué pasó |
+|---|---|---|
+| `400` | `INVALID_BODY` | El cuerpo de una invitación, cambio de rol, cambio de alcance, eliminación o reenvío no es JSON válido: no se cambia nada y no se envía ningún correo ([Cuerpo JSON mal formado](/es/api/overview#cuerpo-json-mal-formado)) |
+| `400` | `INVALID_EMAIL` | La dirección no es plausible |
+| `400` | `ROLE_NOT_ASSIGNABLE` | Cambio de rol: `role` ausente, desconocido u `OWNER`. `assignableRoles` lista los válidos |
+| `403` | `ROLE_NOT_ASSIGNABLE` | Invitación: tu rol no puede asignar ese rol. `assignableRoles` lista los que puedes asignar |
+| `403` | `FEATURE_DISABLED` | Las invitaciones están desactivadas para la cuenta (solo invitar y reenviar) |
+| `404` | `NOT_FOUND` | Ese id de membresía no está en este workspace |
+| `409` | `ALREADY_MEMBER` | Esa dirección ya es un miembro activo (o, al reenviar, la invitación ya fue aceptada) |
+| `409` | `OWNER_IMMUTABLE` | El destino es el owner: cambio o eliminación rechazados |
+| `409` | `MEMBER_HAS_API_KEYS` | Ver abajo |
+| `409` | `WOULD_ORPHAN_WORKSPACE` | El cambio dejaría el workspace sin owner |
+| `429` | `RATE_LIMITED` | Invitación o reenvío por encima de un límite. `retryAfterSeconds` y `Retry-After` indican cuándo reintentar |
+
+## Eliminar un miembro que creó claves de API
+
+`DELETE` rechaza con `409 MEMBER_HAS_API_KEYS` y lista las claves:
+
+```json
+{
+  "error": "O membro criou 1 chave(s) de API ainda ativa(s).",
+  "code": "MEMBER_HAS_API_KEYS",
+  "apiKeys": [
+    { "id": "key_...", "name": "n8n", "keyLast4": "9f21", "whatsappNumberId": null, "lastUsedAt": "2026-08-01T12:00:00.000Z" }
+  ],
+  "hint": "Repeat with apiKeyAction=\"revoke\" or apiKeyAction=\"keep\"."
+}
+```
+
+Repite la llamada con una decisión explícita, en la query string o como `{"apiKeyAction":"keep"}` en el cuerpo (la query gana cuando se envían ambos):
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/workspace/members/mb_...?apiKeyAction=keep" \
+  -H "Authorization: Bearer <oauth-token>"
+```
+
+- `revoke`: las claves dejan de autenticar. Las integraciones que las usan se rompen de inmediato.
+- `keep`: las claves siguen funcionando y se reasignan a quien llama.
+
+No hay valor predeterminado. Un integrador no debe tumbar integraciones en producción por omisión.
+
+Revocar nunca es eliminar: el registro sobrevive para que el historial de mensajes y llamadas siga apuntando a algo real.
+
+## Transferir la propiedad
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/workspace/transfer-ownership \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"new-owner@acme.com"}'
+```
+
+```json
+{ "transferred": true, "newOwnerId": "usr_...", "yourNewRole": "ADMIN" }
+```
+
+Convierte a un miembro activo en el nuevo **owner**. `email` se compara con los correos de los miembros sin distinguir mayúsculas y minúsculas. El destino debe haber **aceptado** la invitación: una invitación pendiente no califica.
+
+<Warning>
+**Qué cambia en el momento en que responde:**
+
+- **Pasas a ser `ADMIN`** (`yourNewRole`). Todo lo que solo el owner podía hacer (mover dinero, archivar, volver a transferir) ahora es del nuevo owner.
+- **Se revocan los refresh tokens OAuth de ambos usuarios.** Una conexión MCP sigue funcionando con el **nuevo** rol de cada usuario (aplicado en la siguiente solicitud) hasta que vence su access token, y luego tiene que volver a autorizar.
+- **La responsabilidad por la factura pasa al nuevo owner.**
+</Warning>
+
+Solo el **owner** puede llamarlo, con un token OAuth/MCP o una clave de cuenta. Una clave `ps_` de workspace o de número recibe `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_WORKSPACE`; cualquier otro, `403 PERMISSION_DENIED`. Herramienta MCP: `workspace_transfer_ownership`, con una vista previa y un token de confirmación ([servidor MCP](/es/integrations/mcp-server)).
+
+| Estado | `code` | Qué pasó |
+|---|---|---|
+| `400` | `MISSING_EMAIL` | `email` falta o está en blanco |
+| `400` | `NOT_A_MEMBER` | Ningún miembro de este workspace tiene ese correo |
+| `400` | `TARGET_NOT_ACTIVE` | La persona todavía no aceptó la invitación |
+| `409` | `ALREADY_OWNER` | La persona ya es el owner |
+| `409` | `NOT_OWNER` | Quien llama ya no es el owner |
+| `409` | `NO_OWNER` | El workspace no tiene owner |
+| `409` | `OWNERSHIP_CHANGED` | La propiedad cambió durante la llamada. Vuelve a leer los miembros e inténtalo de nuevo |
+| `409` | `WOULD_ORPHAN_WORKSPACE` | El cambio dejaría el workspace sin owner |
+
+## Archivar el workspace
+
+<Warning>
+**Archivar deja a todos sin acceso: a ti también, y a la llamada que lo hace.** El token que usaste deja de funcionar en su siguiente solicitud, todas las claves `ps_` del workspace dejan de autenticar y se revocan las sesiones de chat embebidas. **No existe un endpoint para desarchivar:** revertirlo requiere contactar a soporte.
+</Warning>
+
+```bash
+curl -X POST https://pilotstatus.com.br/v1/workspace/archive \
+  -H "Authorization: Bearer <oauth-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"confirmName":"Acme Holdings"}'
+```
+
+```json
+{ "archived": true, "archivedAt": "2026-11-08T12:00:00.000Z" }
+```
+
+`confirmName` debe ser el nombre actual del workspace, **exactamente**: recortado y distinguiendo mayúsculas y minúsculas. Léelo con `GET /v1/workspace`. Un nombre incorrecto o ausente es `400 CONFIRMATION_MISMATCH` con `field: "confirmName"`, y la respuesta nunca repite el nombre real.
+
+Solo el **owner** puede llamarlo, con un token OAuth/MCP o una clave de cuenta. Una clave `ps_` de workspace o de número recibe `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_WORKSPACE`; cualquier otro, `403 PERMISSION_DENIED`. Herramienta MCP: `workspace_archive`, con una vista previa y un token de confirmación ([servidor MCP](/es/integrations/mcp-server)).
+
+| Estado | `code` | Qué pasó |
+|---|---|---|
+| `400` | `CONFIRMATION_MISMATCH` | `confirmName` falta o no coincide con el nombre |
+| `404` | `NOT_FOUND` | El workspace ya no existe |
+| `409` | `ALREADY_ARCHIVED` | El workspace ya está archivado |

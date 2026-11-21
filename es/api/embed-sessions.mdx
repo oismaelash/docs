@@ -1,0 +1,154 @@
+---
+title: "POST /v1/embed/sessions: tokens de embed"
+sidebarTitle: "Sesiones de embed"
+description: "Genera tokens de embed de corta duración, de servidor a servidor, para integrar los microfrontends white-label de Chat y Connect en tu propio SaaS."
+mode: "wide"
+---
+
+# Integración de microfrontends: tokens de embed
+
+Pilot Status permite que un tenant **integre dos microfrontends** en su propio SaaS, **white-label**, mediante un iframe alojado \+ un pequeño SDK de JS. Tus clientes se quedan dentro de **tu** producto y ven **tu** marca.
+
+## Las dos superficies
+
+| Superficie | Qué es | Servida desde |
+| --- | --- | --- |
+| **Chat** | Una bandeja de entrada de WhatsApp (conversaciones, enviar/recibir). | `https://chat.pilotstatus.com.br` |
+| **Connect** | Emparejamiento remoto: conecta un número de WhatsApp (QR / Meta Embedded Signup). | `https://connect.pilotstatus.com.br` |
+
+El documento del iframe está alojado en un subdominio de Pilot, así que sus propias llamadas a `/api` son del **mismo origen**: **no hay CORS** que configurar. Las únicas llamadas que haces son **de servidor a servidor** para generar tokens.
+
+## POST /v1/embed/sessions: generar un token de embed de Chat
+
+Genera los tokens de embed en **tu backend**, nunca en el navegador. Se autentica con una API key `ps_` (header `x-api-key`): una key de workspace, una key de número (solo chat), una key de cuenta con `x-workspace-id`, o un access token de OAuth.
+
+- **`chat`** requiere un rol de **Agent o superior** detrás de una key de cuenta o un token OAuth; un Analyst recibe `403 PERMISSION_DENIED`.
+- **`connect`** requiere una credencial con alcance de tenant (una key de número recibe `403 NUMBER_SCOPE_NOT_ALLOWED`) y, para un usuario, **Admin u Owner**.
+
+No puedes generar un token que llegue más lejos que tu propia credencial.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/embed/sessions" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_api_key" \
+  -d '{
+    "surface": "chat",
+    "whatsappNumberIds": ["wa_abc"],
+    "allowedOrigins": ["https://app.tenant.com"],
+    "ttlSeconds": 900
+  }'
+```
+
+<ParamField body="surface" type="string" required>
+  `"chat"` o `"connect"`: para qué microfrontend es el token.
+</ParamField>
+
+<ParamField body="whatsappNumberIds" type="string[]">
+  **Obligatorio para `surface: "chat"`**: de 1 a 50 ids de número (el id de `WhatsAppNumber`) sobre los que puede actuar el embed; todos deben pertenecer a tu workspace. Una credencial **con alcance de número** (una key de número, o una key de workspace acotada con `x-whatsapp-number-id`) ignora este campo y queda forzada a su propio número.
+</ParamField>
+
+<ParamField body="allowedOrigins" type="string[]" required>
+  De 1 a 20 orígenes exactos autorizados a enmarcar el embed (`scheme://host[:port]`, `http` o `https`, sin path, query ni fragmento), por ejemplo `["https://app.tenant.com"]`. Se elimina una `/` final, el valor se pasa a minúsculas y se quitan los duplicados.
+</ParamField>
+
+<ParamField body="brandingOverride" type="object">
+  Sobrescritura opcional de la marca por sesión (consulta White-label más abajo).
+</ParamField>
+
+<ParamField body="ttlSeconds" type="integer">
+  Duración del token en segundos, un entero positivo de hasta **3600** (1 hora). Valores por defecto: **chat 900** (15 min), **connect 1800** (30 min).
+</ParamField>
+
+Respuesta `201`:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9.<claims>.<sig>",
+  "surface": "chat",
+  "whatsappNumberIds": ["wa_abc"],
+  "allowedOrigins": ["https://app.tenant.com"],
+  "expiresAt": "2026-06-23T15:15:00.000Z"
+}
+```
+
+El `token` es de corta duración. El SDK lo inyecta en el iframe **en memoria**, nunca en una URL.
+
+Un body que no es JSON válido devuelve `400 INVALID_BODY` y no se genera ningún token. Consulta [Body JSON mal formado](/es/api/overview#cuerpo-json-mal-formado). Los campos que el schema no conoce se ignoran.
+
+| Status | `code` | Qué pasó |
+| --- | --- | --- |
+| `400` | — | `{ "error": "Validation error", "details": … }`: falta un campo, tiene el tipo incorrecto o está fuera de rango |
+| `400` | `NUMBERS_REQUIRED` | `surface: "chat"` con una credencial de workspace y sin `whatsappNumberIds` |
+| `400` | `NO_NUMBER` | `surface: "chat"` con una credencial con alcance de número que no indica ningún número (por ejemplo, un token OAuth consentido para números específicos, sin `x-whatsapp-number-id`) |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | `surface: "connect"` con una credencial con alcance de número |
+| `403` | `PERMISSION_DENIED` | El rol del usuario no puede generar tokens para esta superficie |
+| `404` | `NUMBER_NOT_FOUND` | Algunos `whatsappNumberIds` no son números de tu workspace; `missing` los enumera |
+
+## POST /api/public/embed/refresh: renovación deslizante
+
+El iframe presenta su token de embed actual (aún válido) como `Authorization: Bearer <token>` y recibe uno nuevo (renovación deslizante). Cuando expira **por completo**, el SDK llama a `onSessionExpired` para que generes uno nuevo desde tu backend.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/api/public/embed/refresh" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.<current-still-valid>.<sig>"
+```
+
+<Note>
+  **Connect usa un token diferente.** Para la superficie **Connect**, el iframe se autoriza con el **token de emparejamiento remoto** existente (el que devuelve `POST /v1/numbers/remote-pairing` como `remotePairingUrl`; consulta [Emparejamiento remoto](/es/api/numbers/remote-pairing)). El token de `POST /v1/embed/sessions` es para **Chat**.
+</Note>
+
+## SDK de JS: @pilot-status/embed
+
+Disponible como paquete npm y como script por CDN.
+
+```html
+<script src="https://pilotstatus.com.br/embed.js"></script>
+<script>
+  PilotStatus.init();
+
+  // Bandeja de Chat: token de POST /v1/embed/sessions (surface "chat")
+  PilotStatus.chat.mount("#inbox", {
+    token: EMBED_TOKEN,
+    locale: "pt",
+    theme: "light",
+    onUnreadCount: (n) => {/* actualiza un badge */},
+    onConversationOpened: (id) => {},
+    onSessionExpired: () => {/* genera uno nuevo desde tu backend */},
+  });
+
+  // Connect: el token es el de emparejamiento remoto de POST /v1/numbers/remote-pairing
+  PilotStatus.connect.open({
+    token: PAIRING_TOKEN,
+    onPaired: (d) => {},
+    onError: (e) => {},
+    onExpired: () => {},
+  });
+</script>
+```
+
+- `PilotStatus.chat.mount(selector, options)`: monta el iframe de la bandeja de WhatsApp (por defecto `https://chat.pilotstatus.com.br`). Pasa el token de embed de **chat**, además de `locale`, `theme` y callbacks opcionales (`onUnreadCount`, `onConversationOpened`, `onSessionExpired`).
+- `PilotStatus.connect.open(options)`: abre el flujo de connect (emparejamiento remoto) (por defecto `https://connect.pilotstatus.com.br`). Pasa el token de **emparejamiento remoto**, además de los callbacks `onPaired`, `onError`, `onExpired`.
+
+O instala desde npm en lugar del script por CDN:
+
+```bash
+npm install @pilot-status/embed
+```
+
+```ts
+import { PilotStatus } from "@pilot-status/embed";
+
+PilotStatus.init();
+PilotStatus.chat.mount("#inbox", { token: EMBED_TOKEN });
+```
+
+## Seguridad
+
+- **Genera los tokens en el servidor.** Nunca expongas tu key `ps_` en el navegador: solo tu backend llama a `POST /v1/embed/sessions` (y a `POST /v1/numbers/remote-pairing`).
+- **Los tokens son de corta duración** (chat 15 min / connect 30 min por defecto) y se renuevan en una ventana deslizante.
+- **`allowedOrigins`** define qué sitios pueden enmarcar el embed (orígenes exactos, mínimo 1).
+- Un token de embed tiene **alcance estricto** a sus `whatsappNumberIds`: solo puede actuar sobre esos números.
+
+## White-label
+
+El embed reutiliza la marca existente del tenant configurada en la pestaña **Branding/Marca** del dashboard: logo, colores primario/de fondo, nombre de la empresa y el interruptor "ocultar Pilot Status" (consulta [Marca de la página Connect](/es/api/branding)). Además, puedes pasar un objeto opcional `brandingOverride` en `POST /v1/embed/sessions` para sobrescribir la marca **solo en esa sesión**.

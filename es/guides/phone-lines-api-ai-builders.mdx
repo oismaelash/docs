@@ -1,0 +1,500 @@
+---
+title: "Líneas telefónicas para Lovable, Replit, Bolt, v0 y Cursor | Pilot Status"
+sidebarTitle: "Líneas telefónicas para AI Builders"
+description: "Ofrece líneas telefónicas en una app creada con Lovable, Replit, Bolt, v0 o Cursor: cuatro prompts para copiar y pegar para el backend que guarda la clave ps_, la pantalla de compra con una Idempotency-Key, el código de activación de WhatsApp y el webhook firmado de líneas telefónicas."
+mode: "wide"
+---
+
+# Líneas telefónicas para AI builders
+
+Estás construyendo un CRM o un SaaS en **Lovable, Replit, Bolt, v0 o Cursor**, y quieres que tus clientes compren y activen líneas telefónicas (números fijos brasileños para activar cuentas de WhatsApp Business) sin salir de tu producto. Esta página te da cuatro prompts. Pégalos en tu builder en orden y obtendrás el mismo flujo que en [Líneas telefónicas en tu app mediante la API](/es/guides/phone-lines-api).
+
+<Note>
+  ¿Prefieres empezar con código que ya funciona? Descarga la demo con licencia MIT de este mismo flujo (un backend Node + TypeScript que guarda la clave y un frontend React + Vite): **[phone-lines-demo.zip](https://pilotstatus.com.br/downloads/phone-lines-demo.zip)**. Súbela a tu builder o ejecútala localmente con `npm run dev`.
+</Note>
+
+## Por qué todo pasa por tu backend
+
+Aquí no hay página alojada ni iframe. Tu página muestra los números, el botón de compra y el código de activación, pero **tu backend es el que habla con la API de Pilot Status**, por tres razones:
+
+- **La clave `ps_` autoriza todo en tu cuenta**, incluida la compra de líneas, que cobra dinero.
+- **El código de activación es una credencial.** Quien lo tiene puede registrar una cuenta de WhatsApp en la línea, y la grabación de la llamada lo pronuncia.
+- **El navegador no puede llamar a la API.** El CORS de la API es una lista estricta de los dominios propios de Pilot Status, así que un `fetch` desde `*.lovable.app` o `*.replit.app` se bloquea, y ninguna clave cambia eso.
+
+Los AI builders se equivocan en las tres cosas por defecto. Cada prompt de abajo repite las reglas, porque la IA que lee cada prompt no puede ver esta página.
+
+## Antes de empezar
+
+1. Una clave de API **por tenant** (`ps_...`) de la pestaña **API** de tu perfil (`/profile`). Una clave por número recibe **403 `NUMBER_SCOPE_NOT_ALLOWED`** en todos los endpoints de `/v1/phone-lines`. No necesitas ningún número de WhatsApp conectado.
+2. Un titular de la cuenta verificado (CNPJ o CPF, el documento y la confirmación de contacto), hecho una sola vez antes de la primera compra. El camino más simple es el panel: **[Phone lines → Buy a line](https://pilotstatus.com.br/linhas/comprar)**. El Prompt 2 solo lee ese estado y envía al cliente allí cuando falta.
+3. Crédito en la billetera o una tarjeta guardada. Una compra no tiene enlace de pago: sin saldo ni tarjeta, el número falla con `PAYMENT_FAILED` y no se cobra nada.
+4. Un backend. Todos los builders listados arriba pueden ejecutar uno: un servidor de Replit, un route handler de Next.js en v0, una Supabase Edge Function en Lovable o Bolt. Para el webhook (Prompt 4) necesita una URL `https` pública.
+
+<Warning>
+  **La clave `ps_` es un secreto del lado del servidor.** Nunca debe aparecer en código del frontend, ni en una variable con prefijo `VITE_`, `NEXT_PUBLIC_`, `REACT_APP_` o `PUBLIC_`: esas se compilan en el bundle de JavaScript que descargan tus usuarios. Lo mismo vale para el secreto `plwh_` del webhook.
+</Warning>
+
+## Cómo encajan las piezas
+
+```text
+Tu página (cualquier dominio)
+   │ 1. GET  /api/pilot/verification          → ¿canPurchase? si no, enlace a /linhas/comprar
+   │ 2. GET  /api/pilot/available?ddd=11      → números en el código de área
+   │ 3. POST /api/pilot/purchases             → un resultado por número
+   │ 4. POST /api/pilot/lines/:id/activations → luego consulta GET /api/pilot/activations/:id
+   │    GET  /api/pilot/activations/:id/audio → la grabación pasa por tu backend
+   ▼
+Tu backend ── x-api-key: ps_ ──►  https://pilotstatus.com.br/v1/phone-lines…
+   ▲
+   │ 5. POST /api/pilot/phone-lines-webhook   (x-pilot-status-signature)
+   └──────────────────────────────── Pilot Status
+```
+
+La clave `ps_` solo existe en la flecha de tu backend.
+
+## Los cuatro prompts
+
+Pégalos en orden. Cada uno es autónomo: todo lo que la IA necesita está escrito en el propio prompt.
+
+### Prompt 1: backend que guarda la clave y compra con una Idempotency-Key
+
+<CodeGroup>
+
+```text Prompt 1: backend
+Agrega a este proyecto un backend que hable con la API de líneas telefónicas de Pilot Status.
+El frontend de esta app NUNCA llama a Pilot Status: solo llama a las rutas de abajo,
+y estas rutas llaman a la API desde el servidor.
+
+Cada llamada a Pilot Status usa:
+  Base: https://pilotstatus.com.br
+  Encabezado: x-api-key: <el valor de la variable de entorno PILOT_TENANT_KEY>
+
+REQUISITOS DE SEGURIDAD CRÍTICOS (no te desvíes de ellos):
+- La clave empieza con "ps_" y es un secreto del lado del servidor. Léela SOLO de una
+  variable de entorno del servidor llamada PILOT_TENANT_KEY.
+- NUNCA le pongas a la variable un prefijo público: ni VITE_, ni NEXT_PUBLIC_, ni
+  REACT_APP_, ni PUBLIC_. Esos prefijos incrustan el valor en el bundle del
+  navegador.
+- NUNCA llames a pilotstatus.com.br desde código del navegador. El CORS de la API bloquea
+  el origen de esta app.
+- No registres en logs la clave, ni ninguna respuesta que traiga un código de activación.
+- Cada ruta de abajo requiere el usuario con sesión iniciada de esta app.
+
+Crea estas rutas:
+
+1) GET /api/pilot/verification
+   Llama a GET /v1/phone-lines/verification. La respuesta es
+   { "status": string, "canPurchase": boolean, "verification": object | null }.
+   status es uno de: NONE, PENDING_CONTACT, IN_REVIEW, APPROVED,
+   NEEDS_DOCUMENT, REJECTED.
+   Devuelve al frontend SOLO { status, canPurchase }.
+
+2) GET /api/pilot/available?ddd=11
+   Llama a GET /v1/phone-lines/available?ddd=<ddd>. Valida primero: ddd tiene
+   exactamente dos dígitos y el primero es de 1 a 9; si no, responde 400 sin
+   llamar a Pilot Status. La respuesta es
+   { "ddd": "11", "totalAvailable": 2,
+     "numbers": [ { "number": "551148637200", "display": "(11) 4863-7200" } ],
+     "price": 33.9, "currency": "BRL" }.
+   "price" y "currency" son lo que cuesta UNA línea por mes: muéstralos antes de comprar.
+   "number" son dígitos E.164 SIN "+", exactamente el valor que recibe la compra.
+   "display" es para mostrar. Cada búsqueda consume una cuota del operador compartida por toda la plataforma
+   (503 SUPPLIER_UNAVAILABLE cuando se agota): nunca llames a esta ruta en un
+   intervalo, solo cuando el usuario lo pida.
+
+3) GET /api/pilot/lines
+   Llama a GET /v1/phone-lines. La respuesta es { "lines": [ ... ] }, cada línea
+   con id, number, display, status (ACTIVE, PAYMENT_PENDING, SUSPENDED,
+   RETURNED, CANCELED), currentPeriodEnd y cancelAtPeriodEnd. Devuelve la lista.
+
+4) POST /api/pilot/purchases   body: { "purchaseId": string, "numbers": string[] }
+   ESTA RUTA COBRA DINERO. Síguela exactamente:
+
+   a) purchaseId es un UUID que el frontend genera UNA VEZ por compra. Busca una
+      compra con ese purchaseId en la base de datos de esta app. Si no existe,
+      crea la fila { purchaseId, userId, numbers,
+      idempotencyKey: crypto.randomUUID(), createdAt } y GUÁRDALA ANTES de
+      llamar a Pilot Status. Si existe, reutiliza la idempotencyKey y los
+      numbers guardados: un clic repetido nunca debe producir una clave nueva. Guárdala en la
+      base de datos, no en memoria.
+
+   b) Valida numbers: de 1 a 10 cadenas distintas, cada una de 12 dígitos que empiecen con
+      "55" (tal como vino en "number" de la búsqueda).
+
+   c) Llama:
+        POST /v1/phone-lines
+        Encabezados: Content-Type: application/json
+                     x-api-key: <PILOT_TENANT_KEY>
+                     Idempotency-Key: <la idempotencyKey guardada>
+        Body: { "numbers": [ ... ] }
+      El body acepta SOLO el campo "numbers" (cualquier otra cosa → 400
+      UNKNOWN_FIELDS). La clave de idempotencia va en el ENCABEZADO, nunca en el body.
+      Usa un timeout de 60 segundos: los números se procesan uno tras otro.
+
+   d) Ante timeout, error de red o HTTP 5xx: repite la MISMA solicitud con la
+      MISMA Idempotency-Key, hasta 3 intentos en total. NUNCA generes una clave nueva
+      para repetir una respuesta que no llegó: eso puede cobrar el mismo
+      número dos veces. Un 500 no prueba que no se cobró nada.
+
+   e) Ante HTTP 4xx (400 o 403): no se intentó nada. Devuelve { error, code }
+      al frontend. Los 403 que importan: VERIFICATION_REQUIRED y
+      VERIFICATION_REJECTED (titular de la cuenta no verificado, o rechazado).
+
+   f) Ante HTTP 200 la respuesta es
+        { "results": [
+            { "number": "551148637200", "ok": true, "lineId": "..." },
+            { "number": "551148637201", "ok": false, "code": "PAYMENT_FAILED",
+              "error": "English text. | Texto em português." } ] }
+      Un 200 NO significa que se compró algo: lee results[i].ok de cada
+      número. Los números son independientes: uno que falla no deshace los
+      demás.
+
+   g) Conciliación: si algún elemento vuelve con code
+      "REQUEST_ALREADY_PROCESSED", llama a GET /v1/phone-lines y compara por
+      "number". Si el número está en la lista, reemplaza el elemento por
+      { number, ok: true, lineId: <id de la lista> }.
+      REQUEST_ALREADY_PROCESSED por sí solo no dice si el primer
+      intento compró o falló; la lista sí.
+
+   h) Si los 3 intentos fallan sin respuesta, llama a GET /v1/phone-lines y
+      responde 502 con { purchaseId, owned: [ { number, lineId } ] }: los
+      números solicitados que ya son tus líneas. El frontend puede reintentar
+      más tarde con el MISMO purchaseId.
+
+   i) Responde { purchaseId, results }. Los códigos posibles por número:
+      REQUEST_ALREADY_PROCESSED, NUMBER_UNAVAILABLE, PAYMENT_FAILED,
+      PAYMENT_PROVIDER_ERROR, PURCHASE_NOT_COMPLETED, SUPPLIER_UNAVAILABLE.
+      Para volver a intentar los números que fallaron, el frontend hace una compra NUEVA (un
+      purchaseId nuevo, y por lo tanto una clave nueva): con la misma clave vuelven como
+      REQUEST_ALREADY_PROCESSED durante una hora.
+
+Todo error de Pilot Status llega como { "error": string, "code": string }. El
+error es bilingüe, "English | Português": muestra la parte anterior al "|".
+```
+
+</CodeGroup>
+
+<Note>
+  Cada número cuesta el precio mensual completo, que se toma primero de la billetera y, lo que falte, de la tarjeta guardada. Un `PAYMENT_PROVIDER_ERROR` significa que la tarjeta **puede** haber sido cobrada: revisa el estado de cuenta antes de volver a intentar. Todas las reglas están en [Comprar líneas](/es/api/phone-lines/purchase#idempotencia).
+</Note>
+
+### Prompt 2: pantalla de compra con la verificación
+
+<CodeGroup>
+
+```text Prompt 2: pantalla de compra
+Agrega a esta app una página "Líneas telefónicas". Usa SOLO las rutas propias del backend
+de esta app (/api/pilot/...). No llames a pilotstatus.com.br desde el frontend por
+ningún motivo y no leas ninguna clave de API aquí.
+
+1) Cuando se abra la página, llama a GET /api/pilot/verification -> { status, canPurchase }.
+   - canPurchase true (status APPROVED o IN_REVIEW): muestra la búsqueda y la compra.
+     Con IN_REVIEW, muestra también el aviso: "Tu cuenta está en revisión. Si la
+     revisión se rechaza, las líneas compradas ahora se devuelven 3 días después, con
+     el monto reembolsado a la billetera."
+   - canPurchase false: NO muestres el botón de compra. Muestra "Para comprar líneas, verifica
+     al titular de la cuenta" y un botón que abra, en una pestaña nueva,
+     https://pilotstatus.com.br/linhas/comprar . Si status es REJECTED, muestra
+     "La verificación fue rechazada. Contacta al soporte de Pilot Status." Ofrece un
+     botón "Ya verifiqué" que vuelva a llamar a GET /api/pilot/verification.
+
+2) Búsqueda: un campo de código de área (DDD) (dos dígitos, el primero de 1 a 9) y un
+   botón "Buscar". Al hacer clic, llama a GET /api/pilot/available?ddd=<ddd>. Muestra cada
+   elemento por su "display" y conserva su "number". Busca solo cuando el usuario
+   haga clic: nunca en un intervalo, nunca mientras escribe. Reutiliza el resultado mientras
+   el usuario elige.
+
+3) Selección: el usuario elige de 1 a 10 números. Muestra "Cada número se cobra al
+   precio mensual completo, primero de la billetera y luego de la tarjeta guardada."
+   Buscar no reserva: otra persona puede comprar un número antes.
+
+4) Compra: al hacer clic en "Comprar", genera purchaseId = crypto.randomUUID()
+   UNA VEZ y guárdalo en el estado de la página. Deshabilita el botón mientras la solicitud está
+   en curso. Llama a POST /api/pilot/purchases con { purchaseId, numbers }. Si el
+   usuario hace clic en "Intentar de nuevo" después de un error de red o un 502, reenvía el MISMO
+   purchaseId: nunca generes otro para repetir una compra que no
+   respondió.
+
+5) Resultado: muestra una fila por número, leyendo results[i].ok:
+   - ok true: "Comprado" y un botón "Activar en WhatsApp" que lleve a la
+     pantalla de activación de ese lineId.
+   - ok false, según code:
+     NUMBER_UNAVAILABLE -> "Este número ya no está disponible. Busca de nuevo."
+     PAYMENT_FAILED -> "Pago no completado. Agrega saldo o revisa la tarjeta
+       y vuelve a comprar." (no se cobró nada)
+     PAYMENT_PROVIDER_ERROR -> "La tarjeta puede haber sido cobrada. Revisa el
+       estado de cuenta antes de volver a intentar."
+     SUPPLIER_UNAVAILABLE, PURCHASE_NOT_COMPLETED -> "No se pudo completar. El
+       monto volvió a la billetera. Intenta de nuevo en unos minutos."
+     cualquier otro -> muestra la parte en inglés del campo error.
+   Para volver a comprar los que fallaron, inicia una compra NUEVA (purchaseId nuevo).
+   Nunca digas "compra completada" solo porque la solicitud respondió 200.
+
+6) Ante 403 VERIFICATION_REQUIRED o VERIFICATION_REJECTED, vuelve al estado del paso 1
+   (sin botón de compra, con el enlace a /linhas/comprar).
+
+7) Debajo, lista las líneas del usuario con GET /api/pilot/lines: display, status y,
+   si cancelAtPeriodEnd es true, "Cancelada: funciona hasta <currentPeriodEnd>".
+```
+
+</CodeGroup>
+
+### Prompt 3: código de activación, grabación y cancelación
+
+<CodeGroup>
+
+```text Prompt 3: código de activación
+Agrega a esta app la activación de WhatsApp en una línea telefónica comprada. WhatsApp
+verifica una línea fija LLAMÁNDOLA y diciendo un código de 6 dígitos; Pilot Status
+captura la llamada y transcribe el código.
+
+Mantén las mismas reglas de seguridad: la clave ps_ solo en el servidor (variable
+PILOT_TENANT_KEY), sin VITE_/NEXT_PUBLIC_/REACT_APP_/PUBLIC_, el frontend solo
+llama a /api/pilot/... . EL CÓDIGO DE ACTIVACIÓN ES UNA CREDENCIAL: quien lo tiene
+registra una cuenta de WhatsApp en la línea. No lo registres en logs, no lo guardes en caché, no
+lo guardes en la base de datos, y muéstralo solo al usuario con sesión iniciada dueño de
+la línea.
+
+BACKEND: crea estas rutas, todas con el encabezado x-api-key: <PILOT_TENANT_KEY>
+contra https://pilotstatus.com.br. En cada respuesta que traiga una solicitud,
+envía Cache-Control: no-store.
+
+1) POST /api/pilot/lines/:lineId/activations
+   Llama a POST /v1/phone-lines/{lineId}/activations, sin body. El éxito es 201:
+     { "activation": { "id", "lineId", "status": "WAITING", "requestedAt",
+       "pollDeadline", "code": null, "capturedAt": null, "transcribedAt": null,
+       "failureReason": null, "hasAudio": false } }
+   pollDeadline es el final de la ventana de 5 minutos.
+   Errores:
+   - 409 ACTIVATION_IN_PROGRESS: ya hay una solicitud esperando en esta línea.
+     Llama a GET /v1/phone-lines/{lineId}/activations?limit=1 (la más reciente primero,
+     respuesta { "activations": [ ... ] }); si la primera está en WAITING, devuélvela
+     para que el frontend retome la consulta.
+   - 409 LINE_NOT_ACTIVE: la línea está SUSPENDED, RETURNED o CANCELED.
+   - 503 SUPPLIER_UNAVAILABLE: el operador no respondió; se permite reintentar
+     de inmediato.
+
+2) GET /api/pilot/activations/:activationId
+   Llama a GET /v1/phone-lines/activations/{activationId} y devuelve
+   { activation }. 404 ACTIVATION_NOT_FOUND si no existe.
+
+3) GET /api/pilot/activations/:activationId/audio
+   Llama a GET /v1/phone-lines/activations/{activationId}/audio. La respuesta es
+   el archivo de audio, no JSON. Transmite los bytes al navegador con el mismo
+   Content-Type (normalmente audio/wav o audio/mpeg) y con
+   Cache-Control: private, no-store. 404 ACTIVATION_NOT_FOUND cuando la solicitud
+   no tiene grabación.
+
+4) POST /api/pilot/lines/:lineId/activations/:activationId/cancel
+   Llama a POST /v1/phone-lines/{lineId}/activations/{activationId}/cancel, sin
+   body. Éxito 200: la solicitud pasa a TIMED_OUT con failureReason
+   "canceled_by_customer", y se acepta una solicitud nueva de inmediato.
+   409 ACTIVATION_NOT_WAITING: la llamada ya se capturó o la solicitud
+   ya terminó; no cambió nada, sigue consultando.
+
+5) DELETE /api/pilot/lines/:lineId
+   Llama a DELETE /v1/phone-lines/{lineId} y devuelve { line }. El resultado
+   depende del status de la línea ANTES:
+   - ACTIVE: 200 con status "ACTIVE" y cancelAtPeriodEnd true: sigue
+     funcionando hasta currentPeriodEnd, sin reembolso, y no se renueva.
+   - PAYMENT_PENDING o SUSPENDED: 200 con status "RETURNED": el número vuelve
+     al operador DE INMEDIATO y de forma irreversible.
+   - RETURNED o CANCELED: 409 NOT_CANCELABLE.
+   - 503 SUPPLIER_UNAVAILABLE (solo línea vencida): no cambió nada, intenta de nuevo.
+
+FRONTEND: pantalla de activación de una línea:
+
+a) Muestra el número y un botón "Obtener código". EL ORDEN IMPORTA: la solicitud debe
+   existir ANTES de que WhatsApp llame. Solo después de que
+   POST /api/pilot/lines/:lineId/activations responda, muestra la instrucción:
+   "Ahora, en WhatsApp Business, pide el código por LLAMADA: toca 'Llamarme'. Esta
+   línea es fija y no recibe SMS." Nunca muestres esa instrucción
+   antes de que exista la solicitud, y nunca sugieras esperar un SMS.
+
+b) Muestra una cuenta regresiva hasta pollDeadline.
+
+c) Consulta GET /api/pilot/activations/:activationId cada 5 segundos.
+   SIGUE consultando mientras:
+     status === "WAITING", o
+     status === "CAPTURED" y failureReason === null
+   CAPTURED con failureReason null es el estado intermedio mientras se lee el código,
+   y puede durar unos minutos: NO te detengas ahí. Muestra "Llamada
+   recibida, leyendo el código…".
+   DETENTE en cualquier otro caso:
+     TRANSCRIBED con code -> muestra el código de forma destacada: "Escribe este código en
+       WhatsApp".
+     TRANSCRIBED con code null (failureReason "no_code_in_transcript") ->
+       "No pudimos leer el código." y ofrece reproducir la grabación.
+     CAPTURED con failureReason "transcription_failed" -> ofrece reproducir la
+       grabación.
+     TIMED_OUT con "no_call_in_window" -> "No llegó ninguna llamada. Pide un código nuevo
+       y vuelve a tocar 'Llamarme'."
+     TIMED_OUT con "canceled_by_customer" -> "Espera cancelada."
+     FAILED -> "No se pudo capturar la llamada. Pide un código nuevo."
+     cualquier failureReason desconocido -> trátalo como un fallo.
+   TRANSCRIBED no siempre trae un código: revisa el campo code.
+   Si la solicitud sigue en WAITING más de 1 minuto después de pollDeadline, trátala
+   como vencida y habilita "Pedir un código nuevo".
+
+d) Grabación: cuando hasAudio es true, muestra un reproductor <audio> con
+   src="/api/pilot/activations/<activationId>/audio" (la ruta del backend de esta app,
+   nunca la URL de Pilot Status).
+
+e) Un botón "Cancelar espera" mientras status es WAITING: llama a la ruta de cancelación y
+   luego permite "Pedir un código nuevo" de inmediato.
+
+f) En la lista de líneas, un botón "Cancelar línea" con un diálogo de confirmación: "Una
+   línea pagada sigue funcionando hasta el final del período, sin reembolso. Una
+   línea vencida se devuelve de inmediato: el número deja de ser tuyo, no hay
+   garantía de volver a comprarlo, y sus códigos y grabaciones se eliminan."
+   Después de la respuesta, muestra lo que pasó a partir de status y cancelAtPeriodEnd,
+   no del 200.
+```
+
+</CodeGroup>
+
+<Note>
+  Los estados de la solicitud, los valores de `failureReason` y los tiempos (la línea se revisa cada 15 segundos, hasta 3 intentos de transcripción) están en [Códigos de activación](/es/api/phone-lines/activation-codes#estados).
+</Note>
+
+### Prompt 4: webhook de líneas telefónicas, con firma
+
+<CodeGroup>
+
+```text Prompt 4: webhook de líneas telefónicas
+Agrega a esta app el webhook de líneas telefónicas de Pilot Status, para que sepa de inmediato
+que llegó un código, que falló una renovación o que se suspendió una línea.
+
+ADVERTENCIA: el webhook de líneas telefónicas es un registro SEPARADO de los
+webhooks de números. POST /v1/webhooks NUNCA recibe eventos phone_line.*: no uses ese
+endpoint. El registro de líneas telefónicas es POST /v1/phone-lines/webhooks.
+
+Paso 1: registro, del lado del servidor, UNA VEZ.
+
+Crea un script o una ruta de administración (solo para el dueño de la app) que:
+
+a) Llame a GET https://pilotstatus.com.br/v1/phone-lines/webhooks con
+   x-api-key: <PILOT_TENANT_KEY>. Respuesta { "webhooks": [ ... ], "events": [...] }.
+   Si ya existe un webhook con la URL de abajo, NO crees otro:
+   la creación no es idempotente, y dos POST crean dos webhooks con dos
+   secretos.
+
+b) Si no, llame a:
+     POST https://pilotstatus.com.br/v1/phone-lines/webhooks
+     Encabezados: Content-Type: application/json
+                  x-api-key: <PILOT_TENANT_KEY>
+     Body: { "name": "My app",
+             "url": "https://<URL pública de esta app>/api/pilot/phone-lines-webhook",
+             "events": ["*"] }
+   El body acepta solo name, url y events. Aquí "*" significa todos los eventos
+   de líneas telefónicas. La URL debe ser https y pública: localhost, una IP privada o una
+   URL solo de vista previa se rechaza con 400 WEBHOOK_URL_REFUSED.
+
+c) La respuesta 201 trae { "webhook": { "id", ..., "secret": "plwh_..." } }.
+   EL SECRETO APARECE UNA SOLA VEZ, EN ESTA RESPUESTA. Guárdalo de inmediato en un
+   lugar solo del servidor (una variable de entorno PILOT_PHONE_LINES_WEBHOOK_SECRET,
+   o cifrado en la base de datos). Ninguna lectura lo devuelve después y no hay
+   rotación. Nunca devuelvas el secreto al frontend, nunca uses un
+   prefijo VITE_/NEXT_PUBLIC_, nunca lo registres en logs.
+
+Paso 2: receptor: POST /api/pilot/phone-lines-webhook (ruta pública).
+
+a) Lee el BODY CRUDO (los bytes exactamente como llegaron), ANTES de cualquier
+   parseo de JSON. En Express usa express.raw({ type: "application/json" }) solo en esta
+   ruta; en Next.js usa await request.text(); en una Edge Function, lee
+   el texto de la solicitud. Volver a serializar el JSON rompe la firma.
+
+b) Verifica el encabezado x-pilot-status-signature: es el HMAC-SHA256 del
+   body crudo, codificado en hex, con el secreto completo como clave (incluido el prefijo
+   "plwh_"). Compara en tiempo constante (crypto.timingSafeEqual, verificando primero
+   que las longitudes coincidan). Firma ausente o inválida -> 401 y detente.
+   No hay encabezado de timestamp.
+
+c) Parsea. El body es:
+     { "id": "...", "event": "phone_line.code_received",
+       "createdAt": "...", "data": { ... } }
+
+d) Deduplica por "id": guárdalo en una tabla con un índice único; si
+   ya está, responde 200 y detente. El mismo id llega en cada reintento (y
+   también en el encabezado Idempotency-Key). La entrega es al menos una vez y el orden no
+   está garantizado.
+
+e) Responde 2xx en menos de 10 segundos y procesa después. Cualquier otra cosa cuenta como
+   un fallo: hay 6 intentos en unos 15 minutos, y una redirección 3xx no
+   se sigue.
+
+f) Maneja los eventos (los números en data.number vienen SIN "+"):
+   - phone_line.code_received: data = { lineId, number, name, activationId,
+     code, failureReason, audioUrl }. Llega una vez por solicitud. code es null
+     cuando la solicitud terminó sin código (failureReason dice por qué). NO
+     registres este body en logs: el código es una credencial. Actualiza la pantalla de activación si
+     está abierta (el webhook puede reemplazar la consulta periódica).
+   - phone_line.audio_received: la llamada se capturó; audioUrl apunta a la
+     grabación, que requiere la clave: obtenla desde el backend, nunca en
+     el navegador.
+   - phone_line.code_failed: data.reason, siempre acompañado de un
+     code_received con code null.
+   - phone_line.purchased, phone_line.renewed, phone_line.payment_failed,
+     phone_line.suspended, phone_line.returned, phone_line.canceled: actualiza
+     el status de la línea en esta app según data.lineId.
+   - phone_line.verification_updated: data = { verificationId, status } con
+     status APPROVED, IN_REVIEW, NEEDS_DOCUMENT o REJECTED.
+   - cualquier otro evento: ignóralo y responde 200.
+
+g) Los eventos son notificaciones, no la fuente de verdad. Si el endpoint estuvo caído
+   más tiempo del que duran los reintentos, lee el estado actual con
+   GET /v1/phone-lines o GET /v1/phone-lines/activations/{activationId}.
+```
+
+</CodeGroup>
+
+## Errores que la IA suele cometer
+
+Estos explican casi todas las integraciones rotas. Si algo no funciona, revísalos en este orden.
+
+<AccordionGroup>
+  <Accordion title="La clave ps_ termina en el navegador">
+    El builder la lee de `VITE_PILOT_KEY` o `NEXT_PUBLIC_PILOT_KEY` porque es la forma más rápida de que compile una llamada fetch. Esos prefijos incrustan el valor en el bundle publicado, y cualquiera que abra DevTools puede comprar líneas en tu cuenta. La clave va en una variable simple del servidor, como `PILOT_TENANT_KEY`. Si la encuentras en el bundle, rota la clave en el panel antes de corregir el código.
+  </Accordion>
+
+  <Accordion title="Una clave de idempotencia nueva en cada intento">
+    La IA genera `crypto.randomUUID()` dentro de la función que hace el `fetch`, así que cada reintento (y cada clic repetido) se convierte en una compra nueva, cobrada otra vez. La `Idempotency-Key` nace **una vez por compra**, se guarda **antes** de enviar, y se reenvía sin cambios ante timeout, error de red o `5xx`. Una clave nueva solo para una compra nueva, después de corregir la causa de un `PAYMENT_FAILED` o `SUPPLIER_UNAVAILABLE`. Consulta [Idempotencia](/es/api/phone-lines/purchase#idempotencia).
+  </Accordion>
+
+  <Accordion title="Tratar el 200 de la compra como éxito">
+    `POST /v1/phone-lines` responde `200` cuando procesó la solicitud, aunque todos los números hayan fallado. El resultado de cada número está en `results[i].ok`. Y un `REQUEST_ALREADY_PROCESSED` no dice si el número se compró: compara con `GET /v1/phone-lines` por `number`.
+  </Accordion>
+
+  <Accordion title="Decirle al usuario que toque Llamarme antes de que la solicitud esté abierta">
+    Una llamada que llega antes de `POST /v1/phone-lines/{id}/activations` no se captura. La instrucción "toca **Llamarme**" (Call me) solo aparece después de que la solicitud responde `201`. Y la línea es fija: esperar un SMS solo consume la ventana de 5 minutos.
+  </Accordion>
+
+  <Accordion title="Detener la consulta en CAPTURED">
+    La IA se detiene en el primer status distinto de `WAITING`. Pero `CAPTURED` con `failureReason: null` es el estado intermedio mientras se lee el código, y puede durar unos minutos. Sigue consultando hasta un estado final, y revisa `code`: `TRANSCRIBED` no garantiza un código. Todos los estados: [Estados](/es/api/phone-lines/activation-codes#estados).
+  </Accordion>
+
+  <Accordion title="Registrar el webhook con POST /v1/webhooks">
+    `POST /v1/webhooks` es el registro para webhooks de **números** y nunca recibe eventos `phone_line.*`, ni siquiera con `"*"`. El de líneas telefónicas es `POST /v1/phone-lines/webhooks`, y el secreto `plwh_` que devuelve aparece solo en esa respuesta. Consulta [Webhooks de líneas telefónicas](/es/api/phone-lines/webhooks).
+  </Accordion>
+
+  <Accordion title="Verificar la firma sobre JSON ya parseado">
+    El framework parsea el body antes del handler, y la IA calcula el HMAC sobre `JSON.stringify(req.body)`. Nunca coincide. La firma es sobre los **bytes recibidos**: lee el body crudo (`express.raw`, `request.text()`) solo en esa ruta, verifica y solo entonces parsea.
+  </Accordion>
+</AccordionGroup>
+
+## Próximos pasos
+
+<CardGroup cols={2}>
+  <Card title="Líneas telefónicas mediante la API" icon="phone" href="/es/guides/phone-lines-api">
+    El mismo flujo paso a paso, con el backend de compra de ejemplo y el receptor del webhook.
+  </Card>
+  <Card title="Referencia de la API de líneas telefónicas" icon="code" href="/es/api/phone-lines/overview">
+    Cada campo, estado y código de error de `/v1/phone-lines`.
+  </Card>
+  <Card title="Verificación del titular de la cuenta" icon="id-card" href="/es/api/phone-lines/verification">
+    Para hacer la verificación dentro de tu producto en lugar de enviar al cliente al panel.
+  </Card>
+  <Card title="Webhooks de líneas telefónicas" icon="bell" href="/es/api/phone-lines/webhooks">
+    Eventos, payloads, firma y reintentos.
+  </Card>
+</CardGroup>

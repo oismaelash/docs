@@ -1,0 +1,110 @@
+---
+title: "POST /v1/messages/{id}/resend: reenviar un mensaje fallido"
+sidebarTitle: "Reenviar un mensaje fallido"
+description: "Vuelve a enviar la solicitud almacenada de un mensaje fallido o cancelado, como un mensaje nuevo."
+mode: "wide"
+---
+
+# Reenviar un mensaje fallido
+
+```text
+POST https://pilotstatus.com.br/v1/messages/{id}/resend
+```
+
+Vuelve a enviar la **solicitud almacenada** de un mensaje que terminó en `FAILED` o `CANCELED`, sin que tengas que conservar el payload original.
+
+Esto crea un **mensaje nuevo** con su propio `id` y `correlationId`. La fila original queda exactamente como está: su estado, sus marcas de tiempo y su id de mensaje del proveedor siguen siendo legibles, así que los dos intentos siguen siendo distinguibles después.
+
+<Note>
+  El reenvío cuenta contra la cuota de tu plan, igual que cualquier envío. Es un mensaje nuevo, no un reintento del anterior.
+</Note>
+
+<Warning>
+  Antes de construir un reintento automático: cuando un mensaje llega a `FAILED`, la plataforma **ya** lo reintentó: hasta 10 intentos con 30 s de separación, más un reconciliador, más una verificación de entrega 30 y 60 minutos después del envío. `FAILED` significa que nos rendimos.
+
+  Por eso, un reenvío inmediato suele fallar por el mismo motivo (número desconectado, plantilla no aprobada, destino inválido, fuera de la ventana de servicio). Lee `errorCode` (y `errorMessage` para el motivo legible) en [`GET /v1/messages/{id}`](/es/api/messages/status) y reenvía cuando la causa esté corregida, en lugar de reenviar a ciegas en un bucle.
+</Warning>
+
+## Encontrar lo que falló: depende del tipo de conexión
+
+⛔ **Un número oficial (Meta Cloud API) no recibe ningún evento canónico `message.*`.** Ni `message.failed`, ni `message.sent`: ninguno de la familia, sea cual sea la causa del fallo. En esos números tu webhook recibe el **sobre nativo de Meta**, así que un fallo llega como `value.statuses[].status: "failed"` con un arreglo `errors[]`.
+
+<Warning>
+  **Cambió el 2026-09-17.** Hasta esa fecha, `message.sent` y `message.failed` sí llegaban a los webhooks de números oficiales que se habían suscrito a `"*"`. Ya no llegan. Si tu receptor depende de esos dos eventos en un número oficial, cámbialo al `value.statuses[]` del sobre nativo o al endpoint de listado de abajo.
+
+  Las familias canónicas que **sí** llegan a un número oficial son `number.*`, `call.*` y `flow.response_received`.
+</Warning>
+
+En un número no oficial nada cambia: `message.failed` se despacha como antes.
+
+⇒ **El camino de descubrimiento que funciona para ambos tipos de conexión es [`GET /v1/messages?status=FAILED`](/es/api/messages/list).** La fila del mensaje llega a `FAILED` de cualquier forma (incluso en un fallo que reportó la propia Meta), así que el listado y este endpoint coinciden sin importar cómo esté conectado el número.
+
+## Headers
+
+| Header | Obligatorio | Descripción |
+| --- | --- | --- |
+| `x-api-key` | sí | Una API key **con alcance de número**. Una clave de todo el tenant se rechaza con `TENANT_SCOPE_NOT_ALLOWED`. |
+| `x-whatsapp-number-id` | cuando la clave tiene alcance de tenant | El número al que pertenece el mensaje. |
+
+Con un **token OAuth / MCP o una account key** (`ps_account_`), requiere el permiso **`messages:resend`**: `ADMIN` y `OWNER`. Una clave clásica `ps_` no se ve afectada por los roles. Esto es deliberadamente más alto que `messages:send`: un reenvío gasta cuota en un envío que ya pagaste una vez, y puede entregar dos veces.
+
+## Parámetro de ruta
+
+| Parámetro | Descripción |
+| --- | --- |
+| `id` | El `id` interno del mensaje, su `correlationId`, **o** el id de mensaje del propio proveedor (wamid). El mismo contrato de identificador que [`GET /v1/messages/{id}`](/es/api/messages/status). |
+
+## Body
+
+**Ninguno.** Este endpoint no acepta campos en el body: el mensaje viene de la URL y el contenido viene del envío original.
+
+Cualquier campo que envíes se rechaza con `400 UNKNOWN_FIELDS`, indicando su nombre. Aquí no existe la sobrescritura `whatsappInstanceId`: un reenvío siempre sale por el número al que apunta la clave.
+
+## Ejemplo
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/cmf8x2p9k0001/resend" \
+  -H "x-api-key: $PILOT_STATUS_API_KEY"
+```
+
+## Respuesta (202)
+
+```json
+{
+  "id": "cmf9a4t1m0007",
+  "correlationId": "b3f1c8e2-77aa-4c19-9f41-2d0e5a6b8c31",
+  "status": "QUEUED",
+  "createdAt": "2026-09-17T18:42:11.204Z",
+  "origin": "minha-linha",
+  "sourceNumber": "5511999999999",
+  "originalMessageId": "cmf8x2p9k0001"
+}
+```
+
+`originalMessageId` es el mensaje que reenviaste. Todo lo demás es el mensaje **nuevo**, con la misma forma que devuelve [`POST /v1/messages/send`](/es/api/messages/send), incluido `flowToken` cuando la plantilla lleva un botón de Flow. El reenvío genera un `flowToken` **nuevo**, así la respuesta que vuelva puede atribuirse a este intento y no al primero.
+
+## Errores comunes
+
+| Estado | Código | Cuándo |
+| --- | --- | --- |
+| `400` | `INVALID_BODY` | Enviaste un body que no es JSON válido. No envíes body (un body vacío está bien). Consulta [Body JSON malformado](/es/api/overview#cuerpo-json-mal-formado). |
+| `400` | `UNKNOWN_FIELDS` | Enviaste un campo en el body. Este endpoint no acepta ninguno. |
+| `401` | — | Credencial ausente o inválida (`{"error": "Invalid API key"}`). |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Una clave de toda la cuenta sin `x-whatsapp-number-id`. |
+| `403` | `PERMISSION_DENIED` | Token OAuth/MCP o account key cuyo rol no tiene `messages:resend` (por debajo de `ADMIN`). |
+| `404` | `MESSAGE_NOT_FOUND` | Ningún mensaje tuyo coincide con ese identificador en ese número. |
+| `409` | `MESSAGE_NOT_RESENDABLE` | El mensaje no está en `FAILED` ni `CANCELED`. Ver abajo. |
+| `409` | `RESEND_DELIVERY_WINDOW_EXPIRED` | El original definió `deliverUntil` y ya pasó. |
+| `409` | `RESEND_ALREADY_IN_FLIGHT` | Reenviaste este mismo mensaje en los últimos 120 segundos. |
+| `422` | `RESEND_SNAPSHOT_MISSING` | El mensaje no tiene una solicitud almacenada para repetir: envía uno nuevo. |
+| `422` | `RESEND_SNAPSHOT_REDACTED` | La solicitud almacenada fue borrada por la política de retención de datos del número. Envía un mensaje nuevo. |
+
+Pruébalo en el Playground: [Reenviar mensaje](/es/playground/messages/resend-message).
+
+Además, todo lo que [`POST /v1/messages/send`](/es/api/messages/send) puede responder, sin cambios: un reenvío rechazado por falta de cuota se lee exactamente igual que un envío rechazado por falta de cuota.
+
+### Por qué se rechazan `SENT` y `QUEUED`
+
+`SENT` **no** significa resuelto. Significa que llegó un acuse de recibo; la entrega todavía puede concretarse, y la plataforma ya está vigilando ese mensaje a los 30 y 60 minutos y lo volverá a despachar por sí misma si nunca llegó al proveedor. Reenviar encima de eso le da a un mensaje dos remitentes.
+
+`QUEUED` todavía lo están procesando el worker y el reconciliador. En ambos casos la respuesta indica el estado actual en `details.status`, así puedes decidir qué hacer sin una segunda llamada.

@@ -1,0 +1,169 @@
+---
+title: "Checkout transparente: pagos con tarjeta en tu propia página con Stripe Elements"
+sidebarTitle: "Checkout transparente"
+description: "Paso a paso: permite que tu cliente recargue la wallet y guarde una tarjeta dentro de tu propia app, con Stripe Elements y la API de Pilot Status. Tu servidor guarda la API key, el navegador habla con Stripe y los datos de la tarjeta nunca pasan por tus servidores ni por los nuestros."
+mode: "wide"
+---
+
+# Checkout transparente con Stripe Elements
+
+Con un checkout transparente, el formulario de tarjeta está **en tu página**: sin redirección a una página alojada, sin dashboard. Tu cliente escribe la tarjeta en campos renderizados por Stripe; Pilot Status acredita la wallet o guarda la tarjeta. Úsalo para fondear un workspace (por ejemplo, el workspace de cada cliente final cuando [revendes](/es/reseller-billing)) desde dentro de tu propio producto.
+
+Los endpoints se describen en [Wallet y tarjeta por API](/es/api/wallet-and-card#tarjeta-en-tu-propia-página-stripe-elements). Esta guía muestra cómo encajan las piezas.
+
+## Cómo funciona
+
+1. **Tu servidor** le pide un intent a Pilot Status, con la API key.
+2. **Tu página** carga Stripe.js con la `publishableKey` de la respuesta, monta el Payment Element con el `clientSecret` y confirma con Stripe.
+3. **Tu servidor** llama a `sync`, que lee el resultado en Stripe y acredita la wallet (o guarda la tarjeta) de inmediato.
+
+**No** necesitas una cuenta de Stripe: la `publishableKey` y los intents son nuestros.
+
+<Warning>
+  **PCI: los datos de la tarjeta nunca llegan a tu servidor ni al nuestro.** El número de tarjeta, la fecha de vencimiento y el CVC se escriben en los campos propios de Stripe, dentro de un iframe servido por Stripe, y van directo del navegador a Stripe. Tu servidor solo ve el `clientSecret` y los ids. Mantenlo así:
+
+  - carga Stripe.js desde `https://js.stripe.com`, nunca desde una copia que alojes tú;
+  - nunca construyas tus propios campos de tarjeta, y nunca envíes datos de tarjeta a ninguna API, incluida la nuestra;
+  - guarda la API key solo en tu servidor. El navegador recibe el `clientSecret`, nunca la key;
+  - no registres el `clientSecret` en logs: quien lo tenga puede confirmar el intent.
+</Warning>
+
+## 1. Tu servidor: crea el intent
+
+Expón una ruta en tu backend que llame a Pilot Status. Con una key de cuenta, agrega `x-workspace-id` para fondear un workspace específico.
+
+```js server.js (Node 18+)
+import express from "express";
+
+const app = express();
+app.use(express.json());
+
+const PILOT = "https://pilotstatus.com.br";
+const headers = {
+  "Content-Type": "application/json",
+  "x-api-key": process.env.PILOT_STATUS_KEY, // ps_workspace_… o ps_account_…
+  // "x-workspace-id": customer.workspaceId, // solo con una key de cuenta
+};
+
+app.post("/billing/topup", async (req, res) => {
+  const r = await fetch(`${PILOT}/v1/billing/payment-intents`, {
+    method: "POST",
+    headers: { ...headers, "Idempotency-Key": req.body.attemptId }, // un id por clic
+    body: JSON.stringify({ purpose: "wallet_topup", amount: req.body.amount, saveCard: true }),
+  });
+  const body = await r.json();
+  if (!r.ok) return res.status(r.status).json({ code: body.code });
+  // Envía al navegador solo lo que necesita. Nunca la API key.
+  res.json({
+    clientSecret: body.clientSecret,
+    publishableKey: body.publishableKey,
+    paymentIntentId: body.paymentIntentId,
+  });
+});
+
+app.post("/billing/topup/:id/sync", async (req, res) => {
+  const r = await fetch(`${PILOT}/v1/billing/payment-intents/${req.params.id}/sync`, {
+    method: "POST",
+    headers,
+  });
+  res.status(r.status).json(await r.json());
+});
+
+app.listen(3000);
+```
+
+- **`Idempotency-Key`**: genera un id por intento de checkout en el navegador y reutilízalo en los reintentos. Un reintento dentro de 24 horas recibe el mismo intent en lugar de un segundo pedido.
+- **`503 PAYMENTS_NOT_CONFIGURED`**: los pagos con tarjeta no están disponibles de nuestro lado. Muestra otra opción: en workspaces en BRL, [Pix](/es/api/wallet-and-card#recargar-con-pix).
+
+## 2. Tu página: monta el Payment Element y confirma
+
+```html checkout.html
+<form id="checkout">
+  <div id="payment-element"></div>
+  <button id="pay" type="submit">Pay</button>
+  <p id="message"></p>
+</form>
+
+<script src="https://js.stripe.com/v3/"></script>
+<script type="module">
+  const attemptId = crypto.randomUUID();
+  const r = await fetch("/billing/topup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ amount: 150, attemptId }),
+  });
+  const { clientSecret, publishableKey, paymentIntentId } = await r.json();
+
+  const stripe = Stripe(publishableKey);
+  const elements = stripe.elements({ clientSecret });
+  elements.create("payment").mount("#payment-element");
+
+  document.getElementById("checkout").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const { error } = await stripe.confirmPayment({
+      elements,
+      redirect: "if_required", // 3-D Secure se abre en un modal; sin cambio de página para tarjetas
+    });
+    if (error) {
+      document.getElementById("message").textContent = error.message;
+      return;
+    }
+    const sync = await fetch(`/billing/topup/${paymentIntentId}/sync`, { method: "POST" });
+    const result = await sync.json();
+    document.getElementById("message").textContent =
+      result.orderStatus === "COMPLETED" ? `Paid. New balance: ${result.balance ?? "updated"}` : "Processing…";
+  });
+</script>
+```
+
+## 3. Tu servidor: sincroniza y reacciona
+
+`sync` responde con el resultado de inmediato:
+
+- `orderStatus: "COMPLETED"`: la wallet ya tiene el dinero. `credited` es `true` en la llamada que lo acreditó, y `balance` es el nuevo saldo.
+- `orderStatus: "PENDING"`: Stripe aún no confirmó. No hagas nada: cuando Stripe confirme, acreditamos la wallet por nuestra cuenta.
+- `orderStatus: "FAILED"`: el pago fue cancelado. Inicia un nuevo intento con una nueva `Idempotency-Key`.
+
+La wallet se acredita **una sola vez**, ya sea por tu `sync` o por nuestra propia notificación de Stripe. Para enterarte de tu lado sin hacer polling, suscribe un [webhook de workspace](/es/api/workspace-webhooks) a `wallet.topup_paid`: se dispara una vez por recarga acreditada, tanto para Pix como para tarjeta.
+
+## Error en el navegador pero cobrado
+
+`stripe.confirmPayment` puede volver con un **error de red incluso cuando Stripe ya cobró la tarjeta**: la conexión se cayó después del cobro y antes de que la respuesta llegara al navegador. Esto ocurrió en producción el 2026-10-29.
+
+**Nunca muestres "pago fallido" solo por ese error.** Para un `error` de tipo `api_connection_error` (o cualquier error que no sea un rechazo de tarjeta), consulta con el servidor antes de decirle algo al cliente:
+
+1. Consulta [`POST /v1/billing/payment-intents/{paymentIntentId}/sync`](#3-tu-servidor-sincroniza-y-reacciona) (o `GET /v1/billing/topups/{orderId}` con el `orderId` del paso 1) cada 2–3 segundos durante unos **30 segundos**.
+2. Detente en cuanto `sync` responda `orderStatus: "COMPLETED"` (o la recarga responda `status: "paid"`): el pago se realizó.
+3. Si sigue pendiente después de ~30 s, dile al cliente que el pago **se está confirmando**, no que falló. Que `sync` responda `orderStatus: "FAILED"` (o la recarga `status: "failed"`) es el único fallo que muestras.
+
+```javascript
+async function waitForPaid(paymentIntentId, { timeoutMs = 30000, everyMs = 2500 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = await fetch(`/billing/topup/${paymentIntentId}/sync`, { method: "POST" });
+    const { orderStatus } = await r.json();
+    if (orderStatus === "COMPLETED") return "paid";
+    if (orderStatus === "FAILED") return "failed";
+    await new Promise((resolve) => setTimeout(resolve, everyMs));
+  }
+  return "pending"; // muestra "confirmando", nunca "fallido"
+}
+```
+
+<Warning>
+  La fuente de verdad es el webhook de workspace [`wallet.topup_paid`](/es/api/workspace-webhooks): se dispara una vez por recarga acreditada, incluso cuando el navegador nunca supo que el pago tuvo éxito. Concilia tus registros a partir de él, no de lo que vio el navegador.
+</Warning>
+
+## Guardar una tarjeta sin cobrar
+
+El flujo es el mismo con un setup intent:
+
+1. Servidor: `POST /v1/billing/card/setup-intent` sin body → `clientSecret`, `setupIntentId`, `publishableKey`.
+2. Página: `stripe.elements({ clientSecret })`, monta `"payment"` y luego `stripe.confirmSetup({ elements, redirect: "if_required" })`.
+3. Servidor: `POST /v1/billing/card/setup-intent/{setupIntentId}/sync` → `saved: true` y la `card` (marca, últimos 4 dígitos, vencimiento).
+
+La tarjeta pasa a ser la tarjeta guardada del workspace y reemplaza a cualquier anterior. A partir de ahí respalda la wallet en cada cobro: números, renovaciones de plan y líneas telefónicas.
+
+## Pruebas
+
+Usa las [tarjetas de prueba de Stripe](https://docs.stripe.com/testing) solo en un entorno cuya `publishableKey` empiece con `pk_test_`. En producción (`pk_live_`) cada pago confirmado es un cobro real.
