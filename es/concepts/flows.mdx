@@ -1,0 +1,256 @@
+---
+mode: "wide"
+title: "WhatsApp Flows: formularios interactivos dentro del chat"
+sidebarTitle: "Flows"
+description: "Crea y publica WhatsApp Flows en Pilot Status: formularios que se abren dentro del chat. Incluye data_exchange, donde Pilot Status se encarga del cifrado de Meta y reenvía JSON plano a tu webhook."
+---
+
+Un **Flow** es un formulario que se abre dentro del chat de WhatsApp (una pantalla de reservas, un formulario de leads, un triaje de soporte) en lugar de una conversación en la que el cliente tiene que ir escribiendo. Pilot Status gestiona todo el ciclo de vida: crea y edita en el dashboard (`/flows`), mediante la API REST (`/v1/flows`), o adjunta uno a una plantilla con un **botón FLOW**.
+
+Los Flows existen **solo en números de Meta (Cloud API)**. Pertenecen a la WhatsApp Business Account (WABA), no a un número individual, así que todos los números de esa WABA pueden enviar los mismos Flows.
+
+## Dos tipos de Flow
+
+La diferencia es si tu backend participa mientras el formulario está abierto.
+
+|  | **NAVIGATE** | **`data_exchange`** |
+| --- | --- | --- |
+| Pantallas | Fijas, definidas en el Flow JSON | Las decide tu servidor, pantalla por pantalla |
+| Tu backend | No se llama durante el formulario | Se llama en cada pantalla |
+| Requiere endpoint | No | Sí |
+| Uso típico | Captura de leads, encuesta, registro | Reservas con disponibilidad real, consultas, validación |
+
+Un Flow `NAVIGATE` se entrega, se completa y se envía una vez. Recibes la respuesta completa al final. **La mayoría de los Flows son de este tipo, y no necesitan nada más que un Flow JSON.**
+
+Un Flow `data_exchange` responde a mitad del formulario: el cliente elige una fecha y la siguiente pantalla muestra los horarios que _realmente_ están libres. Eso requiere un endpoint HTTPS al que Meta llama en cada pantalla, y Meta cifra cada una de esas llamadas.
+
+<Warning>
+  **Meta no publica un Flow `data_exchange` que no tenga un `endpoint_uri` registrado**: responde *"Publishing without specifying 'endpoint_uri' is forbidden"*. Registrarlo es el paso 3 de más abajo, y es una solicitud aparte.
+</Warning>
+
+## Ciclo de vida
+
+<Steps>
+  <Step title="Crear">
+    Un Flow empieza en `DRAFT`. Dale un nombre y una o más categorías (`SIGN_UP`, `SIGN_IN`, `APPOINTMENT_BOOKING`, `LEAD_GENERATION`, `CONTACT_US`, `CUSTOMER_SUPPORT`, `SURVEY`, `OTHER`).
+  </Step>
+  <Step title="Subir el Flow JSON">
+    Las pantallas en sí son un documento JSON. Meta responde `200` **con una lista de errores de validación** en lugar de rechazarlo, así que una respuesta verde no significa que el documento compiló. Lee siempre `validationErrors`.
+  </Step>
+  <Step title="Publicar">
+    Publicar hace que el Flow se pueda enviar, y es **irreversible del lado de Meta**. Un Flow publicado nunca más puede editarse.
+  </Step>
+  <Step title="Clonar para crear una nueva versión">
+    Como publicar es definitivo, la forma de cambiar un Flow en producción es **clonarlo**. El clon es un Flow nuevo con un id nuevo, y Pilot Status registra el linaje para que puedas seguir la cadena de una versión a la siguiente.
+  </Step>
+  <Step title="Deprecar">
+    Retirar un Flow **no** lo borra, ni borra las respuestas que las personas ya enviaron. Puedes indicar el Flow que lo reemplaza, que es lo que mantiene legible la cadena de versiones.
+  </Step>
+</Steps>
+
+<Warning>
+  **Publicar no se puede deshacer.** No hay edición ni despublicación: solo clonar. El dashboard pide una confirmación explícita, y la API exige `"confirm": true` en el body, justamente para que un clic accidental no pueda hacerlo.
+</Warning>
+
+## Enviar un Flow
+
+Adjunta el Flow a una plantilla mediante un **botón FLOW**. El botón se vincula por `flow_id`, por `flow_name` o por `flow_json` en línea. Cada envío genera un **`flow_token`** nuevo: un valor de un solo uso que vincula ese envío específico con la respuesta que llega después.
+
+## Recibir la respuesta
+
+Cuando el cliente envía el formulario, Meta manda un `nfm_reply` con el `flow_token` y, en un Flow `NAVIGATE`, el formulario completado como un **string** JSON. Hay dos formas de leerlo:
+
+- **En vivo**: el evento de webhook `flow.response_received`, con las respuestas ya parseadas. Consulta [Recibir respuestas de Flows](/es/guides/flow-responses).
+- **Después**: `GET /v1/flows/{id}/responses`, vinculado de vuelta al contacto que respondió.
+
+<Warning>
+  **El mensaje de chat que trae un envío no contiene las respuestas, y hay que suscribirse al evento.** El `nfm_reply` de Meta pone una etiqueta simple en el cuerpo del mensaje (`Sent` / `Enviado`), y esa etiqueta es lo que llega a `content`, `GET /v1/messages` y al espejo de Chatwoot. Por eso, un webhook suscrito solo a `messages` recibe un mensaje que parece vacío, sin ningún error en ninguna parte. Agrega `flow.response_received` a sus `events`.
+</Warning>
+
+<Warning>
+  **En un Flow `data_exchange`, las respuestas no están en `response` en absoluto.** El `nfm_reply` de Meta trae el `flow_token` y nada más, así que `response` (en el evento y en la superficie de lectura) contiene solo un token, mientras tu propio endpoint recibió lo que la persona realmente escribió. Esas respuestas se publican como **`submitted`**, una entrada por intercambio. `response` conserva su significado anterior solo en un Flow sin endpoint, donde los componentes de texto libre siguen llegando ahí.
+</Warning>
+
+<Note>
+  Las respuestas se guardan durante una ventana de retención y luego se eliminan. La ventana se aplica **al leer**, así que una respuesta que ya pasó su vencimiento nunca se sirve, aunque el proceso de limpieza todavía no la haya alcanzado.
+</Note>
+
+## `data_exchange`: Pilot Status se encarga del cifrado
+
+Esta es la parte que suele impedir que los equipos lancen un Flow interactivo.
+
+Meta cifra cada llamada al endpoint: un payload AES-GCM cuya clave llega envuelta con RSA-2048/OAEP-SHA-256 bajo tu clave pública, y la respuesta debe volver cifrada con **la misma clave AES bajo un IV con los bits invertidos**. Equivocarse sutilmente en cualquiera de esos detalles produce un Flow que simplemente nunca avanza, sin error en ninguno de los dos lados.
+
+**Por eso Pilot Status es el endpoint.** Guardamos la clave, desciframos la solicitud de Meta y reenviamos **JSON plano por HTTPS** a un webhook que tú controlas. Tu respuesta se cifra en el camino de vuelta. Nunca implementas RSA, AES-GCM ni el IV invertido.
+
+<Note>
+  **Dos configuraciones en dos niveles, y un registro**: la clave pertenece al **número**, la URL de reenvío al **Flow**, y `endpoint_uri` se escribe **en Meta**. Los Flows `NAVIGATE` no necesitan ninguno de ellos. Los tres se configuran en la pantalla **Flows** del dashboard, y cada uno tiene su propia superficie en la API pública: `GET` / `POST /v1/numbers/{id}/flow-endpoint-key`, `GET` / `PUT` / `PATCH /v1/flows/{id}/endpoint`, y `POST /v1/flows/{id}/endpoint` para el registro, todos protegidos por `flows:manage`. Ninguna de las URLs aparece en `GET /v1/flows`, porque el token que contienen es una credencial: consulta [Conecta tu API a un Flow](/es/guides/flow-data-exchange).
+</Note>
+
+<Steps>
+  <Step title="1. Registra una clave para el número">
+    Puedes **generar** una (Pilot Status crea un par RSA-2048, guarda la mitad privada cifrada y registra la mitad pública en Meta para ese número de teléfono) o **importar** la clave privada que ya usas, lo cual no cambia nada en Meta. Generar **reemplaza** la clave que tiene Meta, porque Meta guarda exactamente una por número.
+  </Step>
+  <Step title="2. Define la URL de tu webhook en el Flow">
+    Aquí es donde reenviamos el JSON descifrado. Se configura **por Flow**, porque un número puede atender varios formularios y cada uno suele ser un servicio diferente de tu lado.
+  </Step>
+  <Step title="3. Regístranos en Meta">
+    **Register at Meta** (Registrar en Meta), en el dashboard, escribe nuestra URL de endpoint en el `endpoint_uri` del Flow en Meta, igual que `POST /v1/flows/{id}/endpoint`. Esa URL lleva dos segmentos (uno que identifica el número y otro que identifica el Flow), porque la solicitud de Meta no dice a qué Flow pertenece. **Guardar la URL en el paso 2 no hace esto por ti**, a propósito: como efecto secundario de un cambio de nombre, secuestraría un Flow que ya apunta al endpoint de otra persona. A un Flow que ya apunta a nosotros se le responde sin escribir nada; uno que apunta a otro lugar se rechaza hasta que confirmes la toma de control.
+  </Step>
+</Steps>
+
+### Lo que recibe tu webhook
+
+```json
+{
+  "version": "3.0",
+  "action": "data_exchange",
+  "screen": "PICK_SLOT",
+  "data": { "day": "2026-09-10" },
+  "flow_token": "a1b2c3...",
+  "flow_id": "1122334455",
+  "number_id": "wn_abc123"
+}
+```
+
+`action` es `INIT` cuando se abre el formulario, `BACK` cuando el cliente vuelve atrás y `data_exchange` cuando envía una pantalla.
+
+<Warning>
+  **Si `data` llega vacío, la causa casi siempre es un carácter en tu Flow JSON.**
+
+  Un valor de formulario se referencia con la **palabra clave literal `form`** (`${form.quantity}`), y el `name` que le diste al componente `Form` que lo contiene nunca aparece en la referencia. Con un `Form` llamado `form_product`, sigue siendo `${form.quantity}`, nunca `${form_product.quantity}`.
+
+  Meta no rechaza un documento con el prefijo incorrecto. Lo compila, lo publica, no reporta ningún error de validación y luego, en tiempo de ejecución, no resuelve nada y le envía a tu endpoint `"data": {}`. La persona solo ve _"Could not complete this step. Please try again."_, que no indica nada.
+
+  Desde el 12 de septiembre de 2026, `POST /v1/flows/{id}/json` rechaza este documento en lugar de subirlo, y responde `422` `FLOW_JSON_DEAD_FORM_PREFIX` con el reemplazo listo para cada referencia. Esa verificación solo cubre los documentos subidos a través de nosotros: un Flow ya publicado en otro lugar todavía tiene que corregirse y volver a publicarse.
+</Warning>
+
+La solicitud se firma con un HMAC-SHA256 del body crudo en el header **`x-pilot-status-signature`**: el mismo header y el mismo esquema que los webhooks salientes de Pilot Status, así que si ya verificas esos, no necesitas una segunda ruta de código.
+
+### Lo que debe devolver tu webhook
+
+JSON plano, indicando la siguiente pantalla y los datos que necesita:
+
+```json
+{
+  "screen": "CONFIRM",
+  "data": { "slots": ["09:00", "11:30", "16:00"] }
+}
+```
+
+Para terminar el Flow, devuelve la pantalla reservada `SUCCESS`:
+
+```json
+{
+  "screen": "SUCCESS",
+  "data": { "extension_message_response": { "params": { "flow_token": "a1b2c3..." } } }
+}
+```
+
+<Note>
+  **Responde en pocos segundos.** Meta mantiene la solicitud abierta mientras una persona mira un indicador de carga, y no hay reintento: una respuesta lenta es una pantalla fallida. Haz el trabajo lento después de responder, no antes.
+</Note>
+
+### Lo que se guarda de los intercambios
+
+Cada intercambio `data_exchange` que desciframos se guarda junto a la respuesta que el formulario termina produciendo, y se publica como **`submitted`**, una entrada por intercambio, tanto en el evento `flow.response_received` como en `GET /v1/flows/{id}/responses`. Dentro de Pilot Status, es el único lugar donde existen las respuestas de un Flow `data_exchange`: el `nfm_reply` que Meta envía al final trae el `flow_token` y nada más, así que `response` está vacío justamente en los Flows cuyas pantallas recolectaron más datos.
+
+Lo que se guarda es **la solicitud que Meta nos envía**: lo que la propia persona ingresó, pantalla por pantalla. Lo que respondió tu endpoint no: los `data` que devuelves, incluido `extension_message_response`, se cifran de vuelta hacia Meta y no se registran en ninguna parte. Tampoco `INIT` ni `BACK`: `INIT` devuelve los parámetros que sembramos al momento del envío y `BACK` es navegación, así que ninguno es algo que una persona haya escrito, y la lista es legítimamente más corta que las trazas de tu propio endpoint.
+
+<Note>
+  **Nada se descarta en silencio.** Un intercambio demasiado grande para guardarse conserva su lugar en la lista y dice `DATA_TOO_LARGE`; uno que no pudimos leer dice `UNREADABLE`; el tope de **50 intercambios por formulario** cierra la lista con una entrada final que dice `LIMIT_REACHED`, y nada posterior se guardó. Además, la lista solo admite agregar: alguien que vuelve a una pantalla y la envía de nuevo produce una segunda entrada genuina, separada de la primera solo por su timestamp.
+</Note>
+
+<Warning>
+  **Un número que no guarda contenido de clientes no guarda nada de esto.** En `RELAY_ONLY` no hay ninguna entrada (ni siquiera una redactada) y `submitted` vuelve vacío, que es también lo que deja la redacción. Vacío nunca es prueba de que nadie escribió nada.
+
+  ⚠️ **Y "vacío" se escribe distinto en las dos superficies, a propósito.** En `GET /v1/flows/{id}/responses`, `submitted` es `[]` y nunca `null`: el valor viene de una consulta que no devuelve nada cuando no hay intercambios, y un campo definido como nada desaparecería del JSON en lugar de llegar vacío. En el evento `flow.response_received` es `null` y nunca `[]`: ese payload se guarda, el redactor solo vacía un campo cuando contiene algo, y un arreglo vacío volvería como el marcador de "contenido no disponible" y se leería como respuestas ocultas. Cada superficie eligió la respuesta correcta para su propio problema.
+
+  Las entradas se eliminan a los **30 días + 1**, y el día extra no es un redondeo. Un intercambio se captura mientras la persona todavía está llenando el formulario, minutos antes del envío que crea la respuesta a su lado; con una ventana idéntica, los intercambios vencerían primero, y una respuesta que todavía se sirve respondería con un `submitted` vacío junto a todo lo demás que aún tiene.
+</Warning>
+
+La forma campo por campo (`screen`, `at`, `data`, `omitted`) está en la [API de Flows](/es/api/flows#leer-respuestas-de-formularios).
+
+### Cuando tu webhook falla
+
+Si tu servidor está caído, excede el tiempo de espera o responde algo inutilizable, Pilot Status **no** traslada el fallo como una pantalla rota. El cliente ve un error genérico en la pantalla que ya está mirando y puede reintentar: no se pierde nada de lo que escribió, y no se le muestra nada sobre tu infraestructura.
+
+<Warning>
+  Dos verificaciones de salud se gestionan por ti y nunca llegan a tu webhook:
+
+  - El **`ping`** de Meta: lo responde Pilot Status, así que si tu servidor está dormido, Meta no marca el endpoint como no saludable para todos los Flows del número.
+  - **Discrepancia de clave**: si la copia de la clave pública que tiene Meta llega a diferir de la nuestra, el endpoint le dice a Meta que la vuelva a obtener. Eso es lo _único_ que significa esa respuesta, así que un fallo de tu lado nunca se reporta como un problema de clave.
+</Warning>
+
+### Adjuntos, y lo que Meta no te deja dibujar
+
+Un `PhotoPicker` o un `DocumentPicker` pone un archivo en el envío. Cuatro restricciones deciden si el Flow que estás diseñando se puede construir:
+
+| Restricción | Detalle |
+| --- | --- |
+| **Un selector por pantalla** | Como máximo un `PhotoPicker` **o** un `DocumentPicker` en cada pantalla: es el propio rechazo de Meta, citado más abajo. Dos archivos significan dos pantallas. |
+| **Un selector requiere `data_exchange`** | Las referencias a los archivos viajan dentro de la solicitud que descifra nuestro endpoint. **Un Flow sin endpoint no recibe ningún adjunto**: el `nfm_reply` que trae el envío no contiene ninguno. |
+| **25 MiB por archivo** | Por encima de eso, la subida se rechaza, no se vuelve lenta. |
+| **20 días en la CDN de Meta** | Meta borra el original después de ese plazo. Pilot Status realoja una copia, y esa copia es la única duradera, **y no tiene vencimiento propio** (consulta más abajo). |
+
+<Note>
+  **El límite de un selector es de Meta, y esta es la redacción de Meta.** Subir un Flow JSON con un `PhotoPicker` y un `DocumentPicker` en la misma pantalla se rechaza con `422` `FLOW_JSON_INVALID`, y la entrada de Meta vuelve textual dentro de `validationErrors`:
+
+  ```json
+  {
+    "error": "COMPONENT_TYPE_MAX_NUMBER_PER_SCREEN",
+    "error_type": "FLOW_JSON_ERROR",
+    "message": "You can only have a maximum of 1 component of type PhotoPicker or DocumentPicker per screen.",
+    "pointers": [
+      { "path": "screens[0].layout.children[0].children[1].type" },
+      { "path": "screens[0].layout.children[0].children[2].type" }
+    ]
+  }
+  ```
+
+  `pointers` indica los componentes que rechazó. Mover el segundo selector a una pantalla propia hace que el mismo documento compile, con `validationErrors: []`. En el SDK de Node, el mismo arreglo se lee con `flowJsonValidationErrors(err)`.
+
+  **Medido contra Meta el 6 de septiembre de 2026.** El código, la redacción y el límite son de Meta y puede cambiarlos sin avisar a nadie: si esto deja de coincidir con lo que recibes, cree en la respuesta de Meta, no en esta página.
+</Note>
+
+{/*
+  PROVENANCE — READ BEFORE EDITING OR "CORRECTING" THE PARAGRAPH ABOVE.
+
+  `COMPONENT_TYPE_MAX_NUMBER_PER_SCREEN`, the message text, the `pointers` shape and
+  the "maximum of 1 per screen" limit are META'S, not ours. They appear NOWHERE in the
+  Pilot Status codebase — grepping the repo for them returns nothing, and that absence
+  is NOT evidence they are wrong.
+
+  Source: measured live against Meta's Graph API on 2026-09-06 by uploading a Flow JSON
+  carrying a PhotoPicker and a DocumentPicker on one screen; splitting them across two
+  screens made the same document pass. The only way to re-verify is to measure again.
+
+  Everything else on this page can be checked against our code. This paragraph cannot.
+*/}
+
+<Warning>
+  **El archivo realojado está en una URL pública: quien tenga el enlace lo puede leer.** Es una decisión explícita del responsable (la URL es el control de acceso, sin nada más delante) y es la misma propiedad que ya tiene el `mediaLink` entrante. Decide eso antes de que uno de tus Flows le pida a alguien un documento de identidad, y trata las URLs como tratarías los archivos.
+
+  El tipo de contenido lo deciden los **bytes**, nunca el nombre del archivo, y nunca es `text/html` ni `image/svg+xml`, aunque los bytes lo parezcan: ambos ejecutarían scripts en el origen que los sirve.
+
+  **La copia nunca vence, y sobrevive a la respuesta a la que pertenece.** Las respuestas de Flows, las sesiones y las trazas del endpoint se eliminan según una ventana de retención; el archivo realojado no: no tiene vencimiento, y nada en la plataforma lo borra. Las respuestas dejan de servirse en `GET /v1/flows/{id}/responses` según lo previsto; el enlace al documento de identidad sigue funcionando después.
+</Warning>
+
+El contrato del wire (`flowMedia` en el webhook, `media` en la superficie de lectura, y por qué la URL está ahí antes que los bytes) está en [Recibir respuestas de Flows](/es/guides/flow-responses).
+
+## Salud y estado
+
+Cada Flow tiene un estado (`DRAFT`, `PUBLISHED`, `DEPRECATED`, `BLOCKED`, `THROTTLED`), la versión del Flow JSON que compiló Meta y un veredicto de salud.
+
+<Note>
+  Meta descontinuó la Flows Metrics API el **2026-04-30** sin sucesora. El webhook `flows` es ahora el único canal que informa que un Flow está siendo limitado o que una clave pública quedó desactualizada: Pilot Status se suscribe a él y registra lo que dice en el Flow, para que la señal sobreviva más allá de la ventana de logs.
+</Note>
+
+## Relacionado
+
+- [Recibir respuestas de Flows](/es/guides/flow-responses)
+- [Flows con datos en vivo](/es/guides/flow-live-data): cómo configurar `data_exchange`, en términos de producto
+- [Conecta tu API a un Flow](/es/guides/flow-data-exchange): el contrato que implementa tu backend
+- [API de Flows](/es/api/flows)
+- [Plantillas](/es/concepts/templates)
+- [Webhooks](/es/concepts/webhooks)
