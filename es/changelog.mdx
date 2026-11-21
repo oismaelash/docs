@@ -1,0 +1,1439 @@
+---
+title: "Registro de cambios"
+description: "Novedades del producto y cambios en la API de la plataforma Pilot Status."
+icon: "clock-rotate-left"
+---
+
+Novedades de la plataforma Pilot Status: nuevas funciones de la API, cambios y correcciones destacadas. Suscríbete con el ícono RSS de arriba.
+
+<Update label="2026-11-11" tags={["API", "MCP", "SDK"]}>
+  ## Stories: por qué falló una story
+
+  **`GET /v1/stories/{id}` devuelve `errorMessage` y `errorCode`** para una story `FAILED`, con las mismas reglas que `errorMessage` y `errorCode` en `GET /v1/messages/{id}`: el texto público y un código estable (por ejemplo, `MEDIA_DOWNLOAD_FAILED`). Ambos son `null` cuando la story no falló. Aplica una vez que se despliegue la versión que lo incluye. [Leer una story](/es/api/stories#leer-una-historia)
+
+  - **SDKs y MCP:** `StoryDetails.errorMessage` / `errorCode` en `@pilot-status/sdk` 0.25.1 y `pilot-status` 1.23.1; la herramienta MCP `story_get` describe ambos campos.
+</Update>
+
+<Update label="2026-11-11" tags={["API", "MCP", "SDK"]}>
+  ## Stories: programar y cancelar
+
+  **`POST /v1/stories` acepta `deliverAt`** para publicar una story más tarde, con las mismas reglas que `deliverAt` al enviar un mensaje. Aplica una vez que se despliegue la versión que lo incluye. [Programar una story](/es/api/stories#programar-una-historia)
+
+  - **Cancelar:** `DELETE /v1/stories/{id}` sobre una story todavía `QUEUED` con un `deliverAt` futuro responde `200 { id, canceledAt }`; pasa a `CANCELED` y no se cobra. Si ya llegó su hora → `409 STORY_NOT_REVOCABLE`.
+  - **`deliverAt`** vuelve en el `202` y en `GET /v1/stories/{id}` (`null` cuando es inmediata).
+  - **El medio** se descarga al momento de publicar: un `mediaUrl` que ya no existe en ese momento hace fallar la story (`message.failed`).
+  - **SDKs, MCP y n8n:** `deliverAt` en `stories.create` (`@pilot-status/sdk` 0.25.0, `pilot-status` 1.23.0), el campo **Deliver at** en `n8n-nodes-pilot-status` 2.17.0, y `deliverAt` en la herramienta MCP `stories_send`.
+</Update>
+
+<Update label="2026-11-10" tags={["API", "Messages", "MCP", "SDK"]}>
+  ## Stories: publica estados de WhatsApp desde la API
+
+  **Nuevos endpoints `/v1/stories`** publican, leen y eliminan una story (estado) de WhatsApp de texto, imagen o video. Aplican una vez que se despliegue la versión que los incluye. [Stories](/es/api/stories)
+
+  - **Solo números Evolution GO.** Los números de Meta Cloud API responden `400 NOT_SUPPORTED_FOR_META`; otras sesiones no oficiales (por ejemplo, Evolution v2) `400 NOT_SUPPORTED_FOR_PROVIDER`.
+  - **Quién la ve:** los contactos en `recipients` o, sin ese campo, la privacidad de estados del teléfono. `GET /v1/stories/{id}` devuelve la lista efectiva y `recipientCount`.
+  - **Límites:** las stories de texto aceptan **de 1 a 700 caracteres**; `recipients` acepta hasta **5000** números (más → `400`). Medios solo por `mediaUrl` (`https`).
+  - **Webhook:** el resultado llega como los eventos habituales `message.sent` / `message.failed` con `type: "story"`. Un rol sin el permiso recibe `403 PERMISSION_DENIED`.
+  - **Las stories de texto** aceptan `backgroundColor`, `textColor` (negro o blanco elegido por contraste cuando envías solo el fondo) y un nombre de `font`. **Imagen y video** hasta 100 MiB; WebP se convierte a JPEG.
+  - **Cobro:** 1 mensaje por story. `DELETE /v1/stories/{id}` la elimina para todos los que la recibieron dentro de las 24 horas, sin costo (`409 STORY_NOT_REVOCABLE`, `410 STORY_EXPIRED`).
+  - **SDKs y MCP:** `client.stories.create/get/delete` en los SDKs de Node y Python; herramientas MCP `stories_send`, `story_get` y `story_delete`. Capa de Evolution GO: `/send/status/text`, `/send/status/media` y `/send/status/revoke`.
+</Update>
+
+<Update label="2026-11-09" tags={["API", "Messages", "Webhooks"]}>
+  ## API: cinco correcciones a respuestas que estaban mal o calladas
+
+  **Pequeñas correcciones en la API pública.** Aplican una vez que se despliegue la versión del backend que las incluye.
+
+  - **`avgDeliveryTime`** (`GET /v1/analytics/dashboard`) ahora mide desde la creación hasta **`deliveredAt`**, solo sobre mensajes entregados. Antes se detenía en `sentAt` (el proveedor aceptando el mensaje), es decir, el tiempo de despacho y no de entrega, y promediaba también mensajes nunca entregados. Espera valores más altos. [Analytics](/es/api/analytics)
+  - **`GET /v1/messages?status=PLAYED`** ahora se acepta. Las filas ya volvían con `"status": "PLAYED"` (el destinatario escuchó la nota de voz), pero el filtro rechazaba el valor con `400 INVALID_STATUS`. SDKs: `MessageStatus` incorpora `PLAYED` en `@pilot-status/sdk` 0.23.1, `pilot-status` 1.21.1 y `n8n-nodes-pilot-status` 2.15.1. [Listar mensajes](/es/api/messages/list)
+  - **`PUT /v1/branding`** rechaza claves desconocidas con **`400 UNKNOWN_FIELDS`** (`unknownFields` las lista) y no guarda nada. `button` es una de ellas: no se almacena para el workspace, solo por enlace de vinculación. Antes respondía `200` y la descartaba. [Branding](/es/api/branding)
+  - **`GET /v1/newsletters`** en un número no oficial cuya sesión no es Evolution GO (por ejemplo, Evolution v2) devuelve **`400 FEATURE_NOT_SUPPORTED`** en lugar del error del proveedor. [Canales](/es/api/newsletters)
+  - **`GET /v1/webhooks/{id}/logs?event=*`** lista todas las entregas, igual que si omites `event`. Antes devolvía una lista vacía, y el filtro de logs del panel ofrecía solo `*` para un webhook de todos los eventos; ahora lista los eventos reales. [Configurar webhooks](/es/api/webhooks/configure)
+</Update>
+
+<Update label="2026-11-09" tags={["API", "Numbers"]}>
+  ## Números: una clave de número ya no puede crear números
+
+  **Crear un número de WhatsApp por la API ahora requiere una clave de workspace o una clave de cuenta.** Aplica una vez que se despliegue la versión del backend que lo incluye. [Crear un número](/es/api/numbers/create)
+
+  - **Cambio de comportamiento.** Una clave de número (`ps_number_`, o una clave `ps_` heredada con alcance de número) en `POST /v1/numbers`, `POST /v1/numbers/meta` o `POST /v1/numbers/remote-pairing` recibe **`403 NUMBER_KEY_CANNOT_CREATE_NUMBER`**, antes de consultar, aprovisionar o cobrar nada.
+  - **Sin cambios:** las claves de workspace (también cuando se restringen con `x-whatsapp-number-id`), las claves de cuenta y los tokens OAuth mantienen exactamente las reglas que tenían. [Qué puede llamar cada credencial](/es/api/key-types#qué-puede-llamar-cada-credencial)
+  - **`409 NUMBER_SOFT_DELETED`**, que incluye el `numberId` del número eliminado, ahora solo lo pueden recibir esas credenciales.
+</Update>
+
+<Update label="2026-11-09" tags={["MCP", "Security", "API"]}>
+  ## Los tokens OAuth / MCP siguen el rol y los números actuales del miembro
+
+  **Un token de acceso OAuth ya no conserva durante toda su hora la autoridad con la que fue emitido.** Aplica una vez que se despliegue la versión del backend que lo incluye. [Autenticación](/es/api/authentication#errores-comunes)
+
+  - Cada solicitud a `/v1` con un token OAuth / MCP vuelve a verificar la membresía **actual** del usuario (en caché por 30 segundos como máximo, se borra con cada cambio de miembro).
+  - **Cambio de comportamiento, miembro eliminado:** `401 OAUTH_MEMBERSHIP_REVOKED` con `WWW-Authenticate: Bearer error="invalid_token"` en todas las rutas, en lugar de `403 WORKSPACE_MEMBERSHIP_REQUIRED` en algunas. Los clientes MCP le piden al usuario que se conecte de nuevo.
+  - **Números restringidos:** un token por número solo alcanza los números concedidos que siguen en el alcance del miembro (si no queda ninguno → `401 OAUTH_GRANT_NUMBERS_REVOKED`); un token de todo el workspace de un miembro que ahora está restringido a algunos números solo alcanza esos.
+  - **Los cambios de rol** (incluida una transferencia de propiedad) aplican en la siguiente solicitud. Un workspace archivado sigue respondiendo `403 WORKSPACE_ARCHIVED`.
+</Update>
+
+<Update label="2026-11-09" tags={["MCP", "Workspace"]}>
+  ## MCP: archivar y transferir el workspace, con vista previa y token de confirmación
+
+  **Dos herramientas MCP nuevas (el servidor ahora lista 148), y eliminar miembros ahora pide confirmación de la misma forma.** Estos cambios aplican una vez que se despliegue la versión del servidor MCP que los incluye. [Servidor MCP](/es/integrations/mcp-server)
+
+  - **`workspace_archive`** (`confirmName`) y **`workspace_transfer_ownership`** (`email`) envuelven [`POST /v1/workspace/archive`](/es/api/workspace#archivar-el-workspace) y [`POST /v1/workspace/transfer-ownership`](/es/api/workspace#transferir-la-propiedad). Solo el propietario, con su token OAuth/MCP o su clave de cuenta; cualquier clave `ps_` recibe `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_WORKSPACE`.
+  - **Dos llamadas, como `templates_delete`.** La primera, sin `confirm_token`, no cambia nada y devuelve un `preview` leído de `GET /v1/workspace` y `GET /v1/workspace/members` más un `confirm_token` de un solo uso válido por 5 minutos; la segunda, con los mismos argumentos y el token, ejecuta. Un `confirmName` incorrecto, o un destinatario de transferencia que no es miembro activo, se rechaza en la vista previa, sin token.
+  - **Cambio de comportamiento: `workspace_members_remove` ahora necesita las mismas dos llamadas.** Una llamada sin `confirm_token` ya no elimina a nadie: muestra una vista previa del e-mail, el rol y los números del miembro, y de lo que pierde.
+  - **Nuevo error `503 CONFIRM_TOKEN_STORE_UNAVAILABLE`** en la llamada de confirmación: el servidor no pudo verificar que el token sea de un solo uso, así que no se ejecutó nada y el token no se gastó. Reinténtalo.
+  - El agente de IA de la app no ofrece archivar ni transferir.
+</Update>
+
+<Update label="2026-11-08" tags={["Templates", "API", "MCP"]}>
+  ## Plantillas: enviar a Meta, sincronizar desde Meta y vista previa de eliminación por la API y MCP
+
+  **Tres acciones de plantillas que solo tenía el panel ahora están en la API pública y en el servidor MCP.** Aplican una vez que se despliegue la versión del backend que las incluye. [API de plantillas](/es/api/templates#enviar-a-meta)
+
+  - **`POST /v1/templates/{id}/submit`** envía una plantilla a Meta para aprobación: el **Submit to Meta** del panel. Cuerpo vacío; el número es el de la clave y debe ser un número de Meta Cloud API (si no, `422 TEMPLATE_REQUIRES_META_NUMBER`). [Enviar a Meta](/es/api/templates#enviar-a-meta)
+  - **`POST /v1/templates/sync`** trae el catálogo de la WABA desde Meta y devuelve `{ created, updated }`. Una sincronización por número a la vez, compartida con el panel: `429 TEMPLATE_SYNC_IN_PROGRESS` con `Retry-After`. [Sincronizar desde Meta](/es/api/templates#sincronizar-desde-meta)
+  - **`DELETE /v1/templates/{id}?dry_run=true`** no elimina nada y devuelve lo que haría la eliminación: plantilla, WABA, el número cuyo token la elimina y advertencias. Meta elimina por nombre: todas las versiones de idioma de ese nombre en la WABA. [Vista previa de una eliminación](/es/api/templates#previsualizar-una-eliminación-dry_run)
+  - **Servidor MCP: 146 herramientas.** Nuevas: `templates_submit` y `templates_sync`. **Cambio de comportamiento: `templates_delete` ahora pide confirmación:** la primera llamada solo devuelve una vista previa y un `confirm_token` de un solo uso por 5 minutos; la segunda llamada, con los mismos argumentos y el token, elimina. [Confirmación para herramientas destructivas](/es/integrations/mcp-server#confirmación-para-herramientas-destructivas)
+</Update>
+
+<Update label="2026-11-08" tags={["API", "Workspace", "MCP"]}>
+  ## Workspace: renombrar, configuración, transferencia de propiedad y archivado por la API
+
+  **Nuevos endpoints bajo `/v1/workspace` cubren lo que era exclusivo del panel: el nombre del workspace, su configuración, la transferencia de propiedad y el archivado.** Estos cambios aplican una vez que se despliegue la versión del backend que los incluye. [API de workspace](/es/api/workspace)
+
+  - **`PATCH /v1/workspace`** renombra el workspace (`name`, de 1 a 60 caracteres; `400 INVALID_NAME`). El nombre es una etiqueta: no es único y el `id` nunca cambia. Clave con alcance de tenant, o un usuario ADMIN u OWNER. [Renombrar](/es/api/workspace#renombrar-el-workspace)
+  - **`GET` / `PATCH /v1/workspace/settings`** leen la moneda, la zona horaria, el idioma, el modo de facturación y `currencyLocked`, además de `phoneLinePrice` (el precio de una línea telefónica nueva para este workspace), y cambian **solo** `mainTimezone` y `mainLanguage` (`pt`, `en`, `es`). Cualquier rol lee; ADMIN o superior escribe. Enviar `mainCurrency` da `400 CURRENCY_NOT_HERE` (el propietario la cambia en el panel) y `billingMode` da `400 BILLING_MODE_NOT_HERE`; también `NO_FIELDS`, `INVALID_TIMEZONE`, `INVALID_LANGUAGE`. [Configuración](/es/api/workspace#configuración-del-workspace)
+  - **`POST /v1/workspace/transfer-ownership`** (`email` de un miembro que aceptó la invitación) lo convierte en propietario. Tú pasas a ADMIN, se revocan los refresh tokens OAuth de ambos usuarios y la factura pasa al nuevo propietario. Errores: `MISSING_EMAIL`, `NOT_A_MEMBER`, `TARGET_NOT_ACTIVE`, `ALREADY_OWNER`, `NOT_OWNER`, `NO_OWNER`, `OWNERSHIP_CHANGED`, `WOULD_ORPHAN_WORKSPACE`. [Transferir propiedad](/es/api/workspace#transferir-la-propiedad)
+  - **`POST /v1/workspace/archive`** (`confirmName` = el nombre exacto del workspace; `400 CONFIRMATION_MISMATCH`) lo archiva. ⛔ **Bloquea el acceso a todos, incluido quien llama, y no existe endpoint para desarchivar**: revertirlo requiere soporte. `409 ALREADY_ARCHIVED`. [Archivar](/es/api/workspace#archivar-el-workspace)
+  - **Transferir y archivar aceptan solo al propietario en la llamada**: un token OAuth/MCP o una clave de cuenta cuyo usuario sea el OWNER. Cualquier clave `ps_` de workspace o de número recibe `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_WORKSPACE`.
+  - **Servidor MCP: 144 herramientas.** Nuevas: `workspace_update`, `workspace_settings_get` y `workspace_settings_update`. Archivar y transferir la propiedad todavía no tienen herramienta MCP. [Servidor MCP](/es/integrations/mcp-server)
+</Update>
+
+<Update label="2026-10-29" tags={["API", "Billing", "Webhooks", "Phone Lines", "Numbers", "MCP", "Breaking"]}>
+  ## Reventa: tarjeta compartida por workspace, precio de línea antes de la compra, `numberId` e `id` de evento
+
+  **Los revendedores ahora deciden, workspace por workspace, qué clientes cubre su tarjeta de respaldo, y `POST /v1/workspaces` ya no la comparte automáticamente.** Estos cambios aplican una vez que se despliegue la versión del backend que los incluye. [Tarjeta compartida](/es/reseller-billing#tarjeta-compartida)
+
+  - **Cambio de comportamiento: `POST /v1/workspaces` ya no comparte la tarjeta de respaldo automáticamente. Envía `"shareCard": true`.** Antes, un workspace que un revendedor creaba por la API heredaba la tarjeta de respaldo por sí solo; ahora `shareCard` ausente o `false` significa **no compartida**. El panel sigue la misma regla: crear un workspace allí comparte la tarjeta solo con la nueva casilla **Use my backup card**, desmarcada por defecto. Los workspaces ya vinculados siguen vinculados. Errores nuevos: `400 INVALID_SHARE_CARD` (no es un booleano JSON) y, con `shareCard: true`, `409 SHARED_CARD_NOT_CONFIGURED`, `409 SOURCE_ARCHIVED` y `409 NO_SHARED_OWNER`; en todos los casos no se crea ningún workspace. `UNKNOWN_FIELDS` ahora acepta `name` y `shareCard`. [Crear un workspace](/es/api/workspaces#crear-un-workspace)
+  - **`sharedCard: { linked, sourceWorkspaceId }`** en la respuesta de `POST /v1/workspaces` y en cada ítem de `GET /v1/workspaces`.
+  - **`PUT` y `DELETE /v1/workspaces/{workspaceId}/shared-card`** (clave de cuenta, Owner del workspace, sin cuerpo) vinculan y desvinculan tu tarjeta de respaldo. Ambos son idempotentes (`changed: false` cuando nada cambió) y registran **Backup card linked** / **Backup card unlinked** en el Historial del workspace. Desvincula a un cliente que dejó de pagar y tu tarjeta deja de pagar las renovaciones de ese cliente. Errores: `400 UNKNOWN_FIELDS`, `400 SELF_SOURCE`, `409 SHARED_CARD_NOT_CONFIGURED`, `409 SOURCE_ARCHIVED`, `409 NO_SHARED_OWNER`. El equipo de Pilot Status sigue configurando cuál de tus workspaces tiene la tarjeta de respaldo: ese es el permiso para compartirla y el origen de cada vínculo. [Tarjeta compartida por workspace](/es/api/workspaces#tarjeta-compartida-por-workspace)
+  - **Líneas telefónicas: `price` y `currency` en `GET /v1/phone-lines/available`**: lo que cuesta al mes una línea nueva para tu workspace, incluido tu propio precio de línea, mostrado antes de la compra. Es el monto que cobra la compra. [Buscar números](/es/api/phone-lines/available#campos-de-la-respuesta)
+  - **`numberId` en el `201` de `POST /v1/numbers`**: el mismo id que `GET /v1/numbers` (`id`), `DELETE /v1/numbers/{id}` y `data.numberId` de los webhooks. `instance` e `instance.id` no cambian. [Crear un número](/es/api/numbers/create)
+  - **Webhooks: un `id` de nivel superior en cada evento `number.*`**: único por evento e igual en cada reintento y reenvío: deduplica con él. **`number.connected` incorpora `data.connectedAt`**, cuándo se estableció la conexión. Aditivo. [Payload de `number.*`](/es/api/webhooks/events#payload-number)
+  - **Los errores de `POST /v1/billing/checkout` son bilingües** (`English | Português`): `INVALID_PURPOSE`, `INVALID_AMOUNT`, `NO_BILLING_EMAIL` y `CHECKOUT_FAILED`. Los códigos y estados no cambian. [Billetera y tarjeta por API](/es/api/wallet-and-card#errores)
+  - **Servidor MCP: 139 herramientas.** Nuevas: `workspaces_shared_card_link` y `workspaces_shared_card_unlink` (solo clave de cuenta, piden confirmación); `workspaces_create` acepta un `shareCard` opcional. [Servidor MCP](/es/integrations/mcp-server)
+</Update>
+
+<Update label="2026-10-29" tags={["Templates", "API", "MCP"]}>
+  ## Plantillas: métricas de Meta con `GET /v1/templates/{id}/insights`
+
+  **Nuevo endpoint: `GET /v1/templates/{id}/insights?days=7|30|90` devuelve los números de Meta para una plantilla**: totales de enviados, entregados y leídos, `readRate` (leídos / entregados, `null` cuando no se entregó nada), clics en botones y una serie diaria. [Insights](/es/api/templates#insights)
+
+  - **`days`** es opcional (por defecto `30`); cualquier valor distinto de `7`, `30` o `90` devuelve `400 INVALID_DAYS`.
+  - **Fuente:** las analíticas de plantillas de Meta: granularidad diaria, solo los últimos 90 días, y los días más recientes todavía pueden estar completándose. La primera llamada puede activar los insights de plantillas para la WhatsApp Business Account en Meta.
+  - **Acceso:** el mismo que `GET /v1/templates/{id}` (`templates:read`; una clave con alcance de número solo ve plantillas de sus números).
+  - **Errores:** `404 TEMPLATE_NOT_FOUND`, `409 TEMPLATE_NOT_ON_META` (plantilla no enviada a Meta), `409 NO_META_NUMBER_FOR_WABA`, `422 TEMPLATE_INSIGHTS_UNAVAILABLE_SMB` (números de WhatsApp Business App / coexistencia: Meta no ofrece insights de plantillas para ellos), `422 META_REJECTED` y `503 META_UNAVAILABLE`.
+  - **SDKs e integraciones:** `client.templates.insights(id, { days })` (Node), `client.templates.insights(id, days=30)` (Python), la herramienta MCP `templates_insights` y el nodo de n8n **Template → Get Insights**.
+</Update>
+
+<Update label="2026-10-29" tags={["API", "Billing", "Payments", "Webhooks", "Phone Lines", "MCP", "Fixed"]}>
+  ## Reventa: un workspace por cliente, claves de cuenta, Pix y tarjeta por la API
+
+  **Los revendedores ahora pueden crear un workspace por cliente final por la API, operarlos todos con una sola clave y recargar cada uno con Pix o tarjeta sin el panel.** Así, una renovación fallida suspende solo los números de ese cliente. [Facturación para revendedores](/es/reseller-billing#un-workspace-por-cliente-final)
+
+  - **Tres tipos de clave, con el tipo en el prefijo:** `ps_number_` (claves de número, página **API Keys**, sin cambios), `ps_workspace_` (claves de workspace, ahora en la nueva pantalla **Workspace keys**, `/workspace-api-keys`, con una **clave principal** y hasta 50 **claves con nombre**) y `ps_account_` (**claves de cuenta**, en **Profile → API**, que antes tenía la clave del tenant). Las claves `ps_` antiguas siguen funcionando. [Tipos de clave](/es/api/key-types)
+  - **Las claves de cuenta** te pertenecen y actúan en cualquier workspace del que seas miembro, con tu rol allí: envía `x-workspace-id`. Errores nuevos: `400 WORKSPACE_ID_REQUIRED`, `403 WORKSPACE_MEMBERSHIP_REQUIRED`, `403 ACCOUNT_KEY_REQUIRED`. También pueden gestionar miembros en `/v1/workspace/members`.
+  - **`GET` y `POST /v1/workspaces`**, además de `GET`, `POST` y `DELETE /v1/workspaces/{id}/api-keys`. Un workspace nuevo viene con su clave principal; cada usuario puede tener hasta 10 por defecto (`409 WORKSPACE_LIMIT_REACHED` con `limit`). Los workspaces creados por un revendedor nacen en **Pay As You Go** con los precios del revendedor y, cuando el equipo de Pilot Status vinculó una, una **tarjeta compartida** como respaldo. [Crear workspaces](/es/api/workspaces)
+  - **Billetera y tarjeta por la API:** `POST /v1/billing/checkout` ahora acepta `method: "pix"` (BRL) y devuelve el código copia y pega y el QR; `GET /v1/billing/topups/{id}` lee el estado de cualquier recarga. Un formulario de tarjeta en tu propia página con Stripe Elements: `POST /v1/billing/card/setup-intent` y `POST /v1/billing/payment-intents` (`Idempotency-Key` opcional), cada uno con un `…/{id}/sync`. `503 PAYMENTS_NOT_CONFIGURED` cuando los pagos con tarjeta no están disponibles. [Billetera y tarjeta por API](/es/api/wallet-and-card) · [Guía de checkout transparente](/es/guides/transparent-checkout)
+  - **Webhooks de workspace** en `/v1/workspace/webhooks*`: el registro de webhooks de líneas telefónicas más el nuevo evento **`wallet.topup_paid`**, opcional: `"*"` sigue cubriendo solo los eventos de líneas telefónicas. [Webhooks de workspace](/es/api/workspace-webhooks)
+  - **Líneas telefónicas:** un workspace puede tener su **propio precio de línea telefónica**, definido por el equipo de Pilot Status (al menos R\$ 23,90 / US\$ 23.90), aplicado a las compras y a cada línea desde su próxima renovación. Las líneas ahora incluyen **`amountDue`**, lo que cobra ahora pagar una línea vencida; `price` es lo que cuesta la próxima renovación. [Tu propio precio de línea telefónica](/es/phone-lines-pricing#precio-propio-del-workspace)
+  - **Servidor MCP: 135 herramientas.** Nuevas: `workspaces_list`, `workspaces_create`, `workspaces_api_keys_list`, `workspaces_api_keys_create`, `workspaces_api_keys_revoke` (solo clave de cuenta), `billing_topups_get` y las siete `workspace_webhooks_*`; `billing_checkout` acepta `method: "pix"`. Con una clave de cuenta, agrega `x-workspace-id` a la conexión MCP; sin él, solo funcionan las herramientas `workspaces_*` y `docs_search`. [Servidor MCP](/es/integrations/mcp-server#con-una-clave-de-cuenta)
+
+  ## API: un cuerpo JSON mal formado devuelve `400 INVALID_BODY`
+
+  **En la API `/v1`, un cuerpo de solicitud no vacío que no es JSON válido ahora devuelve `400` con `code: "INVALID_BODY"`** y el mensaje bilingüe `"The request body is not valid JSON | O corpo da requisição não é um JSON válido"`. No se envía, cobra, crea ni cambia nada. [Cuerpo JSON mal formado](/es/api/overview#cuerpo-json-mal-formado)
+
+  - **Corrección de facturación, números extra:** en `POST /v1/subscription/extra-numbers`, un cuerpo truncado como `{"quantity": 3` caía en `quantity = 1` y **cobraba** un número. Ahora devuelve `400 INVALID_BODY` antes de cualquier vista previa o cobro. `DELETE /v1/subscription/extra-numbers` y `POST /v1/billing/checkout` reciben la misma verificación. [Números extra](/es/api/extra-numbers)
+  - **Antes:** un cuerpo mal formado respondía `500` en `POST /v1/messages/send`, `POST /v1/templates` y `PUT /v1/templates/{id}`, un error que parece temporal, así que las integraciones lo reintentaban para siempre. En otras rutas se leía en silencio como `{}` o como valores por defecto. En `messages/send` el `400` no reserva la `Idempotency-Key`.
+  - **Un cuerpo vacío mantiene el comportamiento anterior de cada ruta:** `POST /v1/subscription/extra-numbers` sin cuerpo sigue significando `quantity = 1`, y `POST /v1/chatwoot/history-sync` sin cuerpo sigue usando los valores por defecto (30 días). Las rutas que requieren cuerpo (`messages/send`, `templates`, `messages/cancel`, `messages/read`, `messages/typing`, `webhooks`) responden el mismo `400` a un cuerpo vacío.
+  - **La misma forma estándar en todas partes:** `messages/cancel`, `messages/read` y `messages/typing` ya devolvían `400`, pero como `{ "error": "Invalid JSON body" }`; ahora incluyen `code` y el mensaje bilingüe. En `POST /v1/webhooks` y `PATCH /v1/webhooks/{id}`, un JSON válido que no es un objeto devuelve `400 INVALID_BODY` con `"The request body must be a JSON object | O corpo da requisição deve ser um objeto JSON"`.
+  - **Rutas cubiertas:** `messages/send`, `messages/{cancel,read,typing}`, `messages/{id}/resend`, `templates` (`POST`, `PUT`), `subscription/extra-numbers` (`POST`, `DELETE`), `billing/checkout`, `calls*`, `groups*`, `numbers` (`POST`, `PATCH /{id}`, `meta`, `remote-pairing`), `api-keys`, `branding`, `embed/sessions`, `flows/{id}` (`PATCH`), `meta-embedded*`, `workspace/members*`, `chatwoot/history-sync` y `webhooks*`.
+</Update>
+
+<Update label="2026-10-28" tags={["MCP"]}>
+  ## MCP: `docs_search` encuentra la página correcta de esta documentación
+
+  **Nueva herramienta en el [servidor MCP](/es/integrations/mcp-server), que ahora lista 122: `docs_search` devuelve las 3 a 5 páginas más relevantes de la documentación de Pilot Status para una pregunta o un código de error**, cada una con `title`, `url` y `description`.
+
+  - **Entrada:** `query` (en portugués o inglés) y un `limit` opcional de 3 a 5 (por defecto 5). **Salida:** `{ query, results, source }`, donde `source` es `live` o `fallback` (una copia integrada del índice, usada cuando no se puede obtener el índice en vivo).
+  - **Cuándo la usa el agente:** cuando el usuario pregunta cómo hacer algo en Pilot Status, y cuando otra herramienta devuelve un código de error; buscar `MEDIA_TRANSCODE_FAILED`, por ejemplo, lleva a [Log Error Codes](/es/api/messages/log-error-codes).
+  - **No requiere permiso:** lee el índice público de la documentación (`llms.txt` y su subíndice pt-BR, sin las páginas del Playground), no llama a ningún endpoint `/v1` y no acepta `whatsappNumberId`. Cualquier rol puede usarla, y el agente de IA de la app la ejecuta sin pedir confirmación. El índice se guarda en caché por 6 horas.
+  - **Dónde:** `/mcp`, [Code Mode](/es/integrations/mcp-code-mode) (`ps.docs_search`, tema `docs`) y el agente de IA de la app.
+</Update>
+
+<Update label="2026-10-28" tags={["MCP", "Messages"]}>
+  ## MCP: audio y voz solo por URL; scripts de Code Mode más rápidos
+
+  **Por MCP, `messages_send` con `mediaType` `audio` o `voice` ahora requiere que `media` sea una URL http(s) pública.** Un data URI base64 de audio o voz (o cualquier medio `data:audio/*`, sea cual sea el `mediaType`) se rechaza con `400 MCP_AUDIO_URL_REQUIRED` antes de enviar nada. [Servidor MCP](/es/integrations/mcp-server#errores-comunes)
+
+  - **Por qué:** los clientes de IA estaban inventando audio en base64. Algunos llegaban con un `...` literal adentro y se rechazaban; otros eran bytes que ffmpeg no podía abrir, y el mensaje fallaba después del `202` con [`MEDIA_TRANSCODE_FAILED`](/es/api/messages/log-error-codes#preparación-de-multimedia-en-números-oficiales). Ahora el rechazo llega de inmediato y no se crea ningún mensaje.
+  - **Dónde aplica:** `/mcp`, [Code Mode](/es/integrations/mcp-code-mode) y el agente de IA de la app. El mensaje de error es bilingüe (`English | Português`).
+  - **Lo que no cambia:** los data URIs de imagen y documento se siguen aceptando por MCP, y la [API REST](/es/api/messages/send) sigue aceptando audio y voz como data URI.
+  - **Code Mode:** la descripción de `execute` ahora le indica al agente que reutilice el `whatsappNumberId` (y otros ids) que ya tiene en lugar de llamar de nuevo a `numbers_list`, que ejecute llamadas independientes con `await Promise.all([...])` en lugar de una por una en un bucle, que pida un `pageSize` pequeño con filtros y que use una URL http(s) para `media`, nunca base64 inventado. [Scripts que corren rápido](/es/integrations/mcp-code-mode#escribir-scripts-que-se-ejecuten-rápido)
+</Update>
+
+<Update label="2026-10-28" tags={["Templates", "API", "MCP"]}>
+  ## Plantillas: `409 TEMPLATE_NOT_EDITABLE` cuando Meta rechaza una edición
+
+  **`PUT /v1/templates/{id}` ahora devuelve `409` `TEMPLATE_NOT_EDITABLE` cuando Meta no permite editar la plantilla en su estado actual** (código Graph `100`, subcódigo `2388003`: "Message templates can only be edited if they have been rejected."). Antes volvía como un `400` que solo traía el mensaje crudo de Meta. [Editar](/es/api/templates#editar)
+
+  - **Cuerpo:** `error` es una frase bilingüe `English | Português`, `code` es `TEMPLATE_NOT_EDITABLE` y `meta_user_message` trae el texto propio de Meta, o `null`.
+  - **Nada cambia cuando Meta rechaza una edición, por cualquier motivo:** la plantilla almacenada conserva su cuerpo y `metaStatus` anteriores, así que sigue coincidiendo con lo que tiene Meta. Antes, el cuerpo nuevo se almacenaba con estado `PENDING` aunque Meta lo hubiera rechazado.
+  - **Qué hacer:** crea una plantilla nueva con el cambio, o envía el documento como parámetro en tiempo de ejecución al enviar ([Medios con plantillas](/es/guides/media-messages#multimedia-con-plantillas)). La regla publicada de Meta permite editar una plantilla aprobada como máximo una vez cada 24 horas y 10 veces cada 30 días, pero Meta aún puede rechazarlo.
+  - **MCP:** `templates_update` pasa por la misma ruta y devuelve el mismo `409`.
+</Update>
+
+<Update label="2026-10-27" tags={["Messages", "API", "Shipped"]}>
+  ## Plantillas: nombra el documento de un encabezado `DOCUMENT` con `mediaFilename`
+
+  **`mediaFilename` en `POST /v1/messages/send` ahora también funciona en un envío de plantilla cuya plantilla aprobada tiene un encabezado `DOCUMENT`.** Pásalo con un `media` por envío (el documento que reemplaza el ejemplo de la plantilla) o sin él (renombra el documento almacenado en la plantilla). Antes solo se aceptaba en un envío directo de documento, y un envío de plantilla con él devolvía `400` "mediaFilename is only supported for direct media sends". [Nombrar el documento de una plantilla](/es/guides/media-messages#nombrar-el-documento-de-una-plantilla)
+
+  - **Por qué importa:** sin nombre, el documento de una plantilla llega a los números oficiales (Meta) sin un título adecuado: WhatsApp muestra el genérico "Document". En los números no oficiales el nombre se infería de la URL. Funciona en Meta Cloud API, Evolution v2 y Evolution GO.
+  - **Reglas:** de 1 a 240 caracteres; `/` y `\` se reemplazan por `_`. Si también envías `mediaType`, debe ser `document`.
+  - **Una plantilla con encabezado `IMAGE`, `VIDEO` o `TEXT`, o sin encabezado, responde `422` `MEDIA_FILENAME_REQUIRES_DOCUMENT_HEADER`**, con `details.templateName` y `details.headerType`, en lugar de descartar el nombre.
+  - **Los envíos de `text` libre siguen rechazándolo** con `400` ("mediaFilename is only supported for direct media sends and templates with a document header").
+</Update>
+
+<Update label="2026-10-27" tags={["Phone Lines", "API", "Shipped"]}>
+  ## Líneas telefónicas: webhooks de línea en la API pública, guía de integración y demo
+
+  **Los webhooks de líneas telefónicas ahora se pueden registrar por la API**, en `/v1/phone-lines/webhooks`; antes, solo en el panel. Es el mismo registro que **Phone lines → Line webhooks**: lo que creas por uno aparece en el otro. [Webhooks de líneas telefónicas](/es/api/phone-lines/webhooks#mediante-la-api)
+
+  - **Endpoints:** `GET` y `POST /v1/phone-lines/webhooks`, `GET`, `PATCH` y `DELETE /v1/phone-lines/webhooks/{id}`, `GET …/{id}/deliveries` (`limit` de 1 a 200, por defecto 50) y `GET …/{id}/deliveries/{deliveryId}`, con el cuerpo exacto que se envió y firmó.
+  - **El secreto `plwh_` viene solo en la respuesta del `POST`.** Ninguna lectura lo devuelve, y crear no es idempotente: dos `POST` crean dos webhooks.
+  - **Quién puede llamar:** una clave con alcance de tenant (con alcance de número → `403 NUMBER_SCOPE_NOT_ALLOWED`); con un token OAuth/MCP, Owner o Admin (`phone_lines:webhooks`).
+  - **Errores:** `400 INVALID_BODY`, `UNKNOWN_FIELDS`, `INVALID_FIELD_TYPE`, `INVALID_WEBHOOK`, `INVALID_WEBHOOK_NAME`, `WEBHOOK_URL_REFUSED` e `INVALID_LIMIT`; `404 WEBHOOK_NOT_FOUND` y `WEBHOOK_DELIVERY_NOT_FOUND`.
+  - **Nueva guía: [Líneas telefónicas en tu app por la API](/es/guides/phone-lines-api)**: verificación, búsqueda por código de área, compra con `Idempotency-Key` y reintentos, código de activación, grabación y webhook, paso a paso.
+  - **Demo (licencia MIT):** un backend Node + TypeScript que guarda la clave y un frontend React + Vite, en [phone-lines-demo.zip](https://pilotstatus.com.br/downloads/phone-lines-demo.zip).
+  - **Playground:** las 7 operaciones nuevas están en [Phone Lines](/es/playground/phone-lines/list-line-webhooks).
+</Update>
+
+<Update label="2026-10-27" tags={["Phone Lines", "Webhooks", "MCP"]}>
+  ## MCP: webhooks de líneas telefónicas
+
+  **Siete herramientas nuevas en el [servidor MCP](/es/integrations/mcp-server), que ahora lista 121, gestionan los [webhooks de líneas telefónicas](/es/api/phone-lines/webhooks) sin el panel.**
+
+  - `phone_lines_webhooks_list` (con el catálogo de eventos), `phone_lines_webhooks_get`, `phone_lines_webhooks_create`, `phone_lines_webhooks_update` (nombre, URL, eventos, `active`) y `phone_lines_webhooks_delete`.
+  - `phone_lines_webhooks_deliveries_list` y `phone_lines_webhooks_deliveries_get` leen el registro de entregas; solo la lectura de una entrega individual trae el payload.
+  - **El secreto de firma se devuelve una sola vez**, por `phone_lines_webhooks_create`. Guárdalo de inmediato: no se puede volver a leer.
+  - Solo credencial con alcance de tenant; `phone_lines:webhooks` (ADMIN u OWNER). También disponible en [Code Mode](/es/integrations/mcp-code-mode), tema `phone-lines`.
+</Update>
+
+<Update label="2026-10-27" tags={["SDK", "Phone Lines", "Shipped"]}>
+  ## SDKs: webhooks de líneas telefónicas
+
+  **[`@pilot-status/sdk` 0.18.0, `pilot-status` 1.16.0 (Python) y `n8n-nodes-pilot-status` 2.10.0](/es/integrations/sdks)** gestionan los [webhooks de líneas telefónicas](/es/api/phone-lines/webhooks) sobre `/v1/phone-lines/webhooks*`: crear, listar, leer, actualizar (incluido pausar), eliminar y leer las entregas.
+
+  - **Node:** `client.phoneLines.webhooks`: `list()`, `get()`, `create()`, `update()`, `delete()`, `listDeliveries()`, `getDelivery()`. `verifyWebhookSignature` funciona con el secreto `plwh_`.
+  - **Python:** `client.phone_lines.webhooks`: `list()`, `get()`, `create()`, `update()`, `delete()`, `list_deliveries()`, `get_delivery()`. El nuevo `verify_webhook_signature(raw_body, signature_header, secret)` verifica `x-pilot-status-signature` para webhooks de número y de línea telefónica (`plwh_`); devuelve `False` en lugar de lanzar una excepción ante un encabezado inválido.
+  - **n8n:** nuevo recurso **Phone Line Webhook** (Create, Delete, Get, Get Many, Update, Get Deliveries, Get Delivery).
+  - **El secreto `plwh_` lo devuelve solo create**, una vez, y create no es idempotente: dos llamadas crean dos webhooks.
+  - **Quién puede llamarlo:** una clave de toda la cuenta de un Owner o Admin (`phone_lines:webhooks`).
+</Update>
+
+<Update label="2026-10-26" tags={["MCP", "Shipped"]}>
+  ## MCP: Code Mode, 2 herramientas en lugar de 114, en `/code`
+
+  **El servidor MCP alojado tiene un segundo endpoint, `https://mcp.pilotstatus.com.br/code`, con solo dos herramientas: `describe` y `execute`.** El agente lee las declaraciones TypeScript de la API y escribe un script que llama `await ps.<tool>(args)`; el script corre en un sandbox sin red, y cada llamada va a `/v1` con tu credencial. `/mcp` no cambia. [MCP Code Mode](/es/integrations/mcp-code-mode)
+
+  - **Contexto:** la lista de herramientas de `/mcp` ocupa 77,666 tokens; `/code`, 962. `describe()` lista los temas (776 tokens); las declaraciones de un tema ocupan 2,049 tokens en la mediana, 11,680 en el más grande (`flows`).
+  - **Mismas credenciales y permisos:** OAuth (conector de claude.ai, concesiones de todo el tenant o por número) o `x-api-key`. Alcance, roles, límites de tasa y facturación aplican a cada llamada, como en `/mcp`.
+  - **Límites por ejecución:** 30 s, 64 MB, 50 llamadas `ps`, como máximo 10 `messages_send` dentro de ellas, 100 KB de salida, 64 KB de script; 2 scripts a la vez por workspace (`CODE_RUN_CONCURRENCY`).
+  - **Una falla detiene el script y no se deshace nada.** El informe lista cada llamada (`calls`, con `ref`). Pasa `idempotencyKey` a cada `ps.messages_send` para que una nueva ejecución no vuelva a enviar.
+  - **Solo alojado:** el paquete npm `@pilot-status/mcp-server` conserva las 114 herramientas.
+</Update>
+
+<Update label="2026-10-24" tags={["Chat", "Fixed"]}>
+  ## Chat: las conversaciones abiertas vuelven a actualizarse solas
+
+  **Los mensajes, estados y llamadas nuevos aparecen en la conversación abierta a medida que ocurren, sin recargar la página.** La conexión en vivo detrás del chat estaba siendo rechazada, así que la pantalla solo se ponía al día cuando recargaba sus datos. Vuelve a funcionar en el panel, al suplantar a un usuario y en el chat embebido.
+
+  - **La pantalla de chat ya no se rompe con una conexión inestable.** Una respuesta cortada por un cambio de red reemplazaba la lista de conversaciones con "Something went wrong"; ahora la solicitud simplemente se reintenta.
+</Update>
+
+<Update label="2026-10-24" tags={["Messages", "API", "Fixed"]}>
+  ## Carrusel: el medio de la tarjeta debe ser una URL `https://` completa, verificada antes de enviar
+
+  **Una tarjeta de carrusel cuyo `media.url` es una ruta relativa o una URL `http://` ahora se rechaza en la API con `400 TEMPLATE_CAROUSEL_MEDIA_NOT_DISPATCHABLE` y el `cardIndex` de la tarjeta.** Antes solo se verificaba la extensión del archivo: el envío se encolaba y luego fallaba en Meta con `META_MEDIA_UPLOAD_ERROR` ("Downloading media from weblink failed"), sin decir qué tarjeta. [Regla de medios del carrusel](/es/api/messages/send-interactive#carrusel)
+
+  - **Sin cambios para las URLs que ya funcionaban.** Todos los carruseles enviados en los últimos 60 días usaron `https://`, excepto los fallidos que esto detecta.
+  - **Logs:** el detalle del mensaje ahora muestra las tarjetas del carrusel, no solo el texto superior, y una tarjeta con una URL de imagen inválida muestra un área de imagen vacía en lugar de una imagen rota.
+  - **Logs: el origen de los mensajes enviados por la API ahora muestra tu propio número** (su nombre, o su instancia en números no oficiales). Desde el 5 de octubre mostraba en su lugar el número de la plataforma Pilot Status; los mensajes ya registrados se corrigieron.
+</Update>
+
+<Update label="2026-10-23" tags={["Workspace", "API", "MCP", "Shipped"]}>
+  ## Workspace: los Admins eligen qué números ve un miembro, y la API también
+
+  **Los Admins ahora pueden cambiar qué números de WhatsApp ve un Agent o Analyst**, en el panel y con el nuevo `PATCH /v1/workspace/members/{id}/numbers`. Antes solo podía el propietario. [API de workspace](/es/api/workspace#cambiar-qué-números-ve-un-miembro)
+
+  - **El rol no cambia.** Cambiar el rol sigue siendo `PATCH /v1/workspace/members/{id}`, solo el propietario.
+  - **Cuerpo:** `{ "allowedNumberIds": [...] }`, obligatorio, y **reemplaza toda la lista**. `[]` significa **todos los números**, incluidos los que se conecten después, no ninguno.
+  - **Un miembro restringido no gana números nuevos automáticamente.** Agrega cada número nuevo a los miembros que lo necesiten.
+  - **Quién puede llamarlo:** un token OAuth/MCP de un `ADMIN` u `OWNER`. Una clave `ps_` clásica recibe `403 MACHINE_CREDENTIAL_CANNOT_MANAGE_MEMBERS`; un `AGENT` o `ANALYST` recibe `403 PERMISSION_DENIED`.
+  - **Errores:** `400 INVALID_SCOPE`, `400 UNKNOWN_FIELDS` (con `details.unknownFields`), `404 NOT_FOUND` y `409 SCOPE_NOT_APPLICABLE` cuando el destino es un propietario o Admin: ellos siempre ven todos los números.
+  - **MCP: 114 herramientas** (eran 113): `workspace_members_set_numbers`.
+</Update>
+
+<Update label="2026-10-21" tags={["Ads", "API", "MCP", "Shipped"]}>
+  ## API y MCP: cuentas publicitarias de Meta, el resumen por anuncio y Páginas de Lead Ads
+
+  **Lo que el panel hace con los anuncios de Meta y Lead Ads ahora está en la API pública y en el [servidor MCP](/es/integrations/mcp-server)**, con los mismos permisos que el panel.
+
+  - **[Anuncios](/es/api/ads):** `GET/POST /v1/ads/accounts` y `DELETE /v1/ads/accounts/{adAccountId}` conectan las cuentas publicitarias que dan nombre a tus anuncios Click-to-WhatsApp (credencial de toda la cuenta, `integrations:manage`). `GET /v1/ads/summary` devuelve conversaciones, mensajes, nombres resueltos y `leadCount` por anuncio, hasta 200 anuncios (`analytics:read`, así que ANALYST también puede leerlo).
+  - **[Páginas de Lead Ads](/es/api/lead-pages):** `GET/POST /v1/lead-pages`, `PATCH/DELETE /v1/lead-pages/{pageLinkId}`, `POST /v1/lead-pages/{pageLinkId}/resync`, `GET /v1/lead-pages/{pageLinkId}/forms` y `PUT /v1/lead-pages/{pageLinkId}/forms/{formId}` vinculan Páginas de Facebook, las mueven entre números, vuelven a traer sus leads de los últimos 90 días y configuran la casilla de consentimiento y el mensaje automático de WhatsApp de cada Formulario Instantáneo (`integrations:manage`).
+  - **`DELETE /v1/lead-pages/{pageLinkId}` borra todos los leads capturados a través de la Página** y las configuraciones de sus formularios. No se puede deshacer.
+  - **La resincronización está limitada a una vez cada 10 minutos por Página:** `429 RESYNC_COOLDOWN` con `retryAfterSeconds`.
+  - **Alcance:** una clave con alcance de número, o `x-whatsapp-number-id`, actúa solo sobre ese número; una credencial de toda la cuenta sin el encabezado ve todo el workspace. Los campos desconocidos del cuerpo se rechazan con `400 UNKNOWN_FIELDS`.
+  - **Sin login de Meta en ninguna parte:** el anunciante comparte la cuenta publicitaria o la Página con el portafolio comercial de Pilot Status (`partnerBusinessId`) en Meta Business Manager.
+  - **MCP: 113 herramientas** (eran 102): `ads_accounts_list`, `ads_accounts_link`, `ads_accounts_unlink`, `ads_summary`, `lead_pages_list`, `lead_pages_link`, `lead_pages_update`, `lead_pages_unlink`, `lead_pages_resync`, `lead_forms_list`, `lead_forms_update`. `webhooks_create` y `webhooks_update` ahora indican que `"*"` no incluye `lead.received`.
+</Update>
+
+<Update label="2026-10-21" tags={["Webhooks", "Messages", "Shipped"]}>
+  ## Webhooks: cada `message.failed` trae el `errorCode` de la API
+
+  **En los números no oficiales (web), `message.failed` ahora trae el mismo `errorCode` que [`GET /v1/messages`](/es/api/messages/log-error-codes) y la pantalla de Logs dan para el mensaje**, en las tres formas de cuerpo. Puedes ramificar según él en lugar de analizar el texto del motivo en portugués. [Códigos de error del webhook vs códigos de error de la API](/es/api/messages/log-error-codes#códigos-de-error-del-webhook-vs-códigos-de-error-de-la-api)
+
+  - **Forma del worker:** nuevo `data.errorCode`, por ejemplo `WHATSAPP_NOT_EXIST`, `WEB_SHADOWBAN`, `WHATSAPP_INSTANCE_NOT_CONNECTED`.
+  - **Forma plana** (reconciliador y plazo de entrega): nuevo `errorCode` de nivel superior **junto al** `code` existente, que no cambia. `code` es el veredicto de tres valores del reconciliador; `errorCode` es el código más fino de la API (`EXPIRED_WHILE_NUMBER_BLOCKED`, `NEVER_ATTEMPTED_MAX_AGE_EXCEEDED`, …).
+  - **Forma de estado:** `data.errorCode` ahora es el código real (`WEB_SHADOWBAN`, `WEB_PROVIDER_REJECTED`, …) y ya no siempre `SEND_FAILED`. **Si comparas con el literal `SEND_FAILED`, agrega los códigos específicos.**
+  - **Aditivo:** no se eliminó ni renombró ningún campo.
+  - **Los números oficiales siguen sin recibir webhooks `message.*`**; lee sus fallas en los `statuses[]` nativos de Meta o con `GET /v1/messages`.
+  - **Un mensaje enviado que no se puede reenviar intacto ahora falla con `MESSAGE_RECOVERY_FAILED`.** Cuando la entrega de un mensaje `SENT` nunca se confirma, Pilot Status lo reenvía. Ahora solo reenvía texto libre en un número no oficial. Un mensaje de un número oficial, o una plantilla, se marca como fallido en lugar de reenviarse incompleto. Tu número no tiene ningún problema: envía el mensaje de nuevo.
+</Update>
+
+<Update label="2026-10-21" tags={["Workspace", "Plans", "API", "Shipped"]}>
+  ## Workspace: miembros ilimitados en todos los planes
+
+  **Ya no hay límite de miembros en ningún plan, incluido Free.** Invita a todas las personas que necesites. Las invitaciones siguen venciendo a los 7 días, y reenviar una sigue generando un enlace nuevo. [Miembros](/es/dashboard/members)
+
+  - **Las invitaciones ya nunca responden `409 SEAT_LIMIT_REACHED`**, y pasar a un plan más pequeño ya no se bloquea por el tamaño de tu equipo (el límite de números sigue aplicando).
+  - **API:** [`GET /v1/workspace` y `GET /v1/workspace/members`](/es/api/workspace) mantienen `seatsUsed` como conteo informativo y devuelven `seatLimit: null`. El campo se mantiene por compatibilidad; trata `null` como ilimitado.
+  - La pestaña Members del panel ya no muestra un contador de asientos ni una invitación a mejorar el plan.
+</Update>
+
+<Update label="2026-10-21" tags={["SDK", "Ads", "Shipped"]}>
+  ## SDKs: anuncios, Páginas de Lead Ads y referencias de anuncios
+
+  **[`@pilot-status/sdk` 0.16.0, `pilot-status` 1.14.0 (Python) y `n8n-nodes-pilot-status` 2.8.0](/es/integrations/sdks)** cubren [referencias de anuncios](/es/api/referrals), [anuncios](/es/api/ads) y [Páginas de Lead Ads](/es/api/lead-pages).
+
+  - **Node:** `client.referrals`, `client.ads` y `client.leadPages`. **`seatLimit` ahora es `number | null`** en `WorkspaceDetail` y `WorkspaceMemberList`: maneja `null` si tu código hace cálculos con él.
+  - **Python:** `client.referrals`, `client.ads` y `client.lead_pages`, además de `PilotStatusClient(..., whatsapp_number_id=...)` y `client.with_number(id)`, que envían `x-whatsapp-number-id` para que una clave de toda la cuenta pueda actuar sobre un número.
+  - **n8n:** nuevos recursos Referral, Ads Summary, Ad Account, Lead Page y Lead Form. **Lead Page → Unlink** borra los leads de la Página.
+</Update>
+
+<Update label="2026-10-21" tags={["Phone Lines", "Numbers", "Shipped"]}>
+  ## Líneas telefónicas y números: un aviso de renovación por día, conexión oficial más rápida
+
+  - **Avisos de renovación de líneas telefónicas:** unas 48 horas antes, ahora recibes un aviso por día de renovación, que lista cada línea que se renueva ese día por nombre y número (en el e-mail), con el total. Las líneas que se renuevan en días distintos reciben avisos separados. [Precios](/es/phone-lines-pricing)
+  - **Conectar un número oficial (Meta) es más rápido**: unos 6 a 8 segundos en lugar de 30 a 50. Si Meta tarda más de 15 segundos en responder un paso del que depende la conexión, la conexión ahora falla con `504 META_GRAPH_TIMEOUT` en lugar de quedarse colgada; intenta conectar de nuevo.
+</Update>
+
+<Update label="2026-10-20" tags={["Webhooks", "Docs"]}>
+  ## Webhooks: `lead.received` documentado
+
+  **El evento [`lead.received`](/es/api/webhooks/events#payload-lead) ahora tiene su referencia**: se dispara cuando alguien envía un Formulario Instantáneo de Meta Lead Ads en una Página de Facebook vinculada a uno de tus números, y trae el lead (formulario, atribución del anuncio, respuestas y `consentGiven`).
+
+  - **Opcional: una suscripción `"*"` no lo recibe.** Incluye `"lead.received"` por nombre en `events` (por ejemplo `["*", "lead.received"]`) o marca **Lead received (Meta Ads)** en el formulario del webhook en el panel.
+  - **El mismo envoltorio en todos los proveedores**, incluidos los números de Meta: `{ event, data }` canónico. Solo los leads recibidos en vivo lo disparan, una vez por lead; deduplica con `data.leadgenId` (sin `Idempotency-Key`).
+  - **[`GET /v1/leads`](/es/api/leads#efecto-del-modo-de-privacidad-pii) ahora documenta que su verificación de privacidad falla en abierto:** si no se puede leer el modo PII del número, los leads cuyos datos personales están almacenados vuelven sin censurar, incluso en un número RELAY_ONLY.
+</Update>
+
+<Update label="2026-10-20" tags={["API", "Docs"]}>
+  ## API: lee tus leads de Meta Lead Ads por REST
+
+  **Nueva página de referencia para [`GET /v1/leads` y `GET /v1/leads/{id}`](/es/api/leads)**: los leads capturados de Formularios Instantáneos (Facebook/Instagram) en las Páginas de Facebook vinculadas a un número, los mismos datos que devuelven las herramientas MCP `leads_list` y `leads_get`.
+
+  - **Un número por solicitud:** una clave con alcance de número, o una clave de toda la cuenta con `x-whatsapp-number-id`. Los tokens OAuth/MCP también necesitan `chat:read` (ANALYST se rechaza).
+  - **Filtros:** `formId`, `adId`, `pageId`, `startDate`/`endDate` (sobre el `created_time` de Meta del lead), `page`/`pageSize` (por defecto 30, máximo 100).
+  - **`GET /v1/leads/{id}` acepta el `id` de Pilot Status, no el `leadgenId` de Meta.** Un lead de otro número, o uno borrado, responde `404 LEAD_NOT_FOUND`.
+  - **`consentGiven` tiene tres estados**: `null` significa desconocido, nunca un rechazo. Un lead censurado (`redacted: true`) sigue contando y conserva su atribución; solo se retienen los datos personales.
+</Update>
+
+<Update label="2026-10-20" tags={["Messages", "Webhooks", "Shipped"]}>
+  ## Mensajes: nuevo código de error `MESSAGE_RECOVERY_FAILED`
+
+  **Un mensaje que Pilot Status no pudo volver a poner intacto en la cola de envío ahora falla con [`MESSAGE_RECOVERY_FAILED`](/es/api/messages/log-error-codes) en lugar de enviarse incompleto**, por ejemplo con variables de plantilla crudas, o sin su plantilla.
+
+  - **La falla es nuestra: tu número no tiene ningún problema y no necesita reconectarse.** Envía el mensaje de nuevo.
+  - **En el webhook `message.failed` de un número no oficial (web)** llega en la [forma plana](/es/api/webhooks/events), con `code: "MESSAGE_RECOVERY_FAILED"` de nivel superior. Un número oficial no recibe `message.failed` por esto, como con cualquier falla. `GET /v1/messages/{messageId}` y Logs muestran el mismo `errorCode` en ambos.
+</Update>
+
+<Update label="2026-10-20" tags={["MCP", "Phone Lines", "Shipped"]}>
+  ## MCP: leads de Meta Lead Ads, verificación del titular y la grabación de activación
+
+  **Ocho herramientas nuevas en el [servidor MCP](/es/integrations/mcp-server), que ahora lista 102.**
+
+  - **Leads de Meta Lead Ads:** `leads_list` y `leads_get` leen los leads capturados de Formularios Instantáneos en las Páginas de Facebook vinculadas al número de la clave (clave con alcance de número). `consentGiven` tiene tres estados: `null` significa desconocido, nunca un rechazo.
+  - **Líneas telefónicas:** `phone_lines_verification_get`, `phone_lines_verification_start`, `phone_lines_verification_confirm_contact`, `phone_lines_verification_resend_contact` y `phone_lines_verification_resend_document` ejecutan la [verificación del titular de la cuenta](/es/api/phone-lines/verification) (solo OWNER, `phone_lines:purchase`; `phone_lines_verification_start` requiere un `idempotencyKey`). `phone_lines_activation_audio` devuelve los metadatos y la URL de descarga de la [grabación de la llamada](/es/api/phone-lines/activation-codes#descargar-el-audio) de una solicitud de código, nunca el audio en sí. Solo credencial con alcance de tenant.
+</Update>
+
+<Update label="2026-10-19" tags={["Messages", "Numbers", "API", "MCP"]}>
+  ## Mensajes: responde sin marcar la conversación como leída
+
+  **Nuevo campo opcional [`markRead`](/es/api/messages/send#confirmación-de-lectura-e-indicador-de-escritura) en `POST /v1/messages/send`.** Con `markRead: false`, un envío desde un número oficial (Meta Cloud API) sale **sin** el indicador de "escribiendo" y **sin** marcar como leído el último mensaje del contacto (sin tildes azules). Úsalo cuando responde un agente automático y una persona todavía debería encontrar la conversación sin leer en WhatsApp más tarde.
+
+  - **En Meta, "escribiendo" y la confirmación de lectura no se pueden separar.** La Cloud API solo muestra "escribiendo" como parte de una confirmación de lectura, así que desactivar uno desactiva el otro.
+  - **Nueva configuración de número [`markReadOnSend`](/es/api/numbers/settings#confirmación-de-lectura-al-enviar)** (`PATCH /v1/numbers/{id}` y `POST /v1/numbers`, dentro de `settings`) define el valor por defecto para cada envío desde ese número. Por defecto es `true`, así que nada cambia hasta que lo desactives; un envío individual todavía lo sobrescribe con `markRead`.
+  - **Sin efecto en números no oficiales (Pilot Status web):** allí enviar nunca marca nada como leído. Lo que marca los mensajes como leídos al llegar es la configuración `readMessages` del número: mantenla desactivada si la conversación debe quedar sin leer.
+  - **[`POST /v1/messages/typing`](/es/api/messages/typing) en un número de Meta también marca la conversación como leída.** Un agente que quiera mantenerla sin leer no debe llamarlo.
+  - El contador de no leídos del panel no se reinicia con un envío, con o sin `markRead`.
+  - Un `markRead` que no sea booleano se rechaza con `400`.
+  - **Nuevo en la respuesta de `settings` del número: `appliesTo.sending`**: `"meta"` en un número oficial, donde `markReadOnSend` tiene efecto, y `"none"` en uno no oficial.
+  - **MCP:** `messages_send` acepta `markRead`; `numbers_settings_update` y `numbers_create` aceptan `markReadOnSend`.
+</Update>
+
+<Update label="2026-10-11" tags={["Notices", "Dashboard", "Shipped"]}>
+  ## Avisos: el botón abre el panel con tu sesión ya iniciada
+
+  **Los avisos de pago y de límite (números extra, cobros, suspensión, saldo, líneas telefónicas) ahora traen un botón que abre el panel con la sesión ya iniciada, en la pantalla de la que trata el aviso.** Sin contraseña, sin código.
+
+  - **Para el propietario del workspace**, en su propio e-mail y WhatsApp. Los demás destinatarios de un aviso conservan el botón normal, que les pide iniciar sesión.
+  - **Antes de iniciar sesión, la página muestra a qué cuenta y a qué workspace estás por entrar.** Solo tu clic en **Continue** abre la sesión.
+  - **El enlace es válido por 24 horas y funciona una sola vez.** Después, el mismo botón lleva al inicio de sesión normal y, una vez iniciada la sesión, a la misma pantalla.
+  - **No reenvíes el aviso:** cualquiera que tenga el enlace dentro de ese plazo inicia sesión en tu cuenta.
+  - **En e-mail, esto aplica a todos los avisos.** En WhatsApp, aplica a casi todos; los restantes empiezan a abrir con sesión iniciada a medida que Meta aprueba las nuevas plantillas de mensaje.
+</Update>
+
+<Update label="2026-10-11" tags={["Numbers", "Payments", "API", "MCP", "Dashboard", "Shipped"]}>
+  ## Números: un número extra se cobra cuando se conecta por primera vez
+
+  **Crear un número o entregar un enlace de vinculación ya no cobra nada, en ningún plan.** Un número extra (un número que supera la capacidad que tu workspace pagó) ahora se cobra cuando el número **se conecta por primera vez**, sea cual sea la forma en que se conectó: el panel, la API, MCP, un enlace de vinculación remota o Meta Embedded Signup. Un número que nunca se conectó no cuenta para tu capacidad ni para tu factura mensual. Crear un número todavía se rechaza con `402` (`INSUFFICIENT_FUNDS` o `PLAN_NUMBER_LIMIT_REACHED`, mismo cuerpo que antes) cuando el siguiente número sería un número extra y el workspace no tiene ni saldo en la billetera para cubrirlo ni una tarjeta guardada. [Números extra](/es/api/extra-numbers#se-cobra-al-conectar-por-primera-vez)
+
+  - **Si el cobro se rechaza, el número sigue conectado pero se bloquea el envío desde él.** `POST /v1/messages/send` responde `409 NUMBER_BLOCKED` con `reason: "extra_charge_unpaid"`, y un mensaje que ya estaba en cola falla y muestra `NUMBER_BLOCKED` en los logs. Si el cobro simplemente no se pudo concluir (no se pudo contactar al procesador de pagos), no se bloquea nada y se reintenta automáticamente cada 15 minutos.
+  - **Qué levanta el bloqueo:** una recarga de la billetera o una tarjeta guardada (ambas reintentan el cobro automáticamente), el botón **Pay now** en la página **Numbers** del panel (solo el propietario del workspace) o el nuevo [`POST /v1/numbers/{id}/pay`](/es/api/numbers/pay).
+  - **Tras 7 días sin pagar, un número conectado por código QR se desconecta** y deja de contar. Se envía un recordatorio 2 días antes. Volver a conectarlo es una nueva primera conexión, que se cobra de nuevo. Un número de Meta Cloud API nunca se desconecta: queda bloqueado para enviar hasta que se pague.
+  - **Nuevos campos en `GET /v1/numbers` y `GET /v1/numbers/{id}`:** [`extraChargeUnpaidSince` y `extraChargeDisconnectAt`](/es/api/numbers/list#cargo-de-número-extra-sin-pagar), ISO 8601 o `null`. Están en el nivel superior del número, no dentro de `health`, y `health.code` nunca muestra este bloqueo.
+  - **El plan Free nunca compra un número extra por sí solo.** Un workspace Free no se convierte ni se cobra al conectar un número: crear o vincular un número que supera la franquicia del plan responde `402 PLAN_NUMBER_LIMIT_REACHED`, sea cual sea el saldo de la billetera, hasta que compres tú mismo el número extra (con confirmación) o subas de plan. [Plan Free](/es/api/extra-numbers#plan-free)
+  - **MCP:** nueva herramienta `numbers_pay`.
+</Update>
+
+<Update label="2026-09-29" tags={["Messages", "Media", "API", "Breaking", "Shipped"]}>
+  ## Mensajes: se rechaza `voice` junto con `templateId`
+
+  **Enviar `mediaType: "voice"` junto con `templateId` en `POST /v1/messages/send` ahora se rechaza con `400`, igual que `audio`.** Antes la solicitud se aceptaba y el medio se ignoraba en silencio. Para enviar una nota de voz, usa un envío directo de medio separado (`media` \+ `mediaType: "voice"`, sin `templateId`). [Audio y notas de voz](/es/guides/media-messages#audio-y-notas-de-voz)
+</Update>
+
+<Update label="2026-09-29" tags={["Phone Lines", "Webhooks", "API", "Shipped"]}>
+  ## Líneas telefónicas: verificación del titular por la API, la grabación de la llamada por API y por qué se devolvió una línea
+
+  - **Nuevo: [verificación del titular de la cuenta por la API](/es/api/phone-lines/verification)**: `GET` y `POST /v1/phone-lines/verification`, `POST …/contact/{channel}/confirm`, `POST …/contact/{channel}/send` y `POST …/document`. Envía el CNPJ o CPF, un e-mail de contacto, un número de WhatsApp y el documento como data URI base64 (PDF, JPEG, PNG o WEBP, hasta 10 MB); confirma los códigos de contacto; lee `status` (`NONE`, `PENDING_CONTACT`, `IN_REVIEW`, `APPROVED`, `NEEDS_DOCUMENT` o `REJECTED`) y `canPurchase`. El número del documento y los contactos vuelven enmascarados. Solo el propietario (`phone_lines:purchase`); el envío requiere `Idempotency-Key`; como máximo 10 envíos por hora por workspace (`429 RATE_LIMITED` con `Retry-After`). La verificación ya no es exclusiva del panel, y es la misma verificación que la del panel.
+  - **Nuevo: [`GET /v1/phone-lines/activations/{activationId}/audio`](/es/api/phone-lines/activation-codes#descargar-el-audio)** descarga la grabación de la llamada de una solicitud de código, con la misma clave y permiso que para consultarla (`phone_lines:read`), enviada con `Cache-Control: private, no-store`. Una solicitud sin grabación (`hasAudio: false`), o de una línea devuelta o cancelada, responde `404 ACTIVATION_NOT_FOUND`. Escuchar la grabación ya no es exclusivo del panel.
+  - **Webhooks: [`audioUrl`](/es/api/phone-lines/webhooks#la-url-del-audio)** en `phone_line.audio_received`, `phone_line.code_received` y `phone_line.code_failed`: la URL absoluta de esa ruta, o `null` cuando la solicitud no tiene grabación. No contiene ninguna credencial: obtenla con tu clave con alcance de tenant.
+  - **Webhooks: [`phone_line.returned`](/es/api/phone-lines/webhooks#payloads) trae `reason`**: `unpaid`, `canceled_by_customer` o `verification_rejected`.
+  - **Una verificación rechazada recupera las líneas compradas durante la revisión.** 3 días después del rechazo se devuelven al operador (`reason: "verification_rejected"`), y cada cobro que pagaron (incluidas las partes con tarjeta) se reembolsa a la billetera. Hasta entonces siguen funcionando y no se renuevan. Las líneas compradas con una verificación anterior aprobada no se ven afectadas. Consulta la [verificación de identidad](/es/api/phone-lines/overview#antes-de-la-primera-compra-verificar-la-identidad).
+  - **Una línea que sale de tu workspace pierde su historial de códigos**: cuando se devuelve, o cuando una línea cancelada llega a `CANCELED`. [`GET /v1/phone-lines/{id}/activations`](/es/api/phone-lines/activation-codes#historial-de-códigos) sigue listando sus solicitudes, con `code: null` y `hasAudio: false`, y sus grabaciones responden `404`.
+  - **En el panel,** **Pay … now** / **Pay … and reactivate** en la página de una línea ahora cobra solo esa línea (**Pay for all**, en la lista de líneas, sigue cobrando todas las líneas impagas).
+</Update>
+
+<Update label="2026-09-29" tags={["Messages", "Media", "Docs"]}>
+  ## Corrección de la documentación: `audio` es un archivo de audio en los números oficiales; usa `voice` para una nota de voz
+
+  **La documentación decía que `mediaType: "audio"` siempre se entrega como nota de voz (PTT). Eso solo es cierto en los números no oficiales (Pilot Status web).** En los números oficiales (Meta Cloud API), `audio` llega como archivo de audio: un reproductor, no una nota de voz. Hoy no cambió nada en el producto: es la documentación poniéndose al día.
+
+  - **Para enviar una nota de voz en cualquier número, usa `mediaType: "voice"`.** Usa `audio` solo cuando quieras un archivo de audio en un número oficial. `PLAYED` se informa solo en números oficiales y solo para notas de voz: un envío de `audio` allí no lo alcanza, y en números no oficiales una nota de voz escuchada aparece como `READ`.
+  - **El audio no siempre se convierte a Ogg/Opus.** La entrada del 2026-07-29 más abajo decía que ambos tipos se normalizan a OGG/Opus mono. En los números oficiales el audio se convierte a AAC en MP4 (`audio/mp4`) antes de ir a Meta; en los no oficiales se convierte a Ogg/Opus.
+  - **Un caption en `voice` no se rechaza.** La documentación decía que devuelve `400`. `audio` con caption sí; `voice` con caption se acepta, pero el caption se descarta en números no oficiales y su visualización en números oficiales no está garantizada: no lo envíes.
+  - **Los números oficiales sí muestran un indicador antes de un envío de audio:** "escribiendo…", cuando la conversación tiene un mensaje reciente del contacto. Los no oficiales muestran "grabando audio…". La guía de medios decía que no aparecía ningún indicador en los números oficiales.
+
+  [Audio y notas de voz](/es/guides/media-messages#audio-y-notas-de-voz)
+</Update>
+
+<Update label="2026-09-29" tags={["Phone Lines", "Webhooks", "API", "Shipped"]}>
+  ## Las líneas telefónicas tienen nombre
+
+  - **Ponle nombre a una línea en el panel** (**Edit name** en la página de la línea), hasta 60 caracteres, como nombras un número de WhatsApp. Si lo dejas vacío, el nombre se borra y la línea vuelve a mostrar su número. En el panel el nombre es el título de la línea, y también identifica los cobros y recibos de la línea.
+  - **[`GET /v1/phone-lines`](/es/api/phone-lines/list) y `GET /v1/phone-lines/{id}` devuelven un nuevo campo [`name`](/es/api/phone-lines/list#campos-del-objeto-de-línea)**: el nombre que le diste, o el número formateado (`(11) 4863-7200`, igual que `display`) cuando la línea no tiene. Nunca está vacío. La línea devuelta por `DELETE /v1/phone-lines/{id}` también lo trae.
+  - **Cada [webhook `phone_line.*`](/es/api/phone-lines/webhooks#payloads) sobre una línea trae `name`**: todos los eventos excepto `phone_line.verification_updated`. `phone_line.purchased` siempre trae el número formateado, ya que una línea se compra sin nombre.
+  - Poner nombre es exclusivo del panel: no hay ruta de API para definirlo, y `POST /v1/phone-lines` sigue aceptando solo `numbers`.
+</Update>
+
+<Update label="2026-09-28" tags={["Phone Lines", "Webhooks", "API", "Shipped"]}>
+  ## Líneas telefónicas: cancelar una espera, el código se vuelve a leer de la grabación y cada solicitud de código termina con un evento
+
+  - **Nuevo: [`POST /v1/phone-lines/{id}/activations/{activationId}/cancel`](/es/api/phone-lines/activation-codes#cancelar-una-espera).** Termina una solicitud de código que todavía está `WAITING`, para que puedas pedir un código nuevo de inmediato en lugar de recibir `409 ACTIVATION_IN_PROGRESS` hasta que cierre la ventana de 5 minutos. La solicitud pasa a `TIMED_OUT` con `failureReason: "canceled_by_customer"`. Una llamada que ya se capturó nunca se descarta: en ese caso la cancelación responde `409 ACTIVATION_NOT_WAITING`. El panel tiene el mismo botón **Cancel wait**.
+  - **Una transcripción fallida se reintenta** desde la grabación almacenada, hasta 3 intentos en total, así que una solicitud puede quedar `CAPTURED` con `failureReason: null` por unos minutos; `transcription_failed` ahora significa que fallaron los 3 intentos.
+  - **Una llamada en los últimos segundos de la ventana ya no se pierde:** la verificación justo después de `pollDeadline` lee la línea una última vez.
+  - **Webhooks:** nuevos eventos [`phone_line.audio_received`](/es/api/phone-lines/webhooks#payloads) (la llamada se capturó y almacenó) y [`phone_line.code_failed`](/es/api/phone-lines/webhooks#payloads) (la solicitud terminó sin código, con `reason`). **`phone_line.code_received` ahora se envía una vez por cada solicitud aceptada**: con el código, o con `code: null` más un nuevo campo `failureReason` cuando terminó sin código (ninguna llamada en la ventana, una espera cancelada, una transcripción fallida, o una grabación que no se pudo descargar o almacenar). Hasta hoy se enviaba solo después de una transcripción terminada. Los webhooks suscritos a todos los eventos (`"*"`) reciben los eventos nuevos; los que tienen una lista explícita no, hasta que los agregues.
+  - **Los webhooks de línea en el panel** ahora tienen un **nombre** opcional (hasta 100 caracteres; vacío usa el host de la URL) y se pueden **editar** (nombre, URL y eventos) sin cambiar el secreto de firma. Una URL que apunta a una dirección de red interna o privada se rechaza al guardarla (`WEBHOOK_URL_REFUSED`), en lugar de aceptarse y luego fallar en cada entrega.
+</Update>
+
+<Update label="2026-09-28" tags={["Messages", "Media", "API", "Shipped"]}>
+  ## URLs de medios y las capas de Evolution: se rechazan las direcciones internas
+
+  - **`POST /v1/messages/send` con una URL de `media` que apunta a una dirección de red interna o privada** (o que redirige a una) ahora falla con [`MEDIA_DOWNLOAD_FAILED`](/es/api/messages/log-error-codes) antes de hacer cualquier solicitud, en todos los tipos de número, con un `errorMessage` que empieza con `Mídia recusada:`. No se reintenta. Las URLs públicas no se ven afectadas.
+  - **Las capas [Evolution V2](/es/api/layer/evolution-v2#las-urls-de-la-solicitud-deben-ser-públicas) y [Evolution GO](/es/api/layer/evolution-go#las-urls-de-la-solicitud-deben-ser-públicas)** ahora rechazan, con `400`, una solicitud cuya URL de medio, foto, enlace con vista previa, webhook o integración apunta a una dirección de red interna o privada. No se reenvía nada.
+</Update>
+
+<Update label="2026-09-25" tags={["Numbers", "Messages", "API", "Shipped"]}>
+  ## Números: un número de Meta reconectado tras eliminarse sigue funcionando, y uno que no está registrado lo dice
+
+  **Reconectar el mismo número de Meta ya no lo deja sin poder enviar.** Registrar un número en la Cloud API le define un PIN de verificación en dos pasos en Meta, y hasta hoy ese PIN vivía solo con el registro del número. Eliminar el número de forma permanente y conectarlo de nuevo hacía que el nuevo registro usara un PIN distinto; Meta lo rechazaba (`133005`), el número parecía conectado y **cada envío fallaba con `133010` "Account does not exist in Cloud API"**. Ahora el PIN se guarda por número de teléfono de Meta y se reutiliza al reconectar.
+
+  **Los envíos rechazados por ese motivo ahora traen `errorCode: META_PHONE_NOT_REGISTERED`** en lugar del genérico `META_SEND_FAILED`, con un mensaje que te indica registrar el número de nuevo en el panel.
+
+  **`health.code: meta_phone_not_registered`** marca un número de Meta cuyo estado de teléfono es `DISCONNECTED`, en `GET /v1/numbers` y `GET /v1/numbers/{id}/status`, y el panel muestra una insignia "Not registered on the Cloud API". La fila queda `sendable: true` a propósito: la cola no se pausa, y cada envío devuelve el error explícito de Meta. Consulta [`health.code`](/es/api/numbers/list).
+
+  **En el panel:**
+  - **Register on the Cloud API pide el PIN cuando Meta dice que no coincide**, en lugar de terminar en un error sin dónde escribirlo.
+  - **Delete permanently ahora muestra lo que se perderá** (cuántas conversaciones y mensajes, más los otros datos vinculados al número) antes de que escribas el número para confirmar.
+  - **Reconectar un número de Meta que todavía está en la papelera ahora pasa por Restore** (la misma ventana de 30 días y **el mismo cobro que Restore**) y trae de vuelta el número con sus conversaciones, claves y configuraciones. Se identifica por el número de teléfono de Meta, en el mismo workspace.
+</Update>
+
+<Update label="2026-09-25" tags={["Numbers", "Messages", "API", "Shipped"]}>
+  ## Números no oficiales: reconectar el mismo número vuelve a funcionar
+
+  - **Cerrar sesión y reconectar el MISMO número no oficial podía quedar sin registrar.** Cuando pasaba, no se enviaba `number.connected`, el panel seguía mostrando el número como desconectado con el envío pausado, y `POST /v1/messages/send` respondía `409 NUMBER_BLOCKED` hasta que alguien hacía clic en "Resume sending". Corregido: la reconexión ahora se registra, se envía `number.connected` y el envío se libera en cuanto vuelve la conexión, sin necesidad de clic.
+  - **`409 NUMBER_BLOCKED` con `reason: "all_connections_down"` ahora dice lo que significa:** el número lleva más de 60 minutos desconectado y debe reconectarse antes de enviar. Antes decía que WhatsApp estaba rechazando los envíos. `code`, `reason` y el estado HTTP no cambian. [Códigos de error](/es/api/messages/log-error-codes)
+  - **`POST /v1/messages/{id}/resend`** ahora responde el mismo `409 NUMBER_BLOCKED` que `POST /v1/messages/send` cuando el número no puede enviar. Antes respondía un `500` genérico.
+  - **Los mensajes que vencen mientras el número estuvo desconectado más de 60 minutos ahora lo dicen en `error`.** El `errorCode` sigue siendo `EXPIRED_WHILE_NUMBER_BLOCKED`.
+</Update>
+
+<Update label="2026-09-24" tags={["Messages", "Media", "Docs"]}>
+  ## Corrección de la documentación: los medios en base64 funcionan en números no oficiales
+
+  **La documentación decía que los números no oficiales (Pilot Status web) no aceptan `media` en base64 en `POST /v1/messages/send`. Sí lo aceptan, desde el 2026-08-24.** Hoy no cambió nada en el producto: es la documentación poniéndose al día. En los números no oficiales, Pilot Status sube el archivo decodificado a su propio almacenamiento y le envía una URL al proveedor; si esa subida falla, el mensaje falla con [`MEDIA_REHOST_FAILED`](/es/api/messages/log-error-codes). Los límites de base64 no cambian (50 MiB para `document`, 16 MiB para todos los demás tipos). Para stickers en números no oficiales, usa una URL http(s) pública. [Mensajes con medios](/es/guides/media-messages#base64-vs-url-según-el-proveedor)
+</Update>
+
+<Update label="2026-09-24" tags={["Messages", "Media", "API", "Shipped"]}>
+  ## Mensajes: un documento en base64 puede tener hasta 50 MiB
+
+  **`POST /v1/messages/send` ahora acepta un `media` en base64 de hasta 50 MiB (52,428,800 bytes, decodificado) cuando `mediaType` es `document`.** Hasta ahora todo payload en base64 tenía un límite de 16 MiB sin importar su tipo, así que un documento de 20 MB enviado en línea se rechazaba, aunque Meta acepta documentos de hasta 100 MB. Todos los demás tipos (`image`, `video`, `audio`, `voice`, `sticker`) y un `media` enviado sin `mediaType` mantienen el límite de 16 MiB (16,777,216 bytes).
+
+  **El rechazo mantiene su forma.** Por encima del límite la solicitud responde `400 Validation error` antes de encolar nada, y `details.fieldErrors.media` indica el límite que aplicó:
+
+  ```json
+  {
+    "error": "Validation error",
+    "details": {
+      "formErrors": [],
+      "fieldErrors": { "media": ["media base64 payload exceeds the 52428800 byte limit"] }
+    }
+  }
+  ```
+
+  Para todos los demás tipos el texto no cambia: `media base64 payload exceeds the 16777216 byte limit`.
+
+  **Los medios enviados por URL no se ven afectados.** Una URL http(s) pública no está sujeta a estos límites; en los números de Meta Cloud API aplican los topes propios de Meta (documento 100 MB, video y audio 16 MB, imagen 5 MB), y un archivo que los supere falla después del `202` con `META_MEDIA_TOO_LARGE`. Para un documento de más de 50 MiB, envía una URL. [Enviar mensaje](/es/api/messages/send)
+</Update>
+
+<Update label="2026-09-23" tags={["Numbers", "API", "MCP", "SDK", "Shipped"]}>
+  ## Números: eliminar es reversible durante 30 días, y la eliminación permanente ahora está documentada
+
+  **`DELETE /v1/numbers/{id}` es una eliminación suave de 30 días**, y lo es desde agosto: el dispositivo se desconecta de inmediato y la respuesta trae `restorableUntil`. Dos endpoints la completan, y la documentación no mencionaba ninguno: [`POST /v1/numbers/{id}/restore`](/es/api/numbers/create) trae de vuelta el número dentro de la ventana, y [`DELETE /v1/numbers/{id}/purge`](/es/api/numbers/create) lo elimina de forma permanente, de inmediato. Haz purge antes de volver a crear el mismo teléfono: mientras el número esté en la ventana, `POST /v1/numbers` responde `409 NUMBER_SOFT_DELETED`.
+
+  **Facturación:** en Pay As You Go, un número eliminado no se cobra en el siguiente ciclo, con o sin purge. En los demás planes, eliminar no reduce la capacidad pagada: para eso, [programa una reducción](/es/api/extra-numbers). **Restaurar se paga como crear:** cuando tu capacidad pagada ya está completa, una restauración compra un número extra, prorrateado; si no se puede pagar responde `422 INSUFFICIENT_FUNDS` y el número sigue eliminado.
+
+  **MCP:** nueva herramienta `numbers_purge` (solo OWNER), junto a `numbers_restore`. **SDK de Python 1.8.0:** `numbers.purge()` y `numbers.restore()`, y `numbers.delete()` ahora tipa su respuesta real (`ok`, `restorableUntil`).
+</Update>
+
+<Update label="2026-09-23" tags={["Chatwoot", "Messages", "Shipped"]}>
+  ## Chatwoot (espejo de API): los medios de números no oficiales llegan con su adjunto, y con nombre de archivo
+
+  **Las imágenes, audios, videos y documentos recibidos en números no oficiales (web/QR) vuelven a llegar a Chatwoot con el adjunto.** En el espejo de API (Modelo A), desde fines de agosto, podían llegar como una burbuja vacía: el espejo publicaba el mensaje antes de que su medio se hubiera almacenado. Ahora espera el medio y publica la burbuja con él, normalmente en pocos segundos. Si el medio todavía no está disponible tras 20 segundos, la burbuja dice `[mídia]` con un enlace que abre el archivo en cuanto se almacena. Los medios recibidos antes de este cambio quedan como están en Chatwoot. [Lo que ven los agentes](/es/integrations/chatwoot#lo-que-ven-los-agentes-en-chatwoot)
+
+  **Un adjunto que llega sin nombre de archivo ahora recibe uno.** Las fotos, notas de voz, videos y stickers suelen venir sin nombre y llegaban a Chatwoot como `attachment`, sin extensión. Ahora se nombran según su tipo y el id del mensaje (`imagem-3EB03F18.jpg`, `audio-3EB0FFE7.ogg`, `figurinha-3EB0A1B2.webp`) para que la descarga se abra en la app correcta. Un archivo que trae su propio nombre lo conserva.
+</Update>
+
+<Update label="2026-09-22" tags={["Chatwoot", "Messages", "API", "Shipped"]}>
+  ## Chatwoot: las respuestas rechazadas muestran por qué, los mensajes de API siguen la conversación abierta, ningún texto se pierde detrás de "unsupported"
+
+  **Una respuesta de Chatwoot que Pilot Status rechaza ahora se marca como fallida en Chatwoot**, con el motivo en la burbuja y una nota privada en la conversación; antes, la burbuja parecía enviada. Esto cubre todo rechazo de una respuesta de agente: WhatsApp rechazando envíos desde el número, facturación suspendida, la ventana de 24 h cerrada, `/template` no encontrada, un adjunto sin URL pública, un mensaje vacío, sin destino. [Lo que ven los agentes](/es/integrations/chatwoot#lo-que-ven-los-agentes-en-chatwoot)
+
+  **Un código nuevo, `NUMBER_BLOCKED`, nombra una respuesta de Chatwoot rechazada porque WhatsApp está rechazando envíos desde el número** (baneado, restringido). Antes se reintentaba cuatro veces y se registraba como `CHATWOOT_SEND_EXCEPTION` en cada intento; ahora se registra una vez y no se reintenta. Es el mismo código con el que `POST /v1/messages/send` responde `409` en ese estado. [Log Error Codes](/es/api/messages/log-error-codes#respuestas-de-agentes-en-chatwoot)
+
+  **Bandeja Cloud nativa (Modelo B): los mensajes enviados por la API de Pilot Status llegan a la conversación abierta del contacto.** Chatwoot abre una conversación nueva cada vez que se resuelve la anterior, y los mensajes de API seguían yendo a la antigua, ya resuelta. Sin conversación abierta, Pilot Status ahora abre una, y la respuesta del cliente se suma a ella.
+
+  **Bandeja Cloud nativa (Modelo B): el mensaje real ya no se pierde detrás de "This message is unsupported".** En los números de coexistencia, WhatsApp a veces entrega un marcador de posición (`131060`) antes del mensaje real, con el mismo id, y Chatwoot conservaba el marcador y descartaba el texto. Pilot Status ahora retiene el marcador unos segundos y lo descarta cuando llega el mensaje real. Cuando WhatsApp nunca entrega el contenido a la API, el marcador todavía aparece: el mensaje solo está en la app de WhatsApp.
+
+  **Un envío a un número sin su código de país ya no divide la conversación** en la bandeja y en [`GET /v1/conversations`](/es/api/conversations): en los números oficiales la conversación sigue el número que WhatsApp confirma para el envío. Sigue enviando en E.164 (con el código de país).
+</Update>
+
+<Update label="2026-09-21" tags={["Messages", "API", "Shipped"]}>
+  ## `errorCode` en el detalle del mensaje
+
+  [`GET /v1/messages/{messageId}`](/es/api/messages/status) ahora devuelve `errorCode`, el mismo valor que [`GET /v1/messages`](/es/api/messages/list) devuelve para el mismo mensaje, con la misma derivación. Hasta ahora el detalle traía solo `errorMessage`, cuyo texto no es un contrato. Ramifica según `errorCode`; es `null` cuando no hay error. En el detalle esto es aditivo: ningún campo existente cambia.
+
+  [Log Error Codes](/es/api/messages/log-error-codes) ahora lista todos los valores que puede tomar `errorCode` (incluidos los rechazos de números web y el conjunto completo de Meta Cloud API) con el código numérico de Meta detrás de cada código `META_*`, para que puedas relacionarlo con `statuses[].errors[].code` en el webhook nativo.
+
+  En ambos endpoints y en Logs, dos códigos nuevos, `BILLING_SUSPENDED` y `NUMBER_DELETED_BEFORE_SEND`, nombran fallas que antes llegaban como `SEND_FAILED`, y un shadowban web (error 463) ahora muestra `WEB_SHADOWBAN` en lugar de `SEND_FAILED`. `PLAYED` se une a `DELIVERED`, `READ` y `CANCELED` como estado cuyo `errorCode` es siempre `null`.
+
+  21 códigos más ahora nombran fallas propias: vencimientos del reconciliador en un número bloqueado o desconectado, respuestas de agentes de Chatwoot, rechazos de composición de lista/carrusel/Flow de plantillas, fallas de medios y de órdenes de pago de números web, y rechazos de la plataforma en números oficiales antes de que el envío llegue a Meta: [lista completa](/es/api/messages/log-error-codes). Antes llegaban como `SEND_FAILED` (`META_SEND_FAILED` para los rechazos de números oficiales), y algunos como un código adivinado a partir del texto del error subyacente, como `DELIVERY_TIMEOUT`. **Si ramificas según `SEND_FAILED`, espera en su lugar estos códigos más específicos, incluso en mensajes antiguos**: el código se calcula cuando se lee el mensaje, no cuando falló.
+
+  En los números oficiales, un envío que Meta rechaza al momento de la solicitud ahora recibe el mismo código que da el webhook de estado para ese número de Meta. `131048` es `META_RATE_LIMITED` (decía `META_NO_CONVERSATION`), `131052` y `131053` son `META_MEDIA_DOWNLOAD_ERROR` y `META_MEDIA_UPLOAD_ERROR`, `4` y `80007` son `META_RATE_LIMITED`, `100` es `META_INVALID_PARAM`, `131000` es `META_GENERIC_ERROR`, y `190` es `META_TOKEN_INVALID` en ambos caminos. Tres códigos de tiempo de envío pasan a ser públicos: `META_TEMPLATE_INVALID_BUTTON_URL`, `META_NUMBER_INFO_NEEDED` y `META_CONTENT_FLAGGED`. **Esto aplica solo a los mensajes que fallen después de la versión**: los antiguos conservan el código que recibieron, excepto los cuatro códigos heredados de abajo. La página también relaciona cada código del webhook `message.failed` con el `errorCode` de la API para el mismo mensaje.
+
+  Cuatro códigos que el camino de tiempo de envío ya no escribe ahora se leen con el código actual también en mensajes antiguos, porque cada uno venía de exactamente un número de Meta: `META_SPAM_RATE_LIMITED` → `META_RATE_LIMITED`, `META_TEMPLATE_BAD_PARAM` → `META_MEDIA_DOWNLOAD_ERROR`, `META_BAD_REQUEST` → `META_INVALID_PARAM`, `META_UPLOAD_SESSION_INVALID` → `META_GENERIC_ERROR`. Un `META_NO_CONVERSATION` o `META_TEMPLATE_NOT_APPROVED` antiguo queda como se almacenó, porque es ambiguo.
+
+  Once códigos más nombran fallas que el worker antes registraba solo como texto libre, que se leían como `SEND_FAILED`: conexión y credenciales, descarga y conversión de medios, composición del mensaje y `PROVIDER_UNREACHABLE` para un proveedor que no se pudo contactar en ningún intento: [lista completa](/es/api/messages/log-error-codes). Algunas fallas también pasan de `DELIVERY_TIMEOUT` o `SEND_FAILED` a un código más preciso. Esto cambia lo que se registra, así que **solo los mensajes que fallen después de la versión los reciben**.
+
+  Un código nuevo, `META_DELIVERY_UNKNOWN`, marca un envío en un número oficial que puede haber llegado a Meta pero no recibió un id de mensaje: la entrega es desconocida, así que no reenvíes a ciegas; [la fila del código](/es/api/messages/log-error-codes) explica cómo verificarlo. Una subida de medio a Meta que no devolvió id de medio ahora se lee como `META_MEDIA_UPLOAD_ERROR`. Ambos aplican solo a los mensajes que fallen después de la versión.
+</Update>
+
+<Update label="2026-09-21" tags={["Templates", "Messages", "API", "Chatwoot", "Shipped"]}>
+  ## Se pueden enviar los botones de URL dinámica de plantillas creadas en la consola de Meta
+
+  Una plantilla creada en el WhatsApp Manager de Meta con marcadores posicionales numera por su cuenta la variable de su botón de URL dinámica: en `https://ctlnk.io/{{1}}`, ese `{{1}}` no es el `{{1}}` del cuerpo. Hasta ahora no había forma de proporcionarla: el envío se aceptaba con `202` y luego fallaba con Meta `131008` (_"Button at index 0 of type Url requires a parameter"_).
+
+  **Envíala como `button_<N>`** en `variables`, donde `N` es la posición del botón en la lista de botones de la plantilla, empezando en 1; todos los botones cuentan, incluidos los estáticos. Solo va la parte variable, no la URL completa:
+
+  ```json
+  "variables": { "1": "Maria", "2": "R$ 10,00", "3": "21/09/2026", "button_1": "Gggkf" }
+  ```
+
+  **`GET /v1/templates` y `GET /v1/templates/{id}` listan la clave** en `variables`: `["1", "2", "3", "button_1"]` para la plantilla de arriba.
+
+  **Un valor faltante se rechaza en el acto.** Un envío sin `button_<N>`, o con un valor vacío, ahora responde `400 MISSING_TEMPLATE_VARIABLES` (o `INVALID_TEMPLATE_VARIABLE_VALUE`) indicando la clave, en lugar de `202` y un mensaje `FAILED` más tarde.
+
+  Los marcadores con nombre no cambian: un botón creado en Pilot Status como `https://shop.com/promo/{{link}}` se sigue completando con `variables.link`. [Detalles](/es/api/templates#marcadores-de-botón-en-plantillas-creadas-en-meta)
+
+  **Los botones de copiar código en números oficiales reciben el código en cada envío.** Para Meta, el código escrito en un botón de copiar código al crearlo es solo un ejemplo; el código que copia el cliente es un parámetro obligatorio de cada envío. Hasta ahora Pilot Status no enviaba ninguno para un botón sin `{{variable}}`, así que Meta rechazaba el envío. En una plantilla aprobada por Meta (`source: "META"`), un botón así ahora también recibe su código como `button_<N>` (`"button_2": "BLACKFRIDAY"` para botones `[QUICK_REPLY, COPY_CODE]`), el GET lista la clave y un envío sin ella se rechaza con `400`. En los números no oficiales el código también es por envío, a través de la `{{variable}}` del botón. [Detalles](/es/api/templates#botones-de-copiar-código-en-números-oficiales)
+
+  **Chatwoot: `/template` completa las variables de botones.** El comando del compositor acepta `button_<N>=value` entre sus argumentos sin consumir un número posicional (`/template link_pagamento_pix Maria, R$ 10, 21/09/2026, button_1=SdjLn`), y las plantillas enviadas con los parámetros estructurados del selector de plantillas de WhatsApp de Chatwoot (`processed_params` con `body` y `buttons`) ahora llegan al envío: los parámetros del cuerpo como variables y los de botones por posición como `button_<N>`. [Detalles](/es/integrations/chatwoot#enviar-una-plantilla-desde-chatwoot)
+
+  **Las plantillas con variables con nombre creadas en la consola de Meta ahora recogen las ediciones posteriores.** Una plantilla creada en el WhatsApp Manager de Meta con parámetros con nombre (`{{first_name}}`) conservaba la copia que Pilot Status importó primero: una edición hecha después en la consola de Meta (un botón nuevo, un texto cambiado) nunca llegaba, y el envío podía entonces ser rechazado por Meta. La sincronización de plantillas ahora trae esas ediciones. Las plantillas creadas en Pilot Status conservan sus nombres de variables, como antes. Las claves `button_<N>` en `variables` ahora también se listan en el orden de los botones.
+
+</Update>
+
+<Update label="2026-09-17" tags={["Webhooks", "Breaking", "Shipped"]}>
+  ## Los números oficiales ya no reciben los eventos canónicos `message.*`
+
+  En un número conectado por la Cloud API oficial de Meta, la familia canónica `message.*` ya no se despacha a tus webhooks: ni `message.sent`, ni `message.failed`, ninguno. Esos números reciben **el envoltorio nativo de Meta**, que es donde siempre estuvo el resultado de un envío: `value.statuses[]`, con `status` y, en caso de falla, `errors[]`.
+
+  **Esto es un cambio, no una aclaración.** Hasta hoy `message.sent` y `message.failed` sí llegaban a los webhooks de números oficiales suscritos a `"*"`: 3,310 entregas `sent` a 19 webhooks en los 7 días previos al cambio. Si tu receptor depende de esos dos eventos en un número oficial, hoy dejó de recibirlos.
+
+  **Qué usar en su lugar**, en orden de preferencia: lee `value.statuses[]` del envoltorio nativo que ya recibes; o consulta [`GET /v1/messages?status=FAILED`](/es/api/messages/list), que funciona en ambos tipos de conexión porque la fila del mensaje llega a `FAILED` de cualquier forma, incluso para una falla que reportó la propia Meta.
+
+  **Los números no oficiales no se ven afectados**: allí `message.*` se despacha exactamente como antes. Y en los números oficiales las familias `number.*`, `call.*` y `flow.response_received` siguen llegando. [Detalles](/es/api/webhooks/events)
+</Update>
+
+<Update label="2026-09-17" tags={["Messages", "API", "Shipped"]}>
+  ## Reenvía un mensaje fallido sin guardar su payload
+
+  `POST /v1/messages/{id}/resend` vuelve a enviar la solicitud almacenada de un mensaje `FAILED` o `CANCELED`. Ya no necesitas guardar el cuerpo original de tu lado para recuperarte de una falla.
+
+  Crea un **mensaje nuevo**, con su propio `id` y `correlationId`, y deja intacta la fila original: el estado, las marcas de tiempo y el id de mensaje del proveedor siguen legibles, así que los dos intentos se pueden distinguir. La respuesta tiene la misma forma que devuelve `POST /v1/messages/send`, más `originalMessageId`. En una plantilla con botón de Flow trae un `flowToken` **nuevo**, para que la respuesta que vuelva se atribuya a este intento y no al primero.
+
+  El identificador es el mismo que acepta `GET /v1/messages/{id}`: id interno, `correlationId` o el wamid del proveedor.
+
+  **Cuenta para tu cuota**, como cualquier envío, y requiere `messages:resend` (`ADMIN`/`OWNER`), deliberadamente más alto que `messages:send`, porque un reenvío gasta cuota en un envío ya pagado una vez y puede entregar dos veces.
+
+  **Antes de automatizar un reintento:** un mensaje que figura como `FAILED` ya fue reintentado por la plataforma: 10 intentos con 30 s de separación, un reconciliador y una verificación de entrega a los 30 y 60 minutos. `FAILED` significa que nos rendimos, así que un reenvío inmediato suele fallar por el mismo motivo. Lee primero `errorMessage` y reenvía cuando la causa esté resuelta. `SENT` y `QUEUED` se rechazan con `409 MESSAGE_NOT_RESENDABLE` por el mismo motivo: todavía están en curso, y reenviar le da a un mensaje dos remitentes. [Detalles](/es/api/messages/resend)
+</Update>
+
+<Update label="2026-09-17" tags={["Dashboard", "Numbers", "History", "Shipped"]}>
+  ## La tarjeta del número te avisa cuando se perdió el historial de WhatsApp
+
+  Disponible en producción desde hoy.
+
+  **Una advertencia "History not imported" en la página Numbers.** Cuando el historial del dispositivo de un número de Meta llegó mientras la importación de historial estaba desactivada, o Meta se negó a enviarlo de nuevo, la tarjeta del número muestra una insignia ámbar. Abre la tarjeta para ver la fecha, el número de eventos y lo que significa. Es la misma información que `historyImport` en `GET /v1/numbers/{id}`. [Detalles](/es/api/numbers/list#el-bloque-historyimport)
+
+  **Vuelve el botón "Sync history".** No se mostraba para los números de coexistencia desde el 30 de junio. Si Meta ya envió el historial del número, rechaza la nueva solicitud, y ahora la advertencia aparece en la tarjeta de inmediato en lugar de en la siguiente carga de página.
+
+  También corregido: algunos textos mostraban un apóstrofo duplicado ("I''m"), y la ayuda de Pix en los formularios de plantillas aparecía en inglés para usuarios de portugués y español.
+</Update>
+
+<Update label="2026-09-16" tags={["Numbers", "History", "API", "Shipped"]}>
+  ## La vinculación remota acepta `settings` para Meta, y el número te dice qué pasó con su historial
+
+  Disponible en producción desde hoy.
+
+  **`POST /v1/numbers/remote-pairing` respeta `settings` con `provider=META`.** Antes ignoraba el bloque sin decir nada, así que un enlace de Meta no podía decidir el historial al crearse. Ahora se escribe en el marcador de posición en el que cae la conexión, y el `201` devuelve el `numberId` del marcador junto con los `settings` con los que se creó. Si tomabas el id de dentro del token del enlace, léelo del cuerpo en su lugar. [Detalles](/es/api/numbers/remote-pairing#historial-decídelo-en-esta-llamada)
+
+  **`historyImport` en `GET /v1/numbers/{id}`.** `discarded` indica que el historial del dispositivo llegó mientras `historyImportEnabled` era `false` y se descartó; `syncRefused` indica que Meta se negó a enviarlo de nuevo. Ambos son definitivos: Meta envía el historial de un número una sola vez, y eliminar y reconectar no lo repite. [Detalles](/es/api/numbers/list#el-bloque-historyimport)
+
+  **Se importan los medios del historial.** Meta los envía en entregas separadas después de las conversaciones; esas entregas se ignoraban, así que los mensajes con medios del historial aparecían vacíos. Los medios que Meta nunca envió quedan como marcador de posición.
+
+  Además: una solicitud de historial que Meta rechaza porque ya se hizo ahora responde `422 HISTORY_SYNC_LIMIT_REACHED` en el botón de sincronización del panel en lugar de un `500`.
+</Update>
+
+<Update label="2026-09-15" tags={["Webhooks", "API", "Shipped"]}>
+  ## Las entregas de webhooks están firmadas, y la salud del número es suscribible
+
+  Disponible en producción desde hoy. Ambos cambian respuestas que esta página dio más temprano el mismo día.
+
+  **La firma ya funciona.** Crear un webhook genera un secreto y lo devuelve en claro en ese `201`, la única respuesta en la vida de un secreto que lo trae. Las entregas incluyen entonces `x-pilot-status-signature`, el HMAC-SHA256 en hexadecimal del cuerpo crudo.
+
+  Los webhooks creados **antes** de hoy no tienen secreto y siguen sin firmar: activar la verificación de firma por debajo de una integración en vivo sería una caída en sí misma. `POST /v1/webhooks/{id}/rotate-secret` la activa para uno de ellos, y también es la única forma de recuperar un secreto perdido. Lee `hasSecret` para distinguirlos antes de decidir si tu receptor puede rechazar entregas sin firma. [Detalles](/es/api/webhooks/configure#verificar-la-firma)
+
+  **`number.health_*` ya no necesita `"*"`.** La familia (`number.health_degraded`, `number.health_blocked`, `number.health_shadowban`, `number.recovered`, `number.inbound_stalled`, `number.inbound_recovered`) está en el selector de eventos. Siempre se despachaba, pero solo a un webhook que había optado por todo, así que suscribirse con precisión significaba no recibir ninguna señal de salud. En un número de Meta eso es todo, ya que `number.disconnected` nunca se dispara allí. [Detalles](/es/api/webhooks/events#salud-del-número-suscribible-desde-el-2026-09-15)
+
+  **`Idempotency-Key` en números de Meta.** El envoltorio nativo ahora trae el encabezado, con clave `<field>:<wamid>:<type>`, deliberadamente no solo el wamid, porque Meta entrega el mismo wamid dos veces con contenido distinto. El cuerpo del envoltorio en sí **no cambia**: la clave va solo en el encabezado, así que lo que recibes sigue siendo byte a byte lo que envió Meta.
+
+  También incluido: `origin` y `metaPricing` en `GET /v1/messages/{id}` (la categoría facturada propia de Meta, ya no inferida de la plantilla), y `sendable` + `health` en `GET /v1/numbers/{id}/status` para números de Meta; es aditivo, y `state` allí sigue mostrando `OPEN` por diseño.
+</Update>
+
+<Update label="2026-09-15" tags={["Webhooks", "Numbers", "Docs"]}>
+  ## Cuatro cosas que la documentación decía y que la plataforma no hace
+
+  Correcciones, todas importantes para una integración que se está construyendo ahora mismo. Nada cambió en el producto: es la documentación poniéndose al día.
+
+  **1. No se puede definir un secreto de firma. En ninguna parte.** La documentación de webhooks decía que se configuraba en la página Webhooks del panel. No es así: ese formulario tiene `name`, `url` y `events`, igual que la API. La columna `secret` existe y el camino de entrega la respeta, pero ninguna superficie la escribe, así que **hoy no se envía `x-pilot-status-signature`**. No construyas un receptor que rechace entregas sin firma; lo rechazaría todo. [Detalles](/es/api/webhooks/configure#verificar-la-firma)
+
+  **2. `Idempotency-Key` no está en todas las entregas.** Se deriva de un id de mensaje en el payload, así que un cuerpo que no tiene ninguno no recibe encabezado ni campo `idempotencyKey`. Eso incluye **todos los envoltorios nativos de Meta Cloud API** (`{ object, entry }`) y las familias `number.*`, es decir, todo el tráfico de conversación de un número de Meta. [Detalles](/es/api/webhooks/configure#eliminar-reintentos-duplicados-idempotency-key)
+
+  **3. En un número de Meta, `GET /v1/numbers/{id}/status` no es una verificación de salud.** Una vez que el número tiene un id de teléfono de Meta, `state` allí es **siempre `OPEN`**: nunca consulta la salud. Un número `RESTRICTED`, o uno cuya calidad cayó a `RED`, responde `OPEN` allí mientras `GET /v1/numbers` y `GET /v1/numbers/{id}` responden `DISCONNECTED` para el mismo número en el mismo instante. Lee `health.sendable` para saber "si puede enviar". [Detalles](/es/api/numbers/status)
+
+  **4. Dos enlaces de vinculación, dos TTL distintos.** La sesión de Embedded Signup `META` dura **30 minutos**; el token QR `PILOT_STATUS` dura **24 horas** o hasta que se conecte. La documentación citaba las 24 h para ambos. Lee `expiresAt` del `201` en lugar de fijar cualquiera de los dos en el código. [Detalles](/es/api/numbers/remote-pairing#vigencia-del-enlace-dos-ttl-diferentes)
+
+  Documentado junto a ellos, en la misma revisión: el bloque `health` completo (`portfolioMessagingLimitTier`, `code`, `reason` y todos los valores que toma cada uno), dónde vive realmente la **categoría facturada** (`value.statuses[].pricing`, no el detalle del mensaje), el bloque `referral` de CTWA y la trampa del `wamid` duplicado, los eventos de salud del número que solo llegan a los suscriptores de `"*"`, las dos claves de arreglo bajo las que puede llegar un eco, y la ventana real de historial de coexistencia: **30 días**, no seis meses.
+</Update>
+
+<Update label="2026-09-14" tags={["Numbers", "API"]}>
+  ## `platformType` nunca dice `COEXISTENCE`, y eso no es un error
+
+  Un número en **coexistencia** (todavía activo en la app WhatsApp Business de un teléfono *y* conectado a la Cloud API) informa `"platformType": "CLOUD_API"`. Porque **está** en la Cloud API. Eso es lo que significa coexistencia, y el conjunto de valores de Meta para ese campo no tiene un miembro `COEXISTENCE`, así que leerlo para responder "¿este número está en coexistencia?" siempre responde que no.
+
+  `GET /v1/numbers` y `GET /v1/numbers/{id}` ahora devuelven un bloque que sí lo responde:
+
+  ```json
+  { "coexistence": { "status": "CONFIRMED", "evidence": "meta_is_on_biz_app" } }
+  ```
+
+  `status` es `CONFIRMED`, `NO`, `LIKELY` o `UNKNOWN`. `evidence` te dice de dónde salió la respuesta, para que puedas separar una respuesta de una suposición: el propio campo `is_on_biz_app` de Meta (también reflejado en `meta.phone.isOnBizApp`), lo que respondió Meta cuando pedimos el historial del dispositivo, o la huella que Meta deja en un número que se niega a registrar.
+
+  **`UNKNOWN` no significa "no".** La huella detrás de `LIKELY` es una señal de un solo sentido: cuando coincide vale la pena confiar en ella, pero su ausencia no prueba nada. Llama `?refresh=1` en el número para obtener la respuesta de la propia Meta.
+
+  Lo que la coexistencia cambia en la práctica: Meta rechaza `/register` para el número, así que las llamadas nunca se pueden habilitar mientras siga así. La mensajería no se ve afectada.
+</Update>
+
+<Update label="2026-09-12" tags={["Flows", "API"]}>
+  ## Un Flow cuyo payload nombraba el `Form` se publicaba, se abría y luego no le enviaba nada a tu endpoint
+
+  Si el payload `data_exchange` de tu Flow referenciaba valores como `${form_product.quantity}` (con el nombre propio del componente `Form` como prefijo), Meta compilaba el documento, lo publicaba, informaba `validation_errors: []`, y todas las entidades volvían `AVAILABLE`. Nada en ninguna parte decía una palabra.
+
+  Luego, en tiempo de ejecución, tu endpoint recibía esto:
+
+  ```json
+  { "version": "3.0", "action": "data_exchange", "screen": "PRODUCT", "data": {} }
+  ```
+
+  Y la persona del otro lado veía solo:
+
+  ```
+  Could not complete this step. Please try again.
+  ```
+
+  ### El prefijo es una palabra clave, no un nombre
+
+  Un valor de formulario se referencia con la **palabra clave literal `form`**. El `name` que le diste al `Form` contenedor nunca aparece en la referencia:
+
+  ```json
+  // ✅ correcto, incluso con un Form llamado "form_product"
+  { "name": "data_exchange", "payload": { "quantity": "${form.quantity}" } }
+
+  // ⛔ no se resuelve a nada, en silencio
+  { "name": "data_exchange", "payload": { "quantity": "${form_product.quantity}" } }
+  ```
+
+  Para un campo completado en una pantalla anterior es `${screen.<SCREEN_ID>.form.<input name>}`: el `form` literal sigue estando ahí.
+
+  ### Qué cambió
+
+  `POST /v1/flows/{id}/json` ahora rechaza un documento así **antes** de que llegue a Meta, y te devuelve el reemplazo ya escrito:
+
+  ```json
+  {
+    "code": "FLOW_JSON_DEAD_FORM_PREFIX",
+    "deadRefs": [
+      { "ref": "${form_product.quantity}", "suggestion": "${form.quantity}" }
+    ]
+  }
+  ```
+
+  Una entrada por referencia, sin duplicados. El estado es `422`, igual que `FLOW_JSON_INVALID`: ramifica según `code`, no según el estado.
+
+  <Note>
+    **Estrecho a propósito, y un `200` sigue sin ser un veredicto sobre tu documento.** La verificación se dispara solo cuando la raíz de una referencia coincide con el `name` de un `Form` declarado en el mismo documento, que es el único caso que demostrablemente no puede resolverse en ninguna versión. Una raíz que no reconocemos se deja en paz: nuestra ignorancia no debe convertirse en tu error. Todo lo demás sigue siendo Meta quien lo juzga.
+  </Note>
+
+  <Warning>
+    **Un Flow ya publicado por otro lado no está cubierto.** La verificación corre al subirlo, así que un documento que llegó a Meta por otra ruta conserva el defecto. Los Flows publicados son inmutables en Meta: clónalo, corrige las referencias, publica el clon, y recuerda que la URL del endpoint se configura **por Flow**, así que el clon empieza sin ninguna.
+  </Warning>
+
+  ### Ya que estás: responde `200` ante un error de negocio
+
+  Cualquier respuesta que no sea `200` de tu endpoint se convierte en esa misma frase genérica en el teléfono, sea cual sea el motivo. Un error que la persona necesita leer va **dentro** de la respuesta:
+
+  ```json
+  { "version": "3.0", "screen": "PRODUCT", "data": { "error_message": "Choose a size" } }
+  ```
+</Update>
+
+<Update label="2026-09-11" tags={["Flows", "API"]}>
+  ## Un Flow `data_exchange` no se podía enviar en absoluto, y la pantalla de entrada que agregamos por ti era la razón
+
+  Si enviabas un Flow con `"action": "data_exchange"`, el mensaje nunca llegaba. Meta lo rechazaba:
+
+  ```
+  (#131009) Unexpected key "flow_action_payload" when "flow_action" is "data_exchange"
+  ```
+
+  ### La pantalla era nuestra, no tuya
+
+  Nada en esas solicitudes estaba mal. El cuerpo traía `flowId`, `cta` y `action`, sin pantalla. Resolvíamos la primera pantalla del Flow y la agregábamos por ti, que es lo correcto en un envío `navigate` y lo único que Meta prohíbe en uno `data_exchange`: para esa acción el payload de la pantalla de entrada no es opcional, se **rechaza**.
+
+  Medido en producción el 10 de septiembre de 2026: tres envíos de una cuenta, ninguno entregado, con la ventana de 24 horas abierta todo el tiempo.
+
+  ### Qué cambió
+
+  Ya no resolvemos ni adjuntamos una pantalla de entrada cuando la acción es `data_exchange`, y el campo se descarta en el último paso antes de salir, aunque algo anterior todavía lo traiga. Un Flow `data_exchange` ahora se envía, se entrega y se abre, verificado de punta a punta el 11 de septiembre de 2026, INIT incluido.
+
+  `screen` y `data` siempre fueron solo para `navigate`; ahora lo dice la API en lugar de dejar que lo diga Meta:
+
+  ```json
+  {
+    "code": "FLOW_PAYLOAD_NOT_ALLOWED",
+    "details": { "field": "flow.screen", "action": "data_exchange" }
+  }
+  ```
+
+  <Note>
+    **Rechazado, no descartado.** Descartar `data` en silencio te haría creer que llegaron al Flow valores que nunca salieron de nuestro proceso. El estado inicial de un Flow `data_exchange` le llega a través de la solicitud **INIT** que Meta hace a tu endpoint.
+  </Note>
+
+  El bloque `flow` ahora también está en la **especificación OpenAPI** y en el Playground, donde antes solo lo tenía el texto.
+</Update>
+
+<Update label="2026-09-06" tags={["Flows", "Webhooks", "API"]}>
+  ## En un Flow `data_exchange` las respuestas nunca estuvieron en `response`: las trae `submitted`
+
+  Te indicábamos `data.response` para lo que escribió un cliente. En un Flow `data_exchange` ese campo es el lugar vacío, y siempre lo fue.
+
+  ### Lo que `response` realmente contiene allí
+
+  `response` es el `nfm_reply` de Meta, ya analizado. En un Flow cuyas pantallas responde tu API, el envío que cierra el formulario trae el token y nada más. Medido tres veces en producción el 2026-09-06, esto es todo lo que contiene:
+
+  ```json
+  { "flow_token": "2kziUbM0UDzp4Dq2WKrI26PGxRSSodn7WNHa8FnisJM" }
+  ```
+
+  En ese mismo envío tu propio endpoint recibió `{"observacao": "Aobaaa", "foto": [...]}`. Las respuestas existían (te llegaron pantalla por pantalla, dentro de los intercambios cifrados) y nada aquí las guardaba, así que cada superficie que ofrecía mostrarte un envío `data_exchange` te mostraba un token en su lugar.
+
+  <Note>
+    **Este es el caso `data_exchange`, no todos los Flows.** Un Flow simple (sin endpoint, `NAVIGATE` entre pantallas) entrega sus componentes de texto libre en `response`, y siempre lo hizo. Es cuando tu API responde las pantallas que el `nfm_reply` se vacía, porque las respuestas fueron a tu API en lugar de ir dentro de él.
+  </Note>
+
+  ### Nuevo: `submitted`, en el evento y en la superficie de lectura
+
+  `flow.response_received` (bajo `data`) y `GET /v1/flows/{id}/responses` ahora traen ambos `submitted`: los intercambios que Meta nos envió mientras la persona todavía completaba el formulario, en orden:
+
+  ```json
+  "submitted": [
+    {
+      "screen": "WELCOME_SCREEN",
+      "at": "2026-09-06T16:08:12.616Z",
+      "data": { "observacao": "Aobaaa" },
+      "omitted": null
+    }
+  ]
+  ```
+
+  `screen` es un string o `null`, `at` es ISO-8601, y `data` es el objeto analizado o `null`.
+
+  **El vacío se escribe distinto en las dos superficies, y es deliberado.** En `GET /v1/flows/{id}/responses` `submitted` es `[]` y nunca `null`: el valor viene de una búsqueda que no responde nada cuando no hay intercambios, y un campo definido como nada desaparecería del JSON en lugar de llegar vacío. En `flow.response_received` es `null` y nunca `[]`: la regla que `flowMedia` ya sigue allí, por la razón de que ese payload se almacena: el censurador vacía un campo solo cuando contiene algo, así que un arreglo vacío volvería leyéndose como *"había respuestas y las ocultamos"*. Ninguna de las dos formas prueba que la persona no escribió nada.
+
+  ### Nada se trunca nunca en silencio
+
+  `omitted` es `null` o exactamente uno de tres valores. Una entrada tiene su `data` con `omitted: null`, o `data: null` y el motivo por el que falta. No hay una tercera forma, así que un `data` `null` siempre tiene su respuesta al lado.
+
+  | `omitted` | Qué pasó |
+  | --- | --- |
+  | `DATA_TOO_LARGE` | Un intercambio demasiado grande. Conserva su fila **y su lugar en el orden**: el intercambio no se descarta, solo su contenido. |
+  | `LIMIT_REACHED` | El tope por formulario de 50 intercambios. Es una entrada marcadora final, y **no se almacenó nada después de ella**. |
+  | `UNREADABLE` | El intercambio está en la lista y su contenido no se pudo volver a leer. |
+
+  **El exceso de tamaño se mide en bytes, no en caracteres.** Los acentos y emojis cuestan más de un byte cada uno, así que `DATA_TOO_LARGE` puede caer en una respuesta que parece corta.
+
+  ### La lista es más corta que las trazas del endpoint, y esa es la función
+
+  **Solo se capturan los intercambios `data_exchange`; `INIT` y `BACK` no.** `INIT` devuelve el estado que *nosotros* sembramos, los parámetros enviados al momento del envío que vuelven a nosotros, y `BACK` es navegación. Ninguno es algo que escribió una persona. Así que la pantalla de trazas del Flow lista más llamadas que entradas lista `submitted`. Esa diferencia es `INIT` y `BACK`, y la lista más corta es la correcta.
+
+  <Warning>
+    **`submitted` es la solicitud que Meta nos envía, nunca lo que respondió tu endpoint.** Las pantallas y payloads que devuelve tu API no se capturan aquí, ni en ninguna parte: `extension_message_response` sigue sin aparecer en ninguna superficie de Pilot Status. Este campo no cambió eso.
+  </Warning>
+
+  **Solo se agregan entradas, sin deduplicación.** Alguien que retrocede una pantalla y la envía de nuevo produce una segunda entrada genuina: ambas son reales, y `at` es lo que separa dos ejecuciones del mismo formulario bajo un mismo token.
+
+  **Un número en `RELAY_ONLY` no guarda nada aquí.** No una fila vacía: ninguna fila. El intercambio se sigue descifrando y reenviando a tu endpoint, como todo en ese modo; lo que no se guarda es la copia.
+
+  ### Se guarda por 30 días + 1
+
+  Las respuestas se depuran a los 30 días, los intercambios detrás de ellas a los 31, y **el día extra no es un redondeo**. Un intercambio se captura mientras el cliente todavía completa el formulario, minutos *antes* del envío que crea la fila de respuesta. Con 30 días idénticos los intercambios vencerían primero, y una respuesta en sus últimos minutos de vida publicaría un `submitted` vacío junto a respuestas que estuvieron allí todo el tiempo.
+
+  Consulta [Recibir respuestas de Flow](/es/guides/flow-responses) para el campo en ambas superficies, y [Retención de datos y modos PII](/es/trust/data-retention) para las ventanas.
+</Update>
+
+<Update label="2026-09-06" tags={["Flows", "Webhooks", "API"]}>
+  ## `endpoint_uri` no tenía quién lo escribiera en ninguna parte del producto, y un archivo adjuntado dentro de un formulario no llegaba a ninguna superficie
+
+  Dos huecos en la misma función, ambos del tipo que no reporta nada.
+
+  ### Todo era configurable excepto el único campo que Meta exige
+
+  La entrada anterior hizo configurable el proxy `data_exchange`: una clave por número, una URL de reenvío por Flow. Ambos decían, en voz alta, que **guardar la URL no registra nada en Meta**, y nada más lo registraba tampoco. No había quién escribiera `endpoint_uri` en ninguna superficie: ni el panel, que mostraba `FLOW_ENDPOINT_META_URI_UNKNOWN` sin ofrecer forma de actuar, ni la API. Un Flow `data_exchange` podía estar conectado de punta a punta y aun así no publicarse, porque Meta rechaza `publish` con *"Publishing without specifying 'endpoint_uri' is forbidden"* (palabras de Meta, no nuestras).
+
+  **Nuevo: `POST /v1/flows/{id}/endpoint`**: la misma ruta que el guardado, un acto distinto. `GET` lee ese estado y `PUT` / `PATCH` guardan **tu** destino; ninguno de los tres habla con Meta. `POST` escribe **nuestra** URL de proxy en el `endpoint_uri` del Flow **en Meta**.
+
+  ```bash
+  curl -X POST https://pilotstatus.com.br/v1/flows/flw_local_1/endpoint \
+    -H "x-api-key: $PILOT_STATUS_API_KEY"
+  ```
+
+  El cuerpo es opcional (uno vacío es válido aquí, a diferencia de `PUT`) y **`confirmOverwrite` es el único campo que acepta**. Cualquier otro da `400 FLOW_UNKNOWN_FIELDS`; `whatsappNumberId` en el cuerpo da `400 FLOW_NUMBER_FROM_KEY`, porque el número viene de la credencial como en todo `/v1`; un cuerpo truncado da `400 FLOW_BODY_INVALID` y nunca se lee como vacío. El `200` es el mismo estado del endpoint que ya devolvían `GET` y `PUT`, sin campo nuevo y sin `secret`: `POST` nunca genera uno.
+
+  **Es idempotente, y la verificación lee Meta en vivo.** Un Flow que ya apunta a nosotros responde `200` sin escribir en el Graph. Deliberadamente no consulta la columna `metaEndpointUri` sincronizada cada hora, porque esa columna no dice nada de un URI registrado en la última hora, justo la ventana en la que dos personas conectan el mismo Flow.
+
+  **Un Flow que apunta a otro lugar se rechaza, y el rechazo nombra el otro endpoint:**
+
+  ```json
+  {
+    "error": "A Meta já aponta este Flow para outro endpoint. …",
+    "errorEN": "Meta already points this Flow at another endpoint. …",
+    "code": "FLOW_ENDPOINT_URI_WOULD_OVERWRITE",
+    "currentEndpointUri": "https://someone-else.example/flows/1122334455"
+  }
+  ```
+
+  `409`, y uno de los dos cuerpos de esta superficie que traen una cuarta clave (`FLOW_JSON_INVALID` ya agrega `validationErrors` de la misma forma). **El nuestro deliberadamente no se devuelve**: nuestra URL incluye el token de endpoint del número, que es la credencial del proxy. Reenviar con `{"confirmOverwrite": true}` toma el Flow, y tomarlo **le quita todos los intercambios de ese Flow a quien lo responda hoy**: la escritura de Meta es una sobrescritura simple, sin fusión, sin deshacer y sin aviso al endpoint que deja de ser llamado.
+
+  **`confirmOverwrite` nunca se convierte de tipo.** Un valor no booleano da `400 FLOW_ENDPOINT_CONFIRM_INVALID` en lugar de una lectura como verdadero: `"false"` es un string verdadero, y leerlo como consentimiento tomaría un endpoint en vivo en una solicitud cuyo autor creía haberse negado.
+
+  <Warning>
+    **`FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` ahora aparece en dos roles.** Antes solo era un valor dentro del arreglo `warnings` de un `200`; ahora también es un **`code` `422`** con cuerpo propio, en el registro. Guardar un destino en un número sin clave sigue teniendo éxito *con una advertencia*; registrar en Meta no puede tener éxito en absoluto, porque no hay URL que registrar. Un cliente que probaba `warnings.includes(...)` ahora puede recibir la misma grafía como falla.
+  </Warning>
+
+  ### Un archivo adjuntado dentro de un formulario vencía en el CDN de Meta y nunca era nuestro
+
+  Un `PhotoPicker` o un `DocumentPicker` pone un archivo en el envío, y **nunca llega en `response`**. Los bytes van a Meta, y la referencia que llega a ellos (con la clave AES que Meta deriva por archivo al lado) viaja dentro de la solicitud `data_exchange` cifrada que solo el proxy descifra, nunca en el `nfm_reply` que se convierte en `response`. Meta luego elimina el archivo tras 20 días como máximo, y nada aquí lo descifraba, copiaba ni listaba: no había ningún descifrador en el código, así que el adjunto simplemente se perdía. Ahora se descifra, se vuelve a alojar y se publica en ambas superficies y en los tipos del SDK.
+
+  **`flow.response_received` ahora trae `flowMedia`:**
+
+  ```json
+  {
+    "event": "flow.response_received",
+    "data": {
+      "event": "flow.response_received",
+      "flowId": "flw_local_1",
+      "metaFlowId": "1122334455",
+      "flowToken": "a1b2c3d4e5f6...",
+      "messageId": "wamid.HBgNNTU2Nzk5...",
+      "whatsappNumberId": "cmm0abc123",
+      "from": "+5567999999999",
+      "receivedAt": "2026-09-06T14:21:07.000Z",
+      "response": { "nome": "Ana" },
+      "responseRaw": null,
+      "flowMedia": [
+        {
+          "field": "documento",
+          "fileName": "carteira.jpg",
+          "mimeType": null,
+          "status": "PENDING",
+          "url": "https://pilotstatus.com.br/api/flows/media/eyJ0IjoiY21xc2N4MXczIiwiayI6ImZvdG8ifQ.9f2c1a4b8e0d6c73"
+        }
+      ]
+    }
+  }
+  ```
+
+  **Y `GET /v1/flows/{id}/responses` ahora trae `media` en cada respuesta**: los mismos archivos, ya asentados, más `sizeBytes`:
+
+  ```json
+  {
+    "field": "documento",
+    "fileName": "carteira.jpg",
+    "mimeType": "image/jpeg",
+    "sizeBytes": 184320,
+    "status": "STORED",
+    "url": "https://media.pilotstatus.com.br/public/tenants/.../flow-media/....jpg"
+  }
+  ```
+
+  **`url` está desde la primera entrega, y es un enlace que espera.** El evento se emite en cuanto se almacena el envío y el realojamiento corre en una cola después, así que normalmente el envío se anuncia mientras la transferencia todavía está en curso. En lugar de no publicar nada durante esa ventana, `url` apunta a una ruta nuestra: obtenerla antes de que lleguen los bytes retiene la solicitud mientras termina el realojamiento y luego sirve el archivo, cada solicitud posterior es una redirección, y una espera que se agota responde `404` con un encabezado `Retry-After`. **El valor no cambia cuando llega el archivo**, así que es seguro guardarlo al recibirlo, y `status` (`PENDING` / `STORED` / `FAILED`) sigue siendo cómo sabes si los bytes son nuestros. Trata el enlace como opaco: obtenlo, nunca lo construyas.
+
+  <Note>
+    **`url` todavía es `null` en tres casos, y "todavía no transferido" no es uno de ellos.** Un despliegue sin secreto de firma configurado vuelve al comportamiento anterior (la URL directa del objeto, una vez que `status` es `STORED`); Meta no envió un `media_id` sobre el cual firmar una identidad; o el número es `RELAY_ONLY`, donde no se almacena ningún adjunto.
+  </Note>
+
+  `mimeType` se detecta a partir de los **bytes** descifrados, nunca del nombre del archivo, y nunca es `text/html` ni `image/svg+xml`: ambos ejecutarían scripts en el origen que los sirve.
+
+  <Warning>
+    **`null` no prueba que no se envió ningún archivo, ni tampoco `[]`.** `flowMedia` también es `null` cuando Meta no devolvió ningún `flow_token` con el envío, cuando falló la búsqueda del adjunto (de mejor esfuerzo, que cuesta un campo y no el evento) y antes de que corra el job de realojamiento, ya que la fila que diría `PENDING` solo se escribe cuando la transferencia realmente empieza, por el backend que la ejecuta, y no en el momento en que el archivo se encola. La superficie de lectura tiene el reflejo: su unión de adjuntos también es de mejor esfuerzo, así que una unión que falla deja **todas las filas de la página con `media: []`**. Un Flow que recopila archivos se concilia contra algo que guardaste tú mismo.
+  </Warning>
+
+  **`fileName` nunca es `null`.** Una foto tomada con la cámara no informa nombre, y se usa en su lugar el nombre propio del campo, así que un `fileName` igual a `field` puede ser del dispositivo o nuestro, y los dos son indistinguibles.
+
+  **Ninguna superficie trae `cdn_url` ni `encryption_metadata`.** Meta deriva una clave AES por archivo; reenviar cualquiera de los dos pondría la clave que abre el documento del cliente en tu webhook y en tus logs.
+
+  <Warning>
+    **El archivo realojado está en una URL pública (quien tenga el enlace lo lee) y la copia nunca vence.** Las respuestas, sesiones y trazas del endpoint se depuran según una ventana de retención; el archivo no. Nada en la plataforma elimina la fila ni el objeto, así que el enlace sobrevive a la respuesta a la que pertenecía: las respuestas dejan de servirse, el enlace al documento sigue funcionando. Decide eso antes de que un Flow tuyo le pida a alguien un documento de identidad.
+  </Warning>
+
+  **SDK de Node.** `FlowResponse.media` y `FlowResponseReceivedEventData.flowMedia` están tipados, y el analizador de webhooks ahora **declara** `flowMedia`; esa línea es todo el punto: `z.object` elimina las claves de las que no se le habló, así que un campo que viene en la llamada y falta en el esquema no falla, **desaparece**, y ves un envío sin adjuntos en lugar de un error que diga que el SDK está desactualizado. Es `.nullable().optional()` a propósito: `null` es el emisor diciendo que no hay nada listado, *ausente* es un backend más antiguo que el campo, y rechazar el segundo rechazaría todos los eventos de un despliegue más antiguo.
+
+  ### Cuatro cuerpos de error de Flow del panel eran medio envoltorio, y uno de ellos ahora llega a `/v1`
+
+  `/v1/flows`, `/v1/flows/{id}` y `/v1/flows/{id}/json` traducen cada uno sus propias fallas de escritura y responden `{ error, errorEN, code }` desde su primera línea: ningún cuerpo ni string de ellos se movió aquí. La tabla que se quedaba corta del envoltorio es el traductor detrás de la API de Flows del **panel** (`/api/flows/*`), cuyos cuerpos eran `{ error, code }`: solo en portugués. Cuatro ahora traen `errorEN`: `FLOW_NOT_FOUND` (404), `FLOW_NOT_DRAFT` (409), `FLOW_REQUIRES_META_NUMBER` (422) y la rama que retransmite un rechazo del Graph, la falla que más probablemente necesita un remedio traducido ("the token expired", "the 24-hour window closed") y la única de las cuatro cuya mitad en inglés ya existía y se estaba descartando.
+
+  **Esa última rama es la que puede ver un integrador.** El registro es la única ruta `/v1` que encadena este traductor, y la única que habla con el Graph, así que un rechazo de Meta en `POST /v1/flows/{id}/endpoint` llega con ambas mitades. Las otras tres no llegan a un integrador: el registro responde los cuerpos propios de `/v1` `FLOW_NOT_FOUND` y `FLOW_REQUIRES_META_NUMBER`, que ya eran bilingües y no se movieron, y nunca lanza `FLOW_NOT_DRAFT`: registrar un `endpoint_uri` no requiere un borrador.
+
+  **Dos mensajes en portugués también cambiaron, y ganaron el remedio que les faltaba.** Son del panel; los códigos y estados HTTP no se tocaron:
+
+  ```json
+  { "error": "Flow não encontrado.", "code": "FLOW_NOT_FOUND" }
+  ```
+
+  ```json
+  {
+    "error": "Flow não encontrado. Ele pode ter sido apagado — atualize a lista.",
+    "errorEN": "Flow not found. It may have been deleted — refresh the list.",
+    "code": "FLOW_NOT_FOUND"
+  }
+  ```
+
+  `FLOW_REQUIRES_META_NUMBER` ganó *"— select a Meta number to continue"* de la misma forma, y ese remedio deliberadamente no es el que da `/v1`: allí el número viene de la clave de API, así que la frase sigue siendo *"use a key bound to a Meta number"*. **Ningún string de mensaje de `/v1` se movió.** Si usas `/api/flows/*` directamente y comparas por el mensaje en lugar de por `code`, esto te rompe; `code` es el contrato y no se movió.
+
+  ### Una clave con alcance de tenant podía enviar desde un número que quien llamaba nunca pidió
+
+  **Corregido.** Una clave de toda la cuenta (`scope: "tenant"`) nombra el número por solicitud, con `x-whatsapp-number-id`. Cuando una clave así de todos modos tenía un número propio en su fila (una mitigación operativa, una migración, un `UPDATE` escrito a mano, y las tres cosas pasaron), el worker volvía a resolver el envío por ese número y **descartaba el encabezado en silencio**. El mensaje salía del número de WhatsApp equivocado, llegaba a la persona correcta, y nada en ninguna parte lo reportaba.
+
+  Una clave con alcance de tenant ahora respeta el encabezado que se le dio. **Una clave con alcance de número sigue teniendo prioridad sobre el encabezado**, y eso es una regla, no una omisión: es la misma que ya aplica el borde, porque de lo contrario el encabezado permitiría que una clave del número A actuara sobre el número B.
+</Update>
+
+<Update label="2026-09-05" tags={["Webhooks", "API"]}>
+  ## Una entrega fallida ahora dice *por qué*: `response` trae la cadena de causas
+
+  Cuando un intento de entrega nunca llegaba a tu endpoint, `GET /v1/webhooks/{id}/logs`
+  guardaba las mismas tres palabras para cualquier motivo posible:
+
+  ```json
+  { "status": "FAILED", "statusCode": null, "response": "fetch failed" }
+  ```
+
+  Un hostname que no se resolvía, una conexión rechazada, un certificado vencido y un timeout
+  eran indistinguibles en el log. El motivo existía en el momento de la falla (vive en
+  el `cause` del error) y se descartaba antes de escribir la fila.
+
+  **`response` ahora trae toda la cadena**, empezando por la causa más externa, unida por `<-` y etiquetada
+  con el código de error del sistema:
+
+  ```json
+  {
+    "status": "FAILED",
+    "statusCode": null,
+    "response": "fetch failed <- getaddrinfo EAI_AGAIN hooks.example.com [EAI_AGAIN]"
+  }
+  ```
+
+  Nada más cambió: mismo endpoint, mismos campos, mismos tipos. `response` sigue siendo un string
+  que acepta null, y una fila `FAILED` con un `statusCode` real sigue trayendo el cuerpo de tu endpoint.
+
+  <Note>
+    `response` es un **string de diagnóstico, no un contrato**: su redacción viene del runtime
+    y puede cambiar. Ramifica según `status` y `statusCode`; lee `response` para averiguar por qué.
+  </Note>
+
+  Consulta [Leer los logs de entrega](/es/api/webhooks/configure#leer-los-registros-de-entrega) para los códigos que
+  más probablemente verás y lo que significa cada uno.
+</Update>
+
+<Update label="2026-09-03" tags={["Flows", "Webhooks", "Chatwoot"]}>
+  ## Las respuestas de Flow te llegan: `flow.response_received`, y un endpoint `data_exchange` que cualquiera puede activar de verdad
+
+  Dos mitades del mismo hueco, cerradas juntas.
+
+  ### Las respuestas se almacenaban y en ningún otro lugar
+
+  Un Flow enviado llega de Meta como `interactive.nfm_reply`, y lo único legible por humanos en él es una etiqueta: `Sent` / `Enviado`. Esa etiqueta es lo que cae en `content`, en `GET /v1/messages` y en el espejo de Chatwoot. Las respuestas se escribían en el almacenamiento y se podían leer en `GET /v1/flows/{id}/responses`, pero **ninguna superficie en vivo las traía**: un webhook parecía, a todos los efectos prácticos, vacío.
+
+  **Nuevo evento: `flow.response_received`**, con las respuestas ya analizadas.
+
+  ```json
+  {
+    "event": "flow.response_received",
+    "data": {
+      "event": "flow.response_received",
+      "flowId": "flw_local_1",
+      "metaFlowId": "1122334455",
+      "flowToken": "a1b2c3...",
+      "messageId": "wamid.HBgNNTU2Nzk5...",
+      "whatsappNumberId": "cmm0abc123",
+      "from": "+5567999999999",
+      "receivedAt": "2026-09-03T14:21:07.000Z",
+      "response": { "nota_atendimento": "9", "comentario": "Teste" },
+      "responseRaw": null
+    }
+  }
+  ```
+
+  **Tienes que suscribirte a él.** Un webhook cuya lista `events` contiene solo `messages` no lo recibe, y nada reporta un error, que es exactamente como se veía el reporte original.
+
+  ```bash
+  curl -X PATCH https://pilotstatus.com.br/v1/webhooks/wh_01HZX... \
+    -H "x-api-key: $PILOT_STATUS_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{ "events": ["messages", "flow.response_received"] }'
+  ```
+
+  `response` contiene las respuestas analizadas; `responseRaw` contiene los bytes crudos y se completa **solo** cuando el análisis falló. Un envío nunca se descarta por no poder analizarse.
+
+  **Chatwoot.** El propio analizador de WhatsApp de Chatwoot no conoce `nfm_reply` y muestra un envío con `content: null`. Es una limitación de Chatwoot, no del número. En las conversaciones **reflejadas por Pilot Status** las respuestas ahora se publican como **nota privada** (visible para los agentes, invisible para el cliente) y la burbuja pública se reemplaza por una línea fija corta en lugar de la etiqueta de Meta. En el canal Cloud **nativo** de Chatwoot no estamos en el camino en absoluto, así que el evento es la única forma de leerlas allí.
+
+  ### `data_exchange`: ahora se puede llegar al proxy
+
+  Pilot Status ha sido el endpoint cifrado al que Meta llama para los Flows `data_exchange`: desciframos, reenviamos JSON plano a tu API y ciframos tu respuesta. Hasta hoy **no había forma de activarlo**: la URL de reenvío no tenía quién la escribiera, y ningún número tenía clave.
+
+  Ambas son configurables ahora, en la pantalla **Flows** y en la API pública: `POST /v1/numbers/{id}/flow-endpoint-key` para la clave, `PUT /v1/flows/{id}/endpoint` para la URL, ambas protegidas por `flows:manage`. Están en niveles distintos, y las superficies lo dicen: la **URL es por Flow** (un número atiende varios formularios), la **clave es por número** (Meta almacena exactamente una clave pública por número de teléfono).
+
+  **Puedes generar una clave o importar la tuya.**
+
+  - **Generar**: creamos un par RSA-2048, almacenamos la mitad privada cifrada y registramos la mitad pública en Meta. ⚠️ Esto **reemplaza** la clave que Meta tiene para ese número: si ya ejecutas tu propio endpoint `data_exchange` allí, deja de descifrar. Rotar sobre una clave en vivo requiere una confirmación explícita; una configuración inicial no, porque no hay nada que destruir.
+  - **Importar**: entréganos la clave que ya usas. **Nada cambia en Meta**; la única llamada al Graph en ese camino es una lectura. Derivamos la mitad pública de lo que enviaste y la comparamos con la de Meta: si coincide se almacena y se marca; una **discrepancia se rechaza de plano** (`FLOW_ENDPOINT_KEY_IMPORT_MISMATCH`) sin escribir nada, porque almacenarla dejaría un número que informa `configured: true` y no descifra nada; y una llamada al Graph que no pudimos hacer deja la clave **guardada con `uploadedAt: null`**, marcada como no verificada en lugar de perdida. ⚠️ Se acepta un PEM protegido con frase de contraseña, y la frase se usa **una vez** para abrirlo y **no se almacena**: guarda tu propia copia.
+
+  **El contrato del endpoint, sin cambios y ahora documentado.** Hacemos `POST` de `{version, action, screen, data, flow_token, flow_id, number_id}` con un encabezado `x-pilot-status-signature` (HMAC-SHA256 sobre el cuerpo crudo, el mismo esquema que nuestros webhooks salientes). Respondes `2xx`, JSON válido, que contenga **`screen`**; `data` es opcional; **no** envíes `version` (devolvemos la de Meta). El `ping` de Meta lo respondemos nosotros y nunca se reenvía.
+
+  **Un `200` sin `screen` se rechaza a propósito.** Si se dejara pasar, Meta lo mostraría como nada en absoluto: el cliente se queda en un formulario que nunca avanza y nunca da error. En su lugar se trata como una llamada fallida: un error reintentable sobre la pantalla en la que ya está.
+
+  **Guardar la URL no registra nada en Meta**: apuntar el `endpoint_uri` de Meta hacia nosotros sigue siendo un acto separado y deliberado, para que un cambio de nombre no pueda secuestrar un Flow ya atendido por el endpoint de otra persona. El recurso del endpoint informa `metaEndpointUri`, `drift` y una lista `warnings` (`FLOW_ENDPOINT_NUMBER_HAS_NO_KEY` es la que importa) para que un guardado que no cambió nada en Meta no pueda parecer uno que sí.
+
+  **Guías nuevas:** [Recibir respuestas de Flow](/es/guides/flow-responses) y [Conecta tu API a un Flow](/es/guides/flow-data-exchange).
+
+</Update>
+
+<Update label="2026-08-26" tags={["API", "Numbers", "Breaking"]}>
+  ## Cambio de valor por defecto: un número nuevo ya no importa el historial del dispositivo
+
+  **`settings.historyImportEnabled` ahora es `false` por defecto.** Un número que crees a partir de hoy empieza a existir en el momento en que se conecta: los hasta 30 días de conversación que el dispositivo entrega al conectarse se descartan en lugar de almacenarse.
+
+  **Los números creados antes de hoy conservan el valor que tenían.** No se reescribió nada, y un número que ya está conectado no se ve afectado.
+
+  **Si quieres el historial, pídelo cuando CREES el número:**
+
+  ```bash
+  curl -X POST https://pilotstatus.com.br/v1/numbers \
+    -H "x-api-key: $PILOT_STATUS_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "name": "Support",
+      "number": "5511999999999",
+      "settings": { "historyImportEnabled": true }
+    }'
+  ```
+
+  `POST /v1/numbers` y `POST /v1/numbers/remote-pairing` ahora aceptan el bloque `settings` completo, y el `201` devuelve con qué se creó el número.
+
+  **Crear y luego hacer PATCH no funciona, y por eso existe el bloque.** WhatsApp entrega el historial en una sola ráfaga justo después de la conexión; el indicador se lee por mensaje a medida que llegan; nada puede volver a pedirlos. Un `PATCH` enviado después del `POST` compite con esa ráfaga: en el flujo del enlace de vinculación no tiene ninguna posibilidad, porque quien abre el enlace se conecta en el acto.
+
+  **En el panel** la pregunta ahora es parte del asistente de conexión, junto al número de teléfono: el único momento en que la respuesta todavía cambia algo.
+
+  **Por qué se invirtió el valor por defecto.** Almacenar un mes de conversaciones que nadie pidió es el valor por defecto caro: llena `/chat` con historial que el tenant ya leyó en el teléfono, y cada reconexión lo repite. Desactivado es la opción reversible para un número nuevo; activado no lo es, una vez que pasó la ráfaga.
+
+</Update>
+
+<Update label="2026-08-25" tags={["API", "Numbers", "Webhooks"]}>
+  ## Desactiva los Canales de WhatsApp en un número: `ignoreNewsletters`
+
+  **Documentado.** `settings.ignoreNewsletters` en [`PATCH /v1/numbers/{id}`](/es/api/numbers/settings) descarta **las publicaciones de Canales de WhatsApp (`@newsletter`) al llegar**: sin conversación, sin mensaje almacenado, sin webhook `message.newsletter`. Por defecto es `false`, así que nada cambia para un número que hoy recibe canales.
+
+  ```bash
+  curl -X PATCH https://pilotstatus.com.br/v1/numbers/num_01HZX... \
+    -H "x-api-key: $PILOT_STATUS_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{ "settings": { "ignoreNewsletters": true } }'
+  ```
+
+  **El comportamiento no es nuevo: ahora se puede llegar al campo.** La API lo acepta desde hace una semana, pero faltaba en la especificación OpenAPI, así que el playground no tenía casilla para él, y faltaba en los SDKs, el servidor MCP y el nodo de n8n. La misma forma que la corrección de `caption` en la entrada del 18 de agosto: aceptado por la API, invisible en todos los lugares donde lo buscarías.
+
+  **Se parece a `ignoreGroups` y no es uno de los campos avanzados.** El proveedor no oficial aplica `ignoreGroups` por sí mismo, y no tiene ningún filtro de `@newsletter`: una publicación de canal siempre llega a la plataforma, así que el único lugar donde se puede rechazar es aquí. El campo acepta un `true` / `false` simple, nunca el `null` que restablece un campo avanzado al valor por defecto del proveedor: para los canales no hay un valor por defecto del proveedor al que volver.
+
+  **SDK de Python:** `numbers.update()` copia `settings` clave por clave desde una lista permitida que no incluía esta, así que el campo se descartaba en silencio: la llamada devolvía `200` y los canales seguían llegando. Corregido, sale en la próxima versión; `curl` y el playground no se ven afectados.
+
+</Update>
+
+<Update label="2026-08-24" tags={["API", "Messages", "Media"]}>
+  ## Video: `.mov` se convierte por ti, y el tope de 16 MB ahora es explícito
+
+  **Corregido.** Enviar un **video `.mov`** (QuickTime) a un número de **Meta Cloud API** fallaba. La Cloud API acepta exactamente dos tipos de video al subir (`video/mp4` y `video/3gpp`), y `.mov`, que es lo que graban el iPhone y la mayoría de las cámaras Android, no es uno de ellos. El envío fallaba con `Received file of type 'video/quicktime'`.
+
+  No tienes que convertir nada: **`.mov` y `.webm` ahora se convierten a MP4 automáticamente** antes del envío. Cuando los códecs ya encajan (H.264 + AAC, que es lo que escriben las cámaras de los teléfonos) es una reescritura del contenedor sin recodificar, así que no hay pérdida de calidad.
+
+  **El video tiene un tope de 16 MB.** Es el límite de WhatsApp, no el nuestro, y no hay forma de evitarlo. Por encima, el envío falla con el nuevo código `META_MEDIA_TOO_LARGE`, que ahora trae el tamaño medido en lugar de retransmitir un error crudo del proveedor. Los demás topes, como referencia: imagen **5 MB**, audio **16 MB**, documento **100 MB**, sticker **100 KB** estático / **500 KB** animado.
+
+  **Enviar un video como `mediaType: "document"` ya no devuelve `202`.** Nunca funcionó (la clase documento no tiene ningún tipo de video, así que un video enviado así siempre se rechazaba más adelante) y es un intento común de cambiar el tope de 16 MB del video por el de 100 MB del documento. En los números de Meta Cloud API la solicitud ahora se rechaza de entrada:
+
+  ```json
+  {
+    "error": "A video cannot be sent as a document on the official WhatsApp API — Meta accepts no video type in the document class. Send it with mediaType \"video\" (up to 16 MB); above that, compress it or send a link.",
+    "code": "META_VIDEO_AS_DOCUMENT_NOT_SUPPORTED"
+  }
+  ```
+
+  `422`, antes de encolar el mensaje, en lugar de un `202` seguido de una falla opaca. **Los números no oficiales (Pilot Status web) no se ven afectados**: entregan bien un video como documento, y la restricción es solo de Meta.
+
+  **La conversión la decide el archivo, no la URL.** El contenedor se identifica a partir de los propios bytes del archivo, así que un `.mov` se convierte incluso cuando la URL no tiene extensión (una clave de objeto `.bin`, una URL firmada) o tiene una engañosa. Esto importa porque un video mal etiquetado es el peor caso que existe: Meta acepta la subida, devuelve un id de mensaje y luego nunca entrega, sin que aparezca ninguna falla. Consulta la [guía de medios](/es/guides/media-messages).
+
+</Update>
+
+<Update label="2026-08-18" tags={["API", "Messages"]}>
+  ## Envía stickers: `mediaType: "sticker"`
+
+  **Nuevo.** El modo de medio directo de [`POST /v1/messages/send`](/es/api/messages/send-media) acepta `mediaType: "sticker"`. Funciona tanto en números de **Meta Cloud API** como en números **no oficiales (Pilot Status web)**: cada uno tiene su propia ruta de stickers por debajo, y la API la elige por ti.
+
+  ```json
+  {
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/sticker.webp",
+    "mediaType": "sticker"
+  }
+  ```
+
+  **Un sticker no lleva texto.** Enviar `caption` junto con él se rechaza con `400` en lugar de entregarlo sin el texto: ningún proveedor tiene un campo de caption en un sticker, así que aceptarlo significaría que el envío "tiene éxito" sin lo que escribiste. `mediaFilename` se rechaza por la misma razón, y un sticker no se puede usar como medio de plantilla: un encabezado de plantilla es TEXT, IMAGE, VIDEO o DOCUMENT, y no existe encabezado de sticker.
+
+  **El archivo debe ser `image/webp` y exactamente de 512×512 píxeles**: estático hasta **100 KB**, animado hasta **500 KB**. Las dimensiones no son una sugerencia: un sticker de 361×363 se rechaza de plano. Estas reglas son de WhatsApp, no nuestras, y WhatsApp es quien las aplica: un archivo de tamaño, dimensiones o formato incorrectos todavía se acepta aquí con `202` y falla después en el webhook `message.failed`, como `META_MEDIA_UPLOAD_ERROR` (código de Meta `131053`) con el motivo exacto en `error_data.details`. Convierte antes de enviar en lugar de confiar en que la API lo detecte. Consulta la [guía de medios](/es/guides/media-messages#stickers).
+
+  **Si enviabas un `.webp` como `mediaType: "image"`** para aproximar un sticker, eso entregaba una imagen común: cámbialo a `"sticker"` para obtener uno real.
+
+  También en esta versión: **`caption` ahora está documentado en el playground de la API.** El campo siempre se aceptó para envíos de imagen, video y documento, pero faltaba en la especificación OpenAPI, así que el playground no tenía casilla para él.
+
+</Update>
+
+<Update label="2026-08-18" tags={["API", "Ads"]}>
+  ## De qué anuncio vino cada conversación, y el nombre de la campaña
+
+  **Nuevo: `GET /v1/referrals` y `GET /v1/referrals/summary`.** Cuando alguien toca un
+  anuncio Click-to-WhatsApp y escribe a tu número de API oficial, WhatsApp nos dice en qué anuncio
+  hizo clic. Eso se recibía y se descartaba; ahora se almacena y se puede leer. El primer
+  endpoint lista los mensajes entrantes que vinieron de un anuncio, el segundo los agrupa por anuncio con
+  un conteo de conversaciones.
+
+  Meta adjunta el origen **solo al primer mensaje de una conversación** y nunca lo repite,
+  así que una fila es una conversación iniciada por ese anuncio. `conversations` cuenta **conversaciones
+  distintas** y `messages` cuenta mensajes: dos mensajes en un mismo hilo son 1 y 2, así que
+  `conversations` es el conteo de leads.
+
+  **Los nombres.** Junto al `sourceId` crudo, el objeto `referral` ahora trae `adName`,
+  `adsetId`, `adsetName`, `campaignId`, `campaignName` y `namesResolvedAt`: las mismas etiquetas
+  que usas en Ads Manager, en lugar de un opaco `120249828053880703`.
+
+  <Warning>
+    **Esos seis vuelven `null` hasta que el anunciante comparte la cuenta publicitaria con nosotros, y `null`
+    es un estado admitido, no un error.** Leer el nombre de un anuncio requiere `ads_read` en la
+    cuenta publicitaria **propia del anunciante**, concedido a través del uso compartido de socios de Meta: agregan el
+    portafolio comercial de Pilot Status como socio, con "ver rendimiento". Hasta entonces la conversación
+    se sigue contando y `sourceId` se sigue devolviendo: solo los nombres son null.
+  </Warning>
+
+  **Ningún endpoint resuelve un nombre a pedido.** La resolución corre de forma asíncrona, fuera del camino
+  de la solicitud, así que consultar nunca dispara una llamada a la Marketing API y un `null` puede convertirse en un nombre minutos
+  después sin que hagas nada de tu lado. `namesResolvedAt` es lo que hace eso observable: `null`
+  significa "todavía no resuelto", mientras que una marca de tiempo con nombres null significa "preguntamos y Meta no devolvió
+  nada": un anuncio eliminado, o el uso compartido todavía pendiente.
+
+  La atribución empieza con esta versión: no hay relleno retroactivo, así que las conversaciones que llegaron
+  antes de hoy no traen origen de anuncio.
+
+  Documentación: [Atribución de Click-to-WhatsApp](/es/api/referrals).
+</Update>
+
+<Update label="2026-08-17" tags={["Connect", "Embed"]}>
+  ## Darle estilo al botón Connect ahora *muestra* el botón
+
+  **Cambio de comportamiento.** Un enlace de vinculación remota generado con `branding.button` ahora muestra **solo el botón**: sin encabezado, sin tarjeta, fondo transparente. Hasta hoy eso requería un segundo paso que la respuesta nunca mencionaba: la página anfitriona también tenía que agregar `?mode=button` a la URL del iframe. Enviar `branding.button` y abrir el `remotePairingUrl` devuelto te daba la página de conexión completa, lo que parecía "se perdió mi estilo".
+
+  Un objeto, ambos efectos: dale estilo a un botón, obtén un botón. Pega el `remotePairingUrl` devuelto en un navegador y verás exactamente lo que verá tu cliente.
+
+  **Si quieres la página completa para un enlace con estilo, agrega `?mode=page`** (o pasa `mode: "page"` al SDK). Esa es la nueva exclusión explícita, y mantiene el estilo del token en el botón *dentro* de la tarjeta. Nada más se movió: un enlace sin branding sigue mostrando la página, y un `?mode=button` explícito sigue mostrando el botón. `metaFlow: "credentials"` y los enlaces QR no se ven afectados: un formulario de credenciales y una línea de tiempo de QR no caben en un botón, así que siempre muestran la página.
+
+  **`@pilot-status/embed` 0.2.0.** `ConnectOptions.mode` ahora es automático por defecto en lugar de `"page"`: omítelo y el SDK resuelve el modo a partir del token, y luego dimensiona el iframe en consecuencia (48 px para un botón en lugar de un mínimo de 520 px). Pasa un `"page"` o `"button"` explícito para decidirlo tú.
+
+  **Corregido: el bundle del SDK servido estaba desactualizado.** El bundle `embed.js` entregado a las páginas anfitrionas no se reconstruía desde el 1 de julio, así que era anterior al modo botón por completo: `PilotStatus.connect.mount(el, { mode: "button" })` mostraba en silencio la página completa para cada usuario del SDK. Reconstruido; el camino del iframe crudo nunca se vio afectado.
+
+  **Corregido: la documentación te decía que cargaras el SDK desde un host que no existe.** Cuatro páginas (las dos de Embed Connect y las dos de Embed Chat) traían `<script src="https://embed.pilotstatus.com.br/embed.js">`. Ese hostname no tiene registro DNS, así que la etiqueta script no se resolvía y `PilotStatus` nunca se definía: nada en la página funcionaba, y la consola del navegador culpaba al DNS y no a nosotros. El SDK siempre se sirvió desde **`https://pilotstatus.com.br/embed.js`** (que es lo que ya usaba la página Embed Sessions). Las seis referencias ahora apuntan allí. Si copiaste el fragmento antiguo, cambia esa única URL.
+
+  Documentación: [Embedded Signup](/es/guides/embedded-signup) y [Modo botón](/es/integrations/embed-connect#modo-botón).
+</Update>
+
+<Update label="2026-08-17" tags={["Webhooks", "Docs"]}>
+  ## Todos los eventos de webhook, en un solo lugar, incluidos los de Meta
+
+  [Eventos de webhook](/es/api/webhooks/events) ahora empieza con un mapa de **qué vocabulario habla cada número**, y documenta el lado de **Meta Cloud API** que faltaba: los 23 nombres de campo suscribibles (`messages`, `message_echoes`, los cinco campos de plantillas, `phone_number_quality_update`, la familia de la cuenta, `calls`, `flows`, los cuatro campos de grupos, `payment_configuration_update`, `user_preferences`), qué informa cada uno y cuáles necesitan un plan pago.
+
+  También queda escrito por primera vez: los números de Meta entregan el **envoltorio nativo** de Meta y nunca `message.received` (`events: ["*"]` no lo convierte); cada cambio se entrega **por separado**, así que `entry` y `entry[0].changes` siempre contienen exactamente un elemento; y **nueve** de los campos de Meta nunca se reenvían a un webhook de cliente, ni siquiera a una suscripción `"*"`: `account_alerts`, `automatic_events`, `history`, `messaging_handovers`, `partner_solutions`, `security`, `smb_app_state_sync`, `standby`, `tracking_events`.
+</Update>
+
+<Update label="2026-08-14" tags={["API", "Webhooks"]}>
+  ## `message.stories`, y los eventos de grupos/canales ya no son solo para planes pagos
+
+  **Nuevo evento: `message.stories`.** Los Estados de WhatsApp (stories) publicados por tus contactos ahora se entregan como evento de webhook, con el medio realojado en `mediaLink`. Suscríbete a él (o al comodín `"*"`) y empieza a llegar.
+
+  Es **bajo demanda**, como los grupos: el proveedor no envía Estados en absoluto hasta que algún webhook los pide, y deja de hacerlo cuando desaparece la última suscripción. Es deliberado. Antes de este cambio un número conectado recibía los Estados de cada contacto que podía ver y la plataforma los descartaba todos al final del proceso: medido en 1,869 eventos al día, el 17% de todo lo que entraba en la ingesta, sin ningún consumidor.
+
+  Un Estado **no se persiste**: no crea conversación ni mensaje, y no aparece en `GET /v1/messages`. WhatsApp vence las stories tras 24 h; el `mediaLink` que realojamos es duradero, la story no. Tampoco hay campo `to`: un Estado se difunde a la lista de contactos de quien lo publica, no va dirigido a tu número.
+
+  **`message.group`, `message.newsletter` y `message.stories` ya no son solo para planes pagos.** Estaban ocultos en el selector de eventos en los planes no pagos; esa restricción era heredada y se eliminó. Los tres se pueden seleccionar en cualquier plan.
+</Update>
+
+<Update label="2026-08-07" tags={["API", "Webhooks", "Dashboard"]}>
+  ## Configuración del número, y el historial ya no inunda tu webhook
+
+  **Cambio de comportamiento.** Cuando un número se conecta, WhatsApp le entrega al proveedor el historial de mensajes del dispositivo. Hasta ahora esos mensajes antiguos se reenviaban a tu webhook como `message.received` / `message.group` / `message.newsletter`, lo que significaba que cada reconexión volvía a entregar hasta 30 días de conversación, sin nada en el payload para distinguirlo del tráfico que acababa de llegar. Se siguen importando al chat; ya no se entregan. Si quieres el comportamiento anterior en un número, activa `settings.webhookHistoricalMessages`.
+
+  **`createdAt` ahora significa lo que dice.** En los webhooks de mensajes trae cuándo ocurrió realmente el mensaje, según el proveedor, en lugar de cuándo lo procesamos. Mismo campo, mismo tipo, mismo formato ISO 8601.
+
+  **Nuevo: `PATCH /v1/numbers/{id}`.** Configuración por número, parcial: política de retención más un bloque `settings` que cubre el comportamiento del historial y, para números no oficiales (vinculados por QR), la configuración avanzada del proveedor: `rejectCall`, `msgRejectCall`, `alwaysOnline`, `readMessages`, `ignoreGroups`, `ignoreStatus`. Consulta la [referencia](/es/api/numbers/settings). Si llamabas a `POST /v1/numbers/{id}/settings`, esa ruta nunca existió y respondía 404 en silencio.
+
+  **Las rutas `/v1` desconocidas ahora devuelven JSON.** Una ruta incorrecta mostraba una página HTML 404, lo que rompía los clientes HTTP tipados sin decirte por qué. Ahora responde `{ "error": "Not found", "code": "ROUTE_NOT_FOUND" }` como cualquier otro error de la API.
+
+  Disponible en los SDKs de Node (`0.5.0`), Python (`1.4.0`) y n8n (`1.3.0`), y en el servidor MCP.
+</Update>
+
+<Update label="2026-07-31" tags={["API"]}>
+  ## Endpoint para cerrar sesión de una instancia de WhatsApp
+
+  Nuevo endpoint `POST /v1/numbers/{id}/logout` para desconectar una instancia de WhatsApp sin eliminarla de la base de datos. Es útil cuando necesitas desconectar temporalmente un número para resolver problemas o reconectarlo a otro dispositivo, sin perder la configuración de la instancia. Consulta la referencia de [`POST /v1/numbers/{id}/logout`](/es/api/numbers/logout).
+</Update>
+
+<Update label="2026-07-29" tags={["API"]}>
+  ## Notas de voz con forma de onda (mediaType `voice`)
+
+  Un nuevo mediaType `"voice"` te da control sobre cómo se muestran los mensajes de audio. `"audio"` envía una nota de voz (PTT) en el reproductor por defecto; `"voice"` la envía con la visualización de forma de onda ("ondinha"). En los números de Meta Cloud API la forma de onda se activa cuando el servidor envía `voice: true` en el payload de audio. Ambos tipos se normalizan en el servidor a OGG/Opus mono (metadatos eliminados, tiempo de inicio cero), así que cada archivo de audio que llega al destinatario es compatible incluso cuando la subida original era un WebM del navegador o una grabación de iOS. Consulta la referencia de [`POST /v1/messages/send`](/es/api/messages/send-interactive).
+</Update>
+
+<Update label="2026-07-23" tags={["API", "Dashboard"]}>
+  ## Carrusel: vista previa en el editor, variables y el OpenAPI
+
+  Construir un carrusel en el editor de plantillas ahora es fiel de punta a punta. La **vista previa en vivo** vuelve a mostrar la tira de tarjetas (antes no mostraba nada), el editor aplica la **exclusividad** del carrusel (un carrusel no puede llevar encabezado, botones de plantilla, botón de lista ni tarjeta de pedido, así que esos controles se ocultan o desactivan mientras haya un carrusel) y las **`{{variables}}` dentro de una tarjeta** (su cuerpo o un botón) ahora se reconocen y se sustituyen en la vista previa en lugar de quedar como tokens crudos.
+
+  Del lado de la API, el **campo `carousel` ahora está en la especificación OpenAPI** de [`POST /v1/messages/send`](/es/api/messages/send-interactive), así que aparece en el playground interactivo y en los clientes generados. También corregimos la documentación: un **botón de URL** en un carrusel de sesión es imposible solo en números de **Meta**; en los números no oficiales (Pilot Status web) un botón de URL se envía ad hoc.
+</Update>
+
+<Update label="2026-07-20" tags={["API", "Dashboard"]}>
+  ## Mensajes de carrusel
+
+  Envía un **carrusel** (un conjunto de tarjetas de medios que se desplaza horizontalmente) en un solo mensaje. Un nuevo campo `carousel` en [`POST /v1/messages/send`](/es/api/messages/send) lleva de 2 a 10 tarjetas, cada una con su propia imagen, una línea corta de cuerpo y hasta dos botones, y el editor de plantillas incorpora un constructor de carruseles con una vista previa en vivo y arrastrable para que reordenes las tarjetas mientras las compones. Un **carrusel de sesión** es libre y no necesita aprobación, pero sus botones son solo de respuesta rápida y solo se entrega dentro de la ventana de servicio de 24 horas; la misma solicitud funciona en números oficiales y no oficiales. Un **carrusel de plantilla** es en cambio una plantilla aprobada de Meta, así que se entrega en cualquier momento y una tarjeta puede combinar un botón de respuesta rápida con un botón de URL.
+</Update>
+
+<Update label="2026-07-20" tags={["API"]}>
+  ## La eliminación de plantillas informa la verdad
+
+  [`DELETE /v1/templates/{id}`](/es/api/templates) ya no informa éxito cuando Meta se niega a eliminar una plantilla. Cuando Meta rechaza la eliminación (por ejemplo, cuando el token de acceso no tiene permiso en la cuenta de WhatsApp Business), el endpoint ahora responde **409** con un mensaje bilingüe que nombra la plantilla y el motivo, y la plantilla se **conserva** localmente porque todavía existe en Meta. Solo una eliminación genuina en ambos lados devuelve `{ "deleted": true }`.
+</Update>
+
+<Update label="2026-07-20" tags={["Dashboard", "Chat"]}>
+  ## Los botones, carruseles y tarjetas de pedido entregados se muestran en el chat
+
+  Los mensajes que llegan con **botones, un carrusel o una tarjeta de pedido** ahora se muestran como su burbuja real en la conversación y en los logs de mensajes, en lugar de reducirse a texto plano. Las respuestas de plantillas muestran sus botones, los carruseles permiten recorrer sus tarjetas y las tarjetas de pedido listan sus ítems, así que el hilo se lee como lo vio realmente el destinatario.
+</Update>
+
+<Update label="2026-07-20" tags={["Dashboard"]}>
+  ## Se detecta un número de Meta revocado
+
+  Cuando un número conectado por la **API oficial de Meta** pierde el acceso (la app se eliminó de la cuenta de WhatsApp Business, o se eliminó la propia WABA), el panel ahora lo detecta y marca el número con la insignia **"Conexão perdida"** (Conexión perdida). Antes el número simplemente se quedaba en silencio sin ninguna señal de que Meta había cortado el acceso; la insignia ahora te indica que vuelvas a conectarlo.
+</Update>
+
+<Update label="2026-07-20" tags={["Fix"]}>
+  ## Enlaces de botones de URL y conteo de variables de plantillas
+
+  **Los ejemplos de botones de URL** ya no duplican la URL base cuando el valor de ejemplo ya la incluye, así que el enlace de la vista previa y el enviado es el real. Y un **envío de plantilla** ahora pasa las variables propias del cuerpo, así que una plantilla que usa una `{{variable}}` tanto en su cuerpo como en un botón ya no falla con un error de cantidad de parámetros.
+</Update>
+
+<Update label="2026-07-20" tags={["Connect"]}>
+  ## Embed de solo botón para Embedded Signup
+
+  El **Embedded Signup** alojado incorpora un **modo de embed de solo botón**: coloca solo el botón de conexión de Facebook en tu propia página en lugar del flujo completo. El estilo del botón viaja en el token del embed, y una conexión completada se informa junto con el número conectado.
+</Update>
+
+<Update label="2026-07-20" tags={["API"]}>
+  ## La clave de API del tenant ahora puede actuar sobre cualquier número
+
+  Una clave con alcance de tenant podía gestionar números pero no usarlos: enviar requería una clave separada por número. Ahora puede llamar a **cualquier endpoint por número de cualquier número del tenant**, incluido el envío, nombrando el número en el encabezado `x-whatsapp-number-id` (acepta el id de `GET /v1/numbers`). Sin el encabezado, los endpoints por número siguen respondiendo `403 TENANT_SCOPE_NOT_ALLOWED`; un id de otro tenant responde `404`. Consulta [Autenticación](/es/api/authentication).
+</Update>
+
+<Update label="2026-07-20" tags={["Dashboard", "Webhooks"]}>
+  ## Las entregas de webhooks se limitan al número activo
+
+  La pantalla Webhooks lista las entregas del número que tienes seleccionado. Las filas de entrega registradas sin número (eventos de estado de mensajes) aparecían bajo todos los números a la vez; ahora se atribuyen al número que las produjo.
+</Update>
+
+<Update label="2026-07-19" tags={["Dashboard", "Templates"]}>
+  ## Crea listas y pagos como botones de plantilla
+
+  **Botão de Lista** (Botón de lista) en el editor de plantillas construye una lista interactiva (etiqueta del botón, secciones y filas) con contadores en vivo y una vista previa en vivo que abre las opciones como un panel inferior, como lo hace el cliente de WhatsApp. Una plantilla que lleva una lista se envía como mensaje interactivo en lugar de plantilla aprobada, así que en los números oficiales no se envía a Meta y solo se entrega dentro de la ventana de servicio de 24 horas; el editor lo indica mientras la construyes.
+
+  **Botão de Pagamento** (Botón de pago) ahora reúne ambas formas de pago en un solo lugar: el botón de copiar código PIX y la tarjeta de pedido detallada, que antes vivía en una sección separada debajo del editor. Las plantillas guardadas antes de esto siguen funcionando sin cambios.
+</Update>
+
+<Update label="2026-07-19" tags={["Dashboard"]}>
+  ## Se detectan los números que dejan de recibir
+
+  Una sesión de WhatsApp puede trabarse en un solo sentido: el número sigue enviando, la conexión se informa como saludable y no llega ningún mensaje entrante durante horas. El panel ahora observa el ritmo de entrada propio de cada número y lo marca cuando los mensajes dejan de llegar mientras el envío sigue funcionando, así la insignia deja de afirmar una salud que no verificó.
+</Update>
+
+<Update label="2026-07-19" tags={["Dashboard"]}>
+  ## Shadowban web marcado en el primer rechazo
+
+  Cuando WhatsApp rechaza envíos por una conexión no oficial, el número ahora se marca de inmediato en lugar de tras tres rechazos en la misma ventana: un tenant que envía por la API unas pocas veces por semana antes podía quedar bloqueado durante semanas detrás de una insignia verde. La marca se borra sola en cuanto un envío vuelve a tener éxito.
+</Update>
+
+<Update label="2026-07-18" tags={["Dashboard"]}>
+  ## Compón listas desde el chat
+
+  El compositor del chat incorpora una acción **Lista**: construye la etiqueta del botón, las secciones y las filas con validación en vivo y vista previa en vivo, y luego envía, tanto en números oficiales como no oficiales. Las listas enviadas ahora se muestran como una burbuja de lista real en la conversación y en los logs de mensajes, y responder a un mensaje mientras envías una lista conserva la cita.
+</Update>
+
+<Update label="2026-07-18" tags={["API"]}>
+  ## Mensajes de lista
+
+  **Nuevo campo `list`** en [`POST /v1/messages/send`](/es/api/messages/send#listas): envía una **lista interactiva de selección única**: `text` se convierte en el cuerpo del mensaje y `buttonText` abre un menú de hasta 10 filas agrupadas en hasta 10 secciones. Funciona en números **oficiales y no oficiales** con la misma solicitud, y la selección del destinatario llega como una respuesta entrante normal.
+</Update>
+
+<Update label="2026-07-18" tags={["Dashboard", "Templates"]}>
+  ## Insights de plantillas
+
+  Cada plantilla ya enviada a Meta incorpora un **botón de insights** en la lista de plantillas: conteos de enviados, entregados y leídos con tasa de lectura, **clics por botón**, insignias de calidad y estado, y un selector de período de 7/30/90 días, impulsado por las analíticas de plantillas de Meta (activadas automáticamente en tu cuenta la primera vez que lo abres).
+</Update>
+
+<Update label="2026-07-18" tags={["Dashboard"]}>
+  ## Vista previa del perfil comercial en números oficiales
+
+  El bloque de un número conectado por la **API oficial de Meta** ahora muestra la **vista previa del perfil comercial** de WhatsApp exactamente como la ven los clientes (foto, nombre, teléfono, descripción, categoría y sitio web) con un botón **Compartilhar** (Compartir) que copia el enlace `wa.me` del número.
+</Update>
+
+<Update label="2026-07-18" tags={["API", "Templates", "Payments"]}>
+  ## API de ventana de servicio, vista previa de plantillas según el proveedor y pagos PIX
+
+  **Nuevo endpoint** [`GET /v1/service-window`](/es/playground/messages/service-window): verifica si la ventana de servicio de 24 horas está **abierta o cerrada** para un contacto antes de enviar: pasa `destinationNumber`, obtén `{ open, windowType, lastInboundAt, expiresAt }`. Los números de Meta informan la ventana real de 24 h; los números no oficiales siempre informan abierta.
+
+  **La vista previa del editor de plantillas** ahora muestra **exactamente lo que ve el destinatario** para el número conectado: la tarjeta de plantilla de Meta en números oficiales, y el formato de texto + botones entregado en números no oficiales, con sustitución en vivo de `{{variable}}` usando tus valores de ejemplo, y la columna de vista previa siguiendo el desplazamiento de la página.
+
+  **El botón de pago PIX** (`PAYMENT_REQUEST`) ahora funciona en **todos los tipos de número**: los números oficiales con WhatsApp Pay muestran la tarjeta de pago nativa, y los no oficiales entregan un **botón de copiar "Copiar código Pix"** con el BR Code completo (sin límite de longitud).
+
+  **Tarjeta de pedido detallada**: las plantillas pueden llevar un bloque de pedido (ítems, cantidades, total y método de pago). Los números no oficiales EVO_V2 lo entregan como una tarjeta de pedido real, acompañada del texto y los botones de la plantilla en un primer mensaje cuando existen. Los campos numéricos (precio, cantidad, totales) aceptan una `{{variable}}` resuelta al momento del envío.
+
+  Además: el modal "send via API" ahora muestra el **nombre** de la plantilla como `templateId`, y el envío a Meta de plantillas `ORDER_DETAILS` se intenta para cuentas con pagos habilitados en lugar de rechazarse localmente.
+</Update>
+
+<Update label="2026-07-13" tags={["API"]}>
+  ## API de precios de mensajes
+
+  **Nuevo endpoint** [`GET /v1/meta/pricing`](/es/api/pricing): la tarifa publicada por mensaje de Meta / WhatsApp para un **mercado + moneda + categoría** (por ejemplo `?market=BR&currency=BRL&category=marketing` → `{ "pricePerMessage": 0.3217 }`). Llámalo sin parámetros para listar los mercados, monedas y categorías disponibles, y agrega `?tiers=1` para los niveles por volumen. También disponible como la herramienta MCP [`meta_pricing_get`](/es/api/pricing) y en el [playground interactivo](/es/playground/pricing/get-message-rates).
+</Update>
+
+<Update label="2026-07-07" tags={["API"]}>
+  ## Lista tus logs de mensajes por la API
+
+  **Nuevo endpoint** [`GET /v1/messages`](/es/api/messages/list): recorre página por página los mensajes **enviados y recibidos** por tu número sin abrir el panel. Filtra por dirección, estado, rango de fechas y número de teléfono, y cada fila trae el mismo `messageId` que ya usas con [`GET /v1/messages/{id}`](/es/api/messages/status), así que una llamada de lista y una de estado coinciden. También disponible como la herramienta MCP [`messages_list`](/es/api/messages/list).
+</Update>
+
+<Update label="2026-07-07" tags={["Dashboard"]}>
+  ## Filtros de Logs, y una insignia para la ventana de 24 horas
+
+  La pantalla **Logs** incorporó el conjunto de filtros que le faltaba: busca un número de teléfono **en cualquier formato**, busca por nombre de plantilla, y filtra por estado, dirección, origen y si el mensaje tuvo error. Una nueva insignia **"Janela 24h"** (Ventana 24 h) marca los mensajes que se enviaron dentro de la ventana de servicio de 24 horas (los que no necesitaron una plantilla aprobada) y también sirve como filtro, para que separes de un vistazo el tráfico libre del tráfico de plantillas. Consulta [Logs y analíticas](/es/dashboard/logs-analytics).
+</Update>
