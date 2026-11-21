@@ -1,0 +1,138 @@
+---
+title: "Envía un WhatsApp Flow sin plantilla"
+sidebarTitle: "Flows dinámicos"
+description: "Elige el Flow al momento del envío en lugar de fijarlo en una plantilla aprobada. Requiere la ventana de 24 horas, y Meta responde 200 y descarta el mensaje en silencio cuando está cerrada, por eso nosotros lo rechazamos."
+mode: "wide"
+---
+
+El botón FLOW de una plantilla es fijo: el Flow se elige cuando se crea la plantilla, y cambiarlo implica editar la plantilla y esperar otra vez la revisión.
+
+Un **Flow dinámico** elige el Flow en la propia llamada de envío. La misma experiencia para el cliente, sin plantilla y sin aprobación.
+
+```json
+POST /v1/messages/send
+
+{
+  "destinationNumber": "+5511999999999",
+  "text": "Please answer our survey:",
+  "flow": {
+    "flowId": "2038526810137974",
+    "cta": "Open",
+    "action": "navigate",
+    "screen": "WELCOME",
+    "data": { "name": "Ana" },
+    "mode": "published"
+  }
+}
+```
+
+## ¿Vienes de un botón FLOW de plantilla?
+
+**No hay ningún objeto de botón que construir.** Esto es lo único que confunde a la gente en la transición: el botón FLOW de una plantilla es un componente que declaras y Meta aprueba, así que el reflejo es buscar lo mismo aquí.
+
+Aquí el botón **es** `cta`. El string que pongas ahí es la etiqueta que el cliente toca. Sin `components`, sin array `buttons`, sin revisión.
+
+Dos cosas sí se trasladan del mundo de las plantillas, y ambas son rechazos, no sorpresas:
+
+- **El Flow y el número que envía deben estar en la misma WhatsApp Business Account.** Si tienes varios números en varias WABA, un Flow creado en una de ellas no se puede enviar desde otra: recibes `FLOW_NOT_SENDABLE`.
+- **El Flow debe estar publicado** (o envía `mode: "draft"` a propósito). Un Flow obsoleto deja de enviarse en el momento en que Meta lo marca así.
+
+| Campo | Obligatorio | Qué hace |
+| --- | --- | --- |
+| `flowId` | Sí | El id del Flow **en Meta**, no el id de la fila en Pilot Status |
+| `cta` | Sí | Etiqueta del botón que abre el Flow, hasta 30 caracteres |
+| `action` | No | `navigate` (por defecto) abre una pantalla; `data_exchange` llama a tu endpoint |
+| `screen` | No | Pantalla de entrada, **solo `navigate`**. Si la omites, resolvemos por ti la primera pantalla del Flow |
+| `data` | No | Datos iniciales para la pantalla de entrada, **solo `navigate`** |
+| `mode` | No | `published` (por defecto) o `draft` |
+
+`text` es obligatorio: el Flow es un botón, no el mensaje completo. El bloque `flow` no se puede combinar con `templateId`, `list`, `carousel`, `buttons`, `header` ni con un envío directo de multimedia.
+
+## La ventana de 24 horas no es opcional
+
+Esta es la parte que no puedes ver, y la razón por la que rechazamos el envío en lugar de intentarlo.
+
+Lo medimos el 9 de septiembre de 2026 con tres versiones de la Graph API (v22.0, v25.0 y v26.0), con números reales y teléfonos reales. **Fuera de la ventana de 24 horas, Meta responde `HTTP 200` con un `wamid` y descarta el mensaje en silencio.** Ningún error. Ningún estado de falla. Nada en ningún log. Ocho envíos, cuatro entregados, `200` en los ocho.
+
+Así que, si lo dejáramos pasar, tu mensaje desaparecería y ni tú ni nosotros lo sabríamos nunca. En su lugar recibes:
+
+```json
+{
+  "code": "FLOW_WINDOW_CLOSED",
+  "error": "The 24h window with this contact is closed…"
+}
+```
+
+Para reabrir la conversación, envía una **plantilla**. Las plantillas no dependen de la ventana, y justamente por eso un botón FLOW dentro de una plantilla sigue siendo la forma de iniciar una conversación.
+
+## Errores
+
+| Código | HTTP | Cuándo |
+| --- | --- | --- |
+| `FLOW_REQUIRES_META_NUMBER` | 422 | El número no es un número de Meta (Cloud API). Los proveedores no oficiales no tienen Flows |
+| `FLOW_WINDOW_CLOSED` | 422 | La ventana de 24 horas está cerrada; ver arriba |
+| `FLOW_NOT_SENDABLE` | 422 | El Flow no existe en tu cuenta, pertenece a otra WABA o no está publicado |
+| `FLOW_TOKEN_NOT_ACCEPTED` | 422 | Enviaste `flow_token` en el cuerpo. Nosotros generamos uno por mensaje |
+| `FLOW_PAYLOAD_NOT_ALLOWED` | 422 | Enviaste `screen` o `data` junto con `action: "data_exchange"`; ver abajo |
+
+`FLOW_NOT_SENDABLE` devuelve un solo mensaje para las tres causas a propósito. Decirte "existe, pero pertenece a otra cuenta" confirmaría que un id que no te pertenece es real.
+
+## `data_exchange` no acepta pantalla ni datos
+
+A un Flow `data_exchange` lo responde tu endpoint, así que no hay nada que precargar al momento del envío, y Meta lo exige. Si envías la pantalla de entrada junto con él, todo el mensaje se rechaza:
+
+```
+(#131009) Unexpected key "flow_action_payload" when "flow_action" is "data_exchange"
+```
+
+Medido en producción el 10 de septiembre de 2026: tres envíos de una cuenta, **ninguno entregado**. El estado inicial de un Flow `data_exchange` le llega mediante la solicitud **INIT** que Meta hace a tu endpoint: esa es la costura, no el envío.
+
+Por eso `screen` y `data` se rechazan en la entrada en lugar de descartarse en silencio:
+
+```json
+{
+  "code": "FLOW_PAYLOAD_NOT_ALLOWED",
+  "details": { "field": "flow.screen", "action": "data_exchange" }
+}
+```
+
+<Note>
+  **Rechazamos en lugar de descartar, y es deliberado.** Descartar `data` en silencio te haría creer que llegaron al Flow valores que nunca salieron de nuestro proceso. Quita el campo, o cambia a `action: "navigate"`, que es exactamente para lo que sirven esos dos campos.
+</Note>
+
+## Cómo recibir las respuestas: hay DOS destinos
+
+Cuál recibes depende de la acción, y confundirlos es la sorpresa más común aquí.
+
+| | A dónde van las respuestas | Cuándo |
+| --- | --- | --- |
+| **`data_exchange`** | **Tu propia API**, pantalla por pantalla | Mientras el cliente todavía llena el formulario (`INIT`, `data_exchange`, `BACK`) |
+| Ambas acciones | Webhook `flow.response_received` + `GET /v1/flows/{id}/responses` | Cuando el cliente envía el formulario |
+
+<Warning>
+  **En un Flow `data_exchange`, el envío final viene casi vacío, y eso no es un bug.** Meta entrega las respuestas a tu endpoint a medida que se escriben, así que lo que cierra el formulario trae el token y poco más. Las respuestas están en `submitted`; consulta [Conecta tu API a un Flow](/es/guides/flow-data-exchange). Si las necesitas en tus propios sistemas, tu endpoint es donde llegan **primero**.
+</Warning>
+
+Cuando alguien envía el Flow, las respuestas llegan en el evento de webhook `flow.response_received` y en `GET /v1/flows/{id}/responses`, correlacionadas con el envío que las produjo.
+
+No tienes que hacer nada para que esa correlación funcione. El token que vincula ambos se genera por mensaje y se guarda cuando sale el mensaje, y por eso también se rechaza `flow_token` en el cuerpo de la solicitud. Un token elegido por quien llama permitiría que una cuenta reclamara las respuestas de otra cuenta.
+
+<Note>
+Suscribirse a `flow.response_received` es un paso aparte. Consulta [Respuestas de Flows](/es/guides/flow-responses).
+</Note>
+
+## Dos cosas que vale la pena saber antes de probar
+
+**Un número de Cloud API no recibe Flows.** Enviar a otro número de Meta (incluso con la ventana abierta) no se entrega, y Meta igual responde `200`. Prueba con un teléfono común.
+
+**`mode: "draft"` funciona.** Puedes probar un Flow antes de publicarlo. Recuerda que el mensaje llega a una persona real.
+
+## ¿Botón de plantilla o Flow dinámico?
+
+| | Plantilla con botón FLOW | `flow` dinámico |
+| --- | --- | --- |
+| El botón | Un componente en la plantilla aprobada | **El string `cta`: nada que construir** |
+| El Flow se elige | Cuando se crea la plantilla | **Al momento del envío** |
+| Ventana de 24 horas | No es necesaria | **Obligatoria** |
+| Pasa por revisión | Sí | No |
+| Puede iniciar una conversación | **Sí** | No |

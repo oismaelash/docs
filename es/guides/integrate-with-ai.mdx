@@ -1,0 +1,296 @@
+---
+title: "Integra Pilot Status con IA (Claude, ChatGPT, Cursor)"
+sidebarTitle: "Integrar con IA"
+description: "Checklist de integración de punta a punta para asistentes de IA: elige una clave ps_ u OAuth, conecta MCP, envía un mensaje, obtén el secreto de firma del webhook (se muestra una vez al crearlo; rótalo si lo pierdes, nunca lo pidas a soporte), verifica x-pilot-status-signature, el verify token de Meta, plantillas y errores comunes."
+mode: "wide"
+---
+
+Esta página está escrita para un asistente de IA (Claude, ChatGPT, Cursor, cualquier agente de código) y para la persona a la que ayuda. Síguela de principio a fin y podrás terminar una integración con Pilot Status **sin contactar a soporte**: cada credencial se muestra en el panel o en una respuesta de la API, y cada una que se pueda perder se puede regenerar.
+
+<Warning>
+  **No le digas al usuario que le pida una "contraseña" a soporte.** Los valores que necesita una integración (API keys, el **secreto de firma** del webhook, el **verify token** de Meta) están todos en las pantallas o en las respuestas que se listan abajo. Soporte tampoco puede leerlos: se muestran una sola vez, y la forma de recuperarlos es rotarlos.
+</Warning>
+
+## ¿A qué "contraseña" se refiere el usuario?
+
+Las integraciones confunden tres secretos distintos. Identifica cuál es antes de responder:
+
+| El usuario dice… | Es | Dirección | Dónde está |
+| --- | --- | --- | --- |
+| "la clave", "el token de la API" | **API key** (`ps_…`) | Tú → Pilot Status, header `x-api-key` | Panel, se muestra una vez al crearla o regenerarla ([paso 1](#1-elige-la-credencial)) |
+| "la contraseña del webhook", "el secreto para validar el webhook", "la clave HMAC" | **Secreto de firma del webhook** | Pilot Status → tu endpoint, header `x-pilot-status-signature` | Se muestra una vez al crear o rotar el webhook ([paso 4](#4-crea-un-webhook-y-obtén-el-secreto-de-firma)) |
+| "el verify token que pide Meta", "el token del webhook en la app de Meta" | **Verify token de Meta** | Meta → Pilot Status (el handshake de Meta) | Solo para un número conectado **con las credenciales de tu propia app de Meta** ([paso 6](#6-verify-token-de-meta-números-con-tu-propia-app-de-meta)) |
+
+El **app secret** de Meta es un cuarto valor, pero es del propio usuario: lo copia de su app de Meta y se lo da a Pilot Status, nunca al revés.
+
+## 1. Elige la credencial
+
+| Credencial | Prefijo / forma | Dónde la obtiene el usuario | Para qué usarla |
+| --- | --- | --- | --- |
+| **Clave de número** | `ps_number_…` | **API Keys** (`/api-keys`), una por número | Enviar y leer a través de **un** número. La opción más simple para un bot en un número. |
+| **Clave de workspace** | `ps_workspace_…` | **Workspace keys** (`/workspace-api-keys`) | Gestionar números, webhooks, líneas, facturación; actuar sobre cualquier número con `x-whatsapp-number-id`. |
+| **Clave de cuenta** | `ps_account_…` | **Profile → API** (`/profile?tab=api`) | Revendedores: crear workspaces y actuar en cualquiera de ellos con `x-workspace-id`. |
+| **Token OAuth 2.1** | `Authorization: Bearer …` | Emitido por el inicio de sesión del conector MCP (claude.ai, ChatGPT, cualquier cliente con OAuth) | Solo MCP. Actúa como el usuario que inició sesión, con su rol en el workspace. |
+
+- **Las claves se muestran una vez**, al crearlas o regenerarlas. ¿Perdiste una? Regenérala en la misma pantalla: el valor anterior deja de funcionar de inmediato. Las claves creadas antes del 2026-10-28 tienen el formato anterior `ps_` + hex y siguen funcionando.
+- **La API REST nunca acepta `Authorization: Bearer`.** Envía la clave en `x-api-key`. Bearer es solo para el OAuth del servidor MCP.
+- **Mantén las claves en un servidor.** Nunca en código del navegador, una app móvil ni una variable `NEXT_PUBLIC_`/`VITE_`.
+
+Detalles: [Tipos de clave](/es/api/key-types) · [Autenticación](/es/api/authentication).
+
+## 2. Conecta el servidor MCP
+
+El servidor alojado expone la API pública `/v1` como **151 herramientas**:
+
+```text
+https://mcp.pilotstatus.com.br/mcp
+```
+
+Para agentes que encadenan muchas llamadas, **Code Mode** ofrece 2 herramientas (`describe`, `execute`) en lugar de 151, con las mismas credenciales y permisos. Conecta un endpoint o el otro, no ambos:
+
+```text
+https://mcp.pilotstatus.com.br/code
+```
+
+<Tabs>
+  <Tab title="Claude (claude.ai / Desktop)">
+    **Settings → Connectors → Add custom connector**, pega la URL. claude.ai ejecuta el inicio de sesión OAuth (SSO de Pilot Status): no se pega ninguna clave. En la pantalla de consentimiento, otorga acceso a **todo el workspace** (solo Owner o Admin) o a **números específicos**.
+  </Tab>
+  <Tab title="ChatGPT">
+    Agrega un conector personalizado (en el modo desarrollador de ChatGPT) con la URL de arriba y autenticación **OAuth**. El servidor admite registro dinámico de clientes, así que ChatGPT se registra solo y envía al usuario a la misma pantalla de inicio de sesión y consentimiento de Pilot Status que claude.ai.
+  </Tab>
+  <Tab title="Claude Code">
+    ```bash
+    claude mcp add --transport http pilot-status https://mcp.pilotstatus.com.br/mcp \
+      --header "x-api-key: ps_your_key_here"
+    ```
+  </Tab>
+  <Tab title="Cursor y clientes configurados por archivo">
+    En `.cursor/mcp.json` (o el archivo de configuración MCP de tu cliente):
+
+    ```json
+    {
+      "mcpServers": {
+        "pilot-status": {
+          "type": "http",
+          "url": "https://mcp.pilotstatus.com.br/mcp",
+          "headers": { "x-api-key": "ps_your_key_here" }
+        }
+      }
+    }
+    ```
+
+    Con una clave de cuenta, agrega `"x-workspace-id": "your_workspace_id"` a `headers` (los ids vienen de la herramienta `workspaces_list`).
+  </Tab>
+</Tabs>
+
+- Con una **clave de workspace, clave de cuenta o autorización OAuth de todo el workspace**, las herramientas de número reciben un argumento `whatsappNumberId`: obtenlo de `numbers_list`.
+- Si no sabes cómo hacer algo, llama a la herramienta **`docs_search`** con la pregunta o el código de error; devuelve las páginas más relevantes de esta documentación.
+- Configuración completa, lista de herramientas y self-hosting: [Servidor MCP](/es/integrations/mcp-server) · [MCP Code Mode](/es/integrations/mcp-code-mode).
+
+## 3. Envía un mensaje
+
+<CodeGroup>
+
+```bash REST
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: order-48213-5511999999999" \
+  -d '{ "destinationNumber": "+5511999999999", "text": "Your order has shipped." }'
+```
+
+```json MCP (messages_send)
+{
+  "name": "messages_send",
+  "arguments": {
+    "destinationNumber": "+5511999999999",
+    "text": "Your order has shipped.",
+    "idempotencyKey": "order-48213-5511999999999"
+  }
+}
+```
+
+</CodeGroup>
+
+- La respuesta es `202` con `status: "QUEUED"` y un `id`. Guarda el `id`: es el que usan los webhooks de estado y `GET /v1/messages/{id}`.
+- **Números oficiales (Meta):** el `text` libre solo funciona dentro de la ventana de servicio de 24 horas. Fuera de ella, envía una **plantilla aprobada** (`templateId` + `variables`), o el mensaje falla con `META_OUTSIDE_24H_WINDOW`.
+- Usa una clave de idempotencia derivada de tus datos, para que un reintento después de un timeout no envíe dos veces.
+
+Detalles: [Enviar mensajes](/es/api/messages/send).
+
+## 4. Crea un webhook y obtén el secreto de firma
+
+Un webhook pertenece a un número. Todo webhook creado desde el 2026-09-15 está **firmado**: recibe un secreto de firma al crearse, y cada entrega lleva `x-pilot-status-signature`.
+
+<Steps>
+  <Step title="Créalo">
+    - **Panel:** **Webhooks** (`/webhooks`) → **New Webhook** → URL y eventos.
+    - **API:** `POST /v1/webhooks` con `{ "url": "…", "events": ["*"] }` (con una clave de workspace, agrega `whatsappNumberId`).
+    - **MCP:** `webhooks_create`.
+
+    Una lista `events` vacía no entrega nada; `"*"` significa todos los eventos (excepto `lead.received`, que es opcional).
+  </Step>
+  <Step title="Copia el secreto de firma: se muestra una sola vez">
+    - **Panel:** justo después de guardar, la ventana **Signing secret** lo muestra con un botón **Copy** y el aviso *"Shown once. Store it now — no read returns it again."* (Se muestra una vez. Guárdalo ahora: ninguna lectura lo devuelve de nuevo). Cópialo antes de hacer clic en **Got it**.
+    - **API:** el campo `secret` de la respuesta `201` de `POST /v1/webhooks`.
+    - **MCP:** el campo `secret` devuelto por `webhooks_create`.
+
+    Guárdalo en el entorno del receptor (por ejemplo, `PILOT_STATUS_WEBHOOK_SECRET`). Ninguna lectura (`GET`, listado, `PATCH`, el panel más adelante) lo devuelve de nuevo; solo indican `hasSecret`.
+  </Step>
+  <Step title="¿Lo perdiste o el webhook no tiene secreto? Rótalo">
+    - **Panel:** abre el webhook → **Edit Webhook** → **Generate a new secret** → confirma. El nuevo aparece una vez, en la misma ventana **Signing secret**.
+    - **API:** `POST /v1/webhooks/{id}/rotate-secret` → `{ "id": "…", "hasSecret": true, "secret": "…" }`.
+    - **MCP:** `webhooks_rotate_secret`.
+
+    El secreto anterior deja de verificar **de inmediato** (sin ventana de superposición). Rotar también es la forma en que un webhook creado antes del 2026-09-15 (**Unsigned** en el panel) pasa a estar firmado.
+  </Step>
+</Steps>
+
+<Note>
+  **Quién puede verlo.** En el panel y por OAuth/MCP, los secretos de webhook van al **Owner** y al **Admin** del workspace (`webhooks:manage`). Con una clave `ps_` que puede gestionar webhooks, la respuesta siempre lo incluye. Si una creación por OAuth responde `secret: null` con `secretWithheld: true`, no se pudo escribir el registro de auditoría: rota para obtener un secreto nuevo.
+</Note>
+
+Los webhooks de líneas telefónicas y de workspace (secretos `plwh_…`, en **Phone lines → Line webhooks** o **Workspace keys → Webhooks**) siguen la misma regla de "se muestra una vez", pero **no se pueden rotar**: crea un webhook nuevo y elimina el anterior. Consulta [Webhooks de workspace](/es/api/workspace-webhooks). Los endpoints de WhatsApp Flow tienen su propio secreto: consulta [Flows](/es/dashboard/flows).
+
+Detalles: [Configurar webhooks](/es/api/webhooks/configure) · [Pantalla de Webhooks](/es/dashboard/webhooks) · [Referencia de eventos](/es/api/webhooks/events).
+
+## 5. Verifica la firma
+
+`x-pilot-status-signature` es el **HMAC-SHA256 codificado en hex del cuerpo en bruto de la solicitud**, con el secreto de firma como clave. Calcúlalo sobre los bytes exactamente como se recibieron (nunca sobre JSON re-serializado) y compara en tiempo constante.
+
+<CodeGroup>
+
+```javascript Node (Express)
+const crypto = require("node:crypto");
+const express = require("express");
+
+const app = express();
+const SECRET = process.env.PILOT_STATUS_WEBHOOK_SECRET; // se muestra una vez al crear o rotar
+
+// express.raw: la firma cubre los bytes recibidos, no JSON.stringify(req.body).
+app.post("/hooks/pilot-status", express.raw({ type: "application/json" }), (req, res) => {
+  const expected = crypto.createHmac("sha256", SECRET).update(req.body).digest("hex");
+  const received = String(req.get("x-pilot-status-signature") ?? "");
+  const ok =
+    received.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected));
+  if (!ok) return res.sendStatus(401);
+
+  const event = JSON.parse(req.body.toString("utf8"));
+  // ... maneja el evento
+  res.sendStatus(200);
+});
+```
+
+```python Python (Flask)
+import hashlib
+import hmac
+import json
+import os
+
+from flask import Flask, abort, request
+
+app = Flask(__name__)
+SECRET = os.environ["PILOT_STATUS_WEBHOOK_SECRET"]  # se muestra una vez al crear o rotar
+
+@app.post("/hooks/pilot-status")
+def pilot_status_hook():
+    raw = request.get_data()  # los bytes en bruto que se firmaron
+    expected = hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    received = request.headers.get("x-pilot-status-signature", "")
+    if not hmac.compare_digest(expected.encode(), received.encode()):
+        abort(401)
+    event = json.loads(raw)
+    # ... maneja el evento
+    return "", 200
+```
+
+</CodeGroup>
+
+Los SDKs lo hacen por ti: `verifyWebhookSignature` en Node (`@pilot-status/sdk`) y `verify_webhook_signature(raw_body, signature_header, secret)` en Python (`pilot-status` 1.16.0+). Consulta [SDKs](/es/integrations/sdks).
+
+- **Los números oficiales (Meta) entregan el sobre nativo de Meta** (`{ object, entry }`), no los eventos `message.*` de los números con código QR. Lee [Qué eventos envía tu número](/es/api/webhooks/events#qué-eventos-envía-tu-número) antes de escribir el parser.
+- Las entregas son al menos una vez: deduplica por `Idempotency-Key` cuando esté presente; si no, por los ids que indica la referencia de eventos.
+
+## 6. Verify token de Meta (números con tu propia app de Meta)
+
+Solo es necesario cuando un número está conectado mediante **Official Meta API (Cloud API)** con las credenciales de la propia app de Meta del usuario y Pilot Status **no** enruta por sí mismo los webhooks de la WABA. Los números conectados con **Connect with Facebook** (Embedded Signup / Coexistence) y los números con código QR no necesitan nada aquí.
+
+- **Panel:** la ventana **Meta Number Created!**, justo después de conectar, muestra la **Callback URL** y el **Verify Token** con botones de copiar. Más adelante, el **Owner** del workspace copia el Verify Token desde la tarjeta expandida del número en **Numbers**; los demás roles ven *"Only the workspace owner can view it"* (Solo el owner del workspace puede verlo).
+- **API:** `POST /v1/numbers/meta` responde `webhook.url` y `webhook.verifyToken`. O pasa `routeWebhooksToPilot: true` y Pilot Status suscribe la WABA por sí mismo (`webhook.routedToPilot: true`), sin token que pegar.
+- En la app de Meta: **WhatsApp → Configuration → Webhook**, pega la Callback URL y el Verify Token, **Verify and save**.
+
+Detalles: [Conectar números](/es/connecting-numbers) · [Crear un número](/es/api/numbers/create).
+
+## 7. Plantillas (números oficiales)
+
+Fuera de la ventana de 24 horas, un número oficial solo puede iniciar una conversación con una **plantilla aprobada**.
+
+| Paso | REST | MCP |
+| --- | --- | --- |
+| Crear (en un número de Meta se envía a Meta de inmediato, `metaStatus: "PENDING"`) | `POST /v1/templates` | `templates_create` |
+| Enviar a revisión una plantilla nunca enviada a Meta, o reenviar una rechazada | `POST /v1/templates/{id}/submit` | `templates_submit` |
+| Importar las plantillas que ya existen en la WABA | `POST /v1/templates/sync` | `templates_sync` |
+| Verificar la aprobación (`metaStatus`, `sendable`) | `GET /v1/templates/{id}` | `templates_get` |
+
+- `examples` es **obligatorio**: una muestra real para cada variable, o `400 TEMPLATE_EXAMPLES_REQUIRED`.
+- Por MCP, un header multimedia se acepta **solo por URL**.
+- El envío a revisión y la sincronización necesitan un número de Meta Cloud API (`422 TEMPLATE_REQUIRES_META_NUMBER`) y una credencial con alcance de número.
+- Los números con código QR (no oficiales) no tienen paso de aprobación: sus plantillas se pueden usar de inmediato.
+
+Detalles: [API de plantillas](/es/api/templates) · [Plantillas](/es/concepts/templates).
+
+## 8. Herramientas destructivas: vista previa y luego token
+
+`templates_delete`, `workspace_archive`, `workspace_transfer_ownership` y `workspace_members_remove` se ejecutan en **dos llamadas**:
+
+1. Llama sin `confirm_token`. Nada cambia: la respuesta es `status: "CONFIRMATION_REQUIRED"`, una `preview` y un `confirm_token` de un solo uso válido por **5 minutos**.
+2. **Muéstrale la vista previa al usuario y espera un sí explícito.** Luego llama de nuevo con los **mismos argumentos** más `confirm_token`.
+
+Nunca confirmes en nombre del usuario. Lo mismo aplica en Code Mode. Errores: `CONFIRM_TOKEN_EXPIRED` (nueva vista previa), `CONFIRM_TOKEN_MISMATCH` (repite los argumentos exactos), `CONFIRM_TOKEN_USED` (ya se ejecutó: no lo repitas), `CONFIRM_TOKEN_INVALID` (nueva vista previa). Consulta [Confirmación para herramientas destructivas](/es/integrations/mcp-server#confirmación-para-herramientas-destructivas).
+
+## 9. Lo que solo el Owner puede hacer por OAuth
+
+Con el conector OAuth, la app actúa con el rol **actual** del usuario en el workspace, leído en cada llamada:
+
+- **API keys**: `api_keys_list` (revela las claves de número) y `api_keys_regenerate_number`, y rotar la clave principal del workspace: **solo Owner**. Los demás reciben `403 OAUTH_SECRET_REQUIRES_OWNER`. Si el usuario no es el Owner, pídele al Owner que cree la clave en el panel, o usa una clave `ps_` en `x-api-key`.
+- **Secretos de firma y el verify token de Meta**: Owner o Admin, como en el panel.
+- **`numbers_purge`** y pagar un número (`numbers_pay`): solo Owner.
+- **Archivar, transferir la propiedad, eliminar un miembro**: solo Owner, con el token OAuth del owner (archivar y transferir también aceptan su clave de cuenta); una clave `ps_` de workspace o de número se rechaza.
+- **Crear workspaces y claves de workspace con nombre** (`workspaces_*`): solo una clave de cuenta; los tokens OAuth reciben `403 ACCOUNT_KEY_REQUIRED`.
+
+Cada revelación o creación de una clave o secreto por OAuth queda registrada en el log de auditoría. Consulta [Secretos y API keys por OAuth](/es/integrations/mcp-server#secretos-y-api-keys-por-oauth).
+
+## 10. Errores comunes
+
+Los errores son JSON con un `code` estable y un `error` bilingüe (`English | Português`). Ramifica según `code`.
+
+| Estado / código | Qué significa | Qué hacer |
+| --- | --- | --- |
+| `401` | Clave ausente, inválida o revocada | Revisa el header `x-api-key` (no `Authorization: Bearer` en REST); regenera la clave si se perdió. |
+| `403 TENANT_SCOPE_NOT_ALLOWED` | Una clave de workspace en un endpoint por número sin número | Envía `x-whatsapp-number-id` (REST) o `whatsappNumberId` (MCP), obtenido de `GET /v1/numbers` / `numbers_list`. |
+| `403 NUMBER_SCOPE_NOT_ALLOWED` | Una clave de número en un endpoint exclusivo de workspace | Usa una clave de workspace. |
+| `400 WORKSPACE_ID_REQUIRED` | Una clave de cuenta sin workspace | Envía `x-workspace-id` (obtenido de `GET /v1/workspaces` / `workspaces_list`). |
+| `403 ACCOUNT_KEY_REQUIRED` | `/v1/workspaces*` con otra credencial | Usa una clave de cuenta (`ps_account_`). |
+| `403 OAUTH_SECRET_REQUIRES_OWNER` | Revelar o crear una API key por OAuth sin ser owner | Lo hace el Owner del workspace, o usa una clave `ps_`. |
+| `403 PERMISSION_DENIED` | El rol del usuario no permite la acción | Lo hace un usuario con un rol superior; consulta [Roles y permisos](/es/concepts/roles-and-permissions). |
+| `400 INVALID_BODY` | El cuerpo no es JSON válido, o está vacío donde es obligatorio | Corrige el payload; no se ejecutó nada. |
+| `400 NUMBER_REQUIRED` | Crear un webhook con una clave de workspace y sin número | Pasa `whatsappNumberId`. |
+| `409 WEBHOOK_DUPLICATE` | La misma URL ya está registrada en ese número | Actualiza el webhook existente en su lugar. |
+| `400 TEMPLATE_EXAMPLES_REQUIRED` | Una variable de plantilla sin muestra | Agrega cada variable a `examples`. |
+| `422 TEMPLATE_REQUIRES_META_NUMBER` | Envío a revisión/sincronización en un número que no es de Meta | Usa la credencial del número de Meta. |
+| `META_OUTSIDE_24H_WINDOW` (en el mensaje, no en el `202`) | Texto libre fuera de la ventana de 24 horas en un número oficial | Envía una plantilla aprobada. |
+| `422 BILLING_SUSPENDED` | La facturación del workspace está suspendida | El usuario regulariza la tarjeta o la billetera en el panel. |
+| `409 IDEMPOTENCY_KEY_REUSED` | Misma `Idempotency-Key`, cuerpo diferente | Usa una clave nueva para un mensaje diferente. |
+| `400 MCP_AUDIO_URL_REQUIRED` | Audio enviado como base64 por MCP | Envía una URL pública http(s) del archivo de audio. |
+| `429` | Límite de tasa | Espera y reintenta. |
+
+Las fallas de entrega que aparecen más tarde en el mensaje (`errorCode`) se listan en [Códigos de error del log](/es/api/messages/log-error-codes).
+
+## Relacionado
+
+- [Usar IA/LLMs con Pilot Status](/es/trust/llms): `llms.txt` y las credenciales que solo muestra el panel
+- [Agentes de IA](/es/guides/ai-agents): patrones de bots basados en webhooks
+- [Recibir mensajes](/es/guides/receive-messages)
+- [Servidor MCP](/es/integrations/mcp-server)

@@ -1,0 +1,95 @@
+---
+title: "Crea agentes de WhatsApp con IA usando Pilot Status"
+sidebarTitle: "Agentes de IA"
+description: "Conecta LLM y flujos de IA a WhatsApp con los webhooks, el servidor MCP y la API REST de Pilot Status. Crea chatbots que responden en tiempo real, 24/7."
+mode: "wide"
+---
+
+Pilot Status está hecho para ser operado por IA. Hay tres formas complementarias de conectar LLM y agentes a WhatsApp: el **servidor MCP** alojado, la **API REST** directa con el encabezado `x-api-key` y los **bots basados en webhooks** que reaccionan a los mensajes entrantes en tiempo real.
+
+## Servidor MCP (conector alojado)
+
+Pilot Status ofrece un servidor oficial de Model Context Protocol que expone la API pública `/v1` como **151 herramientas MCP**: enviar mensajes, leer conversaciones y mensajes no leídos, gestionar números, plantillas, webhooks, grupos, llamadas de voz y más.
+
+El conector alojado funciona en:
+
+```text
+https://mcp.pilotstatus.com.br/mcp
+```
+
+Agrégalo en claude.ai en **Settings → Connectors → Add custom connector**. claude.ai ejecuta el inicio de sesión OAuth 2.1 (SSO de Pilot Status): no se comparte ninguna clave de API con el cliente. Durante el inicio de sesión verás una **pantalla de consentimiento** donde apruebas el acceso a **toda la cuenta** (solo Owner o Admin del workspace) o concedes solo **números específicos** (una concesión por número restringe cada herramienta a esos números). La conexión actúa sobre el workspace seleccionado en tu sesión de Pilot Status al momento de autorizar. Claude Code y ChatGPT se conectan con OAuth de la misma forma; Cursor y VS Code usan una clave de API. Paso a paso para cada cliente: [Conecta tu cliente](/es/integrations/mcp-server#conecta-tu-cliente).
+
+Los clientes configurados por archivo pueden omitir OAuth y enviar en su lugar una clave `ps_*` en el encabezado `x-api-key`:
+
+```json
+{
+  "mcpServers": {
+    "pilot-status": {
+      "type": "http",
+      "url": "https://mcp.pilotstatus.com.br/mcp",
+      "headers": { "x-api-key": "ps_your_key_here" }
+    }
+  }
+}
+```
+
+Con una conexión OAuth o una clave de workspace, pasa `whatsappNumberId` (de `numbers_list`) a cada herramienta que actúe sobre un número: mensajes, conversaciones, plantillas, webhooks. Una clave de número (`ps_number_…`) ya indica su número.
+
+Dos endpoints, las mismas credenciales. Conecta uno de ellos por agente, no ambos:
+
+- **`/mcp`**: las 151 herramientas; tu cliente muestra cada llamada para que la apruebes. Ideal para una o dos llamadas a la vez.
+- **`/code`**: [Code Mode](/es/integrations/mcp-code-mode): dos herramientas, `describe` y `execute`, y el agente escribe un script de TypeScript que llama a `await ps.<tool>(args)`. Ideal para bucles, informes y contexto ajustado.
+
+Las herramientas destructivas (`templates_delete`, `workspace_archive`, `workspace_transfer_ownership`, `workspace_members_remove`) devuelven primero una vista previa y un `confirm_token`; el agente debe mostrar la vista previa y esperar tu sí antes de la segunda llamada. [Confirmación para herramientas destructivas](/es/integrations/mcp-server#confirmación-para-herramientas-destructivas)
+
+Consulta la [página de integración del servidor MCP](/es/integrations/mcp-server) para la autenticación y el autoalojamiento, y la [referencia de herramientas MCP](/es/integrations/mcp-tools) para cada herramienta con sus argumentos obligatorios.
+
+## Enseña a cualquier LLM sobre Pilot Status
+
+Apunta tu modelo o agente de programación a la referencia canónica legible por máquinas:
+
+```text
+https://pilotstatus.com.br/llms.txt
+```
+
+Enlaza endpoints, esquemas de webhooks, conceptos y códigos de error: todo lo que una IA necesita para escribir una integración correcta.
+
+## Bots basados en webhooks
+
+El patrón clásico: suscribe un webhook a `message.received`, pasa el payload por tu LLM y responde mediante la API.
+
+```javascript
+app.post("/hooks/whatsapp", async (req, res) => {
+  res.sendStatus(200); // acknowledge first
+  const { event, data } = req.body;
+  if (event !== "message.received") return;
+
+  const reply = await llm.complete(data.content); // your model call
+
+  await fetch("https://pilotstatus.com.br/v1/messages/send", {
+    method: "POST",
+    headers: {
+      "x-api-key": process.env.PILOT_STATUS_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ text: reply, destinationNumber: data.from }),
+  });
+});
+```
+
+<Tip>
+  Pilot Status dispara los webhooks a los pocos milisegundos de cada evento, así que los agentes pueden responder casi al instante. Elimina duplicados por `data.id` y mantén tu handler rápido: haz la llamada al LLM de forma asíncrona.
+</Tip>
+
+Los detalles de configuración están en la [guía Recibir mensajes](/es/guides/receive-messages).
+
+## API REST directa
+
+Cualquier framework que pueda hacer solicitudes HTTP (LangChain, n8n, Make, backends propios) puede usar la API directamente. La autenticación es siempre el encabezado `x-api-key: ps_...`; la URL base es `https://pilotstatus.com.br/v1`, y el único endpoint de envío es `POST /v1/messages/send` (modo plantilla, texto o multimedia). Los [SDK](/es/integrations/sdks) oficiales lo envuelven para Node.js, Python y n8n.
+
+## Relacionado
+
+- [Servidor MCP](/es/integrations/mcp-server)
+- [Referencia de herramientas MCP](/es/integrations/mcp-tools)
+- [SDK y n8n](/es/integrations/sdks)
+- [Uso de IA/LLM con Pilot Status](/es/trust/llms)
