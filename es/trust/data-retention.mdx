@@ -1,0 +1,83 @@
+---
+title: "Retención de datos y modos de PII"
+sidebarTitle: "Retención de datos"
+description: "Controla cuánto tiempo Pilot Status almacena el contenido de los mensajes por número: STORE_INDEFINITE, STORE_X_DAYS o RELAY_ONLY. Los webhooks y Chatwoot siguen funcionando en cualquier caso."
+mode: "wide"
+---
+
+Pilot Status te permite controlar cuánto tiempo se almacenan los datos sensibles (PII). Hay dos capas independientes:
+
+1. **Retención a nivel de clave de API**: cuánto tiempo conservan PII los logs de mensajes salientes.
+2. **Modo de PII por número**: si los mensajes de chat entrantes/salientes y las conversaciones se almacenan o no.
+
+## Retención a nivel de clave de API
+
+Se configura por clave de API en la página **API Keys** (`/api-keys`):
+
+- `retentionDays > 0`: la PII de los logs de mensajes salientes se conserva hasta N días.
+- `retentionDays = 0`: la PII no se persiste.
+
+Incluso con la retención desactivada, los eventos de webhook se siguen entregando: los campos sensibles (por ejemplo, `destinationNumber`, `content`) pueden llegar vacíos, pero los IDs, marcas de tiempo, estado y metadatos de seguimiento se mantienen.
+
+## Modo de PII por número
+
+Cada número de WhatsApp se configura de forma independiente con uno de tres modos (definido en la configuración del número en el panel):
+
+| Modo | Comportamiento |
+| --- | --- |
+| `STORE_INDEFINITE` | **(Predeterminado)** Todos los mensajes de chat entrantes y salientes y las conversaciones se almacenan indefinidamente. |
+| `STORE_X_DAYS` | Los mensajes y conversaciones se almacenan solo durante los últimos N días (`piiRetentionDays`, entero obligatorio \> 0). Un proceso diario elimina definitivamente los registros de chat anteriores al corte y redacta la PII de las entradas más antiguas del log de envíos. |
+| `RELAY_ONLY` | **No se almacena nada.** Los mensajes entrantes se siguen retransmitiendo (los webhooks se disparan y la integración con Chatwoot sigue funcionando), pero no se crea ningún registro de conversación ni de chat, y la multimedia entrante no se vuelve a alojar. Las filas del log saliente se conservan solo para facturación/estado, con payload `null` y `destinationNumber` en blanco. |
+
+### Efecto en el panel
+
+| Sección | `STORE_INDEFINITE` | `STORE_X_DAYS` | `RELAY_ONLY` |
+| --- | --- | --- | --- |
+| `/chat` | Historial completo | Últimos N días | Vacío \+ banner "Messages are not stored for this number" (los mensajes no se almacenan para este número) |
+| `/logs` | Historial completo | Últimos N días | Vacío \+ banner |
+
+### Efecto en los endpoints de lectura v1
+
+`GET /v1/conversations`, `GET /v1/messages/unread` y `GET /v1/messages/group` aplican el mismo filtro:
+
+| Modo | Comportamiento |
+| --- | --- |
+| `STORE_INDEFINITE` | Resultados normales. |
+| `STORE_X_DAYS` | Solo registros dentro de la ventana: para consultas por rango de fechas, el límite inferior efectivo es `max(startDate, now − piiRetentionDays)`. |
+| `RELAY_ONLY` | Lista vacía con `{ "total": 0, "notice": "PII_RELAY_ONLY" }`. |
+
+## Datos de Flows
+
+Un [WhatsApp Flow](/es/concepts/flows) guarda tres registros propios, y sus ventanas las fija la plataforma: no son el `retentionDays` de la clave de API ni el `piiRetentionDays` del número.
+
+| Registro | Ventana | Qué es |
+| --- | --- | --- |
+| **Respuestas del Flow** | 30 días | Lo que el cliente envió, leído en `GET /v1/flows/{id}/responses`. La ventana se aplica **al leer**, así que una respuesta vencida nunca se sirve, aunque el depurador todavía no la haya alcanzado. |
+| **Intercambios del Flow** | 30 días \+ 1 | Las llamadas `data_exchange` que Meta hizo mientras la persona todavía llenaba el formulario, publicadas como `submitted` en la respuesta y en el evento `flow.response_received`. `INIT` y `BACK` no se capturan, por lo que la lista es más corta que la traza del endpoint del Flow. |
+| **Multimedia del Flow** | **Nunca vence** | Un archivo adjuntado con `PhotoPicker` o `DocumentPicker`, descifrado y vuelto a alojar por nosotros. No tiene vencimiento, y nada en la plataforma lo elimina. |
+
+<Note>
+  **Por qué los intercambios tienen un día más que las respuestas.** Un intercambio se captura mientras el cliente todavía llena el formulario, minutos *antes* del envío que crea la fila de la respuesta. Con 30 días idénticos, los intercambios vencerían primero, y una respuesta en sus últimos minutos de vida publicaría un `submitted` vacío junto a respuestas que estuvieron ahí todo el tiempo.
+</Note>
+
+**En un número `RELAY_ONLY` no se almacena ningún intercambio**: no una fila en blanco, sino ninguna fila. La llamada se sigue descifrando y reenviando a tu endpoint, como todo en ese modo; lo que no se guarda es la copia. Cuando la redacción de un número deja en blanco una copia almacenada del **evento**, `submitted` vuelve como `null`, nunca `[]`, que se leería como respuestas ocultas en lugar de respuestas ausentes. En la **superficie de lectura**, `GET /v1/flows/{id}/responses`, lo vacío se escribe en cambio como `[]`: ahí no hay payload almacenado que redactar, y un campo sin valor desaparecería del JSON en lugar de llegar vacío.
+
+<Warning>
+  **El archivo del Flow vuelto a alojar sobrevive a la respuesta a la que pertenecía, en una URL pública.** Quien tenga el enlace lo lee, y el enlace sigue funcionando después de que las respuestas dejan de servirse en `GET /v1/flows/{id}/responses`. Decide eso antes de que uno de tus Flows le pida a alguien un documento de identidad.
+</Warning>
+
+## El reenvío siempre está activo
+
+Sin importar el modo de PII, esto siempre funciona:
+
+- Los **webhooks** salientes (eventos de entrega y eventos entrantes)
+- La **integración con Chatwoot** (recibir y responder)
+- El **envío** de mensajes
+
+Solo se ven afectados el **almacenamiento y la lectura posterior**.
+
+## Relacionado
+
+- [Webhooks](/es/concepts/webhooks)
+- [Integración con Chatwoot](/es/integrations/chatwoot)
+- [Flows](/es/concepts/flows)
