@@ -1,0 +1,139 @@
+---
+title: "Recibe mensajes de WhatsApp y eventos de entrega mediante webhooks"
+sidebarTitle: "Recibir mensajes"
+description: "Configura un endpoint de webhook para recibir mensajes entrantes de WhatsApp y eventos de entrega de Pilot Status en tiempo real, obtén su secreto de firma (se muestra una sola vez al crearlo, en el panel o en la API) y verifícalo, con ejemplos en Node.js y Python."
+mode: "wide"
+---
+
+Para recibir mensajes entrantes de WhatsApp y eventos de entrega en tiempo real, registra un webhook: un endpoint HTTPS en tu sistema al que Pilot Status llama con un `POST` JSON por cada evento.
+
+## Crea un webhook
+
+<Tabs>
+  <Tab title="Panel">
+    Ve a la página **Webhooks** (`/webhooks`) del panel, haz clic en **New Webhook**, ingresa tu URL y elige los eventos que quieres. Los webhooks tienen alcance por número.
+
+    Justo después de crearlo, una ventana **Signing secret** muestra el secreto del webhook con un botón **Copy** y el aviso *"Shown once. Store it now — no read returns it again."* (se muestra una sola vez; guárdalo ahora, ninguna lectura lo vuelve a devolver). Cópialo en la configuración de tu servidor antes de hacer clic en **Got it**: el panel nunca lo vuelve a mostrar. ¿Lo perdiste? Abre la ventana **Edit Webhook** del webhook y haz clic en **Generate a new secret** (consulta [Rotar](/es/api/webhooks/configure#rotar-o-generar-uno-para-un-webhook-antiguo)).
+  </Tab>
+  <Tab title="API">
+    ```bash
+    curl -X POST "https://pilotstatus.com.br/v1/webhooks" \
+      -H "x-api-key: ps_your_key_here" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "url": "https://example.com/hooks/whatsapp",
+        "name": "My hook",
+        "events": ["message.received", "message.sent", "message.delivered"]
+      }'
+    ```
+
+    El CRUD completo está disponible: `GET /v1/webhooks`, `GET`/`PATCH`/`DELETE /v1/webhooks/{id}` y `GET /v1/webhooks/{id}/logs` para los intentos de entrega recientes. Con una clave **por número**, el webhook se asocia al número de esa clave; con una clave **por tenant**, pasa `whatsappNumberId` en el cuerpo (o el encabezado `x-whatsapp-number-id`).
+  </Tab>
+</Tabs>
+
+<Warning>
+  El filtrado de eventos es explícito: una **lista `events` vacía no despacha nada**; no existe un "suscribirse a todo" implícito. Usa `"*"` para recibir todos los eventos. En `PATCH`, `events` **reemplaza** la lista completa (no se fusiona), y el número del webhook no se puede cambiar después de crearlo.
+</Warning>
+
+Para pausar las entregas sin eliminarlo, haz `PATCH` con `{ "active": false }`.
+
+## El secreto de firma
+
+Cada webhook nuevo recibe un secreto de firma, y se muestra **exactamente una vez**: en la respuesta `201` de `POST /v1/webhooks` (el campo `secret`), o en la ventana **Signing secret** que el panel abre justo después de crear el webhook. Ninguna lectura posterior (`GET /v1/webhooks`, `GET /v1/webhooks/{id}`, `PATCH`, la lista del panel) lo vuelve a devolver; solo indican si existe uno (`hasSecret`).
+
+Si lo perdiste, rótalo: `POST /v1/webhooks/{id}/rotate-secret`, o en el panel abre la ventana **Edit Webhook** del webhook y haz clic en **Generate a new secret**. El nuevo secreto se muestra una sola vez, de la misma forma, y el anterior deja de verificar de inmediato: no hay ventana de superposición. No necesitas contactar a soporte para obtener un secreto.
+
+Para validar las entregas con él, consulta [Verificar la firma](/es/api/webhooks/configure#verificar-la-firma).
+
+## Payload de ejemplo: `message.received`
+
+```json
+{
+  "event": "message.received",
+  "data": {
+    "from": "+5511999999999",
+    "to": "+5511888888888",
+    "numberId": "cmm0abc123",
+    "messageId": "msg_in_id",
+    "id": "cmm04obm46zz0qv4ycjp8x6r2",
+    "type": "text",
+    "fromMe": false,
+    "content": "Hi",
+    "participantName": "WhatsApp name",
+    "createdAt": "2026-02-24T10:30:00.000Z"
+  }
+}
+```
+
+Para mensajes con medios, `mediaLink` es una URL duradera y accesible públicamente al medio realojado en el almacenamiento de Pilot Status (para todos los proveedores: Evolution GO, Evolution v2, Meta Cloud API, incluidos los medios de WhatsApp cifrados de extremo a extremo y descifrados en el servidor), junto con `mediaType`, `mediaCaption` y `mediaFilename`. Consulta la [referencia de eventos](/es/api/webhooks/events) para ver cada evento y campo.
+
+## Ejemplos de receptor
+
+Devuelve `200` rápido y procesa el evento de forma asíncrona; deduplica por `data.id`, ya que los reintentos pueden entregar un evento más de una vez.
+
+<CodeGroup>
+
+```javascript Node.js (Express)
+import express from "express";
+
+const app = express();
+app.use(express.json());
+
+app.post("/hooks/whatsapp", (req, res) => {
+  const { event, data } = req.body;
+
+  // Confirma de inmediato, procesa de forma asíncrona
+  res.sendStatus(200);
+
+  if (event === "message.received") {
+    console.log(`Message from ${data.from}: ${data.content}`);
+    // encola la respuesta, ejecuta tu bot, etc.
+  }
+});
+
+app.listen(3000);
+```
+
+```python Python (Flask)
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.post("/hooks/whatsapp")
+def whatsapp_hook():
+    payload = request.get_json()
+    event = payload.get("event")
+    data = payload.get("data", {})
+
+    if event == "message.received":
+        print(f"Message from {data.get('from')}: {data.get('content')}")
+        # encola la respuesta, ejecuta tu bot, etc.
+
+    return "", 200
+
+if __name__ == "__main__":
+    app.run(port=3000)
+```
+
+</CodeGroup>
+
+## Responder a un mensaje recibido
+
+Responde con `POST /v1/messages/send` usando el número del remitente como destino:
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "x-api-key: ps_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ "text": "Thanks, we got your message!", "destinationNumber": "+5511999999999" }'
+```
+
+<Note>
+  `message.reply` se dispara cuando un contacto cita uno de tus mensajes: usa `quotedMessageId` para compararlo con el `messageId` de tu `message.sent` original. `message.read` solo se dispara cuando el destinatario tiene activadas las confirmaciones de lectura.
+</Note>
+
+## Relacionado
+
+- [Concepto de webhooks](/es/concepts/webhooks)
+- [Referencia de eventos de webhook](/es/api/webhooks/events)
+- [Enviar mensajes](/es/guides/send-messages)

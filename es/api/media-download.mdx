@@ -1,0 +1,111 @@
+---
+title: "GET /v1/media/{mediaId}: descargar media entrante"
+description: "Descarga como base64 la media entrante recibida por la Meta Cloud API."
+mode: "wide"
+---
+
+Al recibir mensajes entrantes con media a través de los webhooks de la Meta Cloud API, el payload incluye un `mediaId`. Este endpoint descarga el archivo real y lo devuelve en base64 y como una URL realojada.
+
+También puedes obtener el `mediaId` del campo `media.id` de los mensajes entrantes que devuelven `GET /v1/messages/unread`, `GET /v1/messages/group` y `GET /v1/messages/history`: en números de **Meta**, `media.id` es el valor que debes pasar aquí.
+
+<Note>
+  En números **no oficiales (Pilot Status web)** no hay `mediaId`; esos mensajes traen `media.url` (una URL de descarga directa), que descargas directamente.
+</Note>
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/media/{mediaId}?phoneNumberId={phoneNumberId}`
+
+## Autenticación
+
+Una key **con alcance de número** en `x-api-key` (o `x-api-key-id`), o una key de toda la cuenta que indique un número en el header [`x-whatsapp-number-id`](/es/api/authentication); sin él, `403 TENANT_SCOPE_NOT_ALLOWED`. **Los tokens OAuth / MCP y las keys de cuenta** (`ps_account_`) también necesitan el permiso `chat:read` (`403 PERMISSION_DENIED` para el rol `ANALYST`).
+
+## Parámetros de query
+
+<ParamField query="phoneNumberId" type="string" required>
+  El Phone Number ID de Meta que recibió el mensaje. Es el mismo valor que `phoneNumberId` en el payload del webhook. Debe pertenecer a un número de tu workspace (de lo contrario, `404 NUMBER_NOT_FOUND`).
+</ParamField>
+
+## Ejemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/media/abc123?phoneNumberId=123456789012345" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "url": "https://media.pilotstatus.com.br/public/tenants/_ephemeral/…/v1-media/3f2a.jpg",
+  "base64": "data:image/jpeg;base64,/9j/4AAQ...",
+  "mimeType": "image/jpeg",
+  "fileName": "photo.jpg",
+  "mediaId": "abc123"
+}
+```
+
+</CodeGroup>
+
+## Campos de la respuesta
+
+<ResponseField name="url" type="string | null">
+  Una copia del archivo realojada en el almacenamiento de Pilot Status: descárgala como cualquier URL. `null` si falló el realojamiento (en ese caso, usa `base64`).
+</ResponseField>
+
+<ResponseField name="base64" type="string | null">
+  Data URI completo (`data:<mimeType>;base64,<data>`) listo para incrustar o decodificar. `null` para un archivo de más de **16 MiB**: en ese caso `base64Omitted` explica el motivo y `url` es la forma de obtenerlo.
+</ResponseField>
+
+<ResponseField name="mimeType" type="string" required>
+  Tipo MIME de la media (por ejemplo, `image/jpeg`, `video/mp4`, `audio/ogg`, `application/pdf`).
+</ResponseField>
+
+<ResponseField name="fileName" type="string | null">
+  Nombre original del archivo cuando está disponible (documentos); de lo contrario, `null`.
+</ResponseField>
+
+<ResponseField name="mediaId" type="string" required>
+  El ID de media solicitado.
+</ResponseField>
+
+<ResponseField name="base64Omitted" type="object">
+  Presente solo cuando el archivo es demasiado grande para incluirse en línea: `{ "reason": "MEDIA_TOO_LARGE_FOR_INLINE", "byteLength": <size>, "maxBytes": 16777216 }`.
+</ResponseField>
+
+## Errores
+
+| Status | `code` | Cuándo |
+| --- | --- | --- |
+| `400` | `MISSING_PHONE_NUMBER_ID` | Falta el parámetro de query `phoneNumberId`. |
+| `400` | `META_TOKEN_MISSING` | El número no tiene access token de Meta (no es un número oficial). |
+| `401` | — | Credencial ausente o inválida (`{"error": "Invalid API key"}`). |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Una key de toda la cuenta sin `x-whatsapp-number-id`. |
+| `403` | `PERMISSION_DENIED` | Token OAuth/MCP o key de cuenta cuyo rol no tiene `chat:read`. |
+| `403` | `NUMBER_NOT_IN_GRANT` | Un token restringido a algunos números, y `phoneNumberId` no es uno de ellos. |
+| `404` | `NUMBER_NOT_FOUND` | Ningún número de tu workspace tiene ese `phoneNumberId`. |
+| `404` | `MEDIA_NOT_FOUND` | Meta no conoce el id de media, o expiró. |
+| `500` | `MEDIA_DOWNLOAD_FAILED` | Falló la descarga desde Meta. |
+| `502` | `MEDIA_TOO_LARGE_AND_REHOST_FAILED` | El archivo supera los 16 MiB y tampoco se pudo realojar (`byteLength`, `maxBytes` en el body). |
+
+Pruébalo en el Playground: [Descargar media](/es/playground/media/download-media-meta).
+
+## Notas
+
+1. El número de WhatsApp referenciado por `phoneNumberId` debe tener un `metaAccessToken` válido configurado en Pilot Status.
+2. Las descargas de media deben hacerse antes de que expire la URL firmada por Meta (normalmente unos minutos después de recibir el webhook).
+3. El campo `base64` es un data URI completo listo para uso directo, de hasta 16 MiB; por encima de eso, usa `url`.
+4. Para stickers, el tipo MIME suele ser `image/webp`.
+5. Para audio, Meta puede devolver `audio/ogg` (mensajes de voz) o `audio/mp4`.
+
+## Campos del payload del webhook (Meta Cloud API)
+
+Los webhooks entrantes de la Meta Cloud API (`message.received`, `message.reply`) incluyen estos campos relacionados con media cuando corresponde:
+
+- `content`: cuerpo del texto o caption de la media
+- `mediaType`: `"image"` | `"video"` | `"audio"` | `"document"` | `"sticker"` | `"location"` | `"contacts"` | `"interactive"` | `"button"` | `"reaction"`
+- `mediaId`: ID del objeto de media de Meta
+- `mediaMimeType`: tipo MIME
+- `mediaCaption`: caption cuando está disponible
+- `mediaFilename`: nombre original del archivo (documentos)
+- `mediaDownloadHint`: instrucciones para descargar mediante este endpoint

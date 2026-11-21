@@ -1,0 +1,224 @@
+---
+title: "SDKs y n8n"
+sidebarTitle: "SDKs y n8n"
+description: "SDKs oficiales de Pilot Status para Node.js/TypeScript y Python, además del nodo nativo de la comunidad de n8n con un nodo Trigger para webhooks."
+mode: "wide"
+---
+
+Los SDKs oficiales envuelven los endpoints públicos `/v1` y ayudan con la validación y el parseo de webhooks. La autenticación siempre es tu API key `ps_`.
+
+## Node.js / TypeScript
+
+Paquete: [`@pilot-status/sdk`](https://www.npmjs.com/package/@pilot-status/sdk)
+
+```bash
+npm i @pilot-status/sdk
+```
+
+```typescript
+import { PilotStatusClient } from "@pilot-status/sdk";
+
+const client = new PilotStatusClient({
+  apiKey: process.env.PILOT_STATUS_API_KEY!,
+});
+
+const accepted = await client.messages.send({
+  templateId: "onboarding-test",
+  destinationNumber: "+5511999999999",
+  variables: { name: "John" },
+});
+
+const message = await client.messages.get(accepted.id);
+```
+
+### Envíos seguros ante reintentos (`idempotencyKey`)
+
+`messages.send()` acepta un segundo argumento opcional, `{ idempotencyKey }`, que se envía como el header [`Idempotency-Key`](/es/api/messages/send#idempotencia), nunca en el body. Reintentar con la **misma key y el mismo input** dentro de 24 horas devuelve la primera respuesta aceptada en lugar de enviar de nuevo; la misma key con un input diferente falla con `409 IDEMPOTENCY_KEY_REUSED`, y mientras la primera llamada sigue en curso, con `409 IDEMPOTENCY_KEY_IN_USE`. El SDK nunca reintenta este POST por su cuenta.
+
+```typescript
+const accepted = await client.messages.send(
+  {
+    templateId: "order-confirmed",
+    destinationNumber: "+5511999999999",
+    variables: { order_id: "48213" },
+  },
+  { idempotencyKey: "order-48213-+5511999999999" },
+);
+```
+
+Deriva la key de tus propios datos (id del pedido \+ destinatario) o genera un UUID y guárdalo antes del primer intento: una key creada de nuevo en cada intento no protege nada.
+
+Parseo de webhooks:
+
+```typescript
+import { parseCustomerWebhook } from "@pilot-status/sdk";
+
+const event = parseCustomerWebhook(payload);
+```
+
+### Eventos de webhook que el SDK no conoce
+
+La plataforma agrega eventos, y un webhook suscrito a `"*"` recibe uno nuevo el mismo día en que se lanza, antes de que actualices. A partir de la **0.12.0**, `parseCustomerWebhook` no lanza una excepción ante un nombre de evento que no conoce: devuelve `{ type: "unknown", event, data, raw }` (`UnknownCustomerWebhookEvent`), con `event` y `data` tal como se recibieron, `raw` con el body completo, sin nada validado. Confírmalo con un `2xx` e ignóralo.
+
+```typescript
+import { isUnknownCustomerWebhookEvent, parseCustomerWebhook } from "@pilot-status/sdk";
+
+const event = parseCustomerWebhook(payload);
+if (isUnknownCustomerWebhookEvent(event)) return new Response("ok");
+
+switch (event.event) {
+  // totalmente acotado, como antes
+}
+```
+
+<Warning>
+  **Migración de TypeScript (una línea).** El `event` del caso desconocido es un `string` simple, así que acotar solo por `event.event` ya no compila: descarta primero el caso desconocido con `isUnknownCustomerWebhookEvent`, como arriba. Para mantener el comportamiento y el tipo de retorno anteriores, pasa `{ unknownEvents: "throw" }`: `parseCustomerWebhook(payload, { unknownEvents: "throw" })`.
+</Warning>
+
+Sigue lanzando una excepción ante un body que no es un objeto con un `event` de tipo string, y ante un evento **conocido** cuyos campos rompen su contrato. `isCustomerWebhookEvent` sigue siendo estricto: `false` para un nombre de evento desconocido.
+
+### Anuncios, Lead Ads Pages y referrals de anuncios (0.16.0)
+
+Desde la **0.16.0**, el SDK de Node cubre [referrals de anuncios](/es/api/referrals), [anuncios](/es/api/ads) y [Lead Ads Pages](/es/api/lead-pages):
+
+```typescript
+const refs = await client.referrals.list();           // GET /v1/referrals
+const perAd = await client.ads.summary();             // GET /v1/ads/summary
+const accounts = await client.ads.listAccounts();     // GET /v1/ads/accounts
+const pages = await client.leadPages.list();          // GET /v1/lead-pages
+```
+
+`client.referrals` tiene `list()` y `summary()`; `client.ads` tiene `listAccounts()`, `linkAccount()`, `unlinkAccount()` y `summary()`; `client.leadPages` tiene `list()`, `link()`, `update()`, `unlink()`, `resync()`, `listForms()` y `updateForm()`. `leadPages.unlink()` borra todos los leads capturados a través de la Page.
+
+**`seatLimit` ahora es `number | null`** en `WorkspaceDetail` y `WorkspaceMemberList`: los miembros del workspace son ilimitados en todos los planes, y la API siempre devuelve `null`. Si tu TypeScript hace aritmética con `seatLimit`, maneja el `null`. `seatsUsed` es solo informativo.
+
+### Webhooks de líneas telefónicas (0.18.0)
+
+Desde la **0.18.0**, `client.phoneLines.webhooks` gestiona los [webhooks de líneas telefónicas](/es/api/phone-lines/webhooks): un registro separado de los webhooks de número (`client.webhooks`) que solo recibe eventos `phone_line.*`. Requiere una key de toda la cuenta (con alcance de tenant) de un **Owner o Admin** (`phone_lines:webhooks`). Cada método devuelve el body de la respuesta tal cual:
+
+```typescript
+const { webhook } = await client.phoneLines.webhooks.create({
+  url: "https://hooks.example.com/lines",                         // https y pública
+  events: ["phone_line.code_received", "phone_line.code_failed"], // o ["*"]
+  name: "Activation codes",                                       // opcional
+});
+// webhook.secret ("plwh_...") solo se devuelve aquí: guárdalo ahora
+
+const { webhooks, events } = await client.phoneLines.webhooks.list();   // nunca el secret
+await client.phoneLines.webhooks.update(webhook.id, { active: false }); // pausar
+const { deliveries } = await client.phoneLines.webhooks.listDeliveries(webhook.id, { limit: 20 });
+const { delivery } = await client.phoneLines.webhooks.getDelivery(webhook.id, deliveries[0].id);
+await client.phoneLines.webhooks.delete(webhook.id);                    // { ok: true }
+```
+
+Los métodos son `list()`, `get(id)`, `create()`, `update(id, input)`, `delete(id)`, `listDeliveries(id, { limit })` (1–200, por defecto 50, las más recientes primero, sin el payload) y `getDelivery(id, deliveryId)`. `create()` no es idempotente: dos llamadas crean dos webhooks con dos secrets, y el SDK nunca lo reintenta. `delivery.payload` es el string JSON exacto que se firmó, así que puedes verificarlo con `verifyWebhookSignature` y el secret `plwh_`. Un payload de `phone_line.code_received` contiene el código de activación: trátalo como una credencial.
+
+## Python
+
+Paquete: [`pilot-status`](https://pypi.org/project/pilot-status/)
+
+```bash
+pip install pilot-status
+```
+
+```python
+import os
+from pilot_status import PilotStatusClient
+
+client = PilotStatusClient(api_key=os.environ["PILOT_STATUS_API_KEY"])
+
+accepted = client.messages.send({
+    "templateId": "onboarding-test",
+    "destinationNumber": "+5511999999999",
+    "variables": {"name": "John"},
+})
+
+message = client.messages.get(accepted["id"])
+```
+
+Para un envío seguro ante reintentos, pasa `idempotency_key`, que se envía como el header [`Idempotency-Key`](/es/api/messages/send#idempotencia), con la misma semántica que en el SDK de Node:
+
+```python
+accepted = client.messages.send(
+    {
+        "templateId": "order-confirmed",
+        "destinationNumber": "+5511999999999",
+        "variables": {"order_id": "48213"},
+    },
+    idempotency_key="order-48213-+5511999999999",
+)
+```
+
+Parseo de webhooks: desde la **1.10.0**, un nombre de evento que el SDK no conoce vuelve como un dict `{"type": "unknown", "event", "data", "raw"}` en lugar de lanzar una excepción; distínguelo con `is_unknown_customer_webhook_event` y respóndelo con un `2xx`:
+
+```python
+from pilot_status import is_unknown_customer_webhook_event, parse_customer_webhook
+
+event = parse_customer_webhook(payload)
+if is_unknown_customer_webhook_event(event):
+    return  # un evento más nuevo: confírmalo, nunca falles por él
+```
+
+`WebhookParseError` se sigue lanzando para un body que no es un objeto con un `event` de tipo string y para un evento **conocido** con campos inválidos. Pasa `unknown_events="raise"` para mantener el comportamiento anterior; `is_customer_webhook_event` sigue siendo estricto. `flow.response_received`, que el parser de Python no modela, ahora vuelve como desconocido en lugar de lanzar una excepción.
+
+Desde la **1.14.0**, el SDK de Python tiene los mismos recursos: `client.referrals`, `client.ads` y `client.lead_pages` (`list`, `link`, `update`, `unlink`, `resync`, `list_forms`, `update_form`); los `TypedDict` usan los nombres camelCase del wire. También incorpora `whatsapp_number_id`: una key de toda la cuenta ahora puede apuntar a un número, como ya hacía el SDK de Node, enviando el header `x-whatsapp-number-id`:
+
+```python
+client = PilotStatusClient(api_key=os.environ["PILOT_STATUS_API_KEY"], whatsapp_number_id="num_01HZX...")
+
+# o, desde un cliente existente, una copia vinculada a otro número
+leads = client.with_number("num_01HZY...").leads.list()
+```
+
+Antes de la 1.14.0, una key de toda la cuenta no podía llegar desde Python a los endpoints con alcance de número (referrals, leads, historial).
+
+Desde la **1.16.0**, `client.phone_lines.webhooks` gestiona los [webhooks de líneas telefónicas](/es/api/phone-lines/webhooks), con las mismas reglas que en el SDK de Node: `list()`, `get(webhook_id)`, `create(url=..., events=[...], name=None)`, `update(webhook_id, name=..., url=..., events=..., active=...)` (solo se envían los argumentos que pasas), `delete(webhook_id)`, `list_deliveries(webhook_id, limit=None)` y `get_delivery(webhook_id, delivery_id)`. Las respuestas son los bodies de la API como dicts con keys en camelCase.
+
+```python
+created = client.phone_lines.webhooks.create(
+    url="https://hooks.example.com/lines",
+    events=["phone_line.code_received"],
+)
+secret = created["webhook"]["secret"]  # "plwh_...": solo se devuelve aquí
+
+client.phone_lines.webhooks.update(created["webhook"]["id"], active=False)
+```
+
+También desde la **1.16.0**, `verify_webhook_signature(raw_body, signature_header, secret)` verifica el header `x-pilot-status-signature`: es el equivalente en Python de `verifyWebhookSignature`. Es el mismo HMAC-SHA256 (hex, sobre el body crudo) para los [webhooks de número](/es/api/webhooks/configure#verificar-la-firma) y los [webhooks de líneas telefónicas](/es/api/phone-lines/webhooks#verificar-la-firma) (secret `plwh_`). Compara en tiempo constante y devuelve `False` (nunca lanza una excepción) ante un header ausente o mal formado, un secret vacío o un body alterado. Pasa el body **exactamente como se recibió** (`bytes`, o un `str` codificado en UTF-8), nunca un JSON re-serializado:
+
+```python
+from pilot_status import WEBHOOK_SIGNATURE_HEADER, verify_webhook_signature
+
+raw = request.get_data()      # Flask; FastAPI: raw = await request.body()
+if not verify_webhook_signature(raw, request.headers.get(WEBHOOK_SIGNATURE_HEADER), secret):
+    abort(401)
+event = parse_customer_webhook(json.loads(raw))
+```
+
+## n8n (integración nativa)
+
+Nodo oficial de la comunidad: `n8n-nodes-pilot-status`.
+
+Instálalo desde la UI de n8n: **Settings → Community Nodes → Install → `n8n-nodes-pilot-status`**. La autenticación usa una API key de Pilot Status.
+
+Desde la **2.8.0**, el nodo agrega los recursos **Referral** (Get Many, Summary), **Ads Summary** (Get), **Ad Account** (Get Many, Link, Unlink), **Lead Page** (Get Many, Link, Update, Unlink, Resync) y **Lead Form** (Get Many, Update). **Lead Page → Unlink** es destructivo: borra todos los leads capturados a través de la Page y sus configuraciones de formulario.
+
+Desde la **2.10.0**, el recurso **Phone Line Webhook** (Create, Delete, Get, Get Many, Update, Get Deliveries, Get Delivery) gestiona los [webhooks de líneas telefónicas](/es/api/phone-lines/webhooks) con una key de toda la cuenta de un Owner o Admin. **Create** devuelve el secret de firma `plwh_` solo una vez: guárdalo en la misma ejecución.
+
+En **Message → Send**, el campo opcional **Idempotency Key** se envía como el header [`Idempotency-Key`](/es/api/messages/send#idempotencia). Usa una expresión que se mantenga **igual** cuando n8n reintenta el item (por ejemplo, un id de tus datos de entrada, como `{{ $json.orderId }}-{{ $json.phone }}`): así, una ejecución reintentada devuelve la primera respuesta en lugar de enviar el mensaje dos veces.
+
+<Note>
+  Para eventos entrantes, agrega el nodo **Pilot Status Trigger** a tu workflow, copia su URL de webhook y pégala como un nuevo webhook en la página **Webhooks** del dashboard de Pilot Status. A partir de ahí, cada evento suscrito inicia tu workflow. Con **All Events** seleccionado, el Trigger deja pasar cualquier evento con el body intacto, incluidos eventos más nuevos que tu versión del nodo; con un evento específico seleccionado, cualquier otro se responde con `200 Ignored event`.
+</Note>
+
+## Buenas prácticas
+
+- Guarda la API key solo en el backend, nunca en código del navegador.
+- Para respuestas `429`/`5xx`, reintenta con backoff exponencial (los SDKs ayudan, pero la política de reintentos depende de tu sistema).
+- Al reintentar un envío, reutiliza la misma `Idempotency-Key` para que un mensaje que ya fue aceptado no se envíe dos veces.
+
+## Relacionado
+
+- [Enviar mensajes](/es/guides/send-messages)
+- [Recibir mensajes](/es/guides/receive-messages)
+- [Servidor MCP](/es/integrations/mcp-server)

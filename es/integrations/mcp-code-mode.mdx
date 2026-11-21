@@ -1,0 +1,239 @@
+---
+title: "MCP Code Mode"
+sidebarTitle: "MCP Code Mode"
+description: "El endpoint /code del servidor MCP alojado de Pilot Status: 2 herramientas en lugar de 151, un script TypeScript que llama a la API en un sandbox sin red, límites por ejecución y el informe de la ejecución."
+mode: "wide"
+---
+
+**Code Mode** es un segundo endpoint del [servidor MCP alojado](/es/integrations/mcp-server). En lugar de las 151 herramientas, el agente recibe **dos**: `describe`, que devuelve las declaraciones TypeScript de la API, y `execute`, que ejecuta un script que escribió el agente. Dentro del script, cada llamada es `await ps.<tool>(args)`: las mismas herramientas, los mismos argumentos y los mismos permisos que en `/mcp`.
+
+```text
+https://mcp.pilotstatus.com.br/code
+```
+
+El endpoint `/mcp` no cambia. Elige uno por conexión.
+
+<Note>
+Code Mode se habilita por workspace. Conectarse a `/code` y llamar a `describe` siempre funciona; hasta que tu workspace esté habilitado, `execute` responde `CODE_MODE_NOT_ENABLED` y no ejecuta nada. Pide a soporte que lo habilite.
+</Note>
+
+## Cuándo usarlo
+
+Usa `/code` cuando:
+
+- la tarea encadena varias llamadas: listar, filtrar y luego leer o actuar sobre cada elemento;
+- recorres muchos elementos (números, webhooks, mensajes, contactos);
+- quieres un informe calculado a partir de muchas lecturas, devuelto como un único resultado;
+- el contexto de tu agente es limitado y las 151 definiciones de herramientas cuestan demasiado.
+
+Quédate en `/mcp` cuando la tarea sea de una o dos llamadas, o cuando quieras aprobar cada llamada una por una en tu cliente.
+
+Una cadena que en `/mcp` requiere decenas de idas y vueltas por el modelo es un único `execute` en `/code`: los resultados intermedios se quedan dentro del script, y solo lo que imprime vuelve al modelo.
+
+### Lo que cuesta en contexto
+
+Medido con `count_tokens` en Claude Sonnet:
+
+| Lo que carga el agente | Tokens |
+| --- | --- |
+| Lista de herramientas de `/mcp` (114 herramientas, medido el 2026-10-26; ahora hay 151) | 77,666 |
+| Lista de herramientas de `/code` (`describe` + `execute`) | 962 |
+| `describe()` sin argumento (la lista de temas) | 776 |
+| `describe({ theme })`, tema mediano | 2,049 |
+| `describe({ theme: "flows" })`, el tema más grande | 11,680 |
+
+El agente solo paga por los temas que realmente lee.
+
+## Conectar
+
+<Warning>
+Conecta **o bien** `/mcp` **o bien** `/code` a un agente, no ambos. Con ambos conectados, el agente igual carga las 151 definiciones de herramientas de `/mcp` (77,666 tokens cuando eran 114), y el ahorro de contexto de `/code` desaparece. Si ya usas `/mcp`, desactiva ese conector en el agente donde agregues `/code`.
+</Warning>
+
+La autenticación es la misma que en `/mcp`: un token **OAuth 2.1** (`Authorization: Bearer`, gestionado por el conector personalizado de claude.ai, con permisos para todo el tenant o por número) o una **clave de API** `ps_*` en el encabezado `x-api-key` (con una clave de cuenta, `ps_account_`, más `x-workspace-id` indicando el workspace; [detalles](/es/integrations/mcp-server#con-una-clave-de-cuenta)). Cada llamada que hace el script va a la API pública `/v1` con esa credencial, así que el alcance de la clave, los roles, los permisos por número, los límites de tasa y la facturación se aplican exactamente igual que en `/mcp`.
+
+En claude.ai, agrega un conector personalizado con la URL `https://mcp.pilotstatus.com.br/code`; todos los clientes de [Conecta tu cliente](/es/integrations/mcp-server#conecta-tu-cliente) funcionan igual con `/code` en lugar de `/mcp`. Clientes configurados por archivo:
+
+```json
+{
+  "mcpServers": {
+    "pilot-status-code": {
+      "type": "http",
+      "url": "https://mcp.pilotstatus.com.br/code",
+      "headers": { "x-api-key": "ps_your_key_here" }
+    }
+  }
+}
+```
+
+<Note>
+Code Mode existe solo en el servidor alojado. El paquete npm `@pilot-status/mcp-server` (autoalojado) sirve solo las 151 herramientas.
+</Note>
+
+## `describe`
+
+Devuelve lo que el script puede llamar. Acepta como máximo un argumento:
+
+| Llamada | Devuelve |
+| --- | --- |
+| `describe()` | La lista de temas: `name`, `summary` y la cantidad de `methods` de cada uno |
+| `describe({ theme: "webhooks" })` | Las declaraciones TypeScript (`declare const ps: { … }`) de cada método de ese tema, con la descripción de cada herramienta y cada argumento |
+| `describe({ search: "idempotency" })` | Las declaraciones de las herramientas cuyo nombre o descripción contiene la palabra, como máximo 15. Cuando coinciden más, un comentario al final lo indica: refina la palabra o elige un tema |
+
+Temas: `messages`, `conversations`, `referrals`, `leads`, `ads`, `groups`, `numbers`, `templates`, `flows`, `branding`, `analytics`, `api-keys`, `subscription`, `media`, `billing`, `webhooks`, `calls`, `chatwoot`, `pricing`, `workspace`, `phone-lines`, `workspace-webhooks`, `workspaces`, `docs`: 24 temas, los mismos grupos que la [referencia de herramientas MCP](/es/integrations/mcp-tools).
+
+Todos los métodos excepto `docs_search` también aceptan `whatsappNumberId`, el número de destino para las herramientas con alcance de número. Es obligatorio con una credencial OAuth o con alcance de tenant (se envía como el encabezado `x-whatsapp-number-id`) y se ignora cuando la clave de API ya tiene alcance de un número.
+
+Errores: pasar `theme` y `search` a la vez devuelve `INVALID_ARGUMENTS`; un tema desconocido devuelve `UNKNOWN_THEME` con la lista de `themes` válidos.
+
+## `execute`
+
+Acepta un argumento, `code`: el cuerpo de un script TypeScript.
+
+- El `await` de nivel superior funciona. Llama a la API con `await ps.<tool>(args)`; el resultado es la respuesta JSON de la API.
+- Imprime con `console.log` (también `info`, `warn`, `error`, `debug`). Los objetos se imprimen como JSON.
+- Un valor de `return` se agrega a la salida como `=> <value>`.
+- Los tipos solo se eliminan, no se verifican: un error de tipos no detiene el script, un error de sintaxis sí.
+- **No hay red** ni nada del host: ni `fetch`, ni `import`, ni `require`, ni `process`, ni `setTimeout`/`setInterval`. La única salida del script es `ps`.
+
+### Ejemplo: listar y luego leer cada uno
+
+Lee las entregas recientes de cada webhook del número, en paralelo, e imprime solo el resumen.
+
+```ts
+type Webhook = { id: string; name: string; url: string; active: boolean };
+type Delivery = { status: "SUCCESS" | "FAILED"; statusCode: number | null };
+
+const webhooks = (await ps.webhooks_list()) as Webhook[];
+const report = await Promise.all(
+  webhooks.map(async (w) => {
+    const { logs } = (await ps.webhook_events({ id: w.id, limit: 50 })) as { logs: Delivery[] };
+    const failed = logs.filter((l) => l.status === "FAILED").length;
+    return { name: w.name, active: w.active, failed, of: logs.length };
+  }),
+);
+console.log(report);
+return webhooks.length;
+```
+
+### Ejemplo: manejar un rechazo de la API
+
+Cuando la API rechaza una llamada, `ps.<tool>` **lanza** una excepción dentro del script. El error tiene `name === "ApiError"`, el `status` HTTP y el `code` de la API. Atrápalo para continuar.
+
+```ts
+try {
+  await ps.numbers_list();
+} catch (e: any) {
+  if (e.name === "ApiError") {
+    console.log("refused:", e.status, e.code); // p. ej., una clave con alcance de número: refused: 403 NUMBER_SCOPE_NOT_ALLOWED
+  } else {
+    throw e;
+  }
+}
+```
+
+Un error no atrapado detiene el script. Otros errores que puede lanzar una llamada: `InvalidArguments` (los argumentos no coinciden con la declaración; `code` es `INVALID_ARGUMENTS`), `CallLimitExceeded` y `SendLimitExceeded` (consulta [Límites](#límites-por-ejecución)).
+
+### Ejemplo: enviar de forma segura con `idempotencyKey`
+
+Pasa un `idempotencyKey` a **cada** `ps.messages_send`. Derívalo de lo que hace único al envío (aquí, el id del pedido y el destinatario), para que ejecutar el mismo script de nuevo no envíe el mismo mensaje dos veces.
+
+```ts
+const orders = [
+  { id: "A-1001", phone: "5511999990001", name: "Ana" },
+  { id: "A-1002", phone: "5511999990002", name: "Bruno" },
+];
+
+for (const o of orders) {
+  const sent = (await ps.messages_send({
+    destinationNumber: o.phone,
+    text: `Hi ${o.name}, your order ${o.id} has shipped.`,
+    idempotencyKey: `order-shipped-${o.id}-${o.phone}`,
+  })) as { id: string; status: string };
+  console.log(o.id, sent.id, sent.status);
+}
+```
+
+Dentro de 24 horas, la misma clave con los mismos argumentos devuelve la primera respuesta aceptada y no envía nada. La misma clave con argumentos distintos es `409 IDEMPOTENCY_KEY_REUSED`. [Idempotencia](/es/api/messages/send#idempotencia)
+
+### Escribir scripts que se ejecuten rápido
+
+Cada llamada a `ps` tarda segundos, y el reloj de 30 segundos las cuenta todas. La descripción de `execute` (lo que el agente lee en la lista de herramientas) le indica:
+
+- **Reutilizar los ids que ya tiene.** Con una credencial de todo el workspace, pasa `whatsappNumberId` a cada llamada con alcance de número, y reutiliza el id (y cualquier otro id) ya obtenido antes en la conversación. Llama a `ps.numbers_list({})` solo cuando todavía no se conozca el id.
+- **Ejecutar juntas las llamadas independientes** con `await Promise.all([...])`, nunca con `await` una por una en un bucle, como en el [primer ejemplo](#ejemplo-listar-y-luego-leer-cada-uno).
+- **Pedir solo lo que necesita:** un `pageSize` pequeño y filtros como `status`, `startDate` y `search`.
+- **Usar una URL real para `media`:** una URL http(s) que le hayan dado, nunca base64 inventado. Para audio y voz esto es obligatorio: una data URI se rechaza con `400 MCP_AUDIO_URL_REQUIRED` y no se envía nada. [Servidor MCP](/es/integrations/mcp-server#errores-comunes)
+
+Lo mismo aplica a los scripts que escribas o revises tú.
+
+## Límites por ejecución
+
+| Límite | Valor | Cuando se excede |
+| --- | --- | --- |
+| Tiempo real | 30 s, llamadas a la API incluidas | El script se detiene: `TIMEOUT` |
+| Memoria | 64 MB | El script se detiene: `OOM` |
+| Llamadas a `ps` | 50, envíos incluidos | La llamada 51 lanza `CallLimitExceeded`: `CALL_LIMIT` |
+| Llamadas a `messages_send` | 10, dentro de las 50 | La 11.ª lanza `SendLimitExceeded`: `SEND_LIMIT` |
+| Salida | 100 KB | La salida se corta y termina con `[output truncated: N KB omitted]`; `outputTruncatedBytes` indica cuánto |
+| Script | 64 KB | Se rechaza antes de ejecutarse: `CODE_TOO_LARGE` |
+| Scripts simultáneos | 2 por workspace | El 3.º se rechaza: `CODE_RUN_CONCURRENCY`, con `retryAfterSeconds` |
+
+- Cada llamada cuenta, incluidas las rechazadas. Un `messages_send` con argumentos inválidos igual cuenta como envío.
+- Solo `messages_send` cuenta como envío. `call_initiate` y `call_permission_request` cuentan solo dentro de las 50 llamadas.
+- No hay límite por hora de ejecuciones: los límites de tasa de la API `/v1` se aplican a cada llamada, igual que en `/mcp`.
+
+## Falla y el informe
+
+**Una falla detiene el script, y nada se deshace.** Lo que se envió, enviado queda. Cada `execute` que se ejecutó devuelve un informe:
+
+```json
+{
+  "runId": "cmr_3f9a…",
+  "status": "ERROR",
+  "error": { "name": "ApiError", "message": "…", "status": 409, "code": "IDEMPOTENCY_KEY_REUSED", "tool": "messages_send" },
+  "calls": [
+    { "i": 1, "tool": "messages_send", "ok": true, "ms": 312, "ref": "msg_…" },
+    { "i": 2, "tool": "messages_send", "ok": false, "ms": 95, "status": 409, "code": "IDEMPOTENCY_KEY_REUSED" }
+  ],
+  "output": "…what the script printed…",
+  "outputTruncatedBytes": 0
+}
+```
+
+| Campo | Significado |
+| --- | --- |
+| `runId` | Id de la ejecución (`cmr_…`). Menciónalo cuando contactes a soporte |
+| `status` | `OK`, `ERROR`, `TIMEOUT`, `OOM`, `CALL_LIMIT` o `SEND_LIMIT`. Cualquier valor distinto de `OK` vuelve con `isError: true` |
+| `error` | Presente cuando el script se detuvo por un error: `name`, `message` y, cuando se conocen, `code`, `status` y `tool` |
+| `calls` | Cada llamada realizada, en orden: `i`, `tool`, `ok`, `ms`, el `status` HTTP y el `code` de la API de un rechazo, y `ref`: el `id` (o `messageId`) que devolvió la API, como el id del mensaje creado |
+| `output` | Lo que imprimió el script, más `=> <value>` cuando devolvió algo |
+| `outputTruncatedBytes` | Cuántos bytes de salida se cortaron (`0` cuando no se cortó nada) |
+| `warning` | Presente solo cuando la ejecución terminó pero no pudo registrarse; el informe en sí sigue siendo exacto |
+
+`calls` es la forma en que el agente sabe qué ya ocurrió antes de decidir qué hacer a continuación. **Para volver a ejecutar un script de forma segura, debe pasar `idempotencyKey` a cada `ps.messages_send`**: sin él, una nueva ejecución envía de nuevo.
+
+### Rechazado antes de ejecutarse
+
+Cuando el script no puede iniciar, `execute` devuelve `isError: true` con un `error`, un `code` y sin informe:
+
+| `code` | Cuándo |
+| --- | --- |
+| `CODE_TOO_LARGE` | El script supera los 64 KB |
+| `CODE_SYNTAX_ERROR` | El script no se puede analizar; el mensaje indica la línea y la columna |
+| `CODE_RUN_CONCURRENCY` | El workspace ya tiene 2 scripts en ejecución (`status: 429`, `retryAfterSeconds`) |
+| `CODE_RUN_UNAVAILABLE` | Code Mode no está disponible temporalmente; reintenta en unos segundos |
+| `CODE_MODE_NOT_ENABLED` | Tu workspace todavía no tiene Code Mode habilitado (`status: 403`) |
+| `CODE_RUN_DRAINING` | La réplica del servidor se está reiniciando (`status: 503`, `retryAfterSeconds: 1`); llama a `execute` de nuevo |
+
+Sin ninguna credencial, `/code` responde `401` e inicia el flujo OAuth, igual que `/mcp`. Una credencial que la API rechaza rechaza la ejecución con el `status` y el `code` de la API.
+
+## Qué se registra
+
+Cada ejecución (el script, los argumentos de cada llamada y la salida) se conserva durante **30 días** por soporte y seguridad, y luego se elimina. Los argumentos y la salida pueden contener datos de contacto (números de teléfono, texto de mensajes). Las ejecuciones no están disponibles en el panel ni en la API: el informe que devuelve `execute` es tu copia.
+
+## Relacionado
+
+- [Servidor MCP](/es/integrations/mcp-server)
+- [Idempotencia en `POST /v1/messages/send`](/es/api/messages/send#idempotencia)
+- [Guía de agentes de IA](/es/guides/ai-agents)

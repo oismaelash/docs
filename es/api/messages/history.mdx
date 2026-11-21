@@ -1,0 +1,270 @@
+---
+title: "GET /v1/messages/history: historial de mensajes"
+description: "Obtén el historial completo de mensajes almacenados (conversaciones directas y de grupo) del número conectado."
+mode: "wide"
+---
+
+Obtén el **historial completo de mensajes almacenados** (conversaciones directas y de grupo) del número conectado.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/messages/history`
+
+<Note>
+  Actúa sobre **un número**: usa una API key **con alcance de número** (`ps_*`) en el encabezado `x-api-key` (o `x-api-key-id`), o una clave de toda la cuenta que indique el número en el encabezado [`x-whatsapp-number-id`](/es/api/authentication). Una clave de toda la cuenta sin ese encabezado recibe `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+  **Los tokens OAuth / MCP y las claves de cuenta** (`ps_account_`) también necesitan el permiso `chat:read` (roles `AGENT`, `ADMIN`, `OWNER`); el rol `ANALYST` se rechaza con `403 PERMISSION_DENIED`. Una clave `ps_` clásica no se ve afectada por los roles.
+
+  **Todos los proveedores son compatibles:** este endpoint funciona tanto para números **no oficiales (Pilot Status web)** como para números oficiales de **Meta Cloud API**.
+</Note>
+
+<Note>
+  Este endpoint es la forma de leer mensajes **antiguos**. Tu webhook no los reproduce: cuando un número se conecta, el historial del dispositivo se importa al chat pero no se entrega como eventos `message.received`. Consulta [`PATCH /v1/numbers/{id}`](/es/api/numbers/settings) si quieres activar esa entrega para un número.
+</Note>
+
+## Coexistencia: qué llega realmente aquí
+
+En un número de **coexistencia de Meta**, Meta envía el historial del dispositivo después del emparejamiento, en partes, mediante su webhook interno `history`. Lo que puedes leer de vuelta aquí es más limitado que lo que Meta envía, de tres formas concretas.
+
+<Warning>
+  **1: La ventana de importación es de 30 días, no de seis meses.** Todo lo que Meta entrega se filtra contra `connectedAt − 30 days` (con `createdAt` como respaldo para los números anteriores a la columna). Los mensajes más antiguos llegan y se **descartan**: nunca se almacenan, así que ningún endpoint puede devolverlos después. Meta puede enviar seis meses; solo sobreviven los últimos 30 días antes de la conexión.
+</Warning>
+
+<Warning>
+  **2: No se almacena nada a menos que `historyImportEnabled` fuera `true` antes de que el número se conectara.** Si está desactivado, toda la entrega `history` se descarta al llegar y este endpoint responde como si el número no tuviera pasado.
+
+  **Un número nuevo nace con `true`.** Los números creados entre el 2026-08-25 y el 2026-09-16 nacieron con `false` y **siguen en `false`**: el cambio del valor predeterminado no toca las filas existentes, porque desde el 25/08 el dashboard pregunta antes de conectar y un `false` allí puede ser una elección real. Si el número es anterior al cambio, verifica el valor en lugar de suponerlo.
+
+  ⛔ **Activarlo después no sirve.** Meta entrega el historial **una sola vez**, justo después del emparejamiento; un `PATCH` posterior llega demasiado tarde y lo que el dispositivo entregó ya se descartó. Envíalo en `POST /v1/numbers/remote-pairing`, que acepta el bloque `settings`.
+
+  No se puede corregir después: Meta entrega el historial una vez, justo después del emparejamiento, y no hay forma de volver a pedirlo. Configúralo en la llamada de emparejamiento (`POST /v1/numbers/remote-pairing` acepta el mismo bloque `settings`), no con un `PATCH` posterior, que compite con la ráfaga. Consulta la [configuración del número](/es/api/numbers/settings).
+</Warning>
+
+<Tip>
+  **Cómo diagnosticar un resultado vacío:** `GET /v1/numbers/{id}` → [`historyImport`](/es/api/numbers/list#el-bloque-historyimport) indica si el historial llegó y se descartó (`discarded`) o si Meta se negó a enviarlo (`syncRefused`).
+</Tip>
+
+
+<Warning>
+  **3: En un número de Meta, el historial importado nunca se entrega a tus webhooks, ni siquiera con `webhookHistoricalMessages: true`.** Esa opción rige el canal de Evolution (QR), donde la reproducción sí despacha `message.received`. La ruta `history` de Meta solo persiste las filas; no tiene despacho de webhook. (`history` también es uno de los nueve campos de Meta que nunca se reenvían de forma nativa, ni siquiera a una suscripción `"*"`).
+
+  Así que, para un número de Meta, este endpoint es **la única** forma de leer lo que se importó. Consúltalo después del emparejamiento en lugar de esperar entregas que no llegarán.
+</Warning>
+
+<Note>
+  **Los contactos no tienen un endpoint propio.** Lo que obtienes es la contraparte de cada conversación (teléfono y, cuando WhatsApp lo proporcionó, el nombre de perfil) mediante [`GET /v1/conversations`](/es/api/conversations) y las filas de mensajes de aquí. No hay una importación de agenda de contactos aparte que leer.
+</Note>
+
+## Parámetros de consulta
+
+<ParamField query="startDate" type="string">
+  Fecha y hora ISO 8601. Filtra los mensajes con `providerTimestamp` **en o después de** esta fecha.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Fecha y hora ISO 8601. Filtra los mensajes con `providerTimestamp` **en o antes de** esta fecha.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Número de página (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Resultados por página (1–100).
+</ParamField>
+
+Tanto `startDate` como `endDate` son opcionales por separado. Cuando se envían, cada uno debe ser una cadena ISO 8601 válida y `startDate` no debe ser posterior a `endDate`; de lo contrario, se devuelve `400 INVALID_DATE_RANGE`.
+
+Los resultados se ordenan por `providerTimestamp` de forma descendente (los más recientes primero). El endpoint devuelve hasta aproximadamente **un mes** de historial almacenado, contado desde la fecha de conexión del número.
+
+## Efecto del modo de PII
+
+La respuesta depende del **modo de PII** configurado para el número (se configura en el dashboard, en el panel Privacy & retention de la página API Keys o en la configuración del número). Los límites de la consulta provienen únicamente de tu `startDate`/`endDate`: la ventana de PII **no** se aplica a la consulta. En cambio, las filas que quedan fuera de la ventana de retención se siguen devolviendo, pero **censuradas**: la fila está presente (identificada por su `providerTimestamp`) con `redacted: true` y sus campos `text`, `media`, `participantName` y `participantPhone` en null.
+
+| Modo de PII | Efecto |
+| --- | --- |
+| `STORE_INDEFINITE` (predeterminado) | Todos los mensajes se devuelven completos (sujeto a los filtros de fecha). |
+| `STORE_X_DAYS` | Los mensajes de los últimos N días se devuelven completos. Los mensajes más antiguos que `piiRetentionDays` se devuelven **censurados** (`redacted: true`, con `text`/`media`/`participantName`/`participantPhone` en null), identificados por `providerTimestamp`. |
+| `RELAY_ONLY` | Todos los mensajes se devuelven **censurados** (`redacted: true`, contenido/multimedia/contraparte en null) y la respuesta incluye un campo `notice: "PII_RELAY_ONLY"`. |
+
+## Ejemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/messages/history?startDate=2026-06-01T00:00:00Z&endDate=2026-06-30T23:59:59Z&page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "messages": [
+    {
+      "id": "cm_01HZX...",
+      "conversationId": "conv_01HZX...",
+      "direction": "INBOUND",
+      "providerKind": "META",
+      "externalMessageId": "wamid.HBg...",
+      "status": "DELIVERED",
+      "messageType": "text",
+      "origin": null,
+      "text": "Olá, ainda está disponível?",
+      "participantName": "Ana",
+      "participantPhone": "+5511988887777",
+      "participantUserId": null,
+      "repliedToExternalId": null,
+      "media": null,
+      "sentAt": null,
+      "deliveredAt": "2026-06-27T10:00:01.000Z",
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T10:00:00.000Z",
+      "createdAt": "2026-06-27T10:00:00.500Z",
+      "referral": null
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1
+}
+```
+
+```json RELAY_ONLY (200)
+{
+  "messages": [
+    {
+      "id": "cm_01HZX...",
+      "conversationId": "conv_01HZX...",
+      "direction": "INBOUND",
+      "providerKind": "META",
+      "externalMessageId": "wamid.HBg...",
+      "status": "DELIVERED",
+      "messageType": "text",
+      "origin": null,
+      "text": null,
+      "participantName": null,
+      "participantPhone": null,
+      "participantUserId": null,
+      "repliedToExternalId": null,
+      "media": null,
+      "redacted": true,
+      "sentAt": null,
+      "deliveredAt": "2026-06-27T10:00:01.000Z",
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T10:00:00.000Z",
+      "createdAt": "2026-06-27T10:00:00.500Z",
+      "referral": null
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1,
+  "notice": "PII_RELAY_ONLY"
+}
+```
+
+</CodeGroup>
+
+## Campos del objeto de mensaje
+
+<ResponseField name="id" type="string" required>
+  ID interno del mensaje en Pilot Status.
+</ResponseField>
+
+<ResponseField name="conversationId" type="string" required>
+  ID de la conversación principal (directa o de grupo).
+</ResponseField>
+
+<ResponseField name="direction" type="string" required>
+  `"INBOUND"` (recibido) o `"OUTBOUND"` (enviado).
+</ResponseField>
+
+<ResponseField name="providerKind" type="string" required>
+  Motor del número que manejó el mensaje: `META` en números oficiales; `EVO_GO` o `EVO_V2` en números no oficiales (Pilot Status web). A diferencia de `media.provider`, este campo lleva la etiqueta interna del motor.
+</ResponseField>
+
+<ResponseField name="externalMessageId" type="string | null">
+  ID del mensaje en el proveedor (por ejemplo, el `wamid` de Meta) cuando está disponible.
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Estado del mensaje (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED`, `FAILED`, `CANCELED`). Los mensajes recibidos suelen estar en `DELIVERED` o `READ`.
+</ResponseField>
+
+<ResponseField name="messageType" type="string" required>
+  `text`, `image`, `audio`, `video`, `document`, `sticker`, `location`, `contacts`, `interactive`, `reaction`, `button`, `template` o `unknown`.
+</ResponseField>
+
+<ResponseField name="origin" type="string | null">
+  De dónde vino un mensaje saliente, cuando se registró: `APP`, enviado desde la app WhatsApp Business del teléfono u otra herramienta en la misma WABA; `CHATWOOT`, una respuesta de un agente desde una bandeja nativa de WhatsApp Cloud de Chatwoot, enviada mediante la [capa de Meta](/es/api/layer/meta); `LAYER`, enviado mediante la capa de Meta por cualquier otro cliente. Un mensaje que envió el propio Pilot Status puede llevar `API` o `null`. `null` en los mensajes entrantes: lee `direction` para distinguir los enviados de los recibidos. El conjunto crece, así que trata un valor que no reconozcas como saliente.
+</ResponseField>
+
+<ResponseField name="text" type="string | null">
+  Texto o pie de foto del mensaje cuando está disponible.
+</ResponseField>
+
+<ResponseField name="participantName" type="string | null">
+  Nombre visible de WhatsApp de la contraparte o remitente cuando está disponible.
+</ResponseField>
+
+<ResponseField name="participantPhone" type="string | null">
+  Teléfono de la contraparte o remitente cuando está disponible (en un grupo, el miembro que escribió).
+</ResponseField>
+
+<ResponseField name="participantUserId" type="string | null">
+  Business-Scoped User ID (BSUID) de Meta de la contraparte o remitente, cuando Meta lo proporcionó.
+</ResponseField>
+
+<ResponseField name="repliedToExternalId" type="string | null">
+  `externalMessageId` del mensaje al que este responde, cuando está disponible.
+</ResponseField>
+
+<ResponseField name="media" type="object | null">
+  Descriptor de multimedia `{ provider, id, url, mimeType, fileName }` cuando el mensaje lleva multimedia; `null` en caso contrario.
+
+  - `media.provider`: `"META"` en números de Meta Cloud API, `"WEB"` en números no oficiales (Pilot Status web).
+  - `media.id`: ID de multimedia de **Meta**. Se completa en la multimedia entrante de `META`; pásalo a [`GET /v1/media/{mediaId}`](/es/api/media-download) para descargar los bytes; `null` para `WEB`.
+  - `media.url`: URL de descarga directa cuando está disponible. La multimedia entrante de **META** se replica en el almacenamiento de Pilot Status (así que los mensajes de META suelen llevar tanto `id` **como** `url`); los números web proporcionan su propio enlace. Es de mejor esfuerzo, puede ser `null`.
+  - `media.mimeType`: tipo MIME de la multimedia cuando se conoce (puede ser `null`).
+  - `media.fileName`: nombre del archivo de la multimedia cuando se conoce (puede ser `null`).
+</ResponseField>
+
+<ResponseField name="sentAt" type="string | null">
+  ISO 8601: cuándo se envió el mensaje.
+</ResponseField>
+
+<ResponseField name="deliveredAt" type="string | null">
+  ISO 8601: cuándo se entregó el mensaje.
+</ResponseField>
+
+<ResponseField name="readAt" type="string | null">
+  ISO 8601: cuándo se leyó el mensaje (solo cuando las confirmaciones de lectura están activadas).
+</ResponseField>
+
+<ResponseField name="providerTimestamp" type="string" required>
+  ISO 8601: marca de tiempo del mensaje según el proveedor.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601: cuándo se creó el registro en Pilot Status.
+</ResponseField>
+
+<ResponseField name="referral" type="object | null">
+  Origen del mensaje en un anuncio Click-to-WhatsApp, cuando vino de un anuncio (números oficiales): el mismo objeto descrito en [`GET /v1/referrals`](/es/api/referrals). `null` en caso contrario.
+</ResponseField>
+
+<ResponseField name="redacted" type="boolean">
+  Presente (`true`) solo cuando la fila queda fuera de la ventana de retención de PII del número (o el número está en `RELAY_ONLY`). Las filas censuradas conservan su `id`, sus marcas de tiempo y sus metadatos de entrega, pero `text`, `media`, `participantName`, `participantPhone` y `participantUserId` son `null`.
+</ResponseField>
+
+## Errores comunes
+
+- `400 INVALID_DATE_RANGE`: `startDate` o `endDate` no es una cadena ISO 8601 válida, o `startDate > endDate`.
+- `400 INVALID_PAGINATION`: `page × pageSize` supera `10000`; acota las fechas en lugar de seguir paginando.
+- `400 NUMBER_NOT_FOUND`: la credencial no indica ningún número de WhatsApp.
+- `401`: credencial faltante o inválida (`{"error": "Invalid API key"}`).
+- `403 TENANT_SCOPE_NOT_ALLOWED`: una clave de toda la cuenta sin `x-whatsapp-number-id`.
+- `403 PERMISSION_DENIED`: token OAuth/MCP o clave de cuenta cuyo rol no tiene `chat:read` (`ANALYST`).
+
+Pruébalo en el Playground: [Historial de mensajes](/es/playground/conversations/message-history).

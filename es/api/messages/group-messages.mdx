@@ -1,0 +1,245 @@
+---
+title: "GET /v1/messages/group: mensajes de grupo"
+description: "Obtén mensajes de conversaciones de GRUPO del número conectado."
+mode: "wide"
+---
+
+Obtén mensajes de conversaciones de **GRUPO** del número conectado.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/messages/group`
+
+<Note>
+  Actúa sobre **un número**: usa una API key **asociada al número** (`ps_*`) en el header `x-api-key` (o `x-api-key-id`), o una key de toda la cuenta que indique el número en el header [`x-whatsapp-number-id`](/es/api/authentication). Una key de toda la cuenta sin ese header recibe `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+  **Los tokens OAuth / MCP y las keys de cuenta** (`ps_account_`) también necesitan el permiso `chat:read` (roles `AGENT`, `ADMIN`, `OWNER`); el rol `ANALYST` se rechaza con `403 PERMISSION_DENIED`. Una key clásica `ps_` no se ve afectada por los roles.
+</Note>
+
+<Note>
+  El endpoint lee los mensajes de grupo **guardados** para el número: nunca llama al proveedor, así que no falla para un número sin grupos; la lista simplemente viene vacía. En un número oficial (Meta) solo hay mensajes de grupo si el número participa en grupos a través de la Groups API de Meta.
+</Note>
+
+## Parámetros de consulta
+
+<ParamField query="startDate" type="string">
+  Fecha y hora ISO 8601. Filtra los mensajes creados **en o después de** esta fecha.
+</ParamField>
+
+<ParamField query="endDate" type="string">
+  Fecha y hora ISO 8601. Filtra los mensajes creados **en o antes de** esta fecha.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Número de página (≥ 1).
+</ParamField>
+
+<ParamField query="pageSize" default="30" type="integer">
+  Resultados por página (1 a 100).
+</ParamField>
+
+`startDate` y `endDate` son opcionales de forma individual. Si se envían, cada uno debe ser un string ISO 8601 válido y `startDate` no puede ser posterior a `endDate`; de lo contrario, se devuelve `400 INVALID_DATE_RANGE`.
+
+Los resultados se ordenan por `createdAt` descendente (los más recientes primero).
+
+## Efecto del modo PII
+
+La respuesta depende del **modo PII** configurado para el número, que se cambia en el panel en la página API Keys (panel Privacidad y retención) o en la configuración del número en Números.
+
+Los límites inferior y superior de la consulta vienen **solo** de `startDate` / `endDate` de quien llama: el modo PII nunca reduce el rango de fechas consultado. En cambio, las filas que quedan fuera de la ventana de retención PII del número se siguen devolviendo, pero **censuradas**: sus campos `text`, `media` y de participante quedan en `null` y la fila lleva `redacted: true`.
+
+| Modo PII | Efecto |
+| --- | --- |
+| `STORE_INDEFINITE` (predeterminado) | Todos los mensajes de grupo se devuelven completos (sujetos a `startDate` / `endDate`). |
+| `STORE_X_DAYS` | Se devuelven todas las filas que coinciden. Las filas más antiguas que la ventana de retención se censuran (campos `text`, `media` y de participante en `null`, `redacted: true`); las filas dentro de la ventana se devuelven completas. |
+| `RELAY_ONLY` | Se devuelven todas las filas que coinciden, pero **todas** se censuran (campos `text`, `media` y de participante en `null`, `redacted: true`), y la respuesta incluye un campo `notice: "PII_RELAY_ONLY"`. |
+
+## Ejemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/messages/group?startDate=2026-06-01T00:00:00Z&endDate=2026-06-27T23:59:59Z&page=1&pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Respuesta (200)
+{
+  "messages": [
+    {
+      "id": "cmm04obm46zz0qv4ycjp8x6r2",
+      "conversationId": "conv_grp_789",
+      "direction": "INBOUND",
+      "providerKind": "EVO_GO",
+      "externalMessageId": "3EB0C4A1F2D3E4B5A6C7",
+      "status": "DELIVERED",
+      "messageType": "image",
+      "origin": null,
+      "text": "Meeting confirmed for tomorrow.",
+      "participantName": "Alice",
+      "participantPhone": "5511999999999",
+      "participantUserId": null,
+      "repliedToExternalId": null,
+      "media": {
+        "provider": "WEB",
+        "id": null,
+        "url": "https://media.pilotstatus.com.br/abc123.jpg",
+        "mimeType": "image/jpeg",
+        "fileName": null
+      },
+      "sentAt": null,
+      "deliveredAt": null,
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T09:30:00.000Z",
+      "createdAt": "2026-06-27T09:30:00.400Z",
+      "referral": null
+    }
+  ],
+  "total": 87,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 3
+}
+```
+
+```json RELAY_ONLY (200)
+{
+  "messages": [
+    {
+      "id": "cmm04obm46zz0qv4ycjp8x6r2",
+      "conversationId": "conv_grp_789",
+      "direction": "INBOUND",
+      "providerKind": "EVO_GO",
+      "externalMessageId": "3EB0C4A1F2D3E4B5A6C7",
+      "status": "DELIVERED",
+      "messageType": "image",
+      "origin": null,
+      "text": null,
+      "participantName": null,
+      "participantPhone": null,
+      "participantUserId": null,
+      "repliedToExternalId": null,
+      "media": null,
+      "sentAt": null,
+      "deliveredAt": null,
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T09:30:00.000Z",
+      "createdAt": "2026-06-27T09:30:00.400Z",
+      "referral": null,
+      "redacted": true
+    }
+  ],
+  "total": 87,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 3,
+  "notice": "PII_RELAY_ONLY"
+}
+```
+
+</CodeGroup>
+
+Cada elemento tiene la misma forma que los elementos de [`GET /v1/messages/history`](/es/api/messages/history): el grupo se identifica por `conversationId` (lista las conversaciones de grupo, con sus nombres, en [`GET /v1/conversations`](/es/api/conversations), donde `type` es `GROUP`) y el miembro que escribió por `participantPhone` / `participantName`.
+
+## Campos del objeto de mensaje
+
+<ResponseField name="id" type="string" required>
+  ID interno del mensaje en Pilot Status.
+</ResponseField>
+
+<ResponseField name="conversationId" type="string" required>
+  ID de la conversación a la que pertenece (directa o de grupo).
+</ResponseField>
+
+<ResponseField name="direction" type="string" required>
+  `"INBOUND"` (recibido) u `"OUTBOUND"` (enviado).
+</ResponseField>
+
+<ResponseField name="providerKind" type="string" required>
+  Motor del número que procesó el mensaje: `META` en números oficiales; `EVO_GO` o `EVO_V2` en números no oficiales (Pilot Status web). A diferencia de `media.provider`, este campo lleva la etiqueta interna del motor.
+</ResponseField>
+
+<ResponseField name="externalMessageId" type="string | null">
+  ID del mensaje en el proveedor (por ejemplo, el `wamid` de Meta) cuando está disponible.
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Estado del mensaje (`QUEUED`, `SENT`, `DELIVERED`, `READ`, `PLAYED`, `FAILED`, `CANCELED`). Los mensajes recibidos suelen estar en `DELIVERED` o `READ`.
+</ResponseField>
+
+<ResponseField name="messageType" type="string" required>
+  `text`, `image`, `audio`, `video`, `document`, `sticker`, `location`, `contacts`, `interactive`, `reaction`, `button`, `template` o `unknown`.
+</ResponseField>
+
+<ResponseField name="origin" type="string | null">
+  De dónde vino un mensaje saliente, cuando se registra: `APP`, enviado desde la app WhatsApp Business en el teléfono u otra herramienta en la misma WABA; `CHATWOOT`, una respuesta de agente desde una bandeja nativa de WhatsApp Cloud en Chatwoot, enviada a través de la [capa de Meta](/es/api/layer/meta); `LAYER`, enviado a través de la capa de Meta por cualquier otro cliente. Un mensaje que Pilot Status envió por sí mismo puede llevar `API` o `null`. `null` en mensajes entrantes: lee `direction` para distinguir enviados de recibidos. El conjunto crece, así que trata un valor que no reconozcas como saliente.
+</ResponseField>
+
+<ResponseField name="text" type="string | null">
+  Texto o caption del mensaje cuando está disponible.
+</ResponseField>
+
+<ResponseField name="participantName" type="string | null">
+  Nombre visible en WhatsApp de la contraparte/remitente cuando está disponible.
+</ResponseField>
+
+<ResponseField name="participantPhone" type="string | null">
+  Teléfono de la contraparte/remitente cuando está disponible (en un grupo, el miembro que escribió).
+</ResponseField>
+
+<ResponseField name="participantUserId" type="string | null">
+  Business-Scoped User ID (BSUID) de Meta de la contraparte/remitente, cuando Meta lo proporcionó.
+</ResponseField>
+
+<ResponseField name="repliedToExternalId" type="string | null">
+  `externalMessageId` del mensaje al que este responde, cuando está disponible.
+</ResponseField>
+
+<ResponseField name="media" type="object | null">
+  Descriptor de multimedia `{ provider, id, url, mimeType, fileName }` cuando el mensaje lleva multimedia; `null` en caso contrario.
+
+  - `media.provider`: `"META"` en números de Meta Cloud API, `"WEB"` en números no oficiales (Pilot Status web).
+  - `media.id`: ID de multimedia de **Meta**. Se define en multimedia entrante `META`; pásalo a [`GET /v1/media/{mediaId}`](/es/api/media-download) para descargar los bytes; `null` para `WEB`.
+  - `media.url`: URL de descarga directa cuando está disponible. La multimedia entrante **META** se replica en el almacenamiento de Pilot Status (por eso los mensajes META suelen traer tanto `id` **como** `url`); los números web proporcionan su propio enlace. Mejor esfuerzo: puede ser `null`.
+  - `media.mimeType`: tipo MIME de la multimedia cuando se conoce (puede ser `null`).
+  - `media.fileName`: nombre de archivo de la multimedia cuando se conoce (puede ser `null`).
+</ResponseField>
+
+<ResponseField name="sentAt" type="string | null">
+  ISO 8601: cuándo se envió el mensaje.
+</ResponseField>
+
+<ResponseField name="deliveredAt" type="string | null">
+  ISO 8601: cuándo se entregó el mensaje.
+</ResponseField>
+
+<ResponseField name="readAt" type="string | null">
+  ISO 8601: cuándo se leyó el mensaje (solo cuando las confirmaciones de lectura están activadas).
+</ResponseField>
+
+<ResponseField name="providerTimestamp" type="string" required>
+  ISO 8601: timestamp del proveedor para el mensaje.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601: cuándo se creó el registro en Pilot Status.
+</ResponseField>
+
+<ResponseField name="referral" type="object | null">
+  Origen del mensaje en un anuncio Click-to-WhatsApp, cuando vino de un anuncio (números oficiales): el mismo objeto descrito en [`GET /v1/referrals`](/es/api/referrals). `null` en caso contrario.
+</ResponseField>
+
+<ResponseField name="redacted" type="boolean">
+  Presente (`true`) solo cuando la fila queda fuera de la ventana de retención PII del número (o el número es `RELAY_ONLY`). Las filas censuradas conservan su `id`, timestamps y metadatos de entrega, pero `text`, `media`, `participantName`, `participantPhone` y `participantUserId` son `null`.
+</ResponseField>
+
+## Errores comunes
+
+- `400 INVALID_DATE_RANGE`: `startDate` o `endDate` no es un string ISO 8601 válido, o `startDate > endDate`.
+- `400 INVALID_PAGINATION`: `page × pageSize` por encima de `10000`; acota las fechas en lugar de seguir paginando.
+- `400 NUMBER_NOT_FOUND`: la credencial no indica ningún número de WhatsApp.
+- `401`: credencial ausente o inválida (`{"error": "Invalid API key"}`).
+- `403 TENANT_SCOPE_NOT_ALLOWED`: una key de toda la cuenta sin `x-whatsapp-number-id`.
+- `403 PERMISSION_DENIED`: token OAuth/MCP o key de cuenta cuyo rol no tiene `chat:read` (`ANALYST`).
+
+Pruébalo en el Playground: [Mensajes de grupo](/es/playground/conversations/group-messages).

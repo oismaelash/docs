@@ -1,0 +1,186 @@
+---
+title: "GET /v1/messages/unread: Mensajes no leídos"
+description: "Obtén todos los mensajes entrantes que todavía no se leyeron para el número conectado."
+mode: "wide"
+---
+
+Obtén los mensajes entrantes que cuentan como no leídos para el número conectado. Lo no leído **no** se deriva de un indicador `readAt` por mensaje (el `readAt` por mensaje no se mantiene para los mensajes entrantes). En cambio, se deriva del `unreadCount` de cada conversación (el mismo contador que se muestra en el dashboard), y el `total` de la respuesta es la **suma de `unreadCount` de las conversaciones no leídas**. Cada elemento incluye ese contador de no leídos a nivel de conversación.
+
+## Endpoint
+
+`GET https://pilotstatus.com.br/v1/messages/unread`
+
+<Note>
+  Actúa sobre **un número**: usa una clave de API con **alcance de número** (`ps_*`) en el encabezado `x-api-key` (o `x-api-key-id`), o una clave de toda la cuenta que indique el número en el encabezado [`x-whatsapp-number-id`](/es/api/authentication). Una clave de toda la cuenta sin ese encabezado recibe `403 TENANT_SCOPE_NOT_ALLOWED`.
+
+  Los **tokens OAuth / MCP y las claves de cuenta** (`ps_account_`) también necesitan el permiso `chat:read` (roles `AGENT`, `ADMIN`, `OWNER`); el rol `ANALYST` se rechaza con `403 PERMISSION_DENIED`. Una clave `ps_` clásica no se ve afectada por los roles.
+</Note>
+
+Para obtener solo los **conteos**, de uno o varios números en una sola llamada, usa [`GET /v1/messages/unread/counts`](#conteos-por-número).
+
+## Parámetros de consulta
+
+<ParamField query="pageSize" default="30" type="integer">
+  Resultados por página (1–100).
+</ParamField>
+
+<ParamField query="cursor" type="string">
+  Cursor keyset: el `nextCursor` de la respuesta anterior, sin cambios. Es la forma de paginar más allá de las primeras páginas. No se puede combinar con `page > 1` ni con `offset` (`400 INVALID_PAGINATION`); un valor que no sea un cursor devuelto por este endpoint da `400 INVALID_CURSOR`.
+</ParamField>
+
+<ParamField query="page" default="1" type="integer">
+  Número de página (≥ 1). `page × pageSize` no puede superar `10000`.
+</ParamField>
+
+<ParamField query="offset" type="integer">
+  Filas a omitir (≥ 0), en lugar de `page`. `offset + pageSize` no puede superar `10000`.
+</ParamField>
+
+Este endpoint no tiene filtro por rango de fechas. Los mensajes vienen del más reciente al más antiguo (`providerTimestamp`, luego `id`), y cada conversación no leída aporta sus últimos `unreadCount` mensajes entrantes, como máximo **100** por conversación.
+
+## Efecto del modo PII
+
+La respuesta depende del **modo PII** configurado para el número (se define en el dashboard, en el panel Privacy & retention de la página API Keys o en la configuración del número). Este endpoint usa **redactar y mostrar**: las filas no se ocultan; una fila cubierta por la política de PII conserva su envoltorio, tiene `text`, `media`, los campos del participante, `from`, `fromName`, `userId` y `username` en `null`, y lleva `redacted: true`.
+
+| Modo PII | Efecto |
+| --- | --- |
+| `STORE_INDEFINITE` (predeterminado) | Todos los mensajes no leídos se devuelven completos. |
+| `STORE_X_DAYS` | Las filas **fuera** de la ventana de retención se redactan; las que están dentro se devuelven completas. |
+| `RELAY_ONLY` | Todas las filas se redactan y la respuesta agrega `"notice": "PII_RELAY_ONLY"`. `total` sigue informando los contadores de las conversaciones. |
+
+## Ejemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/messages/unread?pageSize=30" \
+  -H "x-api-key: ps_your_key_here"
+```
+
+```json Response (200)
+{
+  "messages": [
+    {
+      "id": "cmm04obm46zz0qv4ycjp8x6r2",
+      "conversationId": "conv_abc123",
+      "direction": "INBOUND",
+      "providerKind": "META",
+      "externalMessageId": "wamid.HBgLNTUxMTk5OTk5OTk5",
+      "status": "DELIVERED",
+      "messageType": "text",
+      "origin": null,
+      "text": "Hi, I need help with my order.",
+      "participantName": "John Doe",
+      "participantPhone": "5511999999999",
+      "participantUserId": null,
+      "repliedToExternalId": null,
+      "media": null,
+      "sentAt": null,
+      "deliveredAt": null,
+      "readAt": null,
+      "providerTimestamp": "2026-06-27T10:15:00.000Z",
+      "createdAt": "2026-06-27T10:15:00.300Z",
+      "referral": null,
+      "from": "+5511999999999",
+      "fromName": "John Doe",
+      "userId": null,
+      "username": null,
+      "conversationUnreadCount": 3
+    }
+  ],
+  "total": 12,
+  "page": 1,
+  "pageSize": 30,
+  "totalPages": 1,
+  "nextCursor": null
+}
+```
+
+</CodeGroup>
+
+`total` es la **suma de `unreadCount`** de las conversaciones no leídas del número, así que puede ser mayor que las filas que puedes recorrer paginando (cada conversación aporta como máximo 100). `nextCursor` se define cuando la página vino llena; pásalo como `cursor` para obtener la página siguiente, y detente cuando sea `null`.
+
+## Campos del objeto de mensaje
+
+Cada elemento tiene los campos de un elemento de [`GET /v1/messages/history`](/es/api/messages/history#campos-del-objeto-de-mensaje) (`id`, `conversationId`, `direction` (aquí siempre `INBOUND`), `providerKind`, `externalMessageId`, `status`, `messageType`, `origin`, `text`, `participantName`, `participantPhone`, `participantUserId`, `repliedToExternalId`, `media`, `sentAt`, `deliveredAt`, `readAt`, `providerTimestamp`, `createdAt`, `referral`, `redacted`), más:
+
+<ResponseField name="from" type="string | null">
+  El contacto en E.164 con un `+` al inicio, tomado de la conversación (si no, usa `participantPhone`). `null` cuando está redactado o cuando el contacto no tiene teléfono (contacto solo con username).
+</ResponseField>
+
+<ResponseField name="fromName" type="string | null">
+  Nombre visible del contacto, de la conversación cuando se conoce.
+</ResponseField>
+
+<ResponseField name="userId" type="string | null">
+  El Business-Scoped User ID (BSUID) de Meta del contacto, cuando se conoce; se puede usar como `destinationNumber` en [`POST /v1/messages/send`](/es/api/messages/send).
+</ResponseField>
+
+<ResponseField name="username" type="string | null">
+  El username de WhatsApp del contacto, cuando se conoce.
+</ResponseField>
+
+<ResponseField name="conversationUnreadCount" type="integer" required>
+  Contador de no leídos de esa conversación.
+</ResponseField>
+
+En la práctica, `readAt` siempre es `null`: el `readAt` por mensaje no se mantiene para los mensajes entrantes; el estado de no leído vive en la conversación (`conversationUnreadCount`).
+
+## Errores comunes
+
+- `400 INVALID_PAGINATION`: `page × pageSize` u `offset + pageSize` mayor que `10000`, un `offset` negativo o no entero, o `cursor` combinado con `page > 1` / `offset`.
+- `400 INVALID_CURSOR`: `cursor` no es un valor que este endpoint haya devuelto.
+- `400 NUMBER_NOT_FOUND`: la credencial no indica ningún número de WhatsApp.
+- `401`: credencial ausente o inválida (`{"error": "Invalid API key"}`).
+- `403 TENANT_SCOPE_NOT_ALLOWED`: una clave de toda la cuenta sin `x-whatsapp-number-id`.
+- `403 PERMISSION_DENIED`: token OAuth/MCP o clave de cuenta cuyo rol no tiene `chat:read` (`ANALYST`).
+
+Pruébalo en el Playground: [Mensajes no leídos](/es/playground/conversations/unread-messages).
+
+## Conteos por número
+
+```text
+GET https://pilotstatus.com.br/v1/messages/unread/counts
+```
+
+El **conteo** de no leídos de cada número en una sola llamada, sin contenido de mensajes. El `total` de un número es exactamente el `total` que `GET /v1/messages/unread` devuelve para él.
+
+<ParamField query="whatsappNumberIds" type="string">
+  Opcional. Ids de `WhatsAppNumber` separados por comas (o repetidos), como máximo **100**. Si se omite: todos los números a los que llega la credencial.
+</ParamField>
+
+A qué números llega la credencial:
+
+- una clave con **alcance de número**, o una clave de toda la cuenta con `x-whatsapp-number-id`: solo ese número;
+- un **token OAuth / MCP restringido a algunos números**, o una clave de cuenta de un miembro restringido a algunos números: esos números;
+- una clave de **toda la cuenta** (clave de workspace, token de workspace completo) sin el encabezado: todos los números del workspace.
+
+A diferencia de la lista, este endpoint **no** rechaza una clave de toda la cuenta. Necesita el mismo permiso `chat:read` en tokens OAuth / MCP y claves de cuenta.
+
+```bash
+curl "https://pilotstatus.com.br/v1/messages/unread/counts" \
+  -H "x-api-key: ps_workspace_your_key_here"
+```
+
+```json Response (200)
+{
+  "byNumber": [
+    { "whatsappNumberId": "cmnum_01", "number": "5511999999999", "displayName": "Support", "total": 12 },
+    { "whatsappNumberId": "cmnum_02", "number": "5511888888888", "displayName": null, "total": 0 }
+  ],
+  "total": 12
+}
+```
+
+Los números que indicaste vuelven en el orden en que los indicaste; si no, el número más antiguo primero. Los contadores no son PII, así que un número `RELAY_ONLY` también informa su conteo.
+
+| Status | `code` | Cuándo |
+| --- | --- | --- |
+| `400` | `TOO_MANY_NUMBERS` | Más de 100 ids en `whatsappNumberIds`. |
+| `400` | `NUMBER_REQUIRED` | Una concesión OAuth por número sin número para leer. |
+| `400` | `NUMBER_NOT_FOUND` | La credencial no indica ningún número de WhatsApp. |
+| `403` | `NUMBER_NOT_IN_GRANT` | Un número indicado está fuera de lo que alcanza la credencial. |
+| `403` | `PERMISSION_DENIED` | Token OAuth/MCP o clave de cuenta cuyo rol no tiene `chat:read`. |
+| `404` | `NUMBER_NOT_FOUND` | Un número indicado no es un número de este workspace; `whatsappNumberIds` en el cuerpo indica cuáles. |
+
+Estos rechazos traen `{ "error": "<English> | <Português>", "code": "…" }`. Pruébalo en el Playground: [Conteos de no leídos por número](/es/playground/conversations/unread-counts).

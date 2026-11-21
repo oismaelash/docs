@@ -1,0 +1,298 @@
+---
+title: "Referencia de herramientas MCP"
+sidebarTitle: "Referencia de herramientas MCP"
+description: "Cada herramienta del servidor MCP de Pilot Status, por tema: qué hace, sus argumentos obligatorios y quién puede llamarla (solo OWNER, solo OAuth, con confirmación)."
+mode: "wide"
+---
+
+Las 151 herramientas del [servidor MCP alojado](/es/integrations/mcp-server), agrupadas por los mismos temas que usa el `describe` de [Code Mode](/es/integrations/mcp-code-mode). Cada fila da el propósito en una línea y los argumentos **sin los que la herramienta no puede ejecutarse**; todo lo demás es opcional. Tu cliente MCP muestra la descripción completa y el esquema de cada herramienta, y en Code Mode `describe({ theme })` los devuelve como TypeScript.
+
+## Lee esto primero
+
+- **`whatsappNumberId`.** Todas las herramientas excepto `docs_search` también aceptan `whatsappNumberId`, el id del número sobre el que actuar (obtenido de `numbers_list`). Con una conexión OAuth o una clave de todo el workspace es **obligatorio para las herramientas con alcance de número** (mensajes, conversaciones, grupos, plantillas, webhooks, llamadas, Chatwoot…); se ignora cuando la API key ya está vinculada a un número. No aparece en las tablas de abajo.
+- **Quién puede llamar.** "ADMIN or OWNER", "OWNER only" y "OAuth only" son los roles del workspace y los tipos de credencial que exige la API; los demás llamadores reciben `403`. Con una conexión OAuth, el rol se lee en vivo en cada llamada.
+- **Token de confirmación.** `templates_delete`, `workspace_archive`, `workspace_transfer_ownership` y `workspace_members_remove` se ejecutan en dos llamadas: la primera devuelve una vista previa y un `confirm_token`, la segunda (los mismos argumentos más `confirm_token`) ejecuta la acción. [Cómo funciona](/es/integrations/mcp-server#confirmación-para-herramientas-destructivas)
+- **`confirm: true`.** `flows_publish`, `flows_endpoint_key_rotate` (cuando ya hay una clave registrada) y `subscription_extra_numbers_add` (en un plan FREE) se niegan a ejecutarse sin el booleano `confirm: true`. Envíalo solo después de que el usuario haya dicho que sí.
+- **Anotaciones.** Cada herramienta declara las pistas MCP `readOnlyHint`, `destructiveHint`, `idempotentHint` y `openWorldHint`, para que los clientes puedan omitir la solicitud de aprobación en las lecturas y avisar antes de las llamadas destructivas. Toda herramienta con token de confirmación está marcada como destructiva.
+- **Autorización por número.** Una conexión OAuth que autorizó solo algunos números no puede usar herramientas de nivel de cuenta como `billing_checkout`, `api_keys_*` y `numbers_create`.
+
+### Mensajes (`messages`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `messages_send` | Envía un mensaje de plantilla, texto o multimedia a un contacto, grupo o canal. El `idempotencyKey` opcional hace seguros los reintentos. | un destino (`destinationNumber`, `groupId` o `newsletterId`) y un modo (`templateId`, `text`, o `media` + `mediaType`) |
+| `message_get` | Lee el estado y los metadatos de un mensaje (por id, `correlationId` o id del proveedor). | `id` |
+| `messages_list` | Lista los logs de mensajes del número (enviados y recibidos), con filtros. | — |
+| `messages_history` | Lee el historial de conversación del número, del más reciente al más antiguo. | — |
+| `messages_cancel` | Cancela mensajes programados que todavía no se enviaron. | `messageIds` |
+| `messages_group` | Lista los mensajes de grupo almacenados. | — |
+| `messages_unread` | Lista los mensajes entrantes no leídos del número. | — |
+| `messages_unread_counts` | Conteo de entrantes no leídos por número, en una sola llamada. | — |
+| `messages_mark_read` | Envía una confirmación de lectura del último mensaje entrante del contacto. | `to` |
+| `messages_typing` | Muestra un indicador de escribiendo o grabando a un contacto, sin enviar nada. | `to` |
+
+### Conversaciones (`conversations`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `conversations_list` | Lista las conversaciones del número, por último mensaje. | — |
+
+### Referencias de anuncios (Click-to-WhatsApp) (`referrals`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `referrals_list` | Lista los mensajes entrantes que vinieron de un anuncio o publicación Click-to-WhatsApp. | — |
+| `referrals_summary` | Tráfico Click-to-WhatsApp agregado por anuncio. | — |
+
+### Leads de Meta Lead Ads (`leads`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `leads_list` | Lista los leads capturados de los Instant Forms de Meta Lead Ads. | — |
+| `leads_get` | Lee un lead por el `id` de lead de Pilot Status. | `id` |
+
+### Anuncios de Meta y configuración de Lead Ads (`ads`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `ads_accounts_list` | Lista las cuentas publicitarias de Meta conectadas al workspace. ADMIN or OWNER. | — |
+| `ads_accounts_link` | Conecta una cuenta publicitaria de Meta para que sus anuncios tengan nombres. ADMIN or OWNER. | `adAccountId` |
+| `ads_accounts_unlink` | Desconecta una cuenta publicitaria de Meta. ADMIN or OWNER. | `adAccountId` |
+| `ads_summary` | Volumen Click-to-WhatsApp por anuncio, con nombres y conteo de leads. | — |
+| `lead_pages_list` | Lista las Páginas de Facebook vinculadas y las Páginas que se pueden vincular. ADMIN or OWNER. | — |
+| `lead_pages_link` | Vincula una Página de Facebook a un número para captar leads. ADMIN or OWNER. | `pageId` |
+| `lead_pages_update` | Mueve el vínculo de una Página a otro número. ADMIN or OWNER. | `pageLinkId`, `whatsappNumberId` |
+| `lead_pages_unlink` | Desvincula una Página y BORRA sus leads y la configuración de formularios (irreversible). ADMIN or OWNER. | `pageLinkId` |
+| `lead_pages_resync` | Vuelve a traer los leads de los últimos 90 días de una Página vinculada. ADMIN or OWNER. | `pageLinkId` |
+| `lead_forms_list` | Lista los Instant Forms de una Página vinculada y su configuración de leads. ADMIN or OWNER. | `pageLinkId` |
+| `lead_forms_update` | Guarda la configuración de leads de un formulario, incluida la respuesta automática por WhatsApp. ADMIN or OWNER. | `pageLinkId`, `formId`, `consentDisclaimerKey`, `autoSendEnabled`, `templateId`, `freeText` |
+
+### Grupos y canales (`groups`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `groups_list` | Lista los grupos de WhatsApp del número. | — |
+| `groups_create` | Crea un grupo. | `subject` |
+| `group_info` | Lee el asunto y los participantes de un grupo. | `groupId` |
+| `group_participants_add` | Agrega participantes a un grupo. | `groupId`, `participants` |
+| `group_participants_remove` | Elimina participantes de un grupo. | `groupId`, `participants` |
+| `group_participants_promote` | Asciende participantes a administradores del grupo. | `groupId`, `participants` |
+| `group_participants_demote` | Degrada administradores del grupo a participantes. | `groupId`, `participants` |
+| `group_invite` | Obtiene (o restablece) el enlace de invitación del grupo. | `groupId` |
+| `group_pin` | Fija o desfija un mensaje en un grupo. | `groupId`, `messageId`, `action` |
+| `newsletters_list` | Lista los canales (newsletters) del número. No disponible en números de Meta. | — |
+
+### Historias (`stories`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `stories_send` | Publica una historia (estado) de texto, imagen o video. Solo números Evolution GO; cuesta 1 mensaje; sin `recipients`, la privacidad de estados del teléfono decide quién la ve. | `type`, más `text` o `mediaUrl` |
+| `story_get` | Obtiene una historia con su estado y sus destinatarios efectivos. | `id` |
+| `story_delete` | Elimina una historia enviada para todos los que la recibieron (hasta 24 horas). | `id` |
+
+### Números (`numbers`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `numbers_list` | Lista los números del workspace y su estado de conexión. | — |
+| `numbers_get` | Detalle completo de un número: conexión, salud y configuración. | `id` |
+| `numbers_create` | Crea un número no oficial (QR) y obtiene su QR / código de vinculación. | `name`, `number` |
+| `numbers_delete` | Elimina un número de forma reversible durante 30 días (deshazlo con `numbers_restore`). | `id` |
+| `numbers_restore` | Deshace un `numbers_delete` dentro de la ventana de 30 días. | `id` |
+| `numbers_purge` | Destruye un número de forma permanente (irreversible). Solo OWNER por OAuth. | `id` |
+| `numbers_pay` | Paga el cargo pendiente de número extra de un número y reanuda los envíos. Cobra dinero; OWNER por OAuth. | `id` |
+| `numbers_status` | Estado de conexión en vivo de un número. | `id` |
+| `numbers_connect` | Obtiene el QR y el código de vinculación para conectar un número no oficial. | `id` |
+| `numbers_remote_pairing` | Inicia el onboarding remoto y obtiene un enlace que el usuario abre para conectar. | — |
+| `numbers_check` | Verifica si números de teléfono existen en WhatsApp (solo números no oficiales). | `number` o `numbers` |
+| `numbers_settings_update` | Actualiza la configuración de un número. | `id` |
+
+### Plantillas (`templates`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `templates_list` | Lista las plantillas del número, con el estado de Meta y `sendable`. | — |
+| `templates_create` | Crea una plantilla (se envía a Meta en números de Meta). | `name`, `body`, `examples` |
+| `templates_get` | Lee una plantilla. | `id` |
+| `templates_insights` | Analytics de Meta de una plantilla (enviados, entregados, leídos, clics). | `id` |
+| `templates_update` | Cambia el body de una plantilla (la reenvía a Meta). | `id`, `body`, `examples` |
+| `templates_submit` | Envía una plantilla a Meta para aprobación. | `id` |
+| `templates_sync` | Trae de Meta el catálogo de plantillas de la WABA. | — |
+| `templates_delete` | Elimina una plantilla, también en Meta (todos los idiomas del nombre). Token de confirmación. | `id` |
+
+### WhatsApp Flows (`flows`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `flows_list` | Lista los WhatsApp Flows de la WABA. | — |
+| `flows_create` | Crea un Flow en DRAFT, o clona uno. | `name`, `categories` |
+| `flows_update` | Renombra o cambia la categoría de un Flow en DRAFT. | `id` |
+| `flows_json_upload` | Sube el Flow JSON (pantallas y campos) a un Flow en DRAFT. | `id`, `flowJson` |
+| `flows_publish` | Publica un Flow. Irreversible; necesita `confirm: true`. | `id`, `confirm` |
+| `flows_deprecate` | Retira un Flow publicado (sin vuelta atrás). | `id` |
+| `flows_delete` | Elimina un Flow en DRAFT, también en Meta (irreversible). | `id` |
+| `flows_responses_list` | Lista los formularios que los clientes enviaron a un Flow. | `id` |
+| `flows_endpoint_key_get` | Lee el estado de la clave del endpoint de Flow de un número. Devuelve una credencial. | `numberId` |
+| `flows_endpoint_key_rotate` | Genera o reemplaza la clave del endpoint de Flow; reemplazarla necesita `confirm: true`. | `numberId` (`confirm: true` cuando ya hay una clave registrada) |
+
+### Branding (`branding`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `branding_get` | Lee el branding de marca blanca del workspace. | — |
+| `branding_upsert` | Crea o actualiza el branding de marca blanca. | — |
+
+### Analytics (`analytics`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `analytics_dashboard` | Analytics de mensajes del número (series y totales). | — |
+
+### API keys (`api-keys`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `api_keys_list` | Lista las API keys por número. Revela claves: solo OWNER por OAuth, auditado. | — |
+| `api_keys_regenerate_number` | Rota la API key de un número (la anterior deja de funcionar). Solo OWNER por OAuth, auditado. | `whatsappNumberId` |
+
+### Números extra (`subscription`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `subscription_extra_numbers_get` | Previsualiza el costo de N números extra. | — |
+| `subscription_extra_numbers_add` | Compra N números extra; en un plan FREE necesita `confirm: true`. | — (`confirm: true` en un plan FREE) |
+| `subscription_extra_numbers_remove` | Programa la devolución de N espacios de número extra para el próximo ciclo. | — |
+| `subscription_extra_numbers_cancel_scheduled` | Cancela una reducción programada de números extra. | — |
+
+### Multimedia (`media`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `media_get` | Descarga un objeto multimedia de Meta por su `media.id`. | `mediaId`, `phoneNumberId` |
+
+### Facturación (`billing`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `billing_checkout` | Inicia una recarga de billetera (tarjeta o Pix) o un checkout para agregar tarjeta. OWNER, acceso a toda la cuenta. | `purpose` (también `amount` para `wallet_topup`) |
+| `billing_topups_get` | Lee el estado de una orden de recarga. | `topupId` |
+
+### Webhooks (`webhooks`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `webhooks_list` | Lista los webhooks del número. | — |
+| `webhook_get` | Lee un webhook y su estado de entrega. | `id` |
+| `webhooks_create` | Crea un webhook; devuelve el secreto de firma una sola vez (auditado por OAuth). | `url` |
+| `webhooks_update` | Actualiza un webhook (nombre, URL, eventos, activo). | `id` |
+| `webhooks_delete` | Elimina un webhook y sus logs (irreversible). | `id` |
+| `webhook_events` | Intentos de entrega recientes de un webhook. | `id` |
+| `webhooks_rotate_secret` | Genera un nuevo secreto de firma; el anterior deja de funcionar de inmediato. ADMIN or OWNER, auditado por OAuth. | `id` |
+| `webhooks_reactivate` | Reanuda un webhook pausado por el circuit breaker. ADMIN or OWNER. | `id` |
+
+### Llamadas de voz (`calls`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `call_initiate` | Inicia una llamada de voz iniciada por la empresa. | `to` |
+| `calls_list` | Lista las llamadas de voz del número. | — |
+| `call_get` | Lee una llamada. | `callId` |
+| `call_accept` | Contesta una llamada entrante. | `callId` |
+| `call_reject` | Rechaza una llamada entrante. | `callId` |
+| `call_terminate` | Cuelga una llamada activa. | `callId` |
+| `call_play` | Reproduce un archivo de audio en una llamada activa (números web). | `callId`, `mediaUrl` |
+| `call_realtime_session` | Abre una sesión multimedia en tiempo real para hablar/escuchar en una llamada activa (números web). | `callId`, `mode` |
+| `call_settings_get` | Lee la configuración de llamadas del número (Meta). | — |
+| `call_settings_update` | Actualiza la configuración de llamadas del número (Meta). | — |
+| `call_enable` | Activa WhatsApp Business Calling para el número (Meta). | — |
+| `call_permission_get` | Verifica si la empresa puede llamar a un usuario (Meta). | `to` |
+| `call_permission_request` | Envía el mensaje de solicitud de permiso de llamada (Meta). | `to` |
+
+### Chatwoot (`chatwoot`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `chatwoot_get` | Lee el estado de la integración con Chatwoot del número. | — |
+| `chatwoot_connect` | Conecta el número a una cuenta de Chatwoot. | `instanceUrl`, `accountId`, `userAccessToken` |
+| `chatwoot_update` | Actualiza la integración con Chatwoot. | — |
+| `chatwoot_disconnect` | Desconecta la integración con Chatwoot. | — |
+| `chatwoot_test` | Prueba las credenciales de Chatwoot sin escribir nada. | `instanceUrl`, `accountId` |
+| `chatwoot_history_replay` | Reproduce el historial almacenado en la bandeja de Chatwoot (números de coexistencia). | — |
+| `chatwoot_history_replay_get` | Lee el progreso de la reproducción del historial. | — |
+| `chatwoot_history_replay_cancel` | Cancela una reproducción del historial en curso. | — |
+
+### Precios de Meta (`pricing`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `meta_pricing_get` | La tarifa por mensaje publicada por Meta para un mercado, moneda y categoría. | — |
+
+### Workspace y miembros (`workspace`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `workspace_get` | Lee el workspace (nombre, plan, asientos). | — |
+| `workspace_update` | Renombra el workspace. ADMIN or OWNER. | `name` |
+| `workspace_settings_get` | Lee moneda, zona horaria, idioma y modo de facturación. | — |
+| `workspace_settings_update` | Cambia la zona horaria y/o el idioma. ADMIN or OWNER. | — |
+| `workspace_members_list` | Lista los miembros y las invitaciones pendientes. ADMIN or OWNER. | — |
+| `workspace_members_invite` | Invita a alguien (ADMIN, AGENT o ANALYST). OAuth only. | `email` |
+| `workspace_members_resend` | Vuelve a emitir una invitación pendiente y obtiene una URL nueva. OAuth only. | `id` |
+| `workspace_members_update` | Cambia el rol y los números de un miembro. OWNER only, OAuth only. | `id`, `role` |
+| `workspace_members_set_numbers` | Define qué números puede usar un AGENT o ANALYST. ADMIN or OWNER, OAuth only. | `id`, `allowedNumberIds` |
+| `workspace_members_remove` | Elimina un miembro o revoca una invitación. OWNER only, OAuth only, token de confirmación. | `id` |
+| `workspace_archive` | Archiva el workspace (bloquea el acceso a todos). OWNER only, token de confirmación. | `confirmName` |
+| `workspace_transfer_ownership` | Convierte a otro miembro activo en OWNER. OWNER only, token de confirmación. | `email` |
+
+### Líneas telefónicas (`phone-lines`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `phone_lines_verification_get` | Lee la verificación del titular de la cuenta. OWNER only. | — |
+| `phone_lines_verification_start` | Inicia la verificación del titular de la cuenta. OWNER only. | `documentType`, `documentNumber`, `contactEmail`, `contactWhatsapp`, `document`, `idempotencyKey` |
+| `phone_lines_verification_confirm_contact` | Confirma un canal de contacto con su código. OWNER only. | `channel`, `code` |
+| `phone_lines_verification_resend_contact` | Envía un código nuevo a un canal de contacto. OWNER only. | `channel` |
+| `phone_lines_verification_resend_document` | Envía un nuevo documento de identidad. OWNER only. | `document` |
+| `phone_lines_activation_audio` | Ubica la grabación de la llamada de una activación (metadatos y URL). | `activationId` |
+| `phone_lines_webhooks_list` | Lista los webhooks de líneas telefónicas y el catálogo de eventos. ADMIN or OWNER. | — |
+| `phone_lines_webhooks_get` | Lee un webhook de línea telefónica. ADMIN or OWNER. | `webhookId` |
+| `phone_lines_webhooks_create` | Crea un webhook de línea telefónica; devuelve el secreto `plwh_` una sola vez (auditado por OAuth). ADMIN or OWNER. | `url`, `events` |
+| `phone_lines_webhooks_update` | Actualiza un webhook de línea telefónica. ADMIN or OWNER. | `webhookId` |
+| `phone_lines_webhooks_delete` | Elimina un webhook de línea telefónica y su historial (irreversible). ADMIN or OWNER. | `webhookId` |
+| `phone_lines_webhooks_deliveries_list` | Lista las entregas de un webhook de línea telefónica. ADMIN or OWNER. | `webhookId` |
+| `phone_lines_webhooks_deliveries_get` | Lee una entrega con su payload firmado. ADMIN or OWNER. | `webhookId`, `deliveryId` |
+
+### Webhooks de workspace (`workspace-webhooks`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `workspace_webhooks_list` | Lista los webhooks de workspace y el catálogo de eventos. ADMIN or OWNER. | — |
+| `workspace_webhooks_get` | Lee un webhook de workspace. ADMIN or OWNER. | `webhookId` |
+| `workspace_webhooks_create` | Crea un webhook de workspace; devuelve el secreto `plwh_` una sola vez (auditado por OAuth). ADMIN or OWNER. | `url`, `events` |
+| `workspace_webhooks_update` | Actualiza un webhook de workspace. ADMIN or OWNER. | `webhookId` |
+| `workspace_webhooks_delete` | Elimina un webhook de workspace y su historial (irreversible). ADMIN or OWNER. | `webhookId` |
+| `workspace_webhooks_deliveries_list` | Lista las entregas de un webhook de workspace. ADMIN or OWNER. | `webhookId` |
+| `workspace_webhooks_deliveries_get` | Lee una entrega con su payload firmado. ADMIN or OWNER. | `webhookId`, `deliveryId` |
+
+### Workspaces (clave de cuenta) (`workspaces`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `workspaces_list` | Lista los workspaces a los que pertenece el usuario de la clave de cuenta. Solo clave de cuenta. | — |
+| `workspaces_create` | Crea un workspace y obtiene su clave principal una sola vez. Solo clave de cuenta. | `name` |
+| `workspaces_api_keys_list` | Lista las claves de un workspace, enmascaradas. Solo clave de cuenta; ADMIN or OWNER. | `workspaceId` |
+| `workspaces_api_keys_create` | Crea una clave `ps_workspace_` con nombre, devuelta una sola vez. Solo clave de cuenta; ADMIN or OWNER. | `workspaceId`, `name` |
+| `workspaces_api_keys_revoke` | Revoca una clave de workspace con nombre. Solo clave de cuenta; ADMIN or OWNER. | `workspaceId`, `keyId` |
+| `workspaces_shared_card_link` | Hace que la tarjeta de reserva pague las renovaciones de este workspace. Solo clave de cuenta; OWNER. | `workspaceId` |
+| `workspaces_shared_card_unlink` | Hace que la tarjeta de reserva deje de pagar las renovaciones de este workspace. Solo clave de cuenta; OWNER. | `workspaceId` |
+
+### Documentación (`docs`)
+
+| Herramienta | Qué hace | Argumentos obligatorios |
+| --- | --- | --- |
+| `docs_search` | Busca en esta documentación; devuelve las 3 a 5 páginas más relevantes. | `query` |
+
+## Relacionado
+
+- [Servidor MCP](/es/integrations/mcp-server): conexión, autenticación, OAuth y confirmación
+- [MCP Code Mode](/es/integrations/mcp-code-mode): las mismas herramientas como `await ps.<tool>(args)` en un script

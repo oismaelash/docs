@@ -1,0 +1,416 @@
+---
+title: "Registro de WhatsApp para Lovable, Replit, Bolt, v0 y Cursor | Pilot Status"
+sidebarTitle: "Registro para AI Builders"
+description: "Agrega un botón de registro de WhatsApp funcional a una app creada en Lovable, Replit, Bolt, v0 o Cursor integrando el botón alojado de Pilot Status, sin Facebook SDK ni app de Meta propia, con cuatro prompts para copiar y pegar: backend, iframe, connect:paired y webhooks."
+mode: "wide"
+---
+
+# Registro de WhatsApp para AI builders
+
+Estás creando un CRM o un SaaS en **Lovable, Replit, Bolt, v0 o Cursor**, y tus clientes necesitan conectar su propio número oficial de WhatsApp. Esta página te da cuatro prompts. Pégalos en tu builder en orden y obtienes un flujo de registro funcional, **sin Facebook SDK en tu página, sin app de Meta propia y sin `FB.login` en el navegador**.
+
+<Note>
+  ¿Prefieres empezar desde código que ya funciona? Descarga la demo con licencia MIT de este mismo flujo (backend en Node + frontend en React, con presets de botón listos): **[embedded-signup-demo.zip](https://pilotstatus.com.br/downloads/embedded-signup-demo.zip)**. Súbela a tu builder o ejecútala localmente con `npm run dev`.
+</Note>
+
+## Por qué el botón alojado, y no FB.login en tu página
+
+Tu builder publica en un dominio que le pertenece: `something.lovable.app`, `something.replit.app`, una URL de vista previa nueva en cada deploy. Ese dominio cambia por proyecto, y a menudo por cada push.
+
+Meta valida el dominio que ejecuta `FB.login`. Así que poner el botón de Facebook directamente en tu propia página implicaría registrar cada uno de esos dominios en la app de Meta de Pilot Status, uno por uno, para siempre. Eso no escala y no se ofrece.
+
+El botón alojado resuelve esto ejecutando todo el registro dentro de un `iframe` servido desde `connect.pilotstatus.com.br`, un dominio que Pilot Status ya posee y ya registró. **El Facebook SDK y el popup de inicio de sesión viven dentro de ese iframe, no en tu página.** Facebook verifica el origen del **iframe**, no el tuyo. Tu página puede estar en cualquier dominio, incluida una URL de vista previa que no existía hace cinco minutos, y el popup se abre normalmente.
+
+**Nada que registrar. Nada que esperar. Ningún SDK que cargar.** Este es el camino correcto para apps alojadas en builders, no un parche. Es el mismo flujo documentado en [Integrar la página Connect](/es/integrations/embed-connect); esta guía es su versión para AI builders, basada en prompts.
+
+<Note>
+  Si tienes un dominio estable y quieres el botón de Facebook en tu propio markup, usa [Embedded Signup en tu propia app](/es/guides/embedded-signup). Te da control total del botón, a cambio de ejecutar tú mismo el SDK de JavaScript de Facebook.
+</Note>
+
+## Antes de empezar
+
+1. Una cuenta de Pilot Status que pueda recibir un número más. En el plan Free eso significa espacio dentro de la cuota del plan. En un plan pago significa espacio, o una forma de pagar un número extra (saldo en la billetera o una tarjeta guardada).
+2. Una API key **con alcance de tenant** (`ps_...`) de la pestaña **API** de tu perfil (`/profile`). Una clave con alcance de número no funciona: generar un enlace de registro crea un número completamente nuevo, así que la clave no puede estar vinculada a uno existente.
+3. Un backend. Todos los builders mencionados pueden ejecutar uno: un servidor en Replit, un route handler de Next.js en v0, una Supabase Edge Function en Lovable o Bolt. Lo necesitas porque el navegador no puede llamar directamente a la API de Pilot Status: lo único que hace tu backend aquí es generar el enlace de conexión.
+
+<Warning>
+  **La clave `ps_` es un secreto del lado del servidor.** Autoriza todo en tu cuenta. Nunca debe aparecer en código de frontend, ni en una variable con prefijo `VITE_`, `NEXT_PUBLIC_`, `REACT_APP_` o `PUBLIC_`: esas se compilan dentro del bundle de JavaScript que descargan tus usuarios. Cada prompt de abajo lo repite, porque los AI builders lo hacen mal por defecto.
+</Warning>
+
+## Cómo encajan las piezas
+
+```text
+Tu página (cualquier dominio)
+   │  1. POST /api/pilot/pairing-session   → { token, expiresAt }   (tu backend generó el enlace)
+   │  2. <iframe src="https://connect.pilotstatus.com.br/connect/<token>?embed=1&mode=button">
+   │        ↑ el Facebook SDK y el popup de inicio de sesión viven AQUÍ, dentro de la página de Pilot Status
+   │  3. postMessage "connect:paired" → { numberId, phone, displayName, provider, externalRef }
+   ▼
+Tu backend  ──x-api-key: ps_──►  https://pilotstatus.com.br/v1/numbers/remote-pairing
+```
+
+Tu página nunca carga el Facebook SDK, nunca sirve un `appId` ni un `config_id`, nunca lee `/api/health` y nunca llama a `FB.login`. La clave `ps_` solo existe en la fila de abajo.
+
+## Los cuatro prompts
+
+Pégalos en orden. Cada uno es autocontenido: la IA que lo lee no puede ver esta página, así que todo lo que necesita está escrito en el propio prompt.
+
+### Prompt 1: ruta de backend que genera el enlace de conexión
+
+<CodeGroup>
+
+```text Prompt 1: backend
+Agrega a este proyecto un endpoint de backend que genere un enlace de registro
+de WhatsApp a partir de la API de Pilot Status.
+
+Crea una ruta del lado del servidor: POST /api/pilot/pairing-session
+
+Debe aceptar un cuerpo JSON: { "customerId": string, "customerName": string }
+donde customerId es el id del cliente con sesión iniciada en la base de datos
+propia de esta app.
+
+La ruta debe llamar a la API de Pilot Status del lado del servidor:
+
+  POST https://pilotstatus.com.br/v1/numbers/remote-pairing
+  Headers:
+    Content-Type: application/json
+    x-api-key: <el valor de la variable de entorno PILOT_TENANT_KEY>
+  Body:
+    {
+      "provider": "META",
+      "metaFlow": "embedded",
+      "name": "<customerName>",
+      "externalRef": "<customerId>"
+    }
+
+Una respuesta exitosa es HTTP 201 con exactamente esta forma:
+
+  {
+    "provider": "META",
+    "remotePairingUrl": "https://connect.pilotstatus.com.br/connect/<token>",
+    "expiresAt": "2026-07-20T18:30:00.000Z"
+  }
+
+El token de registro es el ÚLTIMO SEGMENTO DE LA RUTA de remotePairingUrl.
+Extráelo con new URL(remotePairingUrl).pathname.split("/").pop(). El token es
+válido por 30 minutos.
+
+Guarda una fila en la base de datos de esta app antes de responder:
+{ customerId, token, expiresAt, status: "pending" }. Más adelante necesitarás
+relacionar el resultado con este cliente.
+
+Responde al frontend SOLO con { token, expiresAt }. Nunca devuelvas la
+respuesta cruda de Pilot Status y nunca devuelvas la API key.
+
+REQUISITOS CRÍTICOS DE SEGURIDAD (no te desvíes):
+
+- La API key de Pilot Status empieza con "ps_" y es un secreto del lado del
+  servidor. Léela SOLO de una variable de entorno del servidor llamada
+  PILOT_TENANT_KEY.
+- NUNCA pongas la clave en código de frontend, y NUNCA nombres la variable con
+  un prefijo público: ni VITE_, ni NEXT_PUBLIC_, ni REACT_APP_, ni PUBLIC_.
+  Esos prefijos incluyen el valor dentro del bundle del navegador, donde
+  cualquier usuario puede leerlo.
+- NUNCA llames a pilotstatus.com.br desde código del navegador. Su política de
+  CORS es una lista estricta de los dominios propios de Pilot Status, así que
+  una solicitud del navegador desde el origen de esta app será bloqueada.
+  Generar el enlace es la ÚNICA llamada a Pilot Status en toda esta
+  integración, y ocurre aquí, en el backend.
+- No registres en logs la API key ni el token.
+
+Opcionalmente, el cuerpo de la solicitud enviada a Pilot Status también acepta
+un objeto "branding" que da estilo al botón alojado. Inclúyelo solo si te lo
+pido:
+
+  "branding": {
+    "button": {
+      "variant": "facebook",   // o "dark" | "light" | "outline"
+      "label": "Connect WhatsApp",
+      "primaryColor": "#1877F2",
+      "textColor": "#FFFFFF",
+      "radius": "md",          // "sm" | "md" | "lg" | "pill"
+      "size": "md",            // "sm" | "md" | "lg"
+      "fullWidth": true
+    }
+  }
+
+Todos los campos de branding son opcionales. El estilo se acepta SOLO dentro de
+esta solicitud de token firmada: no existe un parámetro de consulta para eso,
+así que no intentes pasar colores ni etiquetas en la URL del iframe.
+```
+
+</CodeGroup>
+
+<Note>
+  Generar el enlace crea un número provisional de inmediato. No ocupa un espacio del plan y no se factura: el número cuenta (y un número extra se cobra) en su activación, cuando se completa el registro ([Se cobra en la primera conexión](/es/api/extra-numbers#se-cobra-al-conectar-por-primera-vez)). Genéralo cuando el cliente esté realmente por hacer clic, no al cargar la página. Un número provisional que el cliente abandona queda en tu lista de números como "esperando conexión" hasta que se elimina automáticamente, 24 horas después de su creación, o hasta que lo borres desde el panel `/numbers`.
+</Note>
+
+### Prompt 2: iframe de frontend con el sandbox correcto
+
+<CodeGroup>
+
+```text Prompt 2: iframe de frontend
+Agrega una sección "Connect WhatsApp" a la página de esta app que ven los
+clientes, que integre el botón de registro alojado de Pilot Status en un iframe.
+
+Comportamiento:
+
+1. Cuando el cliente haga clic en "Connect WhatsApp", llama al backend propio
+   de esta app: POST /api/pilot/pairing-session con { customerId, customerName }.
+   Responde con { token, expiresAt }.
+
+2. Renderiza un iframe con exactamente este src:
+
+   https://connect.pilotstatus.com.br/connect/<token>?embed=1&mode=button&parentOrigin=<origin>
+
+   donde <token> va codificado para URL y <origin> es
+   encodeURIComponent(window.location.origin).
+   El parámetro mode=button renderiza solo el botón de Facebook (sin
+   encabezado, sin tarjeta, con fondo transparente) para que encaje en tu
+   propio layout.
+
+3. El iframe DEBE tener exactamente este atributo sandbox:
+
+   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+
+   allow-popups y allow-popups-to-escape-sandbox son OBLIGATORIOS. El popup de
+   inicio de sesión de Facebook se abre desde dentro del iframe. Sin estos dos
+   flags el popup se bloquea en silencio: sin error, sin mensaje en la consola,
+   el botón simplemente parece no hacer nada. Esta es la falla más común de
+   esta integración.
+
+4. Estilo del iframe: width 100%, border: 0, display: block, y una altura
+   inicial de 48px. No le pongas color de fondo.
+
+5. Registra un listener "message" en window para recibir eventos del iframe.
+   Valida CADA mensaje antes de usarlo, con ambas verificaciones, siempre:
+
+   - event.origin debe ser exactamente "https://connect.pilotstatus.com.br"
+   - event.data.source debe ser exactamente "pilot-status-embed"
+
+   Ignora cualquier mensaje que falle alguna de las dos verificaciones y
+   retorna de inmediato. (Opcionalmente, exige también
+   event.source === iframe.contentWindow para mayor seguridad.)
+
+   Cada mensaje es un objeto con esta forma: solo "type" está en el nivel
+   superior, todo lo demás va dentro de "payload":
+
+     { source: "pilot-status-embed", v: 1, type: "<nombre del evento>", payload: { ... } }
+
+   Decide según message.type y lee los datos de message.payload. Los eventos
+   son "connect:paired" (payload con numberId, phone, displayName, provider,
+   externalRef, redirectUrl), "connect:error" (payload.message),
+   "connect:expired" (sin payload) y "resize" (payload.height).
+
+6. Maneja el evento "resize": payload es { height: number }. Asigna ese valor
+   en píxeles a style.height del iframe. La página alojada emite este evento
+   continuamente para que el iframe se ajuste a su contenido sin barra de
+   desplazamiento.
+
+7. Elimina el listener cuando el componente se desmonte.
+
+NO cargues ningún Facebook SDK en esta app, NO llames a FB.login en ningún
+lugar y NO hagas fetch a /api/health ni a ningún otro endpoint de Pilot Status
+desde el navegador. El iframe alojado hace TODO el trabajo de Facebook (el SDK,
+el popup, el app id y la configuración) en un dominio que ya está registrado en
+Meta. Ejecutar cualquiera de esas cosas en el dominio propio de esta app
+requeriría registrar este dominio en Meta, lo cual no es posible aquí.
+
+No llames a pilotstatus.com.br desde este código de frontend por ningún motivo:
+CORS lo bloquea. La única llamada de red que hace el frontend es al backend
+propio de esta app.
+```
+
+</CodeGroup>
+
+### Prompt 3: manejar `connect:paired` y guardar el número
+
+<CodeGroup>
+
+```text Prompt 3: manejar el resultado
+Amplía el listener "message" de window agregado para el iframe de registro de
+Pilot Status para que maneje los tres eventos de resultado. Mantén las
+verificaciones existentes de origin y source, y aplícalas antes de todo lo que
+sigue.
+
+Evento: type === "connect:paired"
+El cliente terminó el registro con éxito. El payload es:
+
+  {
+    numberId:    string | null,   // el id del número en Pilot Status
+    phone:       string | null,   // el número de teléfono conectado, en dígitos
+    displayName: string | null,   // nombre visible de WhatsApp
+    provider:    string | null,   // "META" para este flujo
+    externalRef: string | null,   // el customerId enviado al generar el enlace
+    redirectUrl: string | null    // URL opcional posterior a la conexión, si definiste una
+  }
+
+Todos los campos están siempre presentes, pero cualquiera puede ser null, así
+que nunca asumas que hay un valor y nunca falles por uno ausente. NO navegues
+automáticamente a redirectUrl: el iframe te deja esa decisión a ti.
+
+En este evento:
+  - Envía el payload por POST al backend propio de esta app en POST /api/pilot/paired.
+  - Oculta el iframe y muestra un estado de éxito con el número de teléfono.
+
+Evento: type === "connect:error"
+El payload es { message: string }. Muestra ese mensaje al cliente y ofrece un
+botón de reintento que pida un token nuevo a tu backend y vuelva a renderizar
+el iframe.
+
+Evento: type === "connect:expired"
+El token superó su vida útil de 30 minutos. No lo reutilices. Muestra "Este
+enlace expiró" y un botón que pida un token nuevo a tu backend y vuelva a
+renderizar el iframe.
+
+Backend: agrega POST /api/pilot/paired.
+
+NO debe confiar en el externalRef del cuerpo de la solicitud para decidir a qué
+cliente pertenece esto: un navegador puede enviar cualquier cosa. En su lugar:
+
+  - Identifica al cliente a partir de la sesión autenticada de la solicitud.
+  - Busca la fila pendiente que esta app guardó al generar el enlace
+    (la que tiene status "pending" para ese cliente).
+  - Actualízala a: { numberId, phone, displayName, provider, status: "connected",
+    connectedAt: now }.
+  - Usa el externalRef del payload solo como verificación cruzada: si no
+    coincide con el customerId guardado, registra una advertencia y no guardes.
+
+Haz que este handler sea idempotente: el mismo numberId puede llegar dos veces.
+Busca por numberId y actualiza en lugar de insertar una fila duplicada.
+
+Mantén la API key de Pilot Status fuera de todo esto. Nada en este paso llama a
+pilotstatus.com.br.
+```
+
+</CodeGroup>
+
+### Prompt 4: registrar el webhook que entrega los mensajes entrantes
+
+<CodeGroup>
+
+```text Prompt 4: webhooks
+Agrega a esta app el registro de webhooks para que reciba los mensajes de
+WhatsApp entrantes de cada número conectado.
+
+Paso 1: registra el webhook, del lado del servidor.
+
+Después de que se conecte un número (en el handler POST /api/pilot/paired, una
+vez que se conoce numberId), llama a la API de Pilot Status desde el backend:
+
+  POST https://pilotstatus.com.br/v1/webhooks
+  Headers:
+    Content-Type: application/json
+    x-api-key: <la variable de entorno PILOT_TENANT_KEY, solo del lado del servidor>
+  Body:
+    {
+      "url": "https://<la URL pública de esta app>/api/pilot/webhook",
+      "whatsappNumberId": "<el numberId del evento paired>",
+      "events": ["messages"]
+    }
+
+El array "events" es OBLIGATORIO en la práctica. No se entrega nada a menos que
+events contenga un nombre de evento coincidente o el comodín "*". Un array
+vacío, u omitir el campo, significa que esta app no recibe absolutamente nada,
+y no hay ningún error que te lo indique. Envía siempre un array events
+explícito.
+
+Paso 2: recibe las entregas.
+
+Agrega una ruta pública: POST /api/pilot/webhook
+
+CRÍTICO: el formato del payload para un número META es el sobre NATIVO de Meta,
+no un evento de Pilot Status. Se ve así:
+
+  {
+    "object": "whatsapp_business_account",
+    "entry": [
+      {
+        "id": "<waba id>",
+        "time": 1753027200,
+        "changes": [
+          { "field": "messages", "value": { ...payload de mensaje de Meta... } }
+        ]
+      }
+    ]
+  }
+
+Procésalo leyendo body.entry[0].changes[0].field y decidiendo según ese valor.
+Los mensajes entrantes llegan con field === "messages", con los mensajes en
+value.messages[] y los contactos en value.contacts[].
+
+NO escribas un handler que busque un evento llamado "message.received". Un
+número META NUNCA lo envía. "message.received" pertenece a otro tipo de número,
+no oficial. Suscribirse con events: ["*"] tampoco traduce el payload: siempre es
+el sobre nativo de Meta para un número META.
+
+Otras cosas que hay que hacer bien:
+
+- Un webhook creado con POST /v1/webhooks no tiene secreto, así que estas
+  entregas NO llevan header de firma: no escribas verificación de firma y no
+  asumas que la solicitud está autenticada. (Si más adelante se define un
+  secreto en el webhook, las entregas incluyen un header
+  x-pilot-status-signature con un HMAC-SHA256 del cuerpo crudo de la
+  solicitud; verifícalo solo cuando realmente hayas definido un secreto.) Usa
+  un segmento de ruta imposible de adivinar en la URL del webhook, o una lista
+  de IPs permitidas, si necesitas reforzarlo.
+- Devuelve HTTP 200 de inmediato y luego procesa de forma asíncrona. Las
+  entregas fallidas se reintentan 5 veces con backoff exponencial a partir de
+  5 segundos, así que los handlers lentos o con fallas generan duplicados.
+- Haz que el handler sea idempotente: elimina duplicados usando el id del
+  mensaje del payload de Meta.
+- La URL del webhook debe ser accesible públicamente por HTTPS. Una URL de
+  localhost o solo de vista previa nunca recibirá nada.
+```
+
+</CodeGroup>
+
+## Errores que la IA suele cometer
+
+Estos cinco explican casi todas las integraciones rotas. Si algo no funciona, revísalos en este orden.
+
+<AccordionGroup>
+  <Accordion title="La clave ps_ termina en el navegador">
+    El builder la lee de `VITE_PILOT_KEY` o `NEXT_PUBLIC_PILOT_KEY` porque es la forma más rápida de hacer que una llamada fetch compile. Esos prefijos insertan el valor en el bundle publicado, así que cualquiera que abra DevTools se adueña de tu cuenta. La clave va en una variable simple del lado del servidor, como `PILOT_TENANT_KEY`, leída solo desde la ruta de backend que genera el enlace de conexión. Si la encuentras en el bundle, rota la clave en el panel antes de corregir el código.
+  </Accordion>
+
+  <Accordion title="Al sandbox del iframe le falta allow-popups">
+    Sin `allow-popups` y `allow-popups-to-escape-sandbox`, el navegador bloquea el popup de Facebook sin error, sin advertencia en la consola y sin ninguna falla visible. El botón simplemente no hace nada al hacer clic, lo que lleva a la gente a buscar un bug en su lógica de tokens. El atributo completo es `sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"`.
+  </Accordion>
+
+  <Accordion title="Llamar a la API de Pilot Status directamente desde el navegador">
+    El código generado hace `fetch("https://pilotstatus.com.br/v1/...")` desde un componente. El CORS de la API es una lista estricta de los dominios propios de Pilot Status, así que una solicitud desde `*.lovable.app` o `*.replit.app` nunca recibe un header `Access-Control-Allow-Origin` y se bloquea. Ninguna API key cambia esto. En el flujo alojado el navegador nunca llama a la API de Pilot Status: solo integra el iframe y llama a tu propio backend, y es tu backend el que genera el enlace de conexión.
+  </Accordion>
+
+  <Accordion title="Registrar un webhook sin array events">
+    `POST /v1/webhooks` acepta un cuerpo sin `events`, devuelve éxito y luego no entrega nada. No hay ninguna advertencia. Envía un array explícito: `["messages"]` para un número META, o `["*"]` para todo.
+  </Accordion>
+
+  <Accordion title="Cargar el Facebook SDK o ejecutar FB.login en tu propia página">
+    La IA conoce la receta estándar de Embedded Signup de Facebook y con gusto agregará `connect.facebook.net/en_US/sdk.js`, servirá un `appId`/`config_id` y llamará a `FB.login` en tu página. En este flujo **no** haces nada de eso: el SDK, el popup y la app de Meta viven dentro del iframe alojado, en un dominio que ya está registrado en Meta. Tu URL `*.lovable.app` o `*.replit.app` no lo está, ni puede estarlo, porque cambia por proyecto y por deploy. Si un prompt empieza a cargar el Facebook SDK, servir `appId`/`configId`, leer `/api/health` o llamar a `FB.login`, vas por el camino equivocado: bórralo y deja que el iframe haga el trabajo.
+  </Accordion>
+</AccordionGroup>
+
+## Una nota sobre el estilo del botón
+
+La apariencia del botón alojado viene del objeto `branding.button` que envías al generar el enlace de conexión (consulta el Prompt 1). Esa solicitud se autentica con tu clave `ps_`, así que el estilo siempre se puede atribuir a tu cuenta.
+
+A propósito, **no existe un parámetro de consulta** para el estilo del botón. No intentes pasar colores, etiquetas ni logos en la URL del iframe; se ignorarán.
+
+La marca "secured by pilotstatus.com.br" debajo del botón se muestra por defecto. `branding.button.hideProvenance` puede ocultarla, pero solo en modo botón y solo cuando esa capacidad está habilitada para tu cuenta; de lo contrario el valor se ignora y la marca se sigue mostrando. Contacta a soporte si la necesitas.
+
+## Próximos pasos
+
+El número está conectado y los webhooks están llegando. Ahora envía algo.
+
+<CardGroup cols={2}>
+  <Card title="Enviar mensajes" icon="paper-plane" href="/es/guides/send-messages">
+    Tu primer envío con `POST /v1/messages/send`: plantillas, texto libre y multimedia.
+  </Card>
+  <Card title="Integrar la página Connect" icon="window" href="/es/integrations/embed-connect">
+    La referencia completa del flujo alojado: forma del token, `mode=button`, el protocolo postMessage y el branding.
+  </Card>
+  <Card title="Embedded Signup en tu propia app" icon="facebook" href="/es/guides/embedded-signup">
+    La alternativa con control total, para cuando tienes un dominio estable y quieres el Facebook SDK en tu propio markup.
+  </Card>
+</CardGroup>

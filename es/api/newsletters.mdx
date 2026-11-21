@@ -1,0 +1,70 @@
+---
+title: "API de canales de WhatsApp (newsletters)"
+description: "Lista los canales de WhatsApp (newsletters) vinculados al número conectado."
+mode: "wide"
+---
+
+Los canales de WhatsApp usan identificadores que terminan en `@newsletter`. Pilot Status ofrece un **listado opcional** de esos canales (id y nombre cuando se conoce) para la **misma instancia de WhatsApp** vinculada a tu API key que `POST /v1/messages/send`.
+
+<Warning>
+  Los canales/newsletters **no son compatibles con números de la Meta Cloud API**: `GET /v1/newsletters` responde `400 NOT_SUPPORTED_FOR_META`. Entre los números no oficiales, el listado solo está disponible en sesiones de **Evolution GO**; cualquier otra sesión responde `400 FEATURE_NOT_SUPPORTED`.
+</Warning>
+
+## API pública
+
+`GET https://pilotstatus.com.br/v1/newsletters`
+
+- **200** con `{ "newsletters": [ { "id": "…@newsletter", "name": "…" } ] }`. `name` puede ser `null`.
+- La sesión debe estar **conectada** (`OPEN`); de lo contrario, **409** con `WHATSAPP_INSTANCE_NOT_CONNECTED`.
+- Cuando el número no tiene ninguna sesión de WhatsApp detrás, **200** con un arreglo `newsletters` vacío.
+- La lista se **guarda en caché hasta 1 hora**.
+
+### Autenticación
+
+Una **key de número** (`ps_number_`) actúa sobre su propio número. Una **key de workspace** (`ps_workspace_`), una **key de cuenta** (`ps_account_`, con `x-workspace-id`) o un **token OAuth** deben indicar el número en `x-whatsapp-number-id`; sin él, la respuesta es `403 TENANT_SCOPE_NOT_ALLOWED`. Con una key de cuenta o un token OAuth, el rol del usuario debe incluir `chat:read` (**AGENT**, **ADMIN** u **OWNER**); de lo contrario, `403 PERMISSION_DENIED`. Consulta [Autenticación](/es/api/authentication).
+
+### Errores
+
+| Status | `code` | Cuándo |
+| --- | --- | --- |
+| `400` | `NOT_SUPPORTED_FOR_META` | El número es de la Meta Cloud API. |
+| `400` | `FEATURE_NOT_SUPPORTED` | La sesión del número no es Evolution GO (por ejemplo, Evolution v2): el listado de canales solo está disponible allí. Hasta el 2026-11-09, un número así recibía el error del proveedor (`WHATSAPP_UPSTREAM_ERROR`). |
+| `403` | `TENANT_SCOPE_NOT_ALLOWED` | Credencial de workspace/cuenta sin `x-whatsapp-number-id`. |
+| `403` | `PERMISSION_DENIED` | Key de cuenta / usuario OAuth cuyo rol no tiene `chat:read`. |
+| `409` | `WHATSAPP_INSTANCE_NOT_CONNECTED` | La sesión no está `OPEN`. |
+| `409` | `LINKED_WHATSAPP_INSTANCE_NOT_FOUND` | La instancia vinculada a la key ya no existe. |
+| status del proveedor | `WHATSAPP_UPSTREAM_ERROR` | El proveedor de WhatsApp rechazó la llamada; `details: { status, body }` trae su respuesta. |
+| `502` | `WHATSAPP_INVALID_JSON` | El proveedor respondió con JSON inválido. |
+| `503` | `WHATSAPP_SESSION_KEY_MISSING` | La key de sesión del número no está configurada. |
+
+## Ejemplo
+
+<CodeGroup>
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/newsletters" \
+  -H "x-api-key: ps_number_your_key"
+```
+
+```json Response (200)
+{
+  "newsletters": [
+    { "id": "120363123456789012@newsletter", "name": "Product Updates" }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Dashboard (sesión)
+
+En **Numbers** (Números), cuando el número está conectado (**OPEN**), usa **List WhatsApp newsletters** (Listar newsletters de WhatsApp) para obtener los mismos datos.
+
+## Webhooks y envío
+
+- El tráfico entrante de canales se entrega como **`message.newsletter`** (consulta la documentación de webhooks).
+- `POST /v1/messages/send` y el listado de canales son flujos independientes; consulta la documentación de envío de mensajes para las reglas de destino.
+
+## n8n
+
+El nodo oficial puede cargar opciones desde `GET /v1/newsletters` en el control opcional **Additional fields** (Campos adicionales) cuando se devuelve una lista.

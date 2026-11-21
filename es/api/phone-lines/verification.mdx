@@ -1,0 +1,352 @@
+---
+title: "/v1/phone-lines/verification: Verificación del titular de la cuenta"
+sidebarTitle: "Verificación del titular"
+description: "Verifica al titular de la cuenta (CNPJ o CPF, el documento que lo muestra y los códigos de contacto) por la API antes de la primera compra de línea telefónica: envía los datos, confirma los códigos y lee la decisión."
+mode: "wide"
+---
+
+# Verificar al titular de la cuenta
+
+<Tip>
+  Pruébalo con tu clave en el Playground: [`GET /v1/phone-lines/verification`](/es/playground/phone-lines/get-verification), [`POST /v1/phone-lines/verification`](/es/playground/phone-lines/submit-verification), [`POST …/contact/{channel}/send`](/es/playground/phone-lines/send-contact-code), [`POST …/contact/{channel}/confirm`](/es/playground/phone-lines/confirm-contact-code), [`POST …/verification/document`](/es/playground/phone-lines/send-new-document).
+</Tip>
+
+Alquilar una línea telefónica requiere un **titular de la cuenta** verificado: un CNPJ o un CPF, una foto o PDF del documento que lo muestra, y un contacto confirmado. Se pide una sola vez por workspace, antes de la primera compra. Estos endpoints lo hacen sin el dashboard, y es la misma verificación que la del dashboard (**Phone lines** → **Buy phone lines**): uses el que uses, el otro ve el resultado.
+
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| `GET` | `/v1/phone-lines/verification` | [Leer el estado](#leer-el-estado): ¿puede comprar este workspace? |
+| `POST` | `/v1/phone-lines/verification` | [Enviar los datos y el documento](#enviar-los-datos). Requiere `Idempotency-Key`. |
+| `POST` | `/v1/phone-lines/verification/contact/{channel}/confirm` | [Confirmar un código de contacto](#confirmar-un-código). |
+| `POST` | `/v1/phone-lines/verification/contact/{channel}/send` | [Enviar un código de contacto nuevo](#enviar-un-código-nuevo). |
+| `POST` | `/v1/phone-lines/verification/document` | [Enviar un documento nuevo](#enviar-un-documento-nuevo). |
+
+<Note>
+  Requiere una clave con **alcance de tenant**, como todos los endpoints de `/v1/phone-lines`. Con un token OAuth / MCP, solo el **Owner** del workspace puede verificar (el permiso es `phone_lines:purchase`, el mismo que para comprar), y cualquier otro rol recibe `403 PERMISSION_DENIED`. El estado se envía con `Cache-Control: no-store`.
+</Note>
+
+## Cómo funciona
+
+<Steps>
+  <Step title="Envía los datos y el documento">
+    `POST /v1/phone-lines/verification` con el CNPJ o CPF, un e-mail de contacto, un número de WhatsApp y el archivo del documento. Verificamos el número (dígitos verificadores; un CNPJ además debe encontrarse y estar **activo** en el registro público), enviamos los códigos de contacto, almacenamos el archivo de forma privada y leemos el número impreso en él.
+  </Step>
+  <Step title="Confirma los códigos de contacto">
+    Cada canal en `contact.requiredChannels` recibe un código de 6 dígitos. Confirma cada uno con `POST …/contact/{channel}/confirm`.
+  </Step>
+  <Step title="Lee la decisión">
+    En cuanto se confirma el último código y el documento está cargado, la verificación se decide, en esa misma respuesta: **`APPROVED`**, o **`IN_REVIEW`** cuando una persona necesita revisarla. **Ambos te permiten comprar** (`canPurchase: true`). La decisión también se entrega como el evento de webhook [`phone_line.verification_updated`](/es/api/phone-lines/webhooks).
+  </Step>
+</Steps>
+
+**Qué códigos.** Un e-mail escrito en una llamada a la API solo se prueba con su código, así que aquí **`EMAIL` siempre es obligatorio**, enviado a `contactEmail`. `WHATSAPP` también es obligatorio siempre que Pilot Status esté enviando códigos por WhatsApp; en ese caso se piden ambos. `contact.requiredChannels` indica exactamente cuáles, y la lista queda fija cuando empieza la verificación.
+
+**La decisión.** `APPROVED` cuando el número leído del documento es el número que enviaste y se pudo consultar el registro público (un CPF no tiene registro: decide el documento). De lo contrario, espera a una persona (`IN_REVIEW`), que la aprueba, la rechaza o pide otro documento (`NEEDS_DOCUMENT`).
+
+<Warning>
+  **Comprar mientras está `IN_REVIEW` depende de la revisión.** Si se rechaza, las líneas compradas durante la revisión se devuelven a la operadora **3 días después de la decisión**, y todos los cargos que pagaron se reembolsan a la billetera; consulta [verificación de identidad](/es/api/phone-lines/overview#antes-de-la-primera-compra-verificar-la-identidad).
+</Warning>
+
+## Enviar los datos
+
+`POST https://pilotstatus.com.br/v1/phone-lines/verification`: responde **`201`** con el [estado](#el-objeto-de-estado), en `PENDING_CONTACT`: los códigos están en camino.
+
+<ParamField header="Idempotency-Key" type="string" required>
+  Cualquier string de hasta **255 caracteres** sin caracteres de control; un UUID por envío. Ausente o en blanco → **400 `IDEMPOTENCY_KEY_REQUIRED`**; más largo, o con un carácter de control → **400 `IDEMPOTENCY_KEY_INVALID`**. Consulta [Idempotencia](#idempotencia).
+</ParamField>
+
+<ParamField body="documentType" type="string" required>
+  `"CNPJ"` o `"CPF"`.
+</ParamField>
+
+<ParamField body="documentNumber" type="string" required>
+  El CNPJ o CPF, con o sin puntuación (`11.222.333/0001-81` o `11222333000181`). Se aceptan CNPJs alfanuméricos.
+</ParamField>
+
+<ParamField body="contactEmail" type="string" required>
+  El e-mail de contacto del titular de la cuenta, hasta 254 caracteres. Recibe un código.
+</ParamField>
+
+<ParamField body="contactWhatsapp" type="string" required>
+  El número de WhatsApp del titular de la cuenta en formato internacional (código de país, código de área y número, por ejemplo `+55 11 90000-0000`); la puntuación se ignora. Recibe un código cuando `WHATSAPP` es obligatorio.
+</ParamField>
+
+<ParamField body="document" type="string" required>
+  El archivo del documento como **data URI en base64**: `data:<type>;base64,<content>`. Tipos: `application/pdf`, `image/jpeg`, `image/png`, `image/webp`; como máximo **10 MB** de archivo (unos 14 MB una vez codificado). Para un CNPJ: la tarjeta CNPJ (*Cartão CNPJ*), el contrato social o el comprobante de inscripción. Para un CPF: un documento de identidad (RG), una licencia de conducir (CNH) o el comprobante de inscripción del CPF, con el número legible.
+</ParamField>
+
+Cualquier otro campo del cuerpo se rechaza con **400 `UNKNOWN_FIELDS`**. El archivo se verifica **antes de que empiece cualquier cosa**: un tipo o tamaño incorrecto no envía ningún código y no crea nada.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines/verification" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -H "Idempotency-Key: 5f0c6d2e-9a41-4d1b-8f7e-2b3c4d5e6f70" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"documentType\": \"CNPJ\",
+    \"documentNumber\": \"11.222.333/0001-81\",
+    \"contactEmail\": \"ana@example.com\",
+    \"contactWhatsapp\": \"+55 11 90000-0000\",
+    \"document\": \"data:application/pdf;base64,$(base64 -w0 cartao-cnpj.pdf)\"
+  }"
+```
+
+```json Response (201)
+{
+  "status": "PENDING_CONTACT",
+  "canPurchase": false,
+  "verification": {
+    "id": "cmg5k0v3r0000vf8example7k",
+    "documentType": "CNPJ",
+    "documentNumber": "**.***.333/0001-**",
+    "legalName": "ACME LTDA",
+    "contact": {
+      "email": "a***@example.com",
+      "whatsapp": "+5511****0000",
+      "requiredChannels": ["WHATSAPP", "EMAIL"],
+      "confirmedChannels": [],
+      "pendingChannels": ["WHATSAPP", "EMAIL"]
+    },
+    "document": { "status": "RECEIVED" },
+    "reviewReason": null,
+    "reviewNote": null,
+    "createdAt": "2026-10-01T13:55:02.000Z",
+    "updatedAt": "2026-10-01T13:55:09.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+La solicitud responde una vez que se leyó el documento: normalmente en segundos, hasta aproximadamente un minuto. Codifica el archivo sin saltos de línea (`base64 -w0` en Linux, `base64 -i file` en macOS).
+
+**Enviar de nuevo.** Mientras la verificación sigue en `PENDING_CONTACT`, un envío nuevo la **reemplaza**; úsalo para corregir un error de tipeo: los códigos ya enviados dejan de funcionar y salen otros nuevos. Una vez que avanzó, un envío responde **409 `VERIFICATION_WRONG_STATE`** (`IN_REVIEW` o `APPROVED`, ya puedes comprar; o `NEEDS_DOCUMENT`, en ese caso [envía el documento](#enviar-un-documento-nuevo)) o **403 `VERIFICATION_REJECTED`** (habla con soporte).
+
+## Confirmar un código
+
+`POST https://pilotstatus.com.br/v1/phone-lines/verification/contact/{channel}/confirm`: `{channel}` es `whatsapp` o `email`, en **minúsculas** (cualquier otra cosa → **400 `INVALID_CONTACT_CHANNEL`**).
+
+<ParamField body="code" type="string" required>
+  El código de 6 dígitos recibido en ese canal.
+</ParamField>
+
+Responde **`200`** con el [estado](#el-objeto-de-estado). Cuando era el último código obligatorio y el documento está cargado, el estado ya trae la decisión.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/phone-lines/verification/contact/email/confirm" \
+  -H "x-api-key: ps_your_tenant_scoped_key" \
+  -H "Content-Type: application/json" \
+  -d '{ "code": "482913" }'
+```
+
+```json Response (200), último código, aprobado
+{
+  "status": "APPROVED",
+  "canPurchase": true,
+  "verification": {
+    "id": "cmg5k0v3r0000vf8example7k",
+    "documentType": "CNPJ",
+    "documentNumber": "**.***.333/0001-**",
+    "legalName": "ACME LTDA",
+    "contact": {
+      "email": "a***@example.com",
+      "whatsapp": "+5511****0000",
+      "requiredChannels": ["WHATSAPP", "EMAIL"],
+      "confirmedChannels": ["WHATSAPP", "EMAIL"],
+      "pendingChannels": []
+    },
+    "document": { "status": "RECEIVED" },
+    "reviewReason": null,
+    "reviewNote": null,
+    "createdAt": "2026-10-01T13:55:02.000Z",
+    "updatedAt": "2026-10-01T13:57:31.000Z"
+  }
+}
+```
+
+</CodeGroup>
+
+- Un código **vence 10 minutos** después de enviado (**400 `CONTACT_CODE_EXPIRED`**).
+- Un código incorrecto da **400 `CONTACT_CODE_INVALID`** y cuenta como intento; después de **5 intentos incorrectos** el código se bloquea (**429 `CONTACT_CODE_TOO_MANY_ATTEMPTS`**): [envía uno nuevo](#enviar-un-código-nuevo).
+- Un código se usa una sola vez. Reintentar una confirmación que ya tuvo éxito responde `CONTACT_CODE_INVALID`: en su lugar, lee el estado con `GET`.
+- Un canal que no está en `requiredChannels` da **400 `CONTACT_CODE_NOT_REQUIRED`**. Si todavía no hay verificación, **404 `VERIFICATION_NOT_FOUND`**.
+
+## Enviar un código nuevo
+
+`POST https://pilotstatus.com.br/v1/phone-lines/verification/contact/{channel}/send`: sin cuerpo. Envía un código nuevo por un canal obligatorio y responde **`200`** con el estado. El código nuevo reemplaza al anterior.
+
+Los primeros códigos los envía el propio envío de datos: llama a este endpoint para un código que venció, se bloqueó o no llegó.
+
+- Como máximo **un código por canal cada 60 segundos**, contando el que envió el envío de datos (**429 `CONTACT_CODE_COOLDOWN`**).
+- Solo mientras la verificación está en `PENDING_CONTACT` (**409 `VERIFICATION_WRONG_STATE`** después), y solo en un canal de `requiredChannels` (**400 `CONTACT_CODE_NOT_REQUIRED`**).
+- **503 `SUPPLIER_UNAVAILABLE`**: el código no se pudo encolar para su envío. No cuenta para el tiempo de espera: intenta de nuevo.
+
+## Enviar un documento nuevo
+
+`POST https://pilotstatus.com.br/v1/phone-lines/verification/document` con `{ "document": "data:…;base64,…" }`: las mismas reglas de archivo que el envío de datos, y cuenta para el mismo [límite de envíos](#límites). Reemplaza el documento de la verificación actual y responde **`200`** con el estado.
+
+Se acepta en dos estados:
+
+- **`PENDING_CONTACT`**: para reemplazar el documento que enviaste. Hazlo cuando `document.status` sea **`UNREADABLE`** o **`UNCLEAR`**: no pudimos leer del archivo un número confiable, así que envía una foto más nítida o el PDF. Si confirmas el último código sin reemplazarlo, la verificación pasa a revisión manual (`IN_REVIEW`, `reviewReason: "DOCUMENT_CHECK"`).
+- **`NEEDS_DOCUMENT`**: el revisor pidió otro documento (`reviewNote` puede indicar cuál). Los códigos de contacto ya se confirmaron, así que el documento nuevo lleva la verificación directamente a una decisión, en esta misma respuesta.
+
+En cualquier otro estado responde **409 `VERIFICATION_WRONG_STATE`**; sin verificación, **404 `VERIFICATION_NOT_FOUND`**.
+
+## Leer el estado
+
+`GET https://pilotstatus.com.br/v1/phone-lines/verification` responde **`200`** con el [estado](#el-objeto-de-estado) de la verificación actual del workspace. Antes de cualquier envío:
+
+```json
+{ "status": "NONE", "canPurchase": false, "verification": null }
+```
+
+### El objeto de estado
+
+Todos los endpoints de esta página responden con él.
+
+<ResponseField name="status" type="string">
+  `NONE`, `PENDING_CONTACT`, `IN_REVIEW`, `APPROVED`, `NEEDS_DOCUMENT` o `REJECTED`; consulta la tabla de abajo. El webhook [`phone_line.verification_updated`](/es/api/phone-lines/webhooks) usa los mismos valores para los últimos cuatro.
+</ResponseField>
+
+<ResponseField name="canPurchase" type="boolean">
+  Si [`POST /v1/phone-lines`](/es/api/phone-lines/purchase) está permitido ahora: `true` para `APPROVED` e `IN_REVIEW`.
+</ResponseField>
+
+<ResponseField name="verification" type="object | null">
+  `null` para `NONE`.
+</ResponseField>
+
+<ResponseField name="verification.id" type="string">
+  Identifica la verificación: es el `verificationId` del evento de webhook, y lo que te pedirá soporte.
+</ResponseField>
+
+<ResponseField name="verification.documentType" type="string">
+  `CNPJ` o `CPF`.
+</ResponseField>
+
+<ResponseField name="verification.documentNumber" type="string">
+  **Enmascarado**: `**.***.333/0001-**` (CNPJ) o `***.456.789-**` (CPF). El número completo nunca se devuelve.
+</ResponseField>
+
+<ResponseField name="verification.legalName" type="string | null">
+  La razón social del registro público (CNPJ). `null` para un CPF, y cuando no se pudo consultar el registro.
+</ResponseField>
+
+<ResponseField name="verification.contact.email" type="string">
+  El e-mail de contacto, enmascarado (`a***@example.com`).
+</ResponseField>
+
+<ResponseField name="verification.contact.whatsapp" type="string | null">
+  El WhatsApp de contacto, enmascarado (`+5511****0000`).
+</ResponseField>
+
+<ResponseField name="verification.contact.requiredChannels" type="string[]">
+  `WHATSAPP` y/o `EMAIL`: los códigos que necesita esta verificación.
+</ResponseField>
+
+<ResponseField name="verification.contact.confirmedChannels" type="string[]">
+  Los canales obligatorios ya confirmados.
+</ResponseField>
+
+<ResponseField name="verification.contact.pendingChannels" type="string[]">
+  Los canales obligatorios que todavía esperan su código.
+</ResponseField>
+
+<ResponseField name="verification.document.status" type="string">
+  `RECEIVED`, `UNREADABLE`, `UNCLEAR`, `REQUESTED` o `MISSING`; consulta la tabla de abajo.
+</ResponseField>
+
+<ResponseField name="verification.reviewReason" type="string | null">
+  Solo mientras está `IN_REVIEW`: `REGISTRY_UNAVAILABLE` (no se pudo consultar el registro de CNPJ) o `DOCUMENT_CHECK` (el documento necesita revisión). `null` en otros casos.
+</ResponseField>
+
+<ResponseField name="verification.reviewNote" type="string | null">
+  El mensaje del revisor, solo en `REJECTED` y `NEEDS_DOCUMENT`. `null` en otros casos, y también puede ser `null` en esos.
+</ResponseField>
+
+<ResponseField name="verification.createdAt" type="string">
+  ISO 8601: cuándo se envió esta verificación.
+</ResponseField>
+
+<ResponseField name="verification.updatedAt" type="string">
+  ISO 8601: su último cambio.
+</ResponseField>
+
+| `status` | Significado | `canPurchase` |
+| --- | --- | :-: |
+| `NONE` | Nunca se inició. | `false` |
+| `PENDING_CONTACT` | Esperando los códigos de contacto (y, si `document.status` lo indica, un documento mejor). | `false` |
+| `IN_REVIEW` | Terminada, esperando a una persona. | **`true`** |
+| `APPROVED` | Verificada. | **`true`** |
+| `NEEDS_DOCUMENT` | El revisor pidió otro documento. Las líneas ya compradas siguen funcionando. | `false` |
+| `REJECTED` | Rechazada. **Definitivo**: habla con soporte. Las líneas compradas mientras estaba `IN_REVIEW` se devuelven 3 días después de la decisión y sus cargos se reembolsan a la billetera ([cómo](/es/api/phone-lines/overview#antes-de-la-primera-compra-verificar-la-identidad)). | `false` |
+
+| `document.status` | Significado | Qué hacer |
+| --- | --- | --- |
+| `RECEIVED` | El documento está cargado. | Nada. |
+| `UNREADABLE` | No encontramos ningún número en el archivo. | [Enviar un documento nuevo](#enviar-un-documento-nuevo). |
+| `UNCLEAR` | Encontramos números, pero ninguno confiable. | [Enviar un documento nuevo](#enviar-un-documento-nuevo). |
+| `REQUESTED` | El revisor pidió otro documento (`status: "NEEDS_DOCUMENT"`). | [Enviar un documento nuevo](#enviar-un-documento-nuevo). |
+| `MISSING` | Todavía no hay documento: una verificación iniciada en el dashboard antes de su carga, o un envío que falló después de empezar. | [Enviar un documento nuevo](#enviar-un-documento-nuevo). |
+
+## Idempotencia
+
+El envío de datos **requiere** un `Idempotency-Key`, porque tiene efectos que un reintento no debe repetir a ciegas: envía los códigos, y un segundo envío **reemplaza** al primero (los códigos recién enviados dejan de funcionar). Durante **24 horas**:
+
+- **Misma clave, misma solicitud, la primera ya terminó** → **`200`** (no `201`) con el estado **actual** del workspace y el encabezado `Idempotent-Replayed: true`. No se envía ni se lee nada de nuevo.
+- **Misma clave mientras la primera sigue ejecutándose** → **409 `IDEMPOTENCY_KEY_IN_USE`**. Espera y vuelve a enviarla para obtener su resultado.
+- **Misma clave, solicitud distinta** (cualquier campo, el archivo incluido) → **409 `IDEMPOTENCY_KEY_REUSED`**. Usa una clave nueva para datos nuevos.
+- **No se puede verificar el registro de idempotencia** (su almacenamiento es inalcanzable o demasiado lento) → **503 `IDEMPOTENCY_UNAVAILABLE`** con un encabezado `Retry-After`. No se inició nada y no se envió ningún código: reintenta con la **misma** clave. El envío se rechaza en lugar de arriesgarse a iniciarse dos veces.
+- **Una solicitud rechazada por completo** (cualquier respuesta `4xx` o `5xx`) libera la clave: la misma clave se puede volver a enviar, y se ejecuta. Sin embargo, liberar la clave no deshace lo que ya ocurrió: un `503 SUPPLIER_UNAVAILABLE` al enviar un código de contacto llega **después** de que se creó la verificación. Esa nueva verificación ya reemplazó a cualquier anterior que siguiera en `PENDING_CONTACT`, y el código de un canal enviado antes de la falla puede haber salido ya. Lee el estado con `GET /v1/phone-lines/verification` antes de enviar de nuevo.
+
+La misma clave enviada por dos workspaces nunca colisiona. Los demás endpoints de verificación no reciben clave: una confirmación se puede reintentar con seguridad (consulta [arriba](#confirmar-un-código)), un envío de código está limitado por su tiempo de espera, y un documento reemplaza al anterior.
+
+## Límites
+
+- **10 envíos por hora por workspace**, el envío de datos y el documento juntos → **429 `RATE_LIMITED`**, con un encabezado `Retry-After` (segundos) y `retryAfterSeconds` en el cuerpo. Lo que se rechaza antes de que empiece el envío no cuenta: un campo, tipo o archivo incorrecto, un problema o una repetición de `Idempotency-Key` y, en el endpoint de documento, `404 VERIFICATION_NOT_FOUND`. Todo lo posterior cuenta, **aunque se rechace**: en el envío de datos, un CPF/CNPJ inválido (dígitos verificadores incorrectos), `REGISTRY_NOT_FOUND`, `REGISTRY_INACTIVE`, `VERIFICATION_WRONG_STATE` y `VERIFICATION_REJECTED`; en el documento, `VERIFICATION_WRONG_STATE`.
+- Códigos de contacto: válidos **10 minutos**, **5 intentos incorrectos** cada uno, **uno por canal cada 60 segundos**.
+- El archivo: PDF, JPEG, PNG o WEBP, **10 MB** como máximo.
+
+## Privacidad
+
+El documento es un dato personal. Se almacena en un bucket privado, solo los revisores de Pilot Status pueden abrirlo (cada apertura queda registrada), y ningún endpoint lo devuelve, ni el número completo del documento, ni lo que se leyó del archivo. Las respuestas enmascaran el número del documento y los contactos, y nunca devuelven el nombre del titular de un CPF.
+
+## Errores
+
+El envoltorio es el mismo de todos los [errores de líneas telefónicas](/es/api/phone-lines/overview#errores): `{ "error": "English. | Português.", "code": "…" }`; **decide en función de `code`**. Los errores de validación pueden agregar `details` (`unknownFields`, `maxLength`).
+
+| Status | `code` | Dónde | Qué pasó |
+| --- | --- | --- | --- |
+| `400` | `IDEMPOTENCY_KEY_REQUIRED` | envío | Sin `Idempotency-Key`, o solo espacios en blanco. |
+| `400` | `IDEMPOTENCY_KEY_INVALID` | envío | Clave de más de 255 caracteres, o con un carácter de control. `details.maxLength`. |
+| `400` | `INVALID_BODY` | envío, confirmación, documento | El cuerpo no es un objeto JSON. |
+| `400` | `UNKNOWN_FIELDS` | envío, confirmación, documento | Campos que este endpoint no acepta. `details.unknownFields` los indica. (El canal va en la ruta, no en el cuerpo.) |
+| `400` | `INVALID_DOCUMENT_TYPE` | envío | `documentType` no es `CNPJ` ni `CPF`. |
+| `400` | `INVALID_DOCUMENT_NUMBER` | envío | Falta el número o sus dígitos verificadores son incorrectos. |
+| `400` | `INVALID_CONTACT_EMAIL` | envío | `contactEmail` no es un e-mail válido. |
+| `400` | `INVALID_CONTACT_WHATSAPP` | envío | `contactWhatsapp` no es un número con código de país y de área. |
+| `400` | `INVALID_DOCUMENT` | envío, documento | `document` no es un data URI en base64. |
+| `400` | `DOCUMENT_TYPE_UNSUPPORTED` | envío, documento | El archivo no es PDF, JPEG, PNG ni WEBP. |
+| `413` | `DOCUMENT_TOO_LARGE` | envío, documento | El archivo supera los 10 MB. |
+| `400` | `REGISTRY_NOT_FOUND` | envío | El CNPJ no está en el registro público. |
+| `400` | `REGISTRY_INACTIVE` | envío | El CNPJ no está activo en el registro público: no se le pueden vender líneas. |
+| `400` | `INVALID_CONTACT_CHANNEL` | confirmación, envío de código | El `{channel}` de la ruta no es `whatsapp` ni `email`. |
+| `400` | `CONTACT_CODE_INVALID` | confirmación | Código incorrecto (cuenta como intento), ningún código en ese canal, o `code` no es un string. |
+| `400` | `CONTACT_CODE_EXPIRED` | confirmación | El código tiene más de 10 minutos. |
+| `400` | `CONTACT_CODE_NOT_REQUIRED` | confirmación, envío de código | El canal no está en `requiredChannels`. |
+| `403` | `VERIFICATION_REJECTED` | envío | La verificación fue rechazada. |
+| `404` | `VERIFICATION_NOT_FOUND` | confirmación, envío de código, documento | No se envió nada en este workspace. |
+| `409` | `VERIFICATION_WRONG_STATE` | envío, envío de código, documento | La verificación está en un estado que no lo permite (consulta cada endpoint). |
+| `409` | `IDEMPOTENCY_KEY_IN_USE` | envío | Una solicitud con esta clave sigue ejecutándose. |
+| `409` | `IDEMPOTENCY_KEY_REUSED` | envío | Esta clave se usó para una solicitud distinta. |
+| `429` | `RATE_LIMITED` | envío, documento | Más de 10 envíos en la hora. `Retry-After`. |
+| `429` | `CONTACT_CODE_COOLDOWN` | envío de código | Se envió un código por este canal hace menos de 60 segundos. |
+| `429` | `CONTACT_CODE_TOO_MANY_ATTEMPTS` | confirmación | 5 intentos incorrectos: envía un código nuevo. |
+| `503` | `SUPPLIER_UNAVAILABLE` | envío, envío de código | No se pudo encolar un código para su envío. Intenta de nuevo en unos minutos. |
+| `503` | `IDEMPOTENCY_UNAVAILABLE` | envío | No se pudo verificar el `Idempotency-Key`. No se inició nada y no se envió ningún código. `Retry-After`; reintenta con la misma clave. |
+
+Además, los errores de todos los endpoints de líneas telefónicas: `401`, `403 NUMBER_SCOPE_NOT_ALLOWED`, `403 PERMISSION_DENIED`, `403 WORKSPACE_MEMBERSHIP_REQUIRED`, `403 TENANT_REQUIRED`, `403 WORKSPACE_ARCHIVED` y `500 INTERNAL_ERROR`.

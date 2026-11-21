@@ -1,0 +1,105 @@
+---
+title: "Enviar un mensaje multimedia: POST /v1/messages/send"
+sidebarTitle: "Enviar multimedia"
+description: "Envía un mensaje de WhatsApp con imagen, video, documento o audio usando el modo de medios directos de POST /v1/messages/send con autenticación x-api-key."
+---
+
+# Enviar un mensaje multimedia
+
+Los medios directos son uno de los tres modos mutuamente excluyentes del endpoint de envío **único**; no existe un endpoint `/messages/media` separado:
+
+```text
+POST https://pilotstatus.com.br/v1/messages/send
+```
+
+## Solicitud
+
+Autentícate con tu API key **con alcance de número** en el encabezado `x-api-key`. Envía `media` \+ `mediaType` **sin** `templateId` y **sin** `text`.
+
+<ParamField body="destinationNumber" type="string" required>
+  Teléfono de destino en **E.164** (el `+` inicial es opcional, por ejemplo `+5511999999999`) o el BSUID del contacto. Consulta [Enviar un mensaje](/es/api/messages/send#destino-exactamente-uno).
+</ParamField>
+
+<ParamField body="media" type="string" required>
+  Una **URL http(s) pública** o un **data URI en base64** (por ejemplo `data:image/png;base64,...`). Los data URI en base64 se aceptan en números de **Meta Cloud API** y en números **no oficiales (Pilot Status web)**. En los números no oficiales, Pilot Status sube el archivo decodificado a su propio almacenamiento y envía al proveedor una URL; si esa subida falla, el mensaje falla con `MEDIA_REHOST_FAILED`. Para stickers en números no oficiales, usa una URL http(s) pública. El base64 admite hasta **50 MiB** decodificados para `document` y **16 MiB** para cualquier otro tipo; por encima de eso la solicitud se rechaza con `400`, así que envía un archivo más grande por URL.
+</ParamField>
+
+<ParamField body="mediaType" type="string" required>
+  `image`, `video`, `document`, `audio`, `voice` o `sticker`. `voice` llega como una **nota de voz (PTT)** de WhatsApp en todos los números. `audio` llega como un **archivo de audio** en números oficiales (Meta Cloud API) y como nota de voz en números no oficiales (Pilot Status web).
+</ParamField>
+
+<ParamField body="caption" type="string">
+  Pie de foto opcional para `image`, `video` y `document`; **no** se admite para `audio`, `voice` ni `sticker`. Con `audio` o `sticker`, un pie de foto devuelve `400`. Con `voice` no se rechaza, pero se descarta en números no oficiales y su visualización en números oficiales no está garantizada: no lo envíes.
+</ParamField>
+
+<ParamField body="mediaFilename" type="string">
+  Solo para `document`: el nombre de archivo que ve el destinatario (1 a 240 caracteres; `/` y `\` se reemplazan por `_`). Si se omite, el nombre toma el último segmento de la URL. Cualquier otro `mediaType` devuelve `400`. También da nombre al documento de una plantilla con encabezado `DOCUMENT`; consulta [Medios con plantillas](/es/guides/media-messages#nombrar-el-documento-de-una-plantilla).
+</ParamField>
+
+<CodeGroup>
+
+```bash Imagen con pie de foto
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/photo.jpg",
+    "mediaType": "image",
+    "caption": "Here is your receipt"
+  }'
+```
+
+```bash Documento con nombre de archivo
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/files/8f3a1c.pdf",
+    "mediaType": "document",
+    "mediaFilename": "Invoice 123.pdf",
+    "caption": "Here is your invoice"
+  }'
+```
+
+```bash Nota de voz (voice)
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/voice.ogg",
+    "mediaType": "voice"
+  }'
+```
+
+```bash Sticker
+curl -X POST "https://pilotstatus.com.br/v1/messages/send" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_your_key_here" \
+  -d '{
+    "destinationNumber": "+5511999999999",
+    "media": "https://cdn.example.com/sticker.webp",
+    "mediaType": "sticker"
+  }'
+```
+
+</CodeGroup>
+
+## Respuesta (202)
+
+```json
+{
+  "id": "msg_abc",
+  "correlationId": "corr_123",
+  "status": "QUEUED"
+}
+```
+
+## Notas
+
+- Para enviar una **nota de voz (PTT)** de WhatsApp en cualquier número, usa `voice`. Usa `audio` solo cuando quieras un **archivo de audio** en un número oficial (Meta Cloud API); en números no oficiales (Pilot Status web) `audio` también llega como nota de voz. Consulta [Audio y notas de voz](/es/guides/media-messages#audio-y-notas-de-voz).
+- `sticker` debe ser **`image/webp`** y medir **exactamente 512×512 píxeles**: estático hasta **100 KB**, animado hasta **500 KB**. Cualquier otro formato o dimensión lo rechaza WhatsApp, no esta API, así que el fallo llega en el webhook `message.failed` y no en la respuesta 202. Un sticker no acepta `caption` ni `mediaFilename` (ambos devuelven 400) y no se puede enviar como medio de plantilla.
+- En este modo **no se permiten** `buttons`, `header`, `footer` ni `variables`; para combinar medios con botones, usa un envío con plantilla (consulta [Enviar interactivo](/es/api/messages/send-interactive)).
+- Para formatos, límites de tamaño y diferencias entre proveedores, consulta la [guía de mensajes multimedia](/es/guides/media-messages); para la lista completa de parámetros, consulta [Enviar un mensaje](/es/api/messages/send).

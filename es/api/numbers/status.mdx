@@ -1,0 +1,143 @@
+---
+title: "GET /v1/numbers/{id}/status: estado de conexión"
+sidebarTitle: "Estado de conexión"
+description: "GET /v1/numbers/{id}/status: consulta en cualquier momento el estado de conexión en vivo de un número de WhatsApp específico de tu proyecto en Pilot Status."
+mode: "wide"
+---
+
+# Consultar el estado de conexión
+
+`GET /v1/numbers/{id}/status` devuelve el estado de conexión en vivo de un número de WhatsApp.
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/wa_abc/status" \
+  -H "x-api-key: ps_your_token_here"
+```
+
+Respuesta:
+
+```json
+{
+  "id": "wa_abc",
+  "state": "OPEN",
+  "stale": false,
+  "checkedAt": "2026-07-22T12:34:56.000Z"
+}
+```
+
+<Note>
+  Este endpoint refleja el mismo estado de conexión que se muestra en la página **Numbers** del panel (igual que `GET /v1/numbers/{id}/connect`).
+</Note>
+
+## Cuándo usarlo
+
+- `GET /v1/numbers` no fuerza una actualización masiva del estado de conexión: llama a este endpoint por número cuando necesites una verificación actualizada.
+- Consúltalo periódicamente después de mostrar un código QR o un código de emparejamiento para detectar cuándo el cliente completa la conexión (o usa en su lugar el webhook `number.connected`).
+
+## Estados
+
+| `state` | Significado |
+| --- | --- |
+| `OPEN` | Conectado a WhatsApp. |
+| `CLOSE` | No conectado: genera un nuevo QR con `GET /v1/numbers/{id}/connect`. Un emparejamiento todavía en curso también se lee como `CLOSE`; solo una conexión completada cambia a `OPEN`. El proveedor también puede informar su propio valor distinto de `OPEN` (por ejemplo `CONNECTING`), que se transmite tal cual: trata cualquier valor distinto de `OPEN` como no conectado. |
+| `PENDING` | Número de Meta esperando a que el usuario final termine el diálogo de Embedded Signup abierto por `POST /v1/numbers/remote-pairing`. Incluye `expiresAt`. Sigue consultando. |
+| `EXPIRED` | Esa ventana de registro se cerró sin completarse. Incluye `expiresAt`. **Terminal**: deja de consultar y crea un nuevo enlace de emparejamiento. |
+
+Trata `state === "OPEN"` como el indicador definitivo de "listo para enviar" en cuanto a la **conexión**. Un cargo de número extra impago bloquea el envío sin cambiarlo: consulta la nota de abajo.
+
+<Warning>
+  Un `200` **no** significa conectado. Un número creado mediante el emparejamiento remoto de Meta responde `200` con `PENDING` desde el momento en que se genera el enlace. Decide según `state`, nunca solo según el estado HTTP.
+</Warning>
+
+<Note>
+  **`/status` no informa un cargo de número extra impago.** Este endpoint responde solo sobre la conexión, y su respuesta no incluye `extraChargeUnpaidSince` ni `extraChargeDisconnectAt`. Un número cuyo [cargo de número extra](/es/api/numbers/pay) fue rechazado sigue respondiendo `OPEN` aquí, mientras que cada envío desde él se rechaza con `409 NUMBER_BLOCKED` (`reason: "extra_charge_unpaid"`). Lee esos dos campos en `GET /v1/numbers` o en [`GET /v1/numbers/{id}`](/es/api/numbers/list#cargo-de-número-extra-sin-pagar). Allí son campos de primer nivel del número, no forman parte de `health`.
+</Note>
+
+## Emparejamiento remoto de Meta: `PENDING`, `EXPIRED` y `expiresAt`
+
+`POST /v1/numbers/remote-pairing` con `provider: "META"` crea el número de inmediato,
+así que aparece como "esperando conexión" mientras tu usuario final todavía está dentro
+del diálogo de Facebook. Consultar su estado durante esa ventana responde:
+
+```json
+{
+  "id": "num_01HZX...",
+  "state": "PENDING",
+  "stale": false,
+  "expiresAt": "2026-08-04T18:27:31.000Z"
+}
+```
+
+`expiresAt` es el final de la ventana de emparejamiento. Una vez pasado, la misma llamada
+responde `state: "EXPIRED"`: el número nunca se conectará por sí solo, así que deja de
+consultar y genera un nuevo enlace.
+
+Un número en este estado **no se factura** (se excluye del conteo de números de tu plan
+y de tu capacidad) y se **elimina automáticamente 24 h** después de su creación, para que
+los registros abandonados no se acumulen en `GET /v1/numbers`.
+
+<Note>
+  Antes, ambos casos respondían `404`, sin poder distinguirse de un id inexistente, lo que
+  dejaba a los ciclos de consulta sin forma de diferenciar "todavía esperando" de "ya no existe".
+</Note>
+
+## Qué tan reciente es la respuesta: `stale`, `checkedAt`, `lastKnownAt`
+
+Cada `200` incluye `stale`, además de **exactamente una** de las dos marcas de tiempo:
+
+| Campo | Tipo | Presente cuando |
+| --- | --- | --- |
+| `stale` | boolean | Siempre. |
+| `checkedAt` | string (ISO 8601) | `stale: false`: el proveedor respondió esta consulta, así que `state` es una lectura en vivo tomada en este instante. |
+| `lastKnownAt` | string (ISO 8601) | `stale: true`: el proveedor **no** respondió esta consulta, así que `state` es el valor que teníamos guardado, actualizado por última vez en este instante. |
+
+`stale: true` siempre viene con `state: "OPEN"`. El valor recordado solo se entrega cuando el estado guardado ya era `OPEN`; para un número que no estaba `OPEN`, un proveedor que no responde produce un `503` (ver abajo).
+
+**Los números de Meta (Cloud API oficial)** no incluyen **ninguna** de las dos marcas de tiempo: se gestionan de forma remota, no se sondea nada para ellos, así que no hay lectura que fechar. En su lugar incluyen el veredicto de envío:
+
+```json
+{
+  "id": "num_01HZX...",
+  "state": "OPEN",
+  "stale": false,
+  "sendable": true,
+  "health": {
+    "status": "HEALTHY",
+    "code": null,
+    "reason": null,
+    "qualityRating": "GREEN",
+    "metaStatus": "CONNECTED"
+  }
+}
+```
+
+`sendable` y `health` se leen de la misma fila de salud que [`GET /v1/numbers/{id}`](/es/api/numbers/list#el-bloque-health); un número sin fila de salud responde `sendable: true` y `health.status: "HEALTHY"`.
+
+<Warning>
+  **En un número de Meta, este endpoint no es una verificación de salud.** Una vez que el número existe con un phone id de Meta, `state` aquí es **siempre `OPEN`**: la salud no lo cambia. Un número que Meta marcó como `RESTRICTED`, o cuya calidad bajó a `RED`, sigue respondiendo `state: "OPEN"` aquí mientras `GET /v1/numbers` y `GET /v1/numbers/{id}` responden `DISCONNECTED` para el mismo número en el mismo instante. La misma respuesta sí lo informa, en `sendable: false` y `health.code`: lee esos campos, no `state`.
+
+  Así que `/status` en un número de Meta responde exactamente una pregunta: *¿este número existe y ya pasó la ventana de registro?* (`PENDING` → `EXPIRED` → `OPEN`). Para saber si actualmente estamos enviando desde el número, lee `sendable` aquí, o `health.sendable` en [`GET /v1/numbers/{id}`](/es/api/numbers/list#el-bloque-health): ese es el campo del que se deriva el `state` de las otras dos rutas. Es **nuestro** veredicto sobre el número, no la respuesta de Meta sobre el próximo envío; las advertencias están en ese campo.
+</Warning>
+
+<Note>
+  En un número **web nativo (emparejado por QR)** nada de esto aplica: `/status` realmente sondea al proveedor, y `stale` / `checkedAt` / `lastKnownAt` describen ese sondeo.
+</Note>
+
+## Errores
+
+| Estado | Cuerpo | Significado |
+| --- | --- | --- |
+| `404` | `{ "error": "…" }` | No existe ese número para esta API key. **Sin campo `code`.** |
+| `503` | `{ "error": "…", "code": "…", "state": "…" }` | La verificación de conexión falló. `state` incluye el último estado guardado para el número. |
+
+El `code` de un `503` te indica si vale la pena reintentar:
+
+| `code` | Qué hacer |
+| --- | --- |
+| `PROVIDER_NOT_CONFIGURED` | **Permanente.** Deja de consultar y escálalo a un operador: reintentar no lo soluciona. |
+| `UPSTREAM_TIMEOUT` | Transitorio. Espera y reintenta. |
+| `UPSTREAM_ERROR` | Transitorio. Espera y reintenta. |
+
+<Note>
+  **Corregido:** este endpoint respondía `503` "WhatsApp provider not configured" para **todos** los números que no estaban ya `OPEN` cada vez que el número propio de la plataforma estaba desconectado. Ese acoplamiento ya no existe: un `503` ahora describe al proveedor propio de este número.
+</Note>
