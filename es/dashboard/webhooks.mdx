@@ -1,0 +1,149 @@
+---
+title: "Pantalla de webhooks en el panel de Pilot Status"
+sidebarTitle: "Webhooks"
+description: "La pantalla /webhooks: crea, edita, desactiva y elimina webhooks por número, lee el secreto de firma (se muestra UNA vez después de crear un webhook y solo se recupera generando uno nuevo en Edit webhook), revisa los logs de entrega, reenvía entregas fallidas y reanuda un destino pausado."
+mode: "wide"
+---
+
+La pantalla **Webhooks** es donde diriges los eventos de un número de WhatsApp a tu propio endpoint HTTPS y ves lo que se entregó. Es la versión de panel de la [API de webhooks](/es/api/webhooks/configure); los payloads en sí están en la [referencia de eventos](/es/api/webhooks/events).
+
+## Cómo llegar
+
+Barra lateral → **Webhooks**, o ve directo a `/webhooks` (atajo de teclado **W** en la paleta de comandos). `/webhooks?new=1` abre directamente el modal **New Webhook**.
+
+**Quién la ve:** **Owner** y **Admin**. Tanto leer la lista como cualquier cambio en ella (crear, editar, activar/desactivar, eliminar, generar un secreto nuevo, reenviar, reanudar la entrega) requieren los permisos de webhooks, que solo tienen esos dos roles. Agents y Analysts no ven la opción en el menú.
+
+<Note>
+  La pantalla trabaja sobre el número seleccionado en el encabezado. Cada webhook pertenece a **un número**, así que la lista, los eventos ofrecidos y los logs de entrega son siempre los del número del encabezado. Cambia el número en el encabezado para ver los webhooks de otro número.
+</Note>
+
+## Qué ves
+
+- **Acciones del encabezado**: **New Webhook** siempre; con un webhook seleccionado, también **Edit webhook**, **Deactivate** / **Activate** y **Delete**. **New Webhook** está deshabilitado mientras está seleccionado el número de prueba compartido (_"Test number: select one of your numbers to create a webhook."_).
+- **Tarjetas de estadísticas**: sin webhook seleccionado, **Total Webhooks**, **Active**, **Inactive**. Con un webhook seleccionado pasan a las entregas de ese webhook: **Total Events**, **Success**, **Failed**.
+- **Dos tarjetas de ayuda**: un enlace a la **Docs** (eventos y payloads) y una referencia a [WebhookGuru](https://webhookguru.online/) para probar y depurar un endpoint.
+- **Selector de webhook** (_Select webhook..._) y, una vez seleccionado uno, el **log de entregas** con sus filtros.
+
+Si la lista no carga, ves **"Could not load your webhooks"** con **Try again**: esto **no** significa que no tengas ninguno, así que no crees uno nuevo por eso. Cuando el número aún no está aprobado para producción, el mensaje lo indica en su lugar; los webhooks de tus otros números siguen funcionando.
+
+## Crear un webhook: modal "New Webhook"
+
+| Campo | Notas |
+| --- | --- |
+| **Name** (opcional) | Una etiqueta para ti, por ejemplo _Main WhatsApp_. Hasta 100 caracteres: el campo se detiene en el límite y muestra el conteo (por ejemplo, *14/100*). |
+| **URL** \* | Tu endpoint (se recomienda `https://`; se acepta `http://`). Obligatorio. Se rechazan las direcciones que apuntan dentro de una red privada: `localhost`, loopback o IP privadas, o un nombre de host sin punto. |
+| **Events** | Los eventos que recibe este webhook, desde una lista con búsqueda (**Select events**, **Search event**). La lista depende del proveedor del número (los números de WhatsApp Web y los de Meta Cloud API emiten eventos distintos); queda vacía hasta que se resuelve el número del encabezado. |
+
+**Select all** suscribe el webhook a **All events** (`*`): todo lo que el proveedor del número emite hoy **y** cualquier evento que se agregue después. El campo muestra entonces **All events** y la leyenda **All events selected**. Desmarcar un evento mientras **All events** está activo reemplaza el comodín por la lista explícita de los eventos restantes: a partir de ese momento, los nuevos tipos de evento ya no se incluyen automáticamente. En otro caso, la leyenda cuenta lo que elegiste (_"N event(s) selected"_) o dice **No event selected**.
+
+El modal también muestra estos avisos:
+
+- **Read status** (`message.read`) solo se dispara cuando el contacto que recibió el mensaje tiene activadas las confirmaciones de lectura en WhatsApp.
+- **"All events" (`*`) no incluye "Lead received (Meta Ads)"**: lleva datos personales y solo se envía si marcas ese evento explícitamente. Marcarlo con **All events** activo mantiene el comodín y agrega el evento de lead junto a él.
+- Cuando marcas `message.received` pero no `message.reply` (y el número lo ofrece), una advertencia te recuerda que _"Messages that reply to another are delivered as message.reply, not message.received. Without subscribing to message.reply, you will not receive them."_
+
+Cualquier evento de la lista, incluidos los de grupos y canales, se puede elegir en cualquier plan.
+
+Haz clic en **Create Webhook** (el aviso dice **Webhook created!**). Un número puede tener más de un webhook; los rechazos son la misma URL exacta dos veces en el mismo número, el límite de **50 webhooks por workspace** y una URL rechazada (ver arriba). El aviso de error muestra el motivo que dio el servidor, para que sepas qué cambiar. Consulta [Cuántos webhooks por número](/es/api/webhooks/configure#cuántos-webhooks-por-número).
+
+### El secreto de firma: se muestra una vez
+
+Justo después de crearlo se abre el diálogo **Signing secret** con el secreto en claro, la nota _"Shown once. Store it now — no read returns it again."_ y dos botones: **Copy** (el aviso dice **Secret copied**) y **Got it**.
+
+<Warning>
+  **El secreto de firma se muestra una sola vez.** Cópialo antes de cerrar el diálogo: **Got it**, el ícono de cerrar y un clic fuera del diálogo lo cierran para siempre. Si **Copy** no hace nada en tu navegador, selecciona el secreto en pantalla y cópialo a mano. Ni el panel, ni la API, ni el soporte de Pilot Status pueden mostrártelo de nuevo: no se guarda en ningún lugar desde donde puedas volver a leerlo.
+
+  **¿Lo perdiste?** Abre el webhook → **Edit webhook** → **Generate a new secret**. Eso crea un secreto nuevo y lo muestra una vez, en el mismo diálogo.
+</Warning>
+
+Cada entrega lleva el header `x-pilot-status-signature`: el **HMAC-SHA256 del cuerpo crudo de la solicitud**, codificado en hex, con este secreto como clave. Cómo verificarlo en tu receptor: [Verificar la firma](/es/api/webhooks/configure#verificar-la-firma).
+
+## Editar un webhook: modal "Edit Webhook"
+
+Selecciona el webhook y haz clic en **Edit webhook**. Cambias **Name**, **URL** y **Events** con los mismos campos de arriba y luego **Save** (**Webhook updated!**). Si se rechaza el guardado, el aviso de error indica el motivo que dio el servidor (por ejemplo, una URL rechazada, o la misma URL ya usada por otro webhook de este número); de lo contrario, dice **Failed to update webhook**.
+
+En la parte superior del modal, el bloque **Signing secret** muestra el estado de firma del webhook:
+
+- **Deliveries signed**: el webhook tiene un secreto.
+- **Unsigned**: el webhook es anterior a la firma (creado antes del 2026-09-15); sus entregas salen sin `x-pilot-status-signature`. Generar un secreto activa la firma.
+
+**Generate a new secret** (Owner y Admin, como cualquier cambio en esta pantalla) pide confirmación en un cuadro del navegador: _"Generating a new secret invalidates the current one IMMEDIATELY — deliveries start signing with the new one and the old one stops working. Continue?"_
+
+<Warning>
+  Generar un secreto nuevo invalida el actual **de inmediato**: no hay superposición ni período de gracia. Las entregas empiezan a firmarse con el secreto nuevo y el anterior deja de verificar en el momento en que confirmas. Actualiza tu receptor enseguida (o acepta ambos secretos durante un minuto) para no rechazar entregas reales.
+</Warning>
+
+El aviso dice **New secret generated** y el secreto nuevo aparece una vez en el diálogo **Signing secret**, exactamente igual que después de crearlo (mismos **Copy** / **Got it**, misma regla de "se muestra una vez"). En un webhook sin firma, así es también como activas la firma. Si falla, el aviso dice **Could not generate the secret**.
+
+## Activar, desactivar, eliminar
+
+- **Deactivate** mantiene el webhook y deja de entregarle eventos; **Activate** lo vuelve a encender. Es tu decisión, distinto de un destino pausado (más abajo).
+- **Delete** abre **Delete Webhook** (_"Are you sure you want to delete the webhook …"_). Eliminar es permanente: la suscripción desaparece y un webhook creado de nuevo recibe un secreto nuevo.
+
+## Logs de entrega
+
+Elige un webhook en el selector para ver sus entregas, de la más reciente a la más antigua. Al seleccionarlo, el rango de fechas empieza en **hoy, desde las 00:00 hasta el minuto actual**, para que veas primero las entregas de hoy. Columnas: **Timestamp**, **Event**, **Status** (`SUCCESS` / `FAILED`), **HTTP Code**, **Duration**. Si no hay nada en el rango, la tabla dice **No events recorded**.
+
+Filtros:
+
+- **Status**: **All**, **Success**, **Failed**.
+- **Filter by event**: los eventos a los que este webhook está suscrito, por nombre. Un webhook con **All events** solo ofrece `*` aquí, así que deja este filtro en **All** para él y acota por estado y fecha.
+- **From** / **To**: selectores de fecha y hora, con los atajos **Today (full day)** y **Yesterday (full day)** (definen de 00:00 a 23:59 de ese día).
+- **Clear filters** reinicia todo, incluida la selección del webhook.
+
+La tabla carga 50 entregas por vez y carga más a medida que te desplazas; las entregas nuevas aparecen solas mientras miras.
+
+<Note>
+  Los filtros de evento y fecha los aplica el servidor. El filtro **Status**, las tarjetas **Total Events** / **Success** / **Failed** y el pie _"Showing X of Y events"_ funcionan sobre las entregas ya cargadas en la página (Y es cuántas están cargadas, no el historial completo del rango). Desplázate hacia abajo para cargar entregas más antiguas en los conteos, o acota el rango de fechas.
+</Note>
+
+### Modal Event Details
+
+Haz clic en una fila para abrir **Event Details**: **Event**, **Status**, **HTTP Code**, **Timestamp**, **Duration**, **Webhook**, el **Payload** que se envió (con **Copy**) y, cuando tu endpoint respondió con un cuerpo, la **Response**.
+
+**Replay**: en una entrega `FAILED`, el modal muestra **Replay** (Owner y Admin). Reenvía el payload guardado a la URL actual del webhook, firmado con su secreto actual, como una entrega nueva que aparece como una fila nueva en el log. El aviso dice **Delivery replayed**, o **Failed to replay delivery** si no se pudo encolar (por ejemplo, una entrega sin payload guardado). Un miembro restringido a algunos números solo puede reenviar entregas de un webhook vinculado a uno de sus números. Las entregas exitosas no tienen botón **Replay**.
+
+## Cuando la entrega está pausada
+
+Si tu endpoint rechaza casi todo (tasa de éxito igual o menor al 20% en las últimas 50 entregas, después de al menos 20), Pilot Status **pausa la entrega a ese destino** para dejar de saturarlo. Esto no es lo mismo que **Deactivate**: tú no apagaste nada.
+
+Qué ves:
+
+- Con el webhook seleccionado, un banner ámbar **"Delivery paused for this destination"**: indica la tasa de éxito, cuántos eventos están **retenidos para reenvío** y cuántos se perdieron.
+- Con otro webhook seleccionado, un banner **"N destination(s) with delivery paused"** que los enumera; haz clic para ir al primero.
+
+Pilot Status sigue probando el destino por su cuenta: cada 5 minutos deja pasar **una** entrega. En cuanto una tiene éxito, la entrega se reanuda sola y los eventos retenidos (guardados hasta 48 horas) salen en su próximo reintento horario.
+
+No tienes que esperar eso: corrige tu endpoint y haz clic en **Resume delivery**. Hasta 1.000 eventos retenidos se adelantan y se reenvían **espaciados** (unos 5 por segundo por destino, así que 1.000 tardan aproximadamente 3 a 4 minutos), no todos a la vez; el aviso dice _"Delivery resumed — N event(s) being resent now"_. Lo que supere 1.000 queda retenido y sale en su propio reintento horario; no se descarta nada.
+
+### A dónde va la alerta de pausa
+
+El **Owner** de la cuenta recibe una alerta en el momento en que se pausa la entrega, **siempre por e-mail** y por **WhatsApp** solo si el Owner tiene un teléfono verificado en la cuenta, con recordatorios a la 1, 6 y 24 horas mientras siga pausada. El enlace de la alerta abre `/webhooks?webhook=<id>`, que cambia el encabezado al número de ese webhook y se desplaza hasta el banner. Si el enlace pertenece a otro workspace, ves _"We could not find this webhook in this workspace."_
+
+Cuando el Owner no tiene WhatsApp registrado, la pantalla muestra **"Paused-destination alerts go out by e-mail only"**; haz clic para agregar el número en **Profile → Information**.
+
+## Enlaces directos
+
+| URL | Abre |
+| --- | --- |
+| `/webhooks?new=1` | El modal **New Webhook**. |
+| `/webhooks?edit=<webhookId>` | El modal **Edit Webhook** de ese webhook. |
+| `/webhooks?webhook=<webhookId>` | El webhook seleccionado, en su número, con el banner de pausa a la vista (el enlace que usan las alertas de pausa). |
+
+Para `?webhook=`, la pantalla primero busca el webhook en el workspace actual, cambia el encabezado a un número al que el webhook está vinculado (mantiene el número actual si el webhook está vinculado a él), selecciona el webhook y se desplaza hasta el banner. Si el webhook no está vinculado a ningún número que puedas seleccionar, se abre en su lugar el modal **Edit Webhook**. Si tu sesión estaba cerrada, primero inicias sesión y llegas al mismo enlace. `?new=1` requiere el mismo permiso que **New Webhook**.
+
+## Hazlo por API / MCP
+
+| Acción en el panel | API | Herramienta MCP |
+| --- | --- | --- |
+| Listar webhooks | [`GET /v1/webhooks`](/es/api/webhooks/configure#endpoints) | `webhooks_list` |
+| Ver un webhook | `GET /v1/webhooks/{id}` | `webhook_get` |
+| New Webhook | `POST /v1/webhooks` (el `201` trae el `secret` una vez) | `webhooks_create` |
+| Edit / Activate / Deactivate | `PATCH /v1/webhooks/{id}` (`name`, `url`, `events`, `active`) | `webhooks_update` |
+| Delete | `DELETE /v1/webhooks/{id}` | `webhooks_delete` |
+| Logs de entrega | [`GET /v1/webhooks/{id}/logs`](/es/api/webhooks/configure#leer-los-registros-de-entrega) | `webhook_events` |
+| Generar un secreto nuevo | [`POST /v1/webhooks/{id}/rotate-secret`](/es/api/webhooks/configure#verificar-la-firma) | `webhooks_rotate_secret` |
+| Reanudar la entrega | `POST /v1/webhooks/{id}/reactivate` | `webhooks_reactivate` |
+| Reenviar una entrega fallida | — | **Solo en el panel** |
+
+Relacionado: [Referencia de eventos de webhook](/es/api/webhooks/events) · [Configurar webhooks](/es/api/webhooks/configure) · [Webhooks de workspace](/es/api/workspace-webhooks) (eventos a nivel de workspace, configurados en la pantalla [**Workspace keys**](/es/dashboard/api-keys)).
