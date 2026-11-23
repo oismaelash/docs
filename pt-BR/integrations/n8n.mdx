@@ -1,7 +1,7 @@
 ---
 title: "n8n"
 sidebarTitle: "n8n"
-description: "Automatize o WhatsApp no n8n com o node oficial do Pilot Status: instale, receba eventos com o node Trigger e importe cinco workflows prontos."
+description: "Automatize o WhatsApp no n8n com o node oficial do Pilot Status: instale, receba eventos com o node Trigger e importe workflows prontos para todo tipo de número."
 mode: "wide"
 ---
 
@@ -10,7 +10,7 @@ O node oficial da comunidade `n8n-nodes-pilot-status` traz dois nodes para o n8n
 - **Pilot Status**: chama a API pública `/v1` para enviar mensagens e templates, listar logs e gerenciar números, templates, Flows, grupos e mais.
 - **Pilot Status Trigger**: recebe os eventos do seu webhook e inicia um workflow.
 
-Esta página mostra como configurar os dois e traz cinco workflows para importar e adaptar. Cada workflow foi importado no n8n e conferido contra a definição dos nodes, e a lógica de roteamento foi executada com payloads de exemplo dos dois formatos de webhook.
+Esta página mostra como configurar os dois e traz workflows para importar e adaptar: um para começar com cada tipo de número (API Pilot Status, layer Evolution GO, layer Evolution v2, oficial Meta) e cinco receitas. Cada workflow foi importado no n8n e conferido contra a definição dos nodes, e a lógica de roteamento foi executada com payloads de exemplo de todos os formatos de webhook.
 
 ## Instale o node
 
@@ -53,9 +53,11 @@ O Trigger repassa o corpo entregue sem alterar nada: `$json` é exatamente o que
 
 O que chega depende de como o número foi conectado ([detalhes](/pt-BR/api/webhooks/events)):
 
-| Número | Corpo que o Trigger recebe | Exemplo de campo |
+| Número | Corpo que o Trigger recebe | Texto recebido em |
 | --- | --- | --- |
-| **QR code (não oficial)** | Eventos do Pilot Status: `{ event, data }` | `$json.data.content` |
+| **API Pilot Status (não oficial, QR code)** | Eventos do Pilot Status: `message.received`, `message.reply`, … | `$json.data.content` |
+| **Layer Evolution GO (não oficial)** | Eventos do Evolution GO: `Message`, `SendMessage`, `Receipt`, … | `$json.data.Message.conversation` |
+| **Layer Evolution v2 (não oficial)** | Eventos do Evolution v2: `messages.upsert`, `messages.update`, … | `$json.data.message.conversation` |
 | **Meta Cloud API (oficial)** | Envelope nativo da Meta: `{ object, entry }` | `$json.entry[0].changes[0].value.messages[0].text.body` |
 
 <Warning>
@@ -66,11 +68,11 @@ O que chega depende de como o número foi conectado ([detalhes](/pt-BR/api/webho
   **Uma resposta chega como `message.reply`, não como `message.received`.** Em número por QR code, uma mensagem que cita outra, incluindo o toque num botão de template, dispara só `message.reply`. Um Trigger em **Message Received** nunca vê o toque no botão.
 </Warning>
 
-Para não escrever cada workflow duas vezes, as receitas abaixo começam com um node Code **Normalize**. Ele transforma os dois formatos no mesmo item simples:
+Para não escrever cada workflow quatro vezes, os workflows abaixo começam com um node Code **Normalize**. Ele transforma os quatro formatos no mesmo item simples:
 
 | Campo | Significado |
 | --- | --- |
-| `source` | `canonical` (número por QR code) ou `meta` (número oficial) |
+| `source` | `pilot-status`, `evolution-go`, `evolution-v2` ou `meta` |
 | `isInbound` | `true` só para mensagem enviada pelo contato. Status e o eco dos seus próprios envios são `false` |
 | `from` | o número do contato em E.164 (`+5511999999999`) |
 | `name` | o nome do contato no WhatsApp, quando conhecido |
@@ -79,10 +81,40 @@ Para não escrever cada workflow duas vezes, as receitas abaixo começam com um 
 | `quotedMessageId` | a mensagem respondida, quando houver |
 
 ```javascript Normalize (node Code)
-// Turns both webhook formats into the same flat item:
-// - QR-code (unofficial) numbers send { event, data }
+// Turns every webhook format into the same flat item:
+// - Pilot Status API (QR code) numbers send { event, data }
+// - Evolution GO layer numbers send Evolution GO events ("Message", "SendMessage", ...)
+// - Evolution v2 layer numbers send Evolution v2 events ("messages.upsert", ...)
 // - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }
+const phoneOf = (jid) =>
+  typeof jid === 'string' && jid.endsWith('@s.whatsapp.net') ? '+' + jid.split('@')[0].split(':')[0] : '';
+
+// Evolution GO and v2 carry the same WhatsApp message object
+const readWaMessage = (m = {}) => ({
+  text:
+    m.conversation ??
+    m.extendedTextMessage?.text ??
+    m.buttonsResponseMessage?.selectedDisplayText ??
+    m.templateButtonReplyMessage?.selectedDisplayText ??
+    m.listResponseMessage?.title ??
+    m.imageMessage?.caption ??
+    m.videoMessage?.caption ??
+    '',
+  buttonId:
+    m.buttonsResponseMessage?.selectedButtonId ??
+    m.templateButtonReplyMessage?.selectedId ??
+    m.listResponseMessage?.singleSelectReply?.selectedRowId ??
+    '',
+  quotedMessageId:
+    m.extendedTextMessage?.contextInfo?.stanzaId ??
+    m.buttonsResponseMessage?.contextInfo?.stanzaId ??
+    m.templateButtonReplyMessage?.contextInfo?.stanzaId ??
+    m.listResponseMessage?.contextInfo?.stanzaId ??
+    '',
+});
+
 return $input.all().map(({ json }) => {
+  // Meta Cloud API (official)
   if (json.entry) {
     const value = json.entry[0]?.changes?.[0]?.value ?? {};
     const msg = value.messages?.[0];
@@ -107,10 +139,43 @@ return $input.all().map(({ json }) => {
       },
     };
   }
+
+  // Evolution v2 layer
+  if (json.event === 'messages.upsert') {
+    const d = json.data ?? {};
+    const jid = d.key?.remoteJidAlt || d.key?.remoteJid;
+    const from = phoneOf(jid);
+    return {
+      json: {
+        source: 'evolution-v2',
+        isInbound: Boolean(from) && !d.key?.fromMe,
+        from,
+        name: d.pushName ?? '',
+        ...readWaMessage(d.message),
+      },
+    };
+  }
+
+  // Evolution GO layer
+  if (json.event === 'Message' || json.event === 'MESSAGES_UPSERT') {
+    const info = json.data?.Info ?? {};
+    const from = phoneOf(info.Chat) || phoneOf(info.SenderAlt);
+    return {
+      json: {
+        source: 'evolution-go',
+        isInbound: Boolean(from) && !info.IsFromMe && !info.IsGroup,
+        from,
+        name: info.PushName ?? '',
+        ...readWaMessage(json.data?.Message),
+      },
+    };
+  }
+
+  // Pilot Status API (QR code)
   const data = json.data ?? {};
   return {
     json: {
-      source: 'canonical',
+      source: 'pilot-status',
       isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,
       from: data.from ?? '',
       name: data.participantName ?? '',
@@ -133,12 +198,609 @@ return $input.all().map(({ json }) => {
   O workflow responde **pelo número da credencial**. Cadastre a URL do Trigger nesse mesmo número: se o webhook é do número A e a credencial do número B, o contato escreve para A e recebe a resposta de B.
 </Note>
 
+## Comece pelo seu tipo de número
+
+Cada workflow abaixo responde todo texto que um contato envia com `Recebemos sua mensagem: <o texto dele>`. Importe o do seu número para ver os eventos chegando e depois siga para as receitas. Os quatro começam igual, **Pilot Status Trigger → Normalize → Inbound text?**; só a resposta muda.
+
+<Tabs>
+  <Tab title="API Pilot Status">
+    Número conectado por QR code no painel. A resposta sai pelo node **Pilot Status** (`POST /v1/messages/send`), com uma chave `ps_` na credencial.
+
+    <Accordion title="JSON do workflow — API Pilot Status">
+    ```json
+    {
+      "name": "Pilot Status - Início rápido: número da API Pilot Status",
+      "nodes": [
+        {
+          "parameters": {
+            "event": "*"
+          },
+          "id": "fb35afa8-5ba3-4c90-9925-d052cf4ff1ea",
+          "name": "Pilot Status Trigger",
+          "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
+          "typeVersion": 1,
+          "position": [
+            0,
+            0
+          ],
+          "webhookId": "2bafc493-425e-4737-990e-8ddd02e04056"
+        },
+        {
+          "parameters": {
+            "jsCode": "// Turns every webhook format into the same flat item:\n// - Pilot Status API (QR code) numbers send { event, data }\n// - Evolution GO layer numbers send Evolution GO events (\"Message\", \"SendMessage\", ...)\n// - Evolution v2 layer numbers send Evolution v2 events (\"messages.upsert\", ...)\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nconst phoneOf = (jid) =>\n  typeof jid === 'string' && jid.endsWith('@s.whatsapp.net') ? '+' + jid.split('@')[0].split(':')[0] : '';\n\n// Evolution GO and v2 carry the same WhatsApp message object\nconst readWaMessage = (m = {}) => ({\n  text:\n    m.conversation ??\n    m.extendedTextMessage?.text ??\n    m.buttonsResponseMessage?.selectedDisplayText ??\n    m.templateButtonReplyMessage?.selectedDisplayText ??\n    m.listResponseMessage?.title ??\n    m.imageMessage?.caption ??\n    m.videoMessage?.caption ??\n    '',\n  buttonId:\n    m.buttonsResponseMessage?.selectedButtonId ??\n    m.templateButtonReplyMessage?.selectedId ??\n    m.listResponseMessage?.singleSelectReply?.selectedRowId ??\n    '',\n  quotedMessageId:\n    m.extendedTextMessage?.contextInfo?.stanzaId ??\n    m.buttonsResponseMessage?.contextInfo?.stanzaId ??\n    m.templateButtonReplyMessage?.contextInfo?.stanzaId ??\n    m.listResponseMessage?.contextInfo?.stanzaId ??\n    '',\n});\n\nreturn $input.all().map(({ json }) => {\n  // Meta Cloud API (official)\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n\n  // Evolution v2 layer\n  if (json.event === 'messages.upsert') {\n    const d = json.data ?? {};\n    const jid = d.key?.remoteJidAlt || d.key?.remoteJid;\n    const from = phoneOf(jid);\n    return {\n      json: {\n        source: 'evolution-v2',\n        isInbound: Boolean(from) && !d.key?.fromMe,\n        from,\n        name: d.pushName ?? '',\n        ...readWaMessage(d.message),\n      },\n    };\n  }\n\n  // Evolution GO layer\n  if (json.event === 'Message' || json.event === 'MESSAGES_UPSERT') {\n    const info = json.data?.Info ?? {};\n    const from = phoneOf(info.Chat) || phoneOf(info.SenderAlt);\n    return {\n      json: {\n        source: 'evolution-go',\n        isInbound: Boolean(from) && !info.IsFromMe && !info.IsGroup,\n        from,\n        name: info.PushName ?? '',\n        ...readWaMessage(json.data?.Message),\n      },\n    };\n  }\n\n  // Pilot Status API (QR code)\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'pilot-status',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
+          },
+          "id": "a252f9bb-4739-4a77-83e3-d357bc1509de",
+          "name": "Normalize",
+          "type": "n8n-nodes-base.code",
+          "typeVersion": 2,
+          "position": [
+            220,
+            0
+          ]
+        },
+        {
+          "parameters": {
+            "conditions": {
+              "options": {
+                "caseSensitive": true,
+                "leftValue": "",
+                "typeValidation": "loose",
+                "version": 2
+              },
+              "conditions": [
+                {
+                  "id": "977e18b1-24e8-4f49-8b47-029e0eb64c32",
+                  "leftValue": "={{ $json.isInbound }}",
+                  "rightValue": "",
+                  "operator": {
+                    "type": "boolean",
+                    "operation": "true",
+                    "singleValue": true
+                  }
+                },
+                {
+                  "id": "46e2f56f-0ec6-4cf7-97c4-2ee308bb378e",
+                  "leftValue": "={{ $json.text }}",
+                  "rightValue": "",
+                  "operator": {
+                    "type": "string",
+                    "operation": "notEmpty",
+                    "singleValue": true
+                  }
+                }
+              ],
+              "combinator": "and"
+            },
+            "options": {}
+          },
+          "id": "0e15a19c-bf58-4268-b21f-d8f5fc6d60b9",
+          "name": "Inbound text?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 2.2,
+          "position": [
+            440,
+            0
+          ]
+        },
+        {
+          "parameters": {
+            "resource": "message",
+            "operation": "send",
+            "destinationNumber": "={{ $json.from }}",
+            "additionalFields": {
+              "text": "=Recebemos sua mensagem: {{ $json.text }}"
+            }
+          },
+          "id": "581e715f-40d5-4490-b13f-377c8e9b95cd",
+          "name": "Reply",
+          "type": "n8n-nodes-pilot-status.pilotStatus",
+          "typeVersion": 1,
+          "position": [
+            660,
+            0
+          ]
+        }
+      ],
+      "connections": {
+        "Pilot Status Trigger": {
+          "main": [
+            [
+              {
+                "node": "Normalize",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Normalize": {
+          "main": [
+            [
+              {
+                "node": "Inbound text?",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Inbound text?": {
+          "main": [
+            [
+              {
+                "node": "Reply",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        }
+      },
+      "pinData": {},
+      "settings": {
+        "executionOrder": "v1"
+      }
+    }
+    ```
+    </Accordion>
+  </Tab>
+  <Tab title="Layer Evolution GO">
+    Número migrado do Evolution GO. Os eventos chegam no formato do próprio Evolution GO, e a resposta usa a layer do mesmo jeito que o seu código Evolution GO: `POST /send/text` em `https://pilotstatus.com.br/api/layer/evolution-go/`, com o **token da instância** no header `apikey` (não uma chave `ps_`). Veja a [layer Evolution GO](/pt-BR/api/layer/evolution-go).
+
+    O que trocar: `YOUR_INSTANCE_TOKEN` em **Reply through the layer**. Para tirar o token do workflow, passe-o para uma credencial **Header Auth** do n8n com o nome `apikey`. Você também pode responder pelo node **Pilot Status**, como num número da API Pilot Status.
+
+    <Accordion title="JSON do workflow — layer Evolution GO">
+    ```json
+    {
+      "name": "Pilot Status - Início rápido: número da layer Evolution GO",
+      "nodes": [
+        {
+          "parameters": {
+            "event": "*"
+          },
+          "id": "fc3fb6a1-7d97-4c24-8304-dd0d404e92e5",
+          "name": "Pilot Status Trigger",
+          "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
+          "typeVersion": 1,
+          "position": [
+            0,
+            0
+          ],
+          "webhookId": "2d23e665-4982-412d-bc77-f760e34bcf01"
+        },
+        {
+          "parameters": {
+            "jsCode": "// Turns every webhook format into the same flat item:\n// - Pilot Status API (QR code) numbers send { event, data }\n// - Evolution GO layer numbers send Evolution GO events (\"Message\", \"SendMessage\", ...)\n// - Evolution v2 layer numbers send Evolution v2 events (\"messages.upsert\", ...)\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nconst phoneOf = (jid) =>\n  typeof jid === 'string' && jid.endsWith('@s.whatsapp.net') ? '+' + jid.split('@')[0].split(':')[0] : '';\n\n// Evolution GO and v2 carry the same WhatsApp message object\nconst readWaMessage = (m = {}) => ({\n  text:\n    m.conversation ??\n    m.extendedTextMessage?.text ??\n    m.buttonsResponseMessage?.selectedDisplayText ??\n    m.templateButtonReplyMessage?.selectedDisplayText ??\n    m.listResponseMessage?.title ??\n    m.imageMessage?.caption ??\n    m.videoMessage?.caption ??\n    '',\n  buttonId:\n    m.buttonsResponseMessage?.selectedButtonId ??\n    m.templateButtonReplyMessage?.selectedId ??\n    m.listResponseMessage?.singleSelectReply?.selectedRowId ??\n    '',\n  quotedMessageId:\n    m.extendedTextMessage?.contextInfo?.stanzaId ??\n    m.buttonsResponseMessage?.contextInfo?.stanzaId ??\n    m.templateButtonReplyMessage?.contextInfo?.stanzaId ??\n    m.listResponseMessage?.contextInfo?.stanzaId ??\n    '',\n});\n\nreturn $input.all().map(({ json }) => {\n  // Meta Cloud API (official)\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n\n  // Evolution v2 layer\n  if (json.event === 'messages.upsert') {\n    const d = json.data ?? {};\n    const jid = d.key?.remoteJidAlt || d.key?.remoteJid;\n    const from = phoneOf(jid);\n    return {\n      json: {\n        source: 'evolution-v2',\n        isInbound: Boolean(from) && !d.key?.fromMe,\n        from,\n        name: d.pushName ?? '',\n        ...readWaMessage(d.message),\n      },\n    };\n  }\n\n  // Evolution GO layer\n  if (json.event === 'Message' || json.event === 'MESSAGES_UPSERT') {\n    const info = json.data?.Info ?? {};\n    const from = phoneOf(info.Chat) || phoneOf(info.SenderAlt);\n    return {\n      json: {\n        source: 'evolution-go',\n        isInbound: Boolean(from) && !info.IsFromMe && !info.IsGroup,\n        from,\n        name: info.PushName ?? '',\n        ...readWaMessage(json.data?.Message),\n      },\n    };\n  }\n\n  // Pilot Status API (QR code)\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'pilot-status',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
+          },
+          "id": "a4066e57-c3f3-4aa5-8685-3fb11c4e4465",
+          "name": "Normalize",
+          "type": "n8n-nodes-base.code",
+          "typeVersion": 2,
+          "position": [
+            220,
+            0
+          ]
+        },
+        {
+          "parameters": {
+            "conditions": {
+              "options": {
+                "caseSensitive": true,
+                "leftValue": "",
+                "typeValidation": "loose",
+                "version": 2
+              },
+              "conditions": [
+                {
+                  "id": "6d0f4306-0a5d-418b-a2dc-67d3aca32a11",
+                  "leftValue": "={{ $json.isInbound }}",
+                  "rightValue": "",
+                  "operator": {
+                    "type": "boolean",
+                    "operation": "true",
+                    "singleValue": true
+                  }
+                },
+                {
+                  "id": "538c9901-9a47-43bb-b7a8-ec77689a32dc",
+                  "leftValue": "={{ $json.text }}",
+                  "rightValue": "",
+                  "operator": {
+                    "type": "string",
+                    "operation": "notEmpty",
+                    "singleValue": true
+                  }
+                }
+              ],
+              "combinator": "and"
+            },
+            "options": {}
+          },
+          "id": "34f56b38-94ac-4dd9-bdd2-863c03b47fec",
+          "name": "Inbound text?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 2.2,
+          "position": [
+            440,
+            0
+          ]
+        },
+        {
+          "parameters": {
+            "method": "POST",
+            "url": "https://pilotstatus.com.br/api/layer/evolution-go/send/text",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                {
+                  "name": "apikey",
+                  "value": "YOUR_INSTANCE_TOKEN"
+                }
+              ]
+            },
+            "sendBody": true,
+            "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify({ number: $json.from.replace('+', ''), text: \"Recebemos sua mensagem: \" + $json.text }) }}",
+            "options": {}
+          },
+          "id": "9c0a5087-ef16-49c8-97a2-4ee02ed676f9",
+          "name": "Reply through the layer",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4.2,
+          "position": [
+            660,
+            0
+          ]
+        }
+      ],
+      "connections": {
+        "Pilot Status Trigger": {
+          "main": [
+            [
+              {
+                "node": "Normalize",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Normalize": {
+          "main": [
+            [
+              {
+                "node": "Inbound text?",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Inbound text?": {
+          "main": [
+            [
+              {
+                "node": "Reply through the layer",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        }
+      },
+      "pinData": {},
+      "settings": {
+        "executionOrder": "v1"
+      }
+    }
+    ```
+    </Accordion>
+  </Tab>
+  <Tab title="Layer Evolution v2">
+    Número migrado da Evolution API v2. Os eventos chegam no formato do próprio Evolution v2 (`messages.upsert`), e a resposta chama `POST /message/sendText/{instance}` em `https://pilotstatus.com.br/api/layer/evolution-v2/`, com o token da instância em `apikey`. Veja na [layer Evolution V2](/pt-BR/api/layer/evolution-v2) qual nome de instância usar.
+
+    O que trocar: `YOUR_INSTANCE_NAME` na URL e `YOUR_INSTANCE_TOKEN` no header de **Reply through the layer**.
+
+    <Accordion title="JSON do workflow — layer Evolution v2">
+    ```json
+    {
+      "name": "Pilot Status - Início rápido: número da layer Evolution v2",
+      "nodes": [
+        {
+          "parameters": {
+            "event": "*"
+          },
+          "id": "26b965a2-21ef-412a-9b4e-12131710b58b",
+          "name": "Pilot Status Trigger",
+          "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
+          "typeVersion": 1,
+          "position": [
+            0,
+            0
+          ],
+          "webhookId": "4473c2ab-ee5a-42af-a71e-8afda4bee5f8"
+        },
+        {
+          "parameters": {
+            "jsCode": "// Turns every webhook format into the same flat item:\n// - Pilot Status API (QR code) numbers send { event, data }\n// - Evolution GO layer numbers send Evolution GO events (\"Message\", \"SendMessage\", ...)\n// - Evolution v2 layer numbers send Evolution v2 events (\"messages.upsert\", ...)\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nconst phoneOf = (jid) =>\n  typeof jid === 'string' && jid.endsWith('@s.whatsapp.net') ? '+' + jid.split('@')[0].split(':')[0] : '';\n\n// Evolution GO and v2 carry the same WhatsApp message object\nconst readWaMessage = (m = {}) => ({\n  text:\n    m.conversation ??\n    m.extendedTextMessage?.text ??\n    m.buttonsResponseMessage?.selectedDisplayText ??\n    m.templateButtonReplyMessage?.selectedDisplayText ??\n    m.listResponseMessage?.title ??\n    m.imageMessage?.caption ??\n    m.videoMessage?.caption ??\n    '',\n  buttonId:\n    m.buttonsResponseMessage?.selectedButtonId ??\n    m.templateButtonReplyMessage?.selectedId ??\n    m.listResponseMessage?.singleSelectReply?.selectedRowId ??\n    '',\n  quotedMessageId:\n    m.extendedTextMessage?.contextInfo?.stanzaId ??\n    m.buttonsResponseMessage?.contextInfo?.stanzaId ??\n    m.templateButtonReplyMessage?.contextInfo?.stanzaId ??\n    m.listResponseMessage?.contextInfo?.stanzaId ??\n    '',\n});\n\nreturn $input.all().map(({ json }) => {\n  // Meta Cloud API (official)\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n\n  // Evolution v2 layer\n  if (json.event === 'messages.upsert') {\n    const d = json.data ?? {};\n    const jid = d.key?.remoteJidAlt || d.key?.remoteJid;\n    const from = phoneOf(jid);\n    return {\n      json: {\n        source: 'evolution-v2',\n        isInbound: Boolean(from) && !d.key?.fromMe,\n        from,\n        name: d.pushName ?? '',\n        ...readWaMessage(d.message),\n      },\n    };\n  }\n\n  // Evolution GO layer\n  if (json.event === 'Message' || json.event === 'MESSAGES_UPSERT') {\n    const info = json.data?.Info ?? {};\n    const from = phoneOf(info.Chat) || phoneOf(info.SenderAlt);\n    return {\n      json: {\n        source: 'evolution-go',\n        isInbound: Boolean(from) && !info.IsFromMe && !info.IsGroup,\n        from,\n        name: info.PushName ?? '',\n        ...readWaMessage(json.data?.Message),\n      },\n    };\n  }\n\n  // Pilot Status API (QR code)\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'pilot-status',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
+          },
+          "id": "ba1457e4-4390-461c-83b5-b9e096fb8e4c",
+          "name": "Normalize",
+          "type": "n8n-nodes-base.code",
+          "typeVersion": 2,
+          "position": [
+            220,
+            0
+          ]
+        },
+        {
+          "parameters": {
+            "conditions": {
+              "options": {
+                "caseSensitive": true,
+                "leftValue": "",
+                "typeValidation": "loose",
+                "version": 2
+              },
+              "conditions": [
+                {
+                  "id": "b59f5192-4078-457c-99f1-39b766eaee1b",
+                  "leftValue": "={{ $json.isInbound }}",
+                  "rightValue": "",
+                  "operator": {
+                    "type": "boolean",
+                    "operation": "true",
+                    "singleValue": true
+                  }
+                },
+                {
+                  "id": "60199b77-02a0-4573-b33a-050b871167b1",
+                  "leftValue": "={{ $json.text }}",
+                  "rightValue": "",
+                  "operator": {
+                    "type": "string",
+                    "operation": "notEmpty",
+                    "singleValue": true
+                  }
+                }
+              ],
+              "combinator": "and"
+            },
+            "options": {}
+          },
+          "id": "50a26ef5-25cc-4263-86a9-1dadd860a1d1",
+          "name": "Inbound text?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 2.2,
+          "position": [
+            440,
+            0
+          ]
+        },
+        {
+          "parameters": {
+            "method": "POST",
+            "url": "https://pilotstatus.com.br/api/layer/evolution-v2/message/sendText/YOUR_INSTANCE_NAME",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": [
+                {
+                  "name": "apikey",
+                  "value": "YOUR_INSTANCE_TOKEN"
+                }
+              ]
+            },
+            "sendBody": true,
+            "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify({ number: $json.from.replace('+', ''), text: \"Recebemos sua mensagem: \" + $json.text }) }}",
+            "options": {}
+          },
+          "id": "91343c70-5dfe-43c1-a6c3-732883f03755",
+          "name": "Reply through the layer",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4.2,
+          "position": [
+            660,
+            0
+          ]
+        }
+      ],
+      "connections": {
+        "Pilot Status Trigger": {
+          "main": [
+            [
+              {
+                "node": "Normalize",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Normalize": {
+          "main": [
+            [
+              {
+                "node": "Inbound text?",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Inbound text?": {
+          "main": [
+            [
+              {
+                "node": "Reply through the layer",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        }
+      },
+      "pinData": {},
+      "settings": {
+        "executionOrder": "v1"
+      }
+    }
+    ```
+    </Accordion>
+  </Tab>
+  <Tab title="Oficial (Meta)">
+    Número conectado pelo Embedded Signup ou por credenciais da Meta. Os eventos chegam como envelope nativo da Meta, e a resposta sai pelo node **Pilot Status**. A resposta em texto livre é permitida porque a mensagem do contato abriu a janela de atendimento de 24 horas; fora dela, envie um template aprovado.
+
+    <Accordion title="JSON do workflow — oficial (Meta)">
+    ```json
+    {
+      "name": "Pilot Status - Início rápido: número oficial (Meta)",
+      "nodes": [
+        {
+          "parameters": {
+            "event": "*"
+          },
+          "id": "8e98062b-2283-46c5-a362-1cd46ec19646",
+          "name": "Pilot Status Trigger",
+          "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
+          "typeVersion": 1,
+          "position": [
+            0,
+            0
+          ],
+          "webhookId": "4c7923cb-5397-438a-8309-5e9981c7e140"
+        },
+        {
+          "parameters": {
+            "jsCode": "// Turns every webhook format into the same flat item:\n// - Pilot Status API (QR code) numbers send { event, data }\n// - Evolution GO layer numbers send Evolution GO events (\"Message\", \"SendMessage\", ...)\n// - Evolution v2 layer numbers send Evolution v2 events (\"messages.upsert\", ...)\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nconst phoneOf = (jid) =>\n  typeof jid === 'string' && jid.endsWith('@s.whatsapp.net') ? '+' + jid.split('@')[0].split(':')[0] : '';\n\n// Evolution GO and v2 carry the same WhatsApp message object\nconst readWaMessage = (m = {}) => ({\n  text:\n    m.conversation ??\n    m.extendedTextMessage?.text ??\n    m.buttonsResponseMessage?.selectedDisplayText ??\n    m.templateButtonReplyMessage?.selectedDisplayText ??\n    m.listResponseMessage?.title ??\n    m.imageMessage?.caption ??\n    m.videoMessage?.caption ??\n    '',\n  buttonId:\n    m.buttonsResponseMessage?.selectedButtonId ??\n    m.templateButtonReplyMessage?.selectedId ??\n    m.listResponseMessage?.singleSelectReply?.selectedRowId ??\n    '',\n  quotedMessageId:\n    m.extendedTextMessage?.contextInfo?.stanzaId ??\n    m.buttonsResponseMessage?.contextInfo?.stanzaId ??\n    m.templateButtonReplyMessage?.contextInfo?.stanzaId ??\n    m.listResponseMessage?.contextInfo?.stanzaId ??\n    '',\n});\n\nreturn $input.all().map(({ json }) => {\n  // Meta Cloud API (official)\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n\n  // Evolution v2 layer\n  if (json.event === 'messages.upsert') {\n    const d = json.data ?? {};\n    const jid = d.key?.remoteJidAlt || d.key?.remoteJid;\n    const from = phoneOf(jid);\n    return {\n      json: {\n        source: 'evolution-v2',\n        isInbound: Boolean(from) && !d.key?.fromMe,\n        from,\n        name: d.pushName ?? '',\n        ...readWaMessage(d.message),\n      },\n    };\n  }\n\n  // Evolution GO layer\n  if (json.event === 'Message' || json.event === 'MESSAGES_UPSERT') {\n    const info = json.data?.Info ?? {};\n    const from = phoneOf(info.Chat) || phoneOf(info.SenderAlt);\n    return {\n      json: {\n        source: 'evolution-go',\n        isInbound: Boolean(from) && !info.IsFromMe && !info.IsGroup,\n        from,\n        name: info.PushName ?? '',\n        ...readWaMessage(json.data?.Message),\n      },\n    };\n  }\n\n  // Pilot Status API (QR code)\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'pilot-status',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
+          },
+          "id": "1c5d5ebc-8792-4aa4-9153-1929cc93d756",
+          "name": "Normalize",
+          "type": "n8n-nodes-base.code",
+          "typeVersion": 2,
+          "position": [
+            220,
+            0
+          ]
+        },
+        {
+          "parameters": {
+            "conditions": {
+              "options": {
+                "caseSensitive": true,
+                "leftValue": "",
+                "typeValidation": "loose",
+                "version": 2
+              },
+              "conditions": [
+                {
+                  "id": "470d9813-e0bf-47f8-8106-7fca89fc56fe",
+                  "leftValue": "={{ $json.isInbound }}",
+                  "rightValue": "",
+                  "operator": {
+                    "type": "boolean",
+                    "operation": "true",
+                    "singleValue": true
+                  }
+                },
+                {
+                  "id": "d9e6b169-0937-4458-97e8-10f2c451284b",
+                  "leftValue": "={{ $json.text }}",
+                  "rightValue": "",
+                  "operator": {
+                    "type": "string",
+                    "operation": "notEmpty",
+                    "singleValue": true
+                  }
+                }
+              ],
+              "combinator": "and"
+            },
+            "options": {}
+          },
+          "id": "e349a5bf-1a46-4c41-9d83-2d19a209790e",
+          "name": "Inbound text?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 2.2,
+          "position": [
+            440,
+            0
+          ]
+        },
+        {
+          "parameters": {
+            "resource": "message",
+            "operation": "send",
+            "destinationNumber": "={{ $json.from }}",
+            "additionalFields": {
+              "text": "=Recebemos sua mensagem: {{ $json.text }}"
+            }
+          },
+          "id": "80deeea0-4c33-46a4-9aff-af313725a391",
+          "name": "Reply",
+          "type": "n8n-nodes-pilot-status.pilotStatus",
+          "typeVersion": 1,
+          "position": [
+            660,
+            0
+          ]
+        }
+      ],
+      "connections": {
+        "Pilot Status Trigger": {
+          "main": [
+            [
+              {
+                "node": "Normalize",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Normalize": {
+          "main": [
+            [
+              {
+                "node": "Inbound text?",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Inbound text?": {
+          "main": [
+            [
+              {
+                "node": "Reply",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        }
+      },
+      "pinData": {},
+      "settings": {
+        "executionOrder": "v1"
+      }
+    }
+    ```
+    </Accordion>
+  </Tab>
+</Tabs>
+
+<Tip>
+  Não sabe de que tipo é o seu número? [`GET /v1/numbers`](/pt-BR/api/numbers/list) devolve o `provider`, e o card do número no painel diz como ele foi conectado.
+</Tip>
+
 ## Receita 1: template com botões, resposta no toque
 
 Você envia um template aprovado com dois botões de resposta rápida, **Confirmar** e **Remarcar**. Quando o contato toca num deles, o workflow responde com uma mensagem diferente para cada botão.
 
 - **Start → Send template** envia o template. Troque o Manual Trigger pelo que inicia o seu fluxo (um formulário, um CRM, um agendamento).
-- **Pilot Status Trigger → Normalize → Which button?** roteia o toque pelo **rótulo** do botão. O rótulo funciona nos dois tipos de número; o `buttonId` nem sempre vem para botões de template.
+- **Pilot Status Trigger → Normalize → Which button?** roteia o toque pelo **rótulo** do botão. O rótulo funciona em todo tipo de número; o `buttonId` nem sempre vem para botões de template.
 - **Reply: …** responde com texto livre. O toque abre a janela de atendimento de 24 horas do WhatsApp, então a resposta em texto livre é permitida mesmo em número oficial.
 
 O que trocar: o `templateId` (`appointment_confirmation`), o número de destino, as variáveis e os dois rótulos em **Which button?**, que precisam ser iguais aos botões do template (maiúsculas e minúsculas não importam).
@@ -150,7 +812,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
   "nodes": [
     {
       "parameters": {},
-      "id": "af0ba527-522c-48e9-bfc7-90e9256e95db",
+      "id": "2871bf8a-b1ee-428c-86c0-e6e55730a57f",
       "name": "Start",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
@@ -168,7 +830,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
         "variablesMode": "json",
         "variablesJson": "{ \"name\": \"Maria\" }"
       },
-      "id": "0b3287d9-1e53-4772-a565-62f7299a0f32",
+      "id": "89ff2e65-9a70-4de2-881d-03b82471582c",
       "name": "Send template",
       "type": "n8n-nodes-pilot-status.pilotStatus",
       "typeVersion": 1,
@@ -181,7 +843,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
       "parameters": {
         "event": "*"
       },
-      "id": "68c2dab7-bc75-463b-acec-47b340dd5b61",
+      "id": "218e3555-5132-4d23-9f06-3666ae3218f9",
       "name": "Pilot Status Trigger",
       "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
       "typeVersion": 1,
@@ -189,13 +851,13 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
         0,
         220
       ],
-      "webhookId": "5b59c59a-d67c-4e38-b81d-e7b0a32429e9"
+      "webhookId": "50871e0b-e3fe-4103-b2ac-55644e23a941"
     },
     {
       "parameters": {
-        "jsCode": "// Turns both webhook formats into the same flat item:\n// - QR-code (unofficial) numbers send { event, data }\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nreturn $input.all().map(({ json }) => {\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'canonical',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
+        "jsCode": "// Turns every webhook format into the same flat item:\n// - Pilot Status API (QR code) numbers send { event, data }\n// - Evolution GO layer numbers send Evolution GO events (\"Message\", \"SendMessage\", ...)\n// - Evolution v2 layer numbers send Evolution v2 events (\"messages.upsert\", ...)\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nconst phoneOf = (jid) =>\n  typeof jid === 'string' && jid.endsWith('@s.whatsapp.net') ? '+' + jid.split('@')[0].split(':')[0] : '';\n\n// Evolution GO and v2 carry the same WhatsApp message object\nconst readWaMessage = (m = {}) => ({\n  text:\n    m.conversation ??\n    m.extendedTextMessage?.text ??\n    m.buttonsResponseMessage?.selectedDisplayText ??\n    m.templateButtonReplyMessage?.selectedDisplayText ??\n    m.listResponseMessage?.title ??\n    m.imageMessage?.caption ??\n    m.videoMessage?.caption ??\n    '',\n  buttonId:\n    m.buttonsResponseMessage?.selectedButtonId ??\n    m.templateButtonReplyMessage?.selectedId ??\n    m.listResponseMessage?.singleSelectReply?.selectedRowId ??\n    '',\n  quotedMessageId:\n    m.extendedTextMessage?.contextInfo?.stanzaId ??\n    m.buttonsResponseMessage?.contextInfo?.stanzaId ??\n    m.templateButtonReplyMessage?.contextInfo?.stanzaId ??\n    m.listResponseMessage?.contextInfo?.stanzaId ??\n    '',\n});\n\nreturn $input.all().map(({ json }) => {\n  // Meta Cloud API (official)\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n\n  // Evolution v2 layer\n  if (json.event === 'messages.upsert') {\n    const d = json.data ?? {};\n    const jid = d.key?.remoteJidAlt || d.key?.remoteJid;\n    const from = phoneOf(jid);\n    return {\n      json: {\n        source: 'evolution-v2',\n        isInbound: Boolean(from) && !d.key?.fromMe,\n        from,\n        name: d.pushName ?? '',\n        ...readWaMessage(d.message),\n      },\n    };\n  }\n\n  // Evolution GO layer\n  if (json.event === 'Message' || json.event === 'MESSAGES_UPSERT') {\n    const info = json.data?.Info ?? {};\n    const from = phoneOf(info.Chat) || phoneOf(info.SenderAlt);\n    return {\n      json: {\n        source: 'evolution-go',\n        isInbound: Boolean(from) && !info.IsFromMe && !info.IsGroup,\n        from,\n        name: info.PushName ?? '',\n        ...readWaMessage(json.data?.Message),\n      },\n    };\n  }\n\n  // Pilot Status API (QR code)\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'pilot-status',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
       },
-      "id": "188bc488-46d3-4c46-89f6-86daf0b9ceae",
+      "id": "28b8eee2-1c4f-4a98-bbbc-5ae2523c987e",
       "name": "Normalize",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -218,7 +880,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
                 },
                 "conditions": [
                   {
-                    "id": "28595543-8409-4b09-bf92-7810ffd46f63",
+                    "id": "e7a4c63d-b790-41ff-9abd-f296a025eab2",
                     "leftValue": "={{ $json.isInbound }}",
                     "rightValue": "",
                     "operator": {
@@ -228,7 +890,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
                     }
                   },
                   {
-                    "id": "d9900225-8ae1-456b-bf55-87e188736019",
+                    "id": "650872a0-9fa0-4fcb-968a-f81ff727f114",
                     "leftValue": "={{ $json.text }}",
                     "rightValue": "Confirmar",
                     "operator": {
@@ -252,7 +914,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
                 },
                 "conditions": [
                   {
-                    "id": "6527045f-c7b5-43b5-a32f-be3ef6ec846a",
+                    "id": "5d4a7c3b-2823-453f-9468-a2cd7ed29c0b",
                     "leftValue": "={{ $json.isInbound }}",
                     "rightValue": "",
                     "operator": {
@@ -262,7 +924,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
                     }
                   },
                   {
-                    "id": "80170236-e10f-4a96-be85-da7b219328f5",
+                    "id": "134f37de-d297-4929-8fe4-9e55a6209a94",
                     "leftValue": "={{ $json.text }}",
                     "rightValue": "Remarcar",
                     "operator": {
@@ -280,7 +942,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
         },
         "options": {}
       },
-      "id": "e0b51964-2fdb-41d2-9bdb-06ecdd5b86d5",
+      "id": "841c3d8b-6d11-4c0d-bb02-82b5cefd169b",
       "name": "Which button?",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
@@ -298,7 +960,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
           "text": "Perfeito, seu horário está confirmado. Até lá!"
         }
       },
-      "id": "3d0214d5-50b9-4881-ad6c-87eff146e996",
+      "id": "c264e12e-564a-4659-a461-168ff9f31f9a",
       "name": "Reply: confirmed",
       "type": "n8n-nodes-pilot-status.pilotStatus",
       "typeVersion": 1,
@@ -316,7 +978,7 @@ O que trocar: o `templateId` (`appointment_confirmation`), o número de destino,
           "text": "Sem problema. Responda com o dia e o horário que ficam melhor para você."
         }
       },
-      "id": "4f80d501-ab8d-4d08-b61c-f3860510b5e4",
+      "id": "ace92fd9-9075-4a62-bddb-e3184dd361fd",
       "name": "Reply: reschedule",
       "type": "n8n-nodes-pilot-status.pilotStatus",
       "typeVersion": 1,
@@ -410,7 +1072,7 @@ O que trocar: a mensagem de sistema do **AI Agent**, o modelo e a credencial da 
       "parameters": {
         "event": "*"
       },
-      "id": "2060e54b-268c-4b2f-a304-97f654399b8b",
+      "id": "ce1e072d-82ea-4134-b55b-d02b1bd86cd5",
       "name": "Pilot Status Trigger",
       "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
       "typeVersion": 1,
@@ -418,13 +1080,13 @@ O que trocar: a mensagem de sistema do **AI Agent**, o modelo e a credencial da 
         0,
         0
       ],
-      "webhookId": "2bf0e486-72fe-4a93-bbe2-c4edd9a007ff"
+      "webhookId": "4e202ba8-b544-480c-a629-3209439184ca"
     },
     {
       "parameters": {
-        "jsCode": "// Turns both webhook formats into the same flat item:\n// - QR-code (unofficial) numbers send { event, data }\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nreturn $input.all().map(({ json }) => {\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'canonical',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
+        "jsCode": "// Turns every webhook format into the same flat item:\n// - Pilot Status API (QR code) numbers send { event, data }\n// - Evolution GO layer numbers send Evolution GO events (\"Message\", \"SendMessage\", ...)\n// - Evolution v2 layer numbers send Evolution v2 events (\"messages.upsert\", ...)\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nconst phoneOf = (jid) =>\n  typeof jid === 'string' && jid.endsWith('@s.whatsapp.net') ? '+' + jid.split('@')[0].split(':')[0] : '';\n\n// Evolution GO and v2 carry the same WhatsApp message object\nconst readWaMessage = (m = {}) => ({\n  text:\n    m.conversation ??\n    m.extendedTextMessage?.text ??\n    m.buttonsResponseMessage?.selectedDisplayText ??\n    m.templateButtonReplyMessage?.selectedDisplayText ??\n    m.listResponseMessage?.title ??\n    m.imageMessage?.caption ??\n    m.videoMessage?.caption ??\n    '',\n  buttonId:\n    m.buttonsResponseMessage?.selectedButtonId ??\n    m.templateButtonReplyMessage?.selectedId ??\n    m.listResponseMessage?.singleSelectReply?.selectedRowId ??\n    '',\n  quotedMessageId:\n    m.extendedTextMessage?.contextInfo?.stanzaId ??\n    m.buttonsResponseMessage?.contextInfo?.stanzaId ??\n    m.templateButtonReplyMessage?.contextInfo?.stanzaId ??\n    m.listResponseMessage?.contextInfo?.stanzaId ??\n    '',\n});\n\nreturn $input.all().map(({ json }) => {\n  // Meta Cloud API (official)\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n\n  // Evolution v2 layer\n  if (json.event === 'messages.upsert') {\n    const d = json.data ?? {};\n    const jid = d.key?.remoteJidAlt || d.key?.remoteJid;\n    const from = phoneOf(jid);\n    return {\n      json: {\n        source: 'evolution-v2',\n        isInbound: Boolean(from) && !d.key?.fromMe,\n        from,\n        name: d.pushName ?? '',\n        ...readWaMessage(d.message),\n      },\n    };\n  }\n\n  // Evolution GO layer\n  if (json.event === 'Message' || json.event === 'MESSAGES_UPSERT') {\n    const info = json.data?.Info ?? {};\n    const from = phoneOf(info.Chat) || phoneOf(info.SenderAlt);\n    return {\n      json: {\n        source: 'evolution-go',\n        isInbound: Boolean(from) && !info.IsFromMe && !info.IsGroup,\n        from,\n        name: info.PushName ?? '',\n        ...readWaMessage(json.data?.Message),\n      },\n    };\n  }\n\n  // Pilot Status API (QR code)\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'pilot-status',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
       },
-      "id": "f9d31bbf-8136-4359-aa84-a998cdc96bf4",
+      "id": "e387037c-cacb-41aa-80f4-4e7aa6be6704",
       "name": "Normalize",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -444,7 +1106,7 @@ O que trocar: a mensagem de sistema do **AI Agent**, o modelo e a credencial da 
           },
           "conditions": [
             {
-              "id": "2e62c90f-4038-4697-bd95-2f0fe03a4a98",
+              "id": "e68cb701-94a4-455c-ae2a-639f22a19938",
               "leftValue": "={{ $json.isInbound }}",
               "rightValue": "",
               "operator": {
@@ -454,7 +1116,7 @@ O que trocar: a mensagem de sistema do **AI Agent**, o modelo e a credencial da 
               }
             },
             {
-              "id": "fc2b639a-8912-4dd8-afef-753e2017a76f",
+              "id": "3803d6b2-c786-424c-b8c3-23b70685a9ac",
               "leftValue": "={{ $json.text }}",
               "rightValue": "",
               "operator": {
@@ -468,7 +1130,7 @@ O que trocar: a mensagem de sistema do **AI Agent**, o modelo e a credencial da 
         },
         "options": {}
       },
-      "id": "501868e2-8c7d-401f-a14c-4bed56e651ed",
+      "id": "ee77411d-3d55-4c9f-92c5-15e6f9cae6a8",
       "name": "Inbound text?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
@@ -485,7 +1147,7 @@ O que trocar: a mensagem de sistema do **AI Agent**, o modelo e a credencial da 
           "systemMessage": "Você é o assistente de WhatsApp da nossa loja. Responda no idioma do cliente, em no máximo 3 frases curtas. Se não souber a resposta, diga que uma pessoa vai responder em breve."
         }
       },
-      "id": "229ca153-6c86-4b17-909d-8ed34f07e5bc",
+      "id": "adc513f9-c27b-4a4a-ba43-e02ebeeb4f79",
       "name": "AI Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
@@ -503,7 +1165,7 @@ O que trocar: a mensagem de sistema do **AI Agent**, o modelo e a credencial da 
         },
         "options": {}
       },
-      "id": "68792a6a-f898-4232-a168-c9a5cba50bb7",
+      "id": "3aebb1a8-6e20-4519-838e-f5fa4dd30b50",
       "name": "OpenAI Chat Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1.2,
@@ -518,7 +1180,7 @@ O que trocar: a mensagem de sistema do **AI Agent**, o modelo e a credencial da 
         "sessionKey": "={{ $('Normalize').item.json.from }}",
         "contextWindowLength": 10
       },
-      "id": "865029ab-8fbf-4fd0-b1e0-217e6255f286",
+      "id": "849c478e-95b9-489b-b4b6-f4184c6b7241",
       "name": "Memory per contact",
       "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
       "typeVersion": 1.3,
@@ -536,7 +1198,7 @@ O que trocar: a mensagem de sistema do **AI Agent**, o modelo e a credencial da 
           "text": "={{ $json.output }}"
         }
       },
-      "id": "92e99e64-5235-4aa1-b04d-3370c6b6a84b",
+      "id": "adea5458-4a1e-4595-9908-ea9a6b1358ef",
       "name": "Send answer",
       "type": "n8n-nodes-pilot-status.pilotStatus",
       "typeVersion": 1,
@@ -654,7 +1316,7 @@ O que trocar: `YOUR_SPREADSHEET_ID` (o id na URL da planilha), o template e as v
           ]
         }
       },
-      "id": "fdb92c88-6336-4c9f-b1ca-de3f4f41f1a9",
+      "id": "06fd5bcd-87c6-4015-8e53-9f134c1c3306",
       "name": "Every day at 9:00",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
@@ -678,7 +1340,7 @@ O que trocar: `YOUR_SPREADSHEET_ID` (o id na URL da planilha), o template e as v
         },
         "options": {}
       },
-      "id": "d3e6b814-0647-4c37-b914-3e105f040fe5",
+      "id": "3f5c7f75-a2dc-41e3-a44b-d18521a5a39b",
       "name": "Read contacts",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
@@ -698,7 +1360,7 @@ O que trocar: `YOUR_SPREADSHEET_ID` (o id na URL da planilha), o template e as v
           },
           "conditions": [
             {
-              "id": "575d2695-17c6-4451-8b0e-b2c887353293",
+              "id": "d785f17a-77b1-490d-8ebe-fe96c18096ca",
               "leftValue": "={{ $json.sent }}",
               "rightValue": "",
               "operator": {
@@ -712,7 +1374,7 @@ O que trocar: `YOUR_SPREADSHEET_ID` (o id na URL da planilha), o template e as v
         },
         "options": {}
       },
-      "id": "18d7caa3-7432-4768-b22a-b0228495e524",
+      "id": "da11a374-dac9-454a-be69-561ee2a01a83",
       "name": "Not sent yet?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
@@ -733,7 +1395,7 @@ O que trocar: `YOUR_SPREADSHEET_ID` (o id na URL da planilha), o template e as v
           "idempotencyKey": "={{ $json.orderId }}-{{ $json.phone }}"
         }
       },
-      "id": "afdaec5f-c2b1-4ff6-bedf-fed8e34cf59c",
+      "id": "3dbf4d3d-202f-49c2-bb34-39da318cd000",
       "name": "Send template",
       "type": "n8n-nodes-pilot-status.pilotStatus",
       "typeVersion": 1,
@@ -790,7 +1452,7 @@ O que trocar: `YOUR_SPREADSHEET_ID` (o id na URL da planilha), o template e as v
         },
         "options": {}
       },
-      "id": "b6acae4f-2bb8-428b-90e1-27244cf2cbd8",
+      "id": "2665d513-1dcc-4f98-a658-27e6948ce564",
       "name": "Mark row as sent",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
@@ -886,7 +1548,7 @@ O que trocar: a credencial SMTP e os dois endereços de e-mail. Para avisar no S
           ]
         }
       },
-      "id": "70acb8c0-1dc0-4134-a7b4-d8e67b5c4e9a",
+      "id": "7b5f53e2-0a56-4e52-a550-105b52996eec",
       "name": "Every 15 minutes",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
@@ -903,7 +1565,7 @@ O que trocar: a credencial SMTP e os dois endereços de e-mail. Para avisar no S
         "listDirection": "out",
         "listStatus": "FAILED"
       },
-      "id": "eff342e3-bc9b-491c-b109-31452fcd4ebe",
+      "id": "b4a45af1-1ed7-4ff1-844a-92dc21c02400",
       "name": "List failed messages",
       "type": "n8n-nodes-pilot-status.pilotStatus",
       "typeVersion": 1,
@@ -917,7 +1579,7 @@ O que trocar: a credencial SMTP e os dois endereços de e-mail. Para avisar no S
         "fieldToSplitOut": "data",
         "options": {}
       },
-      "id": "e7696f48-72ab-4111-93d7-4fe238b10e5d",
+      "id": "cb570211-7aa8-4c3f-94b8-6f9a6523e508",
       "name": "One item per message",
       "type": "n8n-nodes-base.splitOut",
       "typeVersion": 1,
@@ -932,7 +1594,7 @@ O que trocar: a credencial SMTP e os dois endereços de e-mail. Para avisar no S
         "dedupeValue": "={{ $json.id }}",
         "options": {}
       },
-      "id": "ca31f7e8-fa19-450d-8d27-33398208ec0d",
+      "id": "51848cba-d14a-4517-ae05-7030b55cee7c",
       "name": "Only new failures",
       "type": "n8n-nodes-base.removeDuplicates",
       "typeVersion": 2,
@@ -950,7 +1612,7 @@ O que trocar: a credencial SMTP e os dois endereços de e-mail. Para avisar no S
         "text": "=Para: {{ $json.to }}\nTemplate: {{ $json.template }}\nCódigo do erro: {{ $json.errorCode }}\nMotivo: {{ $json.errorMessage }}\nCriada em: {{ $json.createdAt }}\nID da mensagem: {{ $json.id }}",
         "options": {}
       },
-      "id": "12265734-00e1-43c4-8ba5-12c38b92e354",
+      "id": "6e52e291-dd65-4ae0-8ded-04c5534da108",
       "name": "E-mail the team",
       "type": "n8n-nodes-base.emailSend",
       "typeVersion": 2.1,
@@ -1034,7 +1696,7 @@ O que trocar: `YOUR_SPREADSHEET_ID`. Para ter uma coluna por pergunta, troque o 
       "parameters": {
         "event": "flow.response_received"
       },
-      "id": "133ce8cf-1c11-4a25-9d4d-a7ee05fde9b7",
+      "id": "f2bda7d0-c30b-44e1-98bd-8f33123a3241",
       "name": "Pilot Status Trigger",
       "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
       "typeVersion": 1,
@@ -1042,32 +1704,32 @@ O que trocar: `YOUR_SPREADSHEET_ID`. Para ter uma coluna por pergunta, troque o 
         0,
         0
       ],
-      "webhookId": "ac7f70ea-3b1d-40b7-b52d-3e7c01570ab7"
+      "webhookId": "18d16f07-38f4-4e15-bb16-ef9b29704f97"
     },
     {
       "parameters": {
         "assignments": {
           "assignments": [
             {
-              "id": "705ccdd7-fe8f-4977-9790-c95830fe3762",
+              "id": "11ad7c8b-4a1d-45c7-8bd6-542b2fff54a4",
               "name": "receivedAt",
               "value": "={{ $json.data.receivedAt }}",
               "type": "string"
             },
             {
-              "id": "9cb5f7f9-15af-4bb9-a25d-4177204291b9",
+              "id": "840cc72c-4f1d-44b9-b4d5-49c6fa21e24e",
               "name": "phone",
               "value": "={{ $json.data.from }}",
               "type": "string"
             },
             {
-              "id": "a1b7dbf1-9da1-4695-b878-e389b11a1974",
+              "id": "b599d022-0491-4e4b-90f7-dd324b8bca29",
               "name": "flowId",
               "value": "={{ $json.data.flowId }}",
               "type": "string"
             },
             {
-              "id": "38c83ac0-15ff-4caf-b8b7-b8aa294bf6fa",
+              "id": "86b9797c-c0ce-4601-844a-c7d52a33c509",
               "name": "answers",
               "value": "={{ JSON.stringify($json.data.submitted ? $json.data.submitted.map(s => s.data) : $json.data.response) }}",
               "type": "string"
@@ -1076,7 +1738,7 @@ O que trocar: `YOUR_SPREADSHEET_ID`. Para ter uma coluna por pergunta, troque o 
         },
         "options": {}
       },
-      "id": "5ee29279-06b7-4ffc-83a8-54ebfdca8cd7",
+      "id": "29fda841-a608-40e8-92ab-8a62bf799c1f",
       "name": "Answers to columns",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
@@ -1106,7 +1768,7 @@ O que trocar: `YOUR_SPREADSHEET_ID`. Para ter uma coluna por pergunta, troque o 
         },
         "options": {}
       },
-      "id": "959ef923-d7db-4e62-9c85-a274052954d6",
+      "id": "77ddae7c-ae4a-40d0-b199-c3a84143a4e6",
       "name": "Append to sheet",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
