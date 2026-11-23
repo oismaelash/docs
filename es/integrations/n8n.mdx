@@ -1,0 +1,1168 @@
+---
+title: "n8n"
+sidebarTitle: "n8n"
+description: "Automatiza WhatsApp en n8n con el node oficial de Pilot Status: instálalo, recibe eventos con el node Trigger e importa cinco workflows listos."
+mode: "wide"
+---
+
+El node oficial de la comunidad `n8n-nodes-pilot-status` agrega dos nodes a n8n:
+
+- **Pilot Status**: llama a la API pública `/v1` para enviar mensajes y plantillas, listar logs y gestionar números, plantillas, Flows, grupos y más.
+- **Pilot Status Trigger**: recibe los eventos de tu webhook e inicia un workflow.
+
+Esta página muestra cómo configurar los dos e incluye cinco workflows para importar y adaptar. Cada workflow se importó en n8n y se comprobó contra la definición de los nodes, y su lógica de enrutamiento se ejecutó con payloads de ejemplo de los dos formatos de webhook.
+
+## Instala el node
+
+<Steps>
+  <Step title="Instala el node de la comunidad">
+    En n8n, abre **Settings → Community Nodes → Install**, escribe `n8n-nodes-pilot-status` y confirma. Necesitas un n8n self-hosted (ahí los community nodes vienen activados por defecto). En n8n Cloud, n8n decide qué community nodes se pueden instalar; si este no aparece, usa una instancia self-hosted.
+  </Step>
+  <Step title="Crea la credencial">
+    Agrega una credencial **Pilot Status API** y pega tu clave de API `ps_` del panel.
+
+    - Una clave **por número** no necesita nada más: cada llamada sale desde ese número.
+    - Una clave **de la cuenta** necesita también el **WhatsApp Number ID**, que se envía en el header [`x-whatsapp-number-id`](/es/api/authentication). Sin él, las llamadas que actúan sobre un número fallan con `403 TENANT_SCOPE_NOT_ALLOWED`.
+    - Deja la **Base URL** por defecto (`https://pilotstatus.com.br`).
+  </Step>
+  <Step title="Agrega un node Pilot Status">
+    Elige un **Resource** (por ejemplo **Message**) y una **Operation** (por ejemplo **Send**). El menú **Template ID** carga las plantillas del número de la credencial.
+  </Step>
+</Steps>
+
+## Recibe eventos con el Trigger
+
+<Steps>
+  <Step title="Agrega el Pilot Status Trigger">
+    Deja **Registration** en **Manual** y **Event** en **All Events** (la advertencia de abajo explica por qué).
+  </Step>
+  <Step title="Registra la URL">
+    Copia la **Production URL** del Trigger y agrégala como webhook del número en la página **Webhooks** del panel de Pilot Status. Usa la **Test URL** mientras haces clic en **Listen for test event** en el editor.
+  </Step>
+  <Step title="Firma las entregas">
+    Pega el secreto de firma del webhook en **Signing Secret**. El Trigger responde `401` a cualquier solicitud cuyo `x-pilot-status-signature` no coincida. Sin él, cualquiera que conozca la URL puede iniciar tu workflow.
+  </Step>
+  <Step title="Activa el workflow">
+    La **Production URL** solo recibe eventos mientras el workflow está activo.
+  </Step>
+</Steps>
+
+El Trigger entrega el cuerpo recibido sin cambios: `$json` es exactamente lo que Pilot Status envió.
+
+### Dos formatos de webhook
+
+Lo que llega depende de cómo se conectó el número ([detalles](/es/api/webhooks/events)):
+
+| Número | Cuerpo que recibe el Trigger | Ejemplo de campo |
+| --- | --- | --- |
+| **Código QR (no oficial)** | Eventos de Pilot Status: `{ event, data }` | `$json.data.content` |
+| **Meta Cloud API (oficial)** | Sobre nativo de Meta: `{ object, entry }` | `$json.entry[0].changes[0].value.messages[0].text.body` |
+
+<Warning>
+  **En un número oficial, elige All Events.** El sobre de Meta no tiene el campo `event`, así que un Trigger configurado con un evento específico, como **Message Reply**, responde `200 Ignored event` a cada mensaje y el workflow nunca se ejecuta. Por el mismo motivo, no uses el registro **Automatic** con un evento `message.*` en un número oficial: Pilot Status descarta los nombres de evento que el número no emite, así que el webhook se crea con la lista vacía y no entrega nada.
+</Warning>
+
+<Warning>
+  **Una respuesta llega como `message.reply`, no como `message.received`.** En un número por código QR, un mensaje que cita otro, incluido el toque en un botón de plantilla, dispara solo `message.reply`. Un Trigger en **Message Received** nunca ve los toques en botones.
+</Warning>
+
+Para no escribir cada workflow dos veces, las recetas de abajo empiezan con un node Code **Normalize**. Convierte los dos formatos en el mismo ítem plano:
+
+| Campo | Significado |
+| --- | --- |
+| `source` | `canonical` (número por código QR) o `meta` (número oficial) |
+| `isInbound` | `true` solo para un mensaje que envió el contacto. Los estados y el eco de tus propios envíos son `false` |
+| `from` | el número del contacto en E.164 (`+5511999999999`) |
+| `name` | el nombre del contacto en WhatsApp, cuando se conoce |
+| `text` | texto del mensaje, o la etiqueta del botón o de la fila de lista tocada |
+| `buttonId` | id o payload del botón o de la fila de lista tocada, cuando WhatsApp lo informa |
+| `quotedMessageId` | el mensaje respondido, cuando lo hay |
+
+```javascript Normalize (node Code)
+// Turns both webhook formats into the same flat item:
+// - QR-code (unofficial) numbers send { event, data }
+// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }
+return $input.all().map(({ json }) => {
+  if (json.entry) {
+    const value = json.entry[0]?.changes?.[0]?.value ?? {};
+    const msg = value.messages?.[0];
+    return {
+      json: {
+        source: 'meta',
+        isInbound: Boolean(msg),
+        from: msg ? '+' + msg.from : '',
+        name: value.contacts?.[0]?.profile?.name ?? '',
+        text:
+          msg?.text?.body ??
+          msg?.button?.text ??
+          msg?.interactive?.button_reply?.title ??
+          msg?.interactive?.list_reply?.title ??
+          '',
+        buttonId:
+          msg?.button?.payload ??
+          msg?.interactive?.button_reply?.id ??
+          msg?.interactive?.list_reply?.id ??
+          '',
+        quotedMessageId: msg?.context?.id ?? '',
+      },
+    };
+  }
+  const data = json.data ?? {};
+  return {
+    json: {
+      source: 'canonical',
+      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,
+      from: data.from ?? '',
+      name: data.participantName ?? '',
+      text: data.content ?? '',
+      buttonId: data.buttonId ?? '',
+      quotedMessageId: data.quotedMessageId ?? '',
+    },
+  };
+});
+```
+
+## Importa un workflow
+
+1. Copia el JSON de una receta.
+2. En n8n, abre un workflow vacío y presiona **Ctrl+V** (**Cmd+V** en macOS) sobre el canvas. También puedes guardar el JSON en un archivo y usar **⋯ → Import from File**.
+3. Abre cada node de Pilot Status, Google Sheets, OpenAI y correo y selecciona tu credencial.
+4. Cambia los valores de ejemplo: nombres de plantilla, números de teléfono, id de la hoja, direcciones de correo.
+
+<Note>
+  El workflow responde **desde el número de la credencial**. Registra la URL del Trigger en ese mismo número: si el webhook es del número A y la credencial del número B, el contacto escribe a A y recibe la respuesta desde B.
+</Note>
+
+## Receta 1: plantilla con botones, respuesta al tocar
+
+Envías una plantilla aprobada con dos botones de respuesta rápida, **Confirmar** y **Reprogramar**. Cuando el contacto toca uno, el workflow responde con un mensaje distinto para cada botón.
+
+- **Start → Send template** envía la plantilla. Cambia el Manual Trigger por lo que inicia tu flujo (un formulario, un CRM, una programación).
+- **Pilot Status Trigger → Normalize → Which button?** enruta el toque por la **etiqueta** del botón. La etiqueta funciona en los dos tipos de número; el `buttonId` no siempre llega en botones de plantilla.
+- **Reply: …** responde con texto libre. El toque abre la ventana de atención de 24 horas de WhatsApp, así que la respuesta en texto libre está permitida incluso en un número oficial.
+
+Qué cambiar: el `templateId` (`appointment_confirmation`), el número de destino, las variables y las dos etiquetas en **Which button?**, que deben ser iguales a los botones de la plantilla (no distingue mayúsculas de minúsculas).
+
+<Accordion title="JSON del workflow — receta 1">
+```json
+{
+  "name": "Pilot Status - Plantilla con botones, respuesta al tocar",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "d2770807-dbb5-4121-9fb3-11968e329878",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "templateId": "appointment_confirmation",
+        "destinationNumber": "+5511999999999",
+        "variablesMode": "json",
+        "variablesJson": "{ \"name\": \"Maria\" }"
+      },
+      "id": "ec7815af-0e61-4712-b05c-b739cee450fe",
+      "name": "Send template",
+      "type": "n8n-nodes-pilot-status.pilotStatus",
+      "typeVersion": 1,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "event": "*"
+      },
+      "id": "3c522256-bc39-46ee-986a-372bcfe13c50",
+      "name": "Pilot Status Trigger",
+      "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        220
+      ],
+      "webhookId": "3cd12945-9a94-447d-bceb-b8460e6758fd"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turns both webhook formats into the same flat item:\n// - QR-code (unofficial) numbers send { event, data }\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nreturn $input.all().map(({ json }) => {\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'canonical',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
+      },
+      "id": "4c1a7348-c16b-4039-bb46-b8b4f7f5d5b1",
+      "name": "Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "be1d66d8-c534-4076-8b58-f1d017feeb93",
+                    "leftValue": "={{ $json.isInbound }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  },
+                  {
+                    "id": "01baa2b7-0795-4bb2-ab7d-3bc6ebce0600",
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "Confirmar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Confirmar"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "81a80e0a-93fa-45c6-b244-2c0309b404b7",
+                    "leftValue": "={{ $json.isInbound }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  },
+                  {
+                    "id": "763de73e-9f3e-45e5-a5bc-3f6c6ca6527c",
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "Reprogramar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Reprogramar"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a990c369-4e10-4202-9230-913a0da78f3c",
+      "name": "Which button?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        440,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "destinationNumber": "={{ $json.from }}",
+        "additionalFields": {
+          "text": "Perfecto, tu cita está confirmada. ¡Nos vemos!"
+        }
+      },
+      "id": "cf1c31ee-b7bc-45e4-81c9-84bc4442dbff",
+      "name": "Reply: confirmed",
+      "type": "n8n-nodes-pilot-status.pilotStatus",
+      "typeVersion": 1,
+      "position": [
+        660,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "destinationNumber": "={{ $json.from }}",
+        "additionalFields": {
+          "text": "No hay problema. Responde con el día y la hora que mejor te queden."
+        }
+      },
+      "id": "ed415e01-0957-4451-9ec5-6d8aa52eadc0",
+      "name": "Reply: reschedule",
+      "type": "n8n-nodes-pilot-status.pilotStatus",
+      "typeVersion": 1,
+      "position": [
+        660,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Send template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pilot Status Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize": {
+      "main": [
+        [
+          {
+            "node": "Which button?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Which button?": {
+      "main": [
+        [
+          {
+            "node": "Reply: confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply: reschedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
+```
+</Accordion>
+
+## Receta 2: un agente de IA responde los mensajes recibidos
+
+Cada texto que envía un contacto va a un AI Agent de n8n con memoria por contacto, y la respuesta vuelve por WhatsApp.
+
+- **Inbound text?** deja pasar solo los mensajes que envió el contacto. Sin él, el eco de la propia respuesta del agente volvería a iniciar el workflow.
+- **Memory per contact** usa el número del contacto como clave de sesión, así que cada conversación tiene su propio historial.
+- **Send answer** envía `$json.output`, la respuesta del agente, como texto libre. Es una respuesta dentro de la ventana de 24 horas que el contacto acaba de abrir.
+
+Qué cambiar: el mensaje de sistema del **AI Agent**, el modelo y la credencial de OpenAI (o cambia el node de modelo por cualquier otro modelo de chat).
+
+<Tip>
+  Los mensajes de grupo llegan como `message.group` y no se tratan aquí, así que el agente no responde en grupos.
+</Tip>
+
+<Accordion title="JSON del workflow — receta 2">
+```json
+{
+  "name": "Pilot Status - Agente de IA responde mensajes recibidos",
+  "nodes": [
+    {
+      "parameters": {
+        "event": "*"
+      },
+      "id": "d9a49f5e-06ad-4a78-85aa-1e8d83d8670f",
+      "name": "Pilot Status Trigger",
+      "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "612ca893-4440-4bdf-ae54-64e341697bcd"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turns both webhook formats into the same flat item:\n// - QR-code (unofficial) numbers send { event, data }\n// - Meta Cloud API (official) numbers send Meta's native envelope { object, entry }\nreturn $input.all().map(({ json }) => {\n  if (json.entry) {\n    const value = json.entry[0]?.changes?.[0]?.value ?? {};\n    const msg = value.messages?.[0];\n    return {\n      json: {\n        source: 'meta',\n        isInbound: Boolean(msg),\n        from: msg ? '+' + msg.from : '',\n        name: value.contacts?.[0]?.profile?.name ?? '',\n        text:\n          msg?.text?.body ??\n          msg?.button?.text ??\n          msg?.interactive?.button_reply?.title ??\n          msg?.interactive?.list_reply?.title ??\n          '',\n        buttonId:\n          msg?.button?.payload ??\n          msg?.interactive?.button_reply?.id ??\n          msg?.interactive?.list_reply?.id ??\n          '',\n        quotedMessageId: msg?.context?.id ?? '',\n      },\n    };\n  }\n  const data = json.data ?? {};\n  return {\n    json: {\n      source: 'canonical',\n      isInbound: ['message.received', 'message.reply'].includes(json.event) && !data.fromMe,\n      from: data.from ?? '',\n      name: data.participantName ?? '',\n      text: data.content ?? '',\n      buttonId: data.buttonId ?? '',\n      quotedMessageId: data.quotedMessageId ?? '',\n    },\n  };\n});"
+      },
+      "id": "eacefec2-c44c-4f93-8c84-3b107762cd28",
+      "name": "Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b979d5cc-b5b9-402b-a891-bbc7ca3507f5",
+              "leftValue": "={{ $json.isInbound }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "7523501e-2d3a-426d-bb59-1f37d84f4daa",
+              "leftValue": "={{ $json.text }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a17bf53b-e648-4fc9-9b6b-f540df6ee184",
+      "name": "Inbound text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.text }}",
+        "options": {
+          "systemMessage": "Eres el asistente de WhatsApp de nuestra tienda. Responde en el idioma del cliente, en un máximo de 3 frases cortas. Si no sabes la respuesta, di que una persona responderá pronto."
+        }
+      },
+      "id": "ad5a7a88-a06f-46c9-925c-9298ad26a6da",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {}
+      },
+      "id": "ec68f4d2-4e25-49e9-b9cf-1ca0f3c5b543",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        600,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Normalize').item.json.from }}",
+        "contextWindowLength": 10
+      },
+      "id": "fbf5b5cc-84af-44ae-bf71-c1f300a0256c",
+      "name": "Memory per contact",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        760,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "destinationNumber": "={{ $('Normalize').item.json.from }}",
+        "additionalFields": {
+          "text": "={{ $json.output }}"
+        }
+      },
+      "id": "41b1dd70-31c4-45f1-b75c-810795ae5c84",
+      "name": "Send answer",
+      "type": "n8n-nodes-pilot-status.pilotStatus",
+      "typeVersion": 1,
+      "position": [
+        960,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Pilot Status Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize": {
+      "main": [
+        [
+          {
+            "node": "Inbound text?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inbound text?": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Memory per contact": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
+```
+</Accordion>
+
+## Receta 3: enviar una plantilla a cada fila de una hoja
+
+Todos los días a las 9:00, el workflow lee una hoja de Google, envía una plantilla a cada fila que aún no se envió y escribe en la fila la hora del envío.
+
+Crea una pestaña llamada **Contactos** con estas columnas:
+
+| `phone` | `name` | `orderId` | `sent` |
+| --- | --- | --- | --- |
+| `+5511999999999` | Ana | `A-1001` | |
+
+- **Not sent yet?** salta las filas con la columna `sent` llena.
+- **Send template** pasa `name` y `orderId` como variables de la plantilla. Las claves del JSON deben ser iguales a los nombres de las variables de la plantilla.
+- **Idempotency Key** es `orderId-phone`. Cuando n8n reintenta el node (está configurado con 3 intentos), o el workflow se ejecuta de nuevo antes de que se actualice la hoja, la API devuelve la primera respuesta en lugar de enviar dos veces. Consulta [Idempotencia](/es/api/messages/send#idempotencia).
+- **Mark row as sent** busca la fila por `orderId` y llena `sent`.
+
+Qué cambiar: `YOUR_SPREADSHEET_ID` (el id en la URL de la hoja), la plantilla y las variables.
+
+<Accordion title="JSON del workflow — receta 3">
+```json
+{
+  "name": "Pilot Status - Enviar plantilla a cada fila pendiente de una hoja",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "84c6a198-43d3-4909-bc58-0e12ad7ede60",
+      "name": "Every day at 9:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Contactos"
+        },
+        "options": {}
+      },
+      "id": "3288ac55-362e-4f1c-8605-360b113bc4a7",
+      "name": "Read contacts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "943a08d5-6c5c-4757-8c9a-d5af9933ec6e",
+              "leftValue": "={{ $json.sent }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5123fdac-df36-4f31-88db-bddd602a8602",
+      "name": "Not sent yet?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "templateId": "order_shipped",
+        "destinationNumber": "={{ $json.phone }}",
+        "variablesMode": "json",
+        "variablesJson": "={{ JSON.stringify({ name: $json.name, order: $json.orderId }) }}",
+        "additionalFields": {
+          "idempotencyKey": "={{ $json.orderId }}-{{ $json.phone }}"
+        }
+      },
+      "id": "e2693ea2-84a9-4248-9863-cae08f19bf20",
+      "name": "Send template",
+      "type": "n8n-nodes-pilot-status.pilotStatus",
+      "typeVersion": 1,
+      "position": [
+        660,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Contactos"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "orderId": "={{ $('Not sent yet?').item.json.orderId }}",
+            "sent": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [
+            "orderId"
+          ],
+          "schema": [
+            {
+              "id": "orderId",
+              "displayName": "orderId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sent",
+              "displayName": "sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fb0082ea-bab4-4745-ab13-3453257a91c6",
+      "name": "Mark row as sent",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Every day at 9:00": {
+      "main": [
+        [
+          {
+            "node": "Read contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read contacts": {
+      "main": [
+        [
+          {
+            "node": "Not sent yet?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not sent yet?": {
+      "main": [
+        [
+          {
+            "node": "Send template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send template": {
+      "main": [
+        [
+          {
+            "node": "Mark row as sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
+```
+</Accordion>
+
+## Receta 4: alerta por correo de mensajes fallidos
+
+Cada 15 minutos, el workflow lista los últimos 100 mensajes enviados que fallaron y avisa por correo al equipo de cada uno que no había visto antes.
+
+Consulta [`GET /v1/messages`](/es/api/messages/list) en lugar de escuchar `message.failed`, porque el webhook no cubre todos los casos: un número oficial nunca envía `message.failed` (los fallos llegan dentro de `statuses[]` de Meta), y algunos fallos no llegan a ningún webhook. El log tiene todos los fallos, en todo tipo de número.
+
+- **One item per message** separa la lista `data` de la API en un ítem por mensaje.
+- **Only new failures** recuerda los ids de mensaje ya vistos entre ejecuciones, así que cada fallo se avisa una vez.
+- El correo muestra el `errorCode` y el motivo. El [catálogo de códigos de error](/es/api/messages/log-error-codes) explica cada código.
+
+Qué cambiar: la credencial SMTP y las dos direcciones de correo. Para avisar por Slack o Telegram, cambia el último node.
+
+<Note>
+  En la primera ejecución todos los fallos de la lista son nuevos, así que llegan hasta 100 correos. Ejecútalo una vez a mano con el node de correo desactivado para llenar la memoria antes.
+</Note>
+
+<Accordion title="JSON del workflow — receta 4">
+```json
+{
+  "name": "Pilot Status - Alerta por correo de mensajes fallidos",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "9f06ef79-98c0-4327-b575-51a44df32c31",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "listPageSize": 100,
+        "listDirection": "out",
+        "listStatus": "FAILED"
+      },
+      "id": "a0505f2a-01dc-4b82-8569-3fc72c23b843",
+      "name": "List failed messages",
+      "type": "n8n-nodes-pilot-status.pilotStatus",
+      "typeVersion": 1,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "id": "d5bb6872-f0f3-4569-b926-1a9b5b276dee",
+      "name": "One item per message",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "removeItemsSeenInPreviousExecutions",
+        "dedupeValue": "={{ $json.id }}",
+        "options": {}
+      },
+      "id": "d4ddd865-022c-4249-96d3-4966d66fb5c7",
+      "name": "Only new failures",
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@example.com",
+        "toEmail": "team@example.com",
+        "subject": "=Mensaje de WhatsApp fallido: {{ $json.errorCode }} a {{ $json.to }}",
+        "emailFormat": "text",
+        "text": "=Para: {{ $json.to }}\nPlantilla: {{ $json.template }}\nCódigo de error: {{ $json.errorCode }}\nMotivo: {{ $json.errorMessage }}\nCreado: {{ $json.createdAt }}\nID del mensaje: {{ $json.id }}",
+        "options": {}
+      },
+      "id": "a023a892-6147-4223-8447-4c73a1ce45d0",
+      "name": "E-mail the team",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        880,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "List failed messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List failed messages": {
+      "main": [
+        [
+          {
+            "node": "One item per message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per message": {
+      "main": [
+        [
+          {
+            "node": "Only new failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Only new failures": {
+      "main": [
+        [
+          {
+            "node": "E-mail the team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
+```
+</Accordion>
+
+## Receta 5: guardar las respuestas de un WhatsApp Flow en una hoja
+
+Cada vez que alguien envía un [WhatsApp Flow](/es/guides/flow-responses), las respuestas se convierten en una fila nueva de una hoja de Google.
+
+`flow.response_received` mantiene el formato `{ event, data }` de Pilot Status incluso en números oficiales, así que aquí el Trigger puede escuchar solo ese evento y no hace falta el node Normalize.
+
+- **Answers to columns** guarda la hora, el número del contacto, el id del Flow y las respuestas como texto JSON. En un Flow con endpoint de datos, lo que escribió la persona está en `submitted`, una entrada por pantalla; en los demás, está en `response`.
+- **Append to sheet** escribe una fila por envío. Crea una pestaña llamada **Respuestas del Flow** con las columnas `receivedAt`, `phone`, `flowId` y `answers`.
+
+Qué cambiar: `YOUR_SPREADSHEET_ID`. Para tener una columna por pregunta, cambia el campo `answers` por un campo por respuesta, por ejemplo `{{ $json.data.response.nota }}`.
+
+<Accordion title="JSON del workflow — receta 5">
+```json
+{
+  "name": "Pilot Status - Guardar respuestas de WhatsApp Flow en Google Sheets",
+  "nodes": [
+    {
+      "parameters": {
+        "event": "flow.response_received"
+      },
+      "id": "de16c8c4-3b62-46c3-b306-ee44eed4918d",
+      "name": "Pilot Status Trigger",
+      "type": "n8n-nodes-pilot-status.pilotStatusTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "11b303a9-d017-40b1-a023-36020c8b79b0"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "906a3c34-32a2-499d-9a80-0457f657812f",
+              "name": "receivedAt",
+              "value": "={{ $json.data.receivedAt }}",
+              "type": "string"
+            },
+            {
+              "id": "f0e723b3-9850-4f40-976e-5878667dddb0",
+              "name": "phone",
+              "value": "={{ $json.data.from }}",
+              "type": "string"
+            },
+            {
+              "id": "2ffa95eb-1939-4610-a074-333bae15d6ef",
+              "name": "flowId",
+              "value": "={{ $json.data.flowId }}",
+              "type": "string"
+            },
+            {
+              "id": "ea02a94e-24c9-4546-a66d-6b0000ad53d3",
+              "name": "answers",
+              "value": "={{ JSON.stringify($json.data.submitted ? $json.data.submitted.map(s => s.data) : $json.data.response) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9f30f115-aead-4e46-b9c3-e97829e4894f",
+      "name": "Answers to columns",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Respuestas del Flow"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "acdd45fc-9c05-4e70-b9f8-fe6fc59c3e88",
+      "name": "Append to sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Pilot Status Trigger": {
+      "main": [
+        [
+          {
+            "node": "Answers to columns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answers to columns": {
+      "main": [
+        [
+          {
+            "node": "Append to sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
+```
+</Accordion>
+
+## Solución de problemas
+
+| Síntoma | Causa | Solución |
+| --- | --- | --- |
+| El Trigger nunca se dispara | El workflow está inactivo (Production URL), o el webhook se registró con la Test URL | Activa el workflow y registra la **Production URL** |
+| El Trigger responde `200 Ignored event` | **Event** está en un evento específico, y el cuerpo entregado es otro evento o el sobre de Meta | Usa **All Events** y filtra en el workflow |
+| Tocar un botón no hace nada en un número por código QR | El Trigger escucha **Message Received** | Los toques llegan como `message.reply`: usa **All Events** |
+| `$json.data` es `undefined` | El número es oficial, y el cuerpo es el sobre de Meta | Agrega el node **Normalize** |
+| `401 Invalid signature` | El **Signing Secret** no coincide con el webhook | Pega el secreto actual, o rótalo y pega el nuevo |
+| `403 TENANT_SCOPE_NOT_ALLOWED` | Clave de la cuenta sin número | Llena el **WhatsApp Number ID** en la credencial |
+| La respuesta sale desde otro número | El webhook y la credencial son de números distintos | Usa el mismo número en los dos |
+
+## Relacionados
+
+- [Eventos de webhook](/es/api/webhooks/events)
+- [Enviar un mensaje](/es/api/messages/send)
+- [SDKs](/es/integrations/sdks)
+- [Servidor MCP](/es/integrations/mcp-server)
