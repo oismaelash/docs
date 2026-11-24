@@ -113,6 +113,15 @@ The normalized call events — `call.ringing`, `call.connected`, `call.ended`, `
 
 - `lead.received` — someone submitted a Meta Lead Ads Instant Form, carrying the lead. **Opt-in: a `"*"` subscription does not receive it.** See [`lead.*` payload](#lead-payload).
 
+**Chat archive and contact block** (see [`chat.*` / `contact.*` payload](#chat-and-contact-payload)):
+
+- `chat.archived` — a chat was archived on the phone
+- `chat.unarchived` — a chat was unarchived on the phone
+- `contact.blocked` — a contact was blocked
+- `contact.unblocked` — a contact was unblocked
+
+Archive events exist only on **QR Code (native web)** numbers. Block events fire on **QR Code** numbers when the block is done on the phone, and on **Meta Cloud API** numbers only when the block is done through the Pilot Status API (the Cloud API sends no webhook for a block made elsewhere).
+
 ## Identifiers and correlation
 
 Every message event carries two distinct IDs:
@@ -629,6 +638,60 @@ Unlike `message.*` / `number.*`, the normalized `call.*` events are **flat** (no
 | `duration` | conditional | call duration in seconds (`call.ended`, only when answered) |
 
 See the [full calling flow](/api/calls/overview).
+
+## `chat.*` and `contact.*` payload
+
+The four events share one envelope: `{ id, event, data }`. `id` is one value per event, the same on every webhook that receives it, so you can dedup on it.
+
+```json
+{
+  "id": "6f1c2a7e-3b9d-4c51-9a0e-2d7b8f4e1a90",
+  "event": "chat.archived",
+  "data": {
+    "numberId": "cmabc123number",
+    "numberPhone": "+5511999990000",
+    "provider": "qrcode",
+    "jid": "5585988887777@s.whatsapp.net",
+    "phone": "+5585988887777",
+    "isGroup": false,
+    "occurredAt": "2026-11-24T10:00:00.000Z",
+    "source": "phone"
+  }
+}
+```
+
+```json
+{
+  "id": "0b8e4d21-7c3a-4f9e-8d12-5a6b7c8d9e0f",
+  "event": "contact.blocked",
+  "data": {
+    "numberId": "cmabc123number",
+    "numberPhone": "+5511999990000",
+    "provider": "qrcode",
+    "jid": "5585911112222@s.whatsapp.net",
+    "phone": "+5585911112222",
+    "isGroup": false,
+    "occurredAt": "2026-11-24T10:05:00.000Z",
+    "source": "phone"
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `data.numberId` | ID of your number (same `id` as `GET /v1/numbers`) |
+| `data.numberPhone` | your number in E.164 |
+| `data.provider` | `qrcode` (number paired by QR Code) or `meta` (Cloud API) |
+| `data.jid` | the chat or contact JID, as WhatsApp sent it (`@s.whatsapp.net`, `@lid` or `@g.us`) |
+| `data.phone` | the chat or contact in E.164, or `null` when the JID is not a phone (LID, group) |
+| `data.isGroup` | `true` for a group chat (archive events only) |
+| `data.occurredAt` | ISO 8601 — when the change happened |
+| `data.source` | `phone` (done on the WhatsApp app) or `api` (done through the Pilot Status API) |
+
+- **Archive: QR Code numbers only.** The Meta Cloud API has no archive concept, so a Meta number never emits `chat.archived` / `chat.unarchived`.
+- **Block: QR Code (done on the phone) and Meta (done through the API).**
+- When you pair a number, WhatsApp replays the archive state of every chat. Those replays are **not** sent: you only receive changes made after the number is connected.
+- When WhatsApp reports that the whole block list changed at once (without saying which contacts), no event is sent.
 
 ## `flow.*` payload
 
