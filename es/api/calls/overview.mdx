@@ -14,10 +14,10 @@ Las llamadas funcionan en **dos** tipos de proveedor, y se comportan de forma di
 | Proveedor | Qué es | Modelo de medios |
 | --- | --- | --- |
 | **META** (Meta Cloud API) | Número oficial de WhatsApp Business | **Solo señalización**: Pilot Status retransmite el SDP (RFC 8866); el audio fluye **navegador ↔ WhatsApp** directamente por WebRTC |
-| **Pilot Status web** (no oficial) | Un número conectado por QR (no oficial) | **Medios del lado del servidor**: sin SDP; el audio se maneja en el servidor. Envías audio o abres un stream en tiempo real mediante endpoints dedicados |
+| **API no oficial** (conexión por código QR) | Un número conectado escaneando un código QR | **Medios del lado del servidor**: sin SDP; el audio corre en el servidor. Inicias/contestas/rechazas/cuelgas por la API y envías audio o abres un stream en tiempo real mediante endpoints dedicados |
 
 <Warning>
-  Cualquier otro tipo de número devuelve `400 FEATURE_NOT_SUPPORTED`. El mensaje de error: _"Calling is only supported for Meta Cloud API and Pilot Status (web) numbers on this WhatsApp provider"_ Un número web que no está conectado devuelve `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
+  Cualquier otro tipo de número devuelve `400 FEATURE_NOT_SUPPORTED`. El mensaje de error: _"Calling is only supported for Meta Cloud API and Pilot Status (web) numbers on this WhatsApp provider"_ En la API no oficial, las llamadas solo existen en la **conexión por código QR actual**; los números que siguen en la conexión por QR anterior devuelven `400 FEATURE_NOT_SUPPORTED` (reconecta el número para tener llamadas). Un número no oficial que no está conectado devuelve `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
 </Warning>
 
 <Note>
@@ -32,7 +32,7 @@ Las llamadas funcionan en **dos** tipos de proveedor, y se comportan de forma di
 
 | Tipo | Quién la inicia | Facturación |
 | --- | --- | --- |
-| **BIC**: llamada iniciada por la empresa (Business-Initiated Call) | Tú llamas al cliente | En META, la factura **Meta directamente en tu WABA** (por minuto, pulsos de 6 segundos, solo cuando se contesta). En números web no hay cargo por minuto de Meta. |
+| **BIC**: llamada iniciada por la empresa (Business-Initiated Call) | Tú llamas al cliente | En META, la factura **Meta directamente en tu WABA** (por minuto, pulsos de 6 segundos, solo cuando se contesta). En números de la API no oficial no hay cargo por minuto de Meta. |
 | **UIC**: llamada iniciada por el usuario (User-Initiated Call) | El cliente te llama | Gratis |
 
 Pilot Status **no cobra** nada por las llamadas.
@@ -50,7 +50,7 @@ En números de Meta Cloud API, los minutos de BIC los factura **Meta directament
 
 ## Compatibilidad de funciones por proveedor
 
-| Función | Endpoint | META | Web (no oficial) |
+| Función | Endpoint | META | API no oficial (QR) |
 | --- | --- | :-: | :-: |
 | Hacer una llamada (BIC) | `POST /v1/calls` | ✅ oferta SDP **obligatoria** | ✅ **sin SDP** |
 | Listar llamadas | `GET /v1/calls` | ✅ | ✅ |
@@ -59,8 +59,8 @@ En números de Meta Cloud API, los minutos de BIC los factura **Meta directament
 | Pre-aceptar | `POST /v1/calls/{callId}/pre-accept` | ✅ | ❌ |
 | Rechazar | `POST /v1/calls/{callId}/reject` | ✅ | ✅ |
 | Terminar / colgar | `POST /v1/calls/{callId}/terminate` | ✅ | ✅ |
-| Reproducir un archivo de audio en la llamada | `POST /v1/calls/{callId}/play` | ❌ | ✅ **solo web** |
-| Sesión de medios en tiempo real (PCM16 WS) | `POST /v1/calls/{callId}/realtime-session` | ❌ | ✅ **solo web** |
+| Reproducir un archivo de audio en la llamada | `POST /v1/calls/{callId}/play` | ❌ | ✅ **solo no oficial** |
+| Sesión de medios en tiempo real (PCM16 WS) | `POST /v1/calls/{callId}/realtime-session` | ❌ | ✅ **solo no oficial** |
 | Obtener / actualizar la configuración de llamadas | `GET`·`PUT /v1/calls/settings` | ✅ | ❌ |
 | Obtener permisos de llamada | `GET /v1/calls/permissions` | ✅ | ❌ |
 | Solicitar permiso de llamada | `POST /v1/calls/permissions/request` | ✅ | ❌ |
@@ -73,22 +73,22 @@ Una función que un proveedor no admite devuelve `400 FEATURE_NOT_SUPPORTED`.
 
 Pilot Status retransmite el SDP; el audio fluye **navegador ↔ WhatsApp** directamente. Tu cliente WebRTC produce la oferta/respuesta SDP. No hay nada del lado del servidor en lo que reproducir, así que `play` y `realtime-session` no aplican. La página **/chat** del dashboard incluye un **softphone** integrado (disponible en ambos tipos de número).
 
-### Pilot Status web: medios del lado del servidor (sin SDP)
+### API no oficial (conexión por código QR): medios del lado del servidor (sin SDP)
 
-`POST /v1/calls` y `/accept` **no reciben `sdp`**: la llamada se conecta y el audio se procesa en el servidor. Luego controlas el audio con los dos endpoints exclusivos de web:
+`POST /v1/calls` y `/accept` **no reciben `sdp`**: la llamada se conecta y el audio se procesa en el servidor. Iniciar, contestar, rechazar y colgar usan los mismos endpoints que META (`POST /v1/calls`, `/accept`, `/reject`, `/terminate`). Luego controlas el audio con los dos endpoints exclusivos de la API no oficial:
 
 - `POST /v1/calls/{callId}/play`: el backend descarga tu archivo de audio (la URL se valida del lado del servidor) y lo reproduce en la llamada; pasa `hangupAfterPlay: true` para terminar la llamada automáticamente cuando termine la reproducción (los bots de notificación no necesitan un temporizador del lado del cliente).
 - `POST /v1/calls/{callId}/realtime-session`: abre una sesión **WebSocket PCM16** full-duplex; el body `{ "mode": "talk" | "listen" }` es obligatorio (`talk` envía y recibe audio, `listen` solo recibe). El `wsUrl` devuelto está en un host de medios público dedicado y su token es de un solo uso con un TTL corto (~2 min); conéctate a él directamente (no pasa por el proxy de la API).
 
-Los números web no necesitan concesión de **permiso** para BIC y no tienen superficie de **configuración** de llamadas (esos son conceptos de Meta).
+Los números de la API no oficial no necesitan concesión de **permiso** para BIC, no tienen **configuración** de llamadas ni **pre-accept** (conceptos de Meta): esos endpoints devuelven `400 FEATURE_NOT_SUPPORTED`.
 
 ## Capa de migración / compatibilidad
 
-Si ya te integras con Evolution GO, la capa de compatibilidad hace de proxy de los endpoints `/call/*` de GO (start, answer, reject, hangup, list, get, media/play, media/realtime/session): apunta tu URL base a `/api/layer/evolution-go/` y tu código de llamadas de GO existente sigue funcionando. Al WebSocket en tiempo real (`/call/media/realtime/ws/*`) se accede **directamente** en un host de medios público dedicado (la capa HTTP no hace upgrade de WebSockets); las rutas de frontend/manager de GO no pasan por el proxy.
+Si ya tienes código escrito contra la API nativa de llamadas de la conexión por código QR, la capa de compatibilidad hace de proxy de sus endpoints `/call/*` (start, answer, reject, hangup, list, get, media/play, media/realtime/session): apunta tu URL base a `/api/layer/evolution-go/` y tu código de llamadas existente sigue funcionando. Al WebSocket en tiempo real (`/call/media/realtime/ws/*`) se accede **directamente** en un host de medios público dedicado (la capa HTTP no hace upgrade de WebSockets); las rutas de frontend/manager no pasan por el proxy.
 
 ## Sigue el progreso de las llamadas con webhooks
 
-Suscríbete a `call.ringing`, `call.connected`, `call.ended` (incluye `duration` en segundos cuando se contesta), `call.missed` y `call.permission_updated`. Los eventos `call.*` normalizados se disparan tanto para números META como para números Pilot Status web.
+Suscríbete a `call.ringing`, `call.connected`, `call.ended` (incluye `duration` en segundos cuando se contesta), `call.missed` y `call.permission_updated`. `call.ringing`, `call.connected`, `call.ended` y `call.missed` se disparan tanto para números META como de la API no oficial; `call.permission_updated` es **solo META** (la API no oficial no tiene modelo de permisos).
 
 <Frame caption="Llamadas en la página Logs: cada llamada aparece con su dirección, su estado (Completed con duración, Missed, Rejected) y su propio contador CALLS.">
   ![Página Logs con una tarjeta de estadística CALLS y filas de llamadas entrantes con los estados Completed, Missed y Rejected](/images/dashboard/logs-calls.png)
