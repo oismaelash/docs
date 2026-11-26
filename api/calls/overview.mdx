@@ -9,15 +9,15 @@ WhatsApp Business Calling lets you place and receive **voice calls** with your c
 
 ## Supported providers
 
-Calling works on **two** provider types — and behaves differently on each:
+Calling works on **two** connection paths — and behaves differently on each:
 
 | Provider | What it is | Media model |
 | --- | --- | --- |
 | **META** (Meta Cloud API) | Official WhatsApp Business number | **Signaling-only** — Pilot Status relays SDP (RFC 8866); audio flows **browser ↔ WhatsApp** directly over WebRTC |
-| **Pilot Status web** (unofficial) | A number connected via QR (non-official) | **Server-side media** — no SDP; audio is handled on the server. You push audio or open a realtime stream via dedicated endpoints |
+| **Unofficial API** (QR code connection) | A number connected by scanning a QR code | **Server-side media** — no SDP; audio runs on the server. You start/answer/reject/hang up through the API and push audio or open a realtime stream via dedicated endpoints |
 
 <Warning>
-  Any other number type returns `400 FEATURE_NOT_SUPPORTED`. The error message: _"Calling is only supported for Meta Cloud API and Pilot Status (web) numbers on this WhatsApp provider"_ A web number that is not connected returns `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
+  Any other number type returns `400 FEATURE_NOT_SUPPORTED`. The error message: _"Calling is only supported for Meta Cloud API and Pilot Status (web) numbers on this WhatsApp provider"_ On the unofficial API, calling is available only on the **current QR code connection**; numbers still on the older QR connection return `400 FEATURE_NOT_SUPPORTED` (reconnect the number to get calling). An unofficial number that is not connected returns `409 WHATSAPP_INSTANCE_NOT_CONNECTED`.
 </Warning>
 
 <Note>
@@ -32,7 +32,7 @@ Calling works on **two** provider types — and behaves differently on each:
 
 | Type | Who starts it | Billing |
 | --- | --- | --- |
-| **BIC** — Business-Initiated Call | You call the customer | On META, billed by **Meta directly on your WABA** (per minute, 6-second pulses, only when answered). On web numbers there is no Meta per-minute charge. |
+| **BIC** — Business-Initiated Call | You call the customer | On META, billed by **Meta directly on your WABA** (per minute, 6-second pulses, only when answered). On unofficial API numbers there is no Meta per-minute charge. |
 | **UIC** — User-Initiated Call | The customer calls you | Free |
 
 Pilot Status **does not charge** anything for calls.
@@ -50,7 +50,7 @@ On Meta Cloud API numbers, BIC minutes are billed by **Meta directly on your WAB
 
 ## Capability support by provider
 
-| Capability | Endpoint | META | Web (unofficial) |
+| Capability | Endpoint | META | Unofficial API (QR) |
 | --- | --- | :-: | :-: |
 | Place a call (BIC) | `POST /v1/calls` | ✅ SDP offer **required** | ✅ **no SDP** |
 | List calls | `GET /v1/calls` | ✅ | ✅ |
@@ -59,8 +59,8 @@ On Meta Cloud API numbers, BIC minutes are billed by **Meta directly on your WAB
 | Pre-accept | `POST /v1/calls/{callId}/pre-accept` | ✅ | ❌ |
 | Reject | `POST /v1/calls/{callId}/reject` | ✅ | ✅ |
 | Terminate / hang up | `POST /v1/calls/{callId}/terminate` | ✅ | ✅ |
-| Play an audio file into the call | `POST /v1/calls/{callId}/play` | ❌ | ✅ **web-only** |
-| Realtime media session (PCM16 WS) | `POST /v1/calls/{callId}/realtime-session` | ❌ | ✅ **web-only** |
+| Play an audio file into the call | `POST /v1/calls/{callId}/play` | ❌ | ✅ **unofficial only** |
+| Realtime media session (PCM16 WS) | `POST /v1/calls/{callId}/realtime-session` | ❌ | ✅ **unofficial only** |
 | Get / update calling settings | `GET`·`PUT /v1/calls/settings` | ✅ | ❌ |
 | Get call permissions | `GET /v1/calls/permissions` | ✅ | ❌ |
 | Request call permission | `POST /v1/calls/permissions/request` | ✅ | ❌ |
@@ -71,24 +71,24 @@ A capability that a provider doesn't support returns `400 FEATURE_NOT_SUPPORTED`
 
 ### META — signaling only
 
-Pilot Status relays the SDP; audio flows **browser ↔ WhatsApp** directly. Your WebRTC client produces the SDP offer/answer. There is nothing server-side to play into, so `play` and `realtime-session` do not apply. The dashboard **/chat** page includes a built-in **softphone** (available on both number types).
+Pilot Status relays the SDP (signaling only — it never touches the audio); audio flows **browser ↔ WhatsApp** directly. Your WebRTC client produces the SDP offer/answer. There is nothing server-side to play into, so `play` and `realtime-session` do not apply. The dashboard **/chat** page includes a built-in **softphone** (available on both connection paths). Before a BIC, the customer must grant **call permission** (`/v1/calls/permissions`); calling **settings** (`/v1/calls/settings`) and **pre-accept** are Meta-only.
 
-### Pilot Status web — server-side media (no SDP)
+### Unofficial API (QR code connection) — server-side media (no SDP)
 
-`POST /v1/calls` and `/accept` take **no `sdp`** — the call connects and audio is processed on the server. You then drive audio with the two web-only endpoints:
+`POST /v1/calls` and `/accept` take **no `sdp`** — the call connects and audio is processed on the server. Start, answer, reject and hang up use the same endpoints as META (`POST /v1/calls`, `/accept`, `/reject`, `/terminate`). You then drive audio with the two unofficial-only endpoints:
 
 - `POST /v1/calls/{callId}/play` — the backend downloads your audio file (the URL is validated server-side) and plays it into the call; pass `hangupAfterPlay: true` to end the call automatically when playback finishes (notification bots need no client-side timer).
 - `POST /v1/calls/{callId}/realtime-session` — opens a full-duplex **PCM16 WebSocket** session; the body `{ "mode": "talk" | "listen" }` is required (`talk` sends and receives audio, `listen` only receives). The returned `wsUrl` is on a dedicated public media host and its token is single-use with a short (~2 min) TTL; connect to it directly (it is not proxied through the API).
 
-Web numbers need no BIC **permission** grant and have no calling **settings** surface (those are Meta concepts).
+Unofficial API numbers need no BIC **permission** grant, have no calling **settings** surface and no **pre-accept** (those are Meta concepts) — those endpoints return `400 FEATURE_NOT_SUPPORTED`.
 
 ## Migration / compatibility layer
 
-If you already integrate with Evolution GO, the compatibility layer proxies the GO `/call/*` endpoints (start, answer, reject, hangup, list, get, media/play, media/realtime/session) — point your base URL at `/api/layer/evolution-go/` and your existing GO calling code keeps working. The realtime WebSocket (`/call/media/realtime/ws/*`) is reached **directly** on a dedicated public media host (the HTTP layer does not upgrade WebSockets); GO frontend/manager routes are not proxied.
+If you already have code written against the native calling API of the QR code connection, the compatibility layer proxies its `/call/*` endpoints (start, answer, reject, hangup, list, get, media/play, media/realtime/session) — point your base URL at `/api/layer/evolution-go/` and your existing calling code keeps working. The realtime WebSocket (`/call/media/realtime/ws/*`) is reached **directly** on a dedicated public media host (the HTTP layer does not upgrade WebSockets); frontend/manager routes are not proxied.
 
 ## Follow call progress with webhooks
 
-Subscribe to `call.ringing`, `call.connected`, `call.ended` (includes `duration` in seconds when answered), `call.missed`, and `call.permission_updated`. Normalized `call.*` events fire for both META and Pilot Status web numbers.
+Subscribe to `call.ringing`, `call.connected`, `call.ended` (includes `duration` in seconds when answered), `call.missed`, and `call.permission_updated`. `call.ringing`, `call.connected`, `call.ended` and `call.missed` fire for both META and unofficial API numbers; `call.permission_updated` is **META-only** (the unofficial API has no permission model).
 
 <Frame caption="Calls in the Logs page — each call appears with direction, status (Completed with duration, Missed, Rejected), and its own CALLS counter.">
   ![Logs page showing a CALLS stat card and incoming call rows with Completed, Missed, and Rejected statuses](/images/dashboard/logs-calls.png)
