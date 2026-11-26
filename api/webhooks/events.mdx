@@ -87,7 +87,7 @@ Opt in per number with `settings.webhookHistoricalMessages` on [`PATCH /v1/numbe
 
 - `number.created` — number created in Pilot Status
 - `number.connected` — connected to WhatsApp (OPEN state)
-- `number.disconnected` — connection drop confirmed by the number-health transition, on **native web (unofficial)** numbers (one event per confirmed drop, not one per connectivity blip).
+- `number.disconnected` — real connection drop on **native web (unofficial)** numbers: immediately on logout, 60 s after a close that does not recover (one event per drop; a quick blip sends nothing).
 - `number.removed` — number removed
 - `number.restored` — a deleted number was restored within its 30-day window; it comes back disconnected (see [`number.restored`](#number-restored))
 - `number.recovered` — number recovered from a degraded/blocked state
@@ -553,10 +553,15 @@ Fields for `number.created` / `number.connected` / `number.disconnected` / `numb
 
 Emitted from the **number-health transition**, which owns the anti-flap window and the one-alert-per-transition dedup: you get **one** event per confirmed drop, not one per socket blip.
 
-- **Native web (unofficial)** numbers: this event fires on a confirmed connection drop. Previously an unofficial number that fell off produced no subscribable event at all — only the `"*"`-only health events.
+- **Native web (unofficial)** numbers: this event fires on a **real** connection drop, as soon as it is known:
+  - **logout** (the session was unpaired on the phone or by WhatsApp): sent **immediately**;
+  - **connection closed** that does **not** come back within **60 seconds**: sent right after that window;
+  - a quick drop that reconnects within 60 seconds (a socket blip, typically ~4 s) sends **nothing** — neither `number.disconnected` nor `number.connected`.
+  
+  If neither signal reaches us, the periodic number healthcheck still sends it (minutes later). Whichever path notices first, a drop produces **one** event; the next one is armed again after the number reconnects.
 - **Meta Cloud API** numbers: they never emit `number.disconnected`. A Meta quality/status transition emits only its number-health event (`number.health_blocked` / `number.health_degraded` / `number.health_shadowban`), which reaches webhooks subscribed to it by name or to `"*"`.
 
-`error` and `errorCode` are included when the health transition carries a reason.
+`error` and `errorCode` are included when the drop carries a reason. On the immediate paths `error` is `logout` or `connection_closed`; on the healthcheck path it is the health reason, with `errorCode` (e.g. `all_connections_down`).
 
 ```json
 {
