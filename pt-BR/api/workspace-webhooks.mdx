@@ -18,8 +18,8 @@ Mesmo segredo de assinatura (`plwh_`), mesma assinatura, mesmas retentativas e o
 
 ## Configurar
 
-- **No painel:** **Chaves do workspace** (`/workspace-api-keys`), aba **Webhooks** (**Webhooks do workspace**), como **Proprietário ou Administrador**. Os webhooks que escutam só eventos das linhas também aparecem em **Linhas → Webhooks das linhas**. O segredo de assinatura é exibido **uma única vez**, na janela **Segredo de assinatura** que abre logo depois que você cria o webhook — copie-o antes de clicar em **Guardei**. Não há rotação: se perdê-lo, crie um novo webhook, passe seu receptor a usar o segredo dele e exclua o antigo.
-- **Pela API:** os endpoints abaixo, com uma [chave de workspace](/pt-BR/concepts/key-types#chaves-de-workspace) ou uma [chave de conta](/pt-BR/concepts/key-types#chaves-de-conta) com `x-workspace-id`. Uma chave de número recebe **403 `NUMBER_SCOPE_NOT_ALLOWED`**. Com uma chave de conta ou um token OAuth/MCP, o usuário precisa ser **Proprietário ou Administrador** (caso contrário, `403 PERMISSION_DENIED`).
+- **No painel:** **Chaves do workspace** (`/workspace-api-keys`), aba **Webhooks** (**Webhooks do workspace**), como **Proprietário ou Administrador**. Os webhooks que escutam só eventos das linhas também aparecem em **Linhas → Webhooks das linhas**. O segredo de assinatura é exibido **uma única vez**, na janela **Segredo de assinatura** que abre logo depois que você cria o webhook — copie-o antes de clicar em **Guardei**. Perdeu ou vazou? Clique em **Trocar segredo** no webhook: um novo segredo é exibido uma única vez, na mesma janela, e o antigo para de funcionar nesse momento.
+- **Pela API:** os endpoints abaixo, com uma [chave de workspace](/pt-BR/concepts/key-types#chaves-de-workspace) (`ps_`), uma concessão OAuth/MCP do workspace inteiro, ou uma [chave de conta](/pt-BR/concepts/key-types#chaves-de-conta) (`ps_account_`) com o header `x-workspace-id`. Uma chave de número recebe **403 `NUMBER_SCOPE_NOT_ALLOWED`**. Com uma chave de conta ou um token OAuth/MCP, o usuário precisa ser **Proprietário ou Administrador** (caso contrário, `403 PERMISSION_DENIED`).
 
 | Método | Endpoint | Descrição |
 | --- | --- | --- |
@@ -28,6 +28,7 @@ Mesmo segredo de assinatura (`plwh_`), mesma assinatura, mesmas retentativas e o
 | `GET` | `/v1/workspace/webhooks/{id}` | Obtém um webhook. |
 | `PATCH` | `/v1/workspace/webhooks/{id}` | Edita nome, URL e eventos, ou pausa e retoma (`active`). |
 | `DELETE` | `/v1/workspace/webhooks/{id}` | Exclui um webhook e o histórico de entregas dele. |
+| `POST` | `/v1/workspace/webhooks/{id}/rotate-secret` | Gera um novo segredo de assinatura. Devolve-o **só desta vez**; o antigo para de funcionar na hora. |
 | `GET` | `/v1/workspace/webhooks/{id}/deliveries` | As entregas mais recentes, da mais nova para a mais antiga, sem o corpo. `limit` de 1 a 200, padrão 50. |
 | `GET` | `/v1/workspace/webhooks/{id}/deliveries/{deliveryId}` | Uma entrega completa, com o corpo exato que foi enviado e assinado. |
 
@@ -65,10 +66,61 @@ curl -X POST "https://pilotstatus.com.br/v1/workspace/webhooks" \
 </CodeGroup>
 
 <Warning>
-  **O `secret` vem só nesta resposta** e não tem rotação. Guarde-o antes de qualquer outra coisa. Criar não é idempotente: um `POST` repetido cria um segundo webhook.
+  **O `secret` vem só nesta resposta.** Guarde-o antes de qualquer outra coisa; se perdê-lo, [rotacione-o](#rotacionar-o-segredo-de-assinatura). Criar não é idempotente: um `POST` repetido cria um segundo webhook.
 
   Com um token OAuth/MCP, se a criação não puder ser registrada na trilha de auditoria, o webhook é criado mesmo assim, mas `secret` volta `null` com `"secretWithheld": true`, `secretWithheldReason` e `"secretWithheldCode": "OAUTH_SECRET_AUDIT_UNAVAILABLE"` — exclua-o e crie outro.
 </Warning>
+
+### Usar uma chave de conta
+
+Uma chave de conta (`ps_account_`) funciona em todos os endpoints de `/v1/workspace/webhooks`, desde que você indique o workspace no header `x-workspace-id` (o `id` de um workspace, de `GET /v1/workspaces`). O usuário da chave precisa ser **Proprietário ou Administrador** ativo desse workspace.
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/workspace/webhooks" \
+  -H "x-api-key: ps_account_sua_chave" \
+  -H "x-workspace-id: cmh2a9z8y0002ws8example1q"
+```
+
+| Status | `code` | Quando |
+| --- | --- | --- |
+| `400` | `WORKSPACE_ID_REQUIRED` | Chave de conta sem `x-workspace-id`. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | O usuário da chave não é membro ativo desse workspace. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | O membro está restrito a alguns números, ou a chave é de número. |
+| `403` | `PERMISSION_DENIED` | O membro não é Proprietário nem Administrador. |
+
+### Rotacionar o segredo de assinatura
+
+`POST /v1/workspace/webhooks/{id}/rotate-secret` gera um novo segredo `plwh_` e o devolve **uma única vez**. Sem corpo na requisição.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/workspace/webhooks/cmh2c1d2e0001wh8example4f/rotate-secret" \
+  -H "x-api-key: ps_workspace_sua_chave"
+```
+
+```json Resposta (200)
+{
+  "id": "cmh2c1d2e0001wh8example4f",
+  "hasSecret": true,
+  "secret": "plwh_9f2c4e6a8b0d1f3a5c7e9b1d3f5a7c9e2b4d6f8a0c1e3b5d"
+}
+```
+
+</CodeGroup>
+
+<Warning>
+  **O segredo antigo para de funcionar na hora** — não há janela de sobreposição. Atualize seu receptor logo após a chamada; entregas já em andamento ainda podem chegar com a assinatura antiga. O novo `secret` nunca mais é devolvido.
+</Warning>
+
+| Status | `code` | Quando |
+| --- | --- | --- |
+| `400` | `WORKSPACE_ID_REQUIRED` | Chave de conta sem `x-workspace-id`. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | Chave de conta ou usuário OAuth que não é membro ativo do workspace. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Chave de número, concessão OAuth por número, ou membro restrito a alguns números. |
+| `403` | `PERMISSION_DENIED` | Usuário que não é Proprietário nem Administrador. |
+| `404` | `WEBHOOK_NOT_FOUND` | Nenhum webhook com esse id neste workspace (um webhook de outro workspace responde o mesmo). |
+| `500` | `OAUTH_SECRET_AUDIT_UNAVAILABLE` | Só OAuth/MCP: a rotação não pôde ser auditada, então nada mudou e o segredo antigo continua valendo. |
 
 ### `"*"` e os eventos da carteira
 
