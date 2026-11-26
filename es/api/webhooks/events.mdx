@@ -87,7 +87,7 @@ Actívalo por número con `settings.webhookHistoricalMessages` en [`PATCH /v1/nu
 
 - `number.created`: número creado en Pilot Status
 - `number.connected`: conectado a WhatsApp (estado OPEN)
-- `number.disconnected`: caída de conexión confirmada por la transición de salud del número, en números **web nativos (no oficiales)** (un evento por caída confirmada, no uno por cada microcorte de conectividad).
+- `number.disconnected`: caída real de conexión en números **web nativos (no oficiales)**: de inmediato en el logout, 60 s después de un cierre que no se recupera (un evento por caída; un microcorte no envía nada).
 - `number.removed`: número eliminado
 - `number.restored`: un número eliminado se restauró dentro de su ventana de 30 días; vuelve desconectado (consulta [`number.restored`](#number-restored))
 - `number.recovered`: número recuperado de un estado degradado/bloqueado
@@ -553,10 +553,15 @@ Campos de `number.created` / `number.connected` / `number.disconnected` / `numbe
 
 Se emite desde la **transición de salud del número**, que controla la ventana anti-oscilación y la deduplicación de una alerta por transición: recibes **un** evento por caída confirmada, no uno por cada microcorte del socket.
 
-- Números **web nativos (no oficiales)**: este evento se dispara ante una caída de conexión confirmada. Antes, un número no oficial que se desconectaba no producía ningún evento suscribible, solo los eventos de salud exclusivos de `"*"`.
+- Números **web nativos (no oficiales)**: este evento se dispara ante una caída **real** de conexión, en cuanto se conoce:
+  - **logout** (la sesión se desvinculó en el teléfono o por WhatsApp): se envía **de inmediato**;
+  - **conexión cerrada** que **no** vuelve en **60 segundos**: se envía justo después de esa ventana;
+  - una caída rápida que reconecta en menos de 60 segundos (microcorte del socket, normalmente ~4 s) **no envía nada**: ni `number.disconnected` ni `number.connected`.
+  
+  Si ninguna de esas señales nos llega, la verificación periódica de salud del número igual lo envía (minutos después). Sea cual sea el camino que lo detecte primero, una caída genera **un** evento; el siguiente vuelve a ser posible cuando el número se reconecta.
 - Números de **Meta Cloud API**: nunca emiten `number.disconnected`. Una transición de calidad/estado de Meta solo emite su evento de salud del número (`number.health_blocked` / `number.health_degraded` / `number.health_shadowban`), que llega a los webhooks suscritos a él por nombre o a `"*"`.
 
-`error` y `errorCode` se incluyen cuando la transición de salud trae un motivo.
+`error` y `errorCode` se incluyen cuando la caída trae un motivo. En los caminos inmediatos, `error` es `logout` o `connection_closed`; en el camino de la verificación de salud, es el motivo de salud, con `errorCode` (p. ej. `all_connections_down`).
 
 ```json
 {
