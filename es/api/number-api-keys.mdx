@@ -1,0 +1,92 @@
+---
+title: "Claves de número con nombre: listar, crear, revocar"
+sidebarTitle: "Claves de número con nombre"
+description: "Dale a un número de WhatsApp varias API keys, una por integración, con /v1/numbers/{numberId}/api-keys, y rota la clave de un número sin interrupción."
+mode: "wide"
+---
+
+# Claves de número con nombre
+
+Un número de WhatsApp tiene una clave **predeterminada** (`ps_number_`), la que muestra el panel y la que rota `POST /v1/api-keys/regenerate`. Junto a ella puedes crear claves **con nombre**: cada una actúa sobre el número exactamente como la predeterminada, lleva un nombre que indica qué integración la guarda y se revoca por separado.
+
+| Método | Endpoint | Qué hace |
+| --- | --- | --- |
+| `GET` | `/v1/numbers/{numberId}/api-keys` | Lista las claves activas del número, enmascaradas, la predeterminada primero |
+| `POST` | `/v1/numbers/{numberId}/api-keys` | Crea una clave con nombre; la clave sin procesar vuelve una sola vez |
+| `DELETE` | `/v1/numbers/{numberId}/api-keys/{keyId}` | Revoca una clave con nombre |
+
+**Autenticación:** una clave de workspace (`ps_workspace_`) o una clave de cuenta (`ps_account_`) con `x-workspace-id`. Una clave de número recibe **403 `NUMBER_SCOPE_NOT_ALLOWED`**. `{numberId}` acepta el id del número o el id de su instancia principal, como lo devuelve `GET /v1/numbers`; uno desconocido → **404 `NUMBER_NOT_FOUND`**. Los errores traen un `error` bilingüe (`English | Português`) y un `code`.
+
+`GET /v1/api-keys` y `POST /v1/api-keys/regenerate` mantienen el formato de su respuesta y actúan solo sobre la clave **predeterminada** del número ([Claves de API](/es/api/api-keys)).
+
+## GET /v1/numbers/{numberId}/api-keys: listar las claves de un número
+
+Solo las claves activas (no revocadas), enmascaradas: nunca la clave sin procesar. La predeterminada (`isPrimary: true`) va primero. Con una clave de cuenta, requiere **Propietario o Admin** (`apikeys:read`).
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/wn_1/api-keys" \
+  -H "x-api-key: ps_workspace_tu_clave"
+```
+
+```json Respuesta (200)
+{
+  "data": [
+    { "id": "k_default", "name": "Default API Key", "prefix": "ps_number_", "last4": "3b5d", "isPrimary": true, "createdAt": "2026-10-28T09:15:00.000Z", "lastUsedAt": "2026-11-26T09:20:11.000Z" },
+    { "id": "k_cobros", "name": "Integración de cobros", "prefix": "ps_number_", "last4": "a1c0", "isPrimary": false, "createdAt": "2026-11-26T09:15:00.000Z", "lastUsedAt": null }
+  ]
+}
+```
+
+## POST /v1/numbers/{numberId}/api-keys: crear una clave con nombre
+
+Cuerpo: `{ "name": string }`, de 1 a 60 caracteres después de quitar los espacios de los extremos. Cualquier otro campo → **400 `UNKNOWN_FIELDS`**. La `key` sin procesar vuelve **solo en esta respuesta**, con estado `201`. Con una clave de cuenta, requiere **Propietario o Admin** (`apikeys:rotate`); por OAuth/MCP, solo el **Propietario** vigente.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/wn_1/api-keys" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_tu_clave" \
+  -d '{ "name": "Integración de cobros" }'
+```
+
+```json Respuesta (201)
+{
+  "apiKey": {
+    "id": "k_cobros",
+    "name": "Integración de cobros",
+    "key": "ps_number_...nuevareal...a1c0",
+    "prefix": "ps_number_",
+    "last4": "a1c0",
+    "isPrimary": false,
+    "createdAt": "2026-11-26T09:15:00.000Z"
+  }
+}
+```
+
+| Estado | `code` | Cuándo |
+| --- | --- | --- |
+| 400 | `NAME_REQUIRED` / `NAME_TOO_LONG` | `name` ausente, vacío o con más de 60 caracteres |
+| 400 | `UNKNOWN_FIELDS` | Un campo distinto de `name` |
+| 404 | `NUMBER_NOT_FOUND` | El número no existe en el workspace |
+| 409 | `NUMBER_KEY_LIMIT_REACHED` | El número ya tiene **20** claves activas, incluida la predeterminada (`"limit": 20`) |
+
+## DELETE /v1/numbers/{numberId}/api-keys/{keyId}: revocar una clave con nombre
+
+Responde `200 { "revoked": true, "id": "k_cobros" }`. La siguiente solicitud con esa clave se rechaza con **401** (revocada). Es idempotente: revocarla de nuevo también responde `200`.
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wn_1/api-keys/k_cobros" \
+  -H "x-api-key: ps_workspace_tu_clave"
+```
+
+| Estado | `code` | Cuándo |
+| --- | --- | --- |
+| 404 | `NUMBER_NOT_FOUND` / `API_KEY_NOT_FOUND` | Número desconocido, o ninguna clave con ese id en este número (también la de otro número) |
+| 409 | `PRIMARY_KEY_USE_REGENERATE` | El id es el de la clave predeterminada: rótala con `POST /v1/api-keys/regenerate` |
+
+## Rotar la clave de un número sin interrupción
+
+1. **Crea** una clave con nombre: `POST /v1/numbers/{numberId}/api-keys`.
+2. **Cambia** tu integración a la clave nueva y confirma que funciona (`lastUsedAt` aparece en el `GET`).
+3. **Revoca** la antigua: `DELETE .../api-keys/{keyId}` si es una clave con nombre, o, si la antigua es la predeterminada, `POST /v1/api-keys/regenerate` cuando nada la use.
+
+Ambas claves funcionan mientras tanto, así que ninguna solicitud falla durante el cambio.

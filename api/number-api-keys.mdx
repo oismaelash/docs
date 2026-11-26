@@ -1,0 +1,92 @@
+---
+title: "Named number keys — list, create, revoke"
+sidebarTitle: "Named number keys"
+description: "Give one WhatsApp number several API keys, one per integration, with /v1/numbers/{numberId}/api-keys — and rotate a number's key without downtime."
+mode: "wide"
+---
+
+# Named number keys
+
+A WhatsApp number has one **default** key (`ps_number_`), the one the dashboard shows and `POST /v1/api-keys/regenerate` rotates. Next to it you can create **named** keys: each one acts on the number exactly like the default key, carries a name that tells which integration holds it, and is revoked on its own.
+
+| Method | Endpoint | What it does |
+| --- | --- | --- |
+| `GET` | `/v1/numbers/{numberId}/api-keys` | Lists the number's live keys, masked, default first |
+| `POST` | `/v1/numbers/{numberId}/api-keys` | Creates a named key; the raw key comes back once |
+| `DELETE` | `/v1/numbers/{numberId}/api-keys/{keyId}` | Revokes a named key |
+
+**Auth:** a workspace key (`ps_workspace_`), or an account key (`ps_account_`) with `x-workspace-id`. A number key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. `{numberId}` takes the number's id or its primary instance id, as returned by `GET /v1/numbers`; an unknown one → **404 `NUMBER_NOT_FOUND`**. Errors carry a bilingual `error` (`English | Português`) and a `code`.
+
+`GET /v1/api-keys` and `POST /v1/api-keys/regenerate` keep their response shapes and act on the number's **default** key only ([API keys](/api/api-keys)).
+
+## GET /v1/numbers/{numberId}/api-keys — List a number's keys
+
+Live (non-revoked) keys only, masked — never the raw key. The default key (`isPrimary: true`) comes first. With an account key, it needs **Owner or Admin** (`apikeys:read`).
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/wn_1/api-keys" \
+  -H "x-api-key: ps_workspace_your_key"
+```
+
+```json Response (200)
+{
+  "data": [
+    { "id": "k_default", "name": "Default API Key", "prefix": "ps_number_", "last4": "3b5d", "isPrimary": true, "createdAt": "2026-10-28T09:15:00.000Z", "lastUsedAt": "2026-11-26T09:20:11.000Z" },
+    { "id": "k_billing", "name": "Billing integration", "prefix": "ps_number_", "last4": "a1c0", "isPrimary": false, "createdAt": "2026-11-26T09:15:00.000Z", "lastUsedAt": null }
+  ]
+}
+```
+
+## POST /v1/numbers/{numberId}/api-keys — Create a named key
+
+Body: `{ "name": string }`, 1 to 60 characters after trimming. Any other field → **400 `UNKNOWN_FIELDS`**. The raw `key` is returned **only in this response**, with status `201`. With an account key, it needs **Owner or Admin** (`apikeys:rotate`); over OAuth/MCP, only the live **Owner**.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/wn_1/api-keys" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_your_key" \
+  -d '{ "name": "Billing integration" }'
+```
+
+```json Response (201)
+{
+  "apiKey": {
+    "id": "k_billing",
+    "name": "Billing integration",
+    "key": "ps_number_...newreal...a1c0",
+    "prefix": "ps_number_",
+    "last4": "a1c0",
+    "isPrimary": false,
+    "createdAt": "2026-11-26T09:15:00.000Z"
+  }
+}
+```
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 400 | `NAME_REQUIRED` / `NAME_TOO_LONG` | Missing or empty `name`, or longer than 60 characters |
+| 400 | `UNKNOWN_FIELDS` | A field other than `name` |
+| 404 | `NUMBER_NOT_FOUND` | No such number in the workspace |
+| 409 | `NUMBER_KEY_LIMIT_REACHED` | The number already has **20** live keys, default included (`"limit": 20`) |
+
+## DELETE /v1/numbers/{numberId}/api-keys/{keyId} — Revoke a named key
+
+Answers `200 { "revoked": true, "id": "k_billing" }`. The next request with that key is refused with **401** (revoked). It is idempotent: revoking it again also answers `200`.
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wn_1/api-keys/k_billing" \
+  -H "x-api-key: ps_workspace_your_key"
+```
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 404 | `NUMBER_NOT_FOUND` / `API_KEY_NOT_FOUND` | Unknown number, or no key with that id on this number (a key of another number too) |
+| 409 | `PRIMARY_KEY_USE_REGENERATE` | The id is the default key — rotate it with `POST /v1/api-keys/regenerate` instead |
+
+## Zero-downtime rotation for a number
+
+1. **Create** a named key: `POST /v1/numbers/{numberId}/api-keys`.
+2. **Switch** your integration to the new key and confirm it works (`lastUsedAt` fills in on `GET`).
+3. **Revoke** the old key: `DELETE .../api-keys/{keyId}` for a named key, or — if the old one is the default — `POST /v1/api-keys/regenerate` once nothing uses it.
+
+Both keys work in between, so no request fails during the switch.
