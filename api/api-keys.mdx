@@ -108,6 +108,39 @@ curl -X POST "https://pilotstatus.com.br/v1/api-keys/regenerate" \
 
 With a number key, `name` is `"Default API Key"`, `keyPrefix` is `"ps_number_"`, `scope` is `"number"` and `whatsappNumberId` names the number.
 
+## Rotate without downtime
+
+<Warning>
+  **Regenerating revokes the previous key immediately.** This applies to a number's key (**Regenerate API key** on the **API Keys** page, `POST /v1/api-keys`, or `POST /v1/api-keys/regenerate` with a number key) and to the workspace's **primary** key (**Regenerate** on **Workspace keys**, or `POST /v1/api-keys/regenerate` with a workspace or account key). There is no grace period: every system still sending the old key gets `401 Invalid API key` on its next request.
+</Warning>
+
+To swap a key with no interruption, run the integration on a key you can hold **two of at the same time**: a **named workspace key** (`ps_workspace_`) or an **account key** (`ps_account_`). Then rotate in four steps:
+
+<Steps>
+  <Step title="Create the new key">
+    - **Named workspace key:** dashboard → **Workspace keys** (`/workspace-api-keys`) → create a named key, or call [`POST /v1/workspaces/{workspaceId}/api-keys`](/api/workspaces#create-a-named-key) with `{ "name": "…" }` and an account key. Owner or Admin.
+    - **Account key:** dashboard → **Profile → API** (`/profile?tab=api`) → create a key (up to 20 per user).
+
+    The raw key is shown only once: store it in your secret manager now. The old key keeps working.
+  </Step>
+  <Step title="Switch your system to the new key">
+    Deploy the new value to every service that calls the API. Both keys are valid during this window, so you can roll it out gradually.
+  </Step>
+  <Step title="Verify">
+    Confirm that requests with the new key succeed (for example `GET /v1/numbers`) and that nothing is still sending the old one.
+  </Step>
+  <Step title="Revoke the old key">
+    - **Named workspace key:** revoke it on **Workspace keys**, or call [`DELETE /v1/workspaces/{workspaceId}/api-keys/{keyId}`](/api/workspaces#revoke-a-named-key). It stops working on the next request.
+    - **Account key:** revoke it in **Profile → API**.
+  </Step>
+</Steps>
+
+A number key and the primary workspace key cannot be held twice, so regenerating them is always an immediate cut-over. If your integration uses one of them today, first move it to a named workspace key (add `x-whatsapp-number-id` to act on a specific number) or to an account key, using the steps above.
+
+### If a key leaked
+
+Do not rotate gradually: revoke at once. In the dashboard, **Workspace keys** has **Revoke EVERYTHING (workspace + numbers)**, which revokes every key of the workspace (workspace keys and every number's keys) and issues a single new workspace key, shown once. On the **API Keys** page, **Revoke this number's keys** does the same for one number. Both require Owner or Admin and cannot be undone; webhooks and number connections keep working. A leaked named workspace key or account key can also be revoked on its own, as in step 4.
+
 ## Privacy & data retention
 
 The **API Keys** page also hosts the per-number **Privacy & retention** panel (the same control appears on the **Numbers** page). It governs whether — and for how long — this number's conversations and message content are stored. It never affects delivery: the **Chatwoot integration and webhooks keep working in every mode** (they run upstream of storage).
