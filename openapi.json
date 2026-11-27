@@ -44185,6 +44185,241 @@
         }
       }
     },
+    "/v1/workspace/webhooks/{id}/rotate-secret": {
+      "post": {
+        "summary": "Rotate a workspace webhook's signing secret",
+        "description": "⚠️ **Real side effect.** Mints a NEW `plwh_` signing secret for the workspace webhook and returns it in clear, **once**: `{ \"id\", \"hasSecret\": true, \"secret\" }`, sent with `Cache-Control: no-store`. The previous secret stops verifying **immediately** — there is no overlap window, so update your receiver right after the call; deliveries already in flight sign with whichever value their dispatch loaded. It is the only way to recover a lost or leaked secret without deleting the webhook and its delivery history. No request body.\n\nCredential: a workspace key (`ps_`), a full-workspace OAuth/MCP grant, or an account key (`ps_account_`) with `x-workspace-id`. With an account key or an OAuth/MCP token, the user must be an **Owner or Admin** (`phone_lines:webhooks`) — `403 PERMISSION_DENIED` otherwise. A number-scoped key (or a per-number OAuth grant) gets `403 NUMBER_SCOPE_NOT_ALLOWED`. A webhook of another workspace answers **404 `WEBHOOK_NOT_FOUND`**, the same as one that does not exist.\n\nOver OAuth/MCP the rotation is recorded in the audit trail BEFORE it happens; if that record cannot be written the rotation is refused with `500 OAUTH_SECRET_AUDIT_UNAVAILABLE` and the old secret stays valid.\n\n**Requires a tenant-scoped key.**",
+        "tags": [
+          "Workspace"
+        ],
+        "operationId": "post_workspace_webhooks_id_rotate_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "cmh1w8b2k0001wh8example3d",
+            "description": "The webhook's `id` (from `GET /v1/workspace/webhooks` or the create response)."
+          },
+          {
+            "name": "x-workspace-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Only with an account key (`ps_account_`): the workspace to act on, from `GET /v1/workspaces`. Without it an account key gets `400 WORKSPACE_ID_REQUIRED`.",
+            "example": "cmh2a9z8y0002ws8example1q"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "New secret, in clear, once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "The webhook id.",
+                      "example": "cmh1w8b2k0001wh8example3d"
+                    },
+                    "hasSecret": {
+                      "type": "boolean",
+                      "description": "Always `true`: deliveries are signed (`x-pilot-status-signature`).",
+                      "example": true
+                    },
+                    "secret": {
+                      "type": "string",
+                      "description": "The new `plwh_` signing secret, in clear. **Returned only here and at creation** — store it now.",
+                      "example": "plwh_9f2c4e6a8b0d1f3a5c7e9b1d3f5a7c9e2b4d6f8a0c1e3b5d"
+                    }
+                  }
+                },
+                "example": {
+                  "id": "cmh1w8b2k0001wh8example3d",
+                  "hasSecret": true,
+                  "secret": "plwh_9f2c4e6a8b0d1f3a5c7e9b1d3f5a7c9e2b4d6f8a0c1e3b5d"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Account key without `x-workspace-id` (`WORKSPACE_ID_REQUIRED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "workspaceIdRequired": {
+                    "summary": "Account key without `x-workspace-id`",
+                    "value": {
+                      "error": "An account API key must name the workspace to act on: send the x-workspace-id header (a workspace id from GET /v1/workspaces) | Uma API key de conta precisa indicar o workspace: envie o header x-workspace-id (o id de um workspace, obtido em GET /v1/workspaces)",
+                      "code": "WORKSPACE_ID_REQUIRED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credential (`x-api-key`, `x-api-key-id` or `Authorization: Bearer`). The body carries only `error`, no `code`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "missing": {
+                    "summary": "No credential",
+                    "value": {
+                      "error": "Missing x-api-key, x-api-key-id or Authorization Bearer token"
+                    }
+                  },
+                  "invalid": {
+                    "summary": "Invalid API key",
+                    "value": {
+                      "error": "Invalid API key"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Number-scoped key (`NUMBER_SCOPE_NOT_ALLOWED`), OAuth/MCP token of a user who is not Owner or Admin (`PERMISSION_DENIED`) or no longer an active member (`WORKSPACE_MEMBERSHIP_REQUIRED`), or archived workspace (`WORKSPACE_ARCHIVED`). `TENANT_REQUIRED`: credential not bound to any workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "numberScope": {
+                    "summary": "Number-scoped key",
+                    "value": {
+                      "error": "This endpoint requires a tenant-scoped API key",
+                      "code": "NUMBER_SCOPE_NOT_ALLOWED"
+                    }
+                  },
+                  "permissionDenied": {
+                    "summary": "OAuth/MCP user who is not Owner or Admin",
+                    "value": {
+                      "error": "Your workspace role does not allow this action (phone_lines:webhooks).",
+                      "code": "PERMISSION_DENIED"
+                    }
+                  },
+                  "notMember": {
+                    "summary": "OAuth/MCP user no longer a member",
+                    "value": {
+                      "error": "The user behind this token is not an active member of this workspace.",
+                      "code": "WORKSPACE_MEMBERSHIP_REQUIRED"
+                    }
+                  },
+                  "archived": {
+                    "summary": "Workspace archived",
+                    "value": {
+                      "error": "This workspace has been archived and its API is closed. | Este workspace foi arquivado e sua API está encerrada.",
+                      "code": "WORKSPACE_ARCHIVED"
+                    }
+                  },
+                  "tenantRequired": {
+                    "summary": "Credential not bound to a workspace",
+                    "value": {
+                      "error": "This credential is not bound to a workspace.",
+                      "code": "TENANT_REQUIRED"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such webhook in your workspace (`WEBHOOK_NOT_FOUND`) — a webhook of another workspace reads the same",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "error": "Webhook not found. | Webhook não encontrado.",
+                  "code": "WEBHOOK_NOT_FOUND"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "examples": {
+                  "auditUnavailable": {
+                    "summary": "OAuth/MCP: the audit row could not be written, nothing was rotated",
+                    "value": {
+                      "error": "Could not record this access in the audit trail, so it was not performed. Try again | Não foi possível registrar este acesso na auditoria, então ele não foi realizado. Tente novamente",
+                      "code": "OAUTH_SECRET_AUDIT_UNAVAILABLE"
+                    }
+                  },
+                  "internal": {
+                    "summary": "Unexpected error",
+                    "value": {
+                      "error": "Internal server error"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspace/webhooks/{id}/deliveries": {
       "get": {
         "summary": "List a webhook's deliveries",

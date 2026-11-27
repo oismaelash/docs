@@ -18,8 +18,8 @@ Same signing secret (`plwh_`), same signature, same retries and the same deliver
 
 ## Configure
 
-- **In the dashboard:** **Workspace keys** (`/workspace-api-keys`), **Webhooks** tab (**Workspace webhooks**), as an **Owner or Admin**. Webhooks listening only to phone-line events also show under **Phone lines → Line webhooks**. The signing secret is shown **once**, in the **Signing secret** window that opens right after you create the webhook — copy it before clicking **Got it**. There is no rotation: if you lose it, create a new webhook, move your receiver to its secret, and delete the old one.
-- **Through the API:** the endpoints below, with a [workspace key](/concepts/key-types#workspace-keys) or an [account key](/concepts/key-types#account-keys) with `x-workspace-id`. A number key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. With an account key or an OAuth/MCP token, the user must be an **Owner or Admin** (`403 PERMISSION_DENIED` otherwise).
+- **In the dashboard:** **Workspace keys** (`/workspace-api-keys`), **Webhooks** tab (**Workspace webhooks**), as an **Owner or Admin**. Webhooks listening only to phone-line events also show under **Phone lines → Line webhooks**. The signing secret is shown **once**, in the **Signing secret** window that opens right after you create the webhook — copy it before clicking **Got it**. Lost or leaked it? Click **Rotate secret** on the webhook: a new secret is shown once, in the same window, and the old one stops working at that moment.
+- **Through the API:** the endpoints below, with a [workspace key](/concepts/key-types#workspace-keys) (`ps_`), a full-workspace OAuth/MCP grant, or an [account key](/concepts/key-types#account-keys) (`ps_account_`) with the `x-workspace-id` header. A number key gets **403 `NUMBER_SCOPE_NOT_ALLOWED`**. With an account key or an OAuth/MCP token, the user must be an **Owner or Admin** (`403 PERMISSION_DENIED` otherwise).
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
@@ -28,6 +28,7 @@ Same signing secret (`plwh_`), same signature, same retries and the same deliver
 | `GET` | `/v1/workspace/webhooks/{id}` | Get a webhook. |
 | `PATCH` | `/v1/workspace/webhooks/{id}` | Edit name, URL and events, or pause and resume (`active`). |
 | `DELETE` | `/v1/workspace/webhooks/{id}` | Delete a webhook and its delivery history. |
+| `POST` | `/v1/workspace/webhooks/{id}/rotate-secret` | Mint a new signing secret. Returns it **this one time only**; the old one stops working immediately. |
 | `GET` | `/v1/workspace/webhooks/{id}/deliveries` | The latest deliveries, newest first, without their body. `limit` from 1 to 200, default 50. |
 | `GET` | `/v1/workspace/webhooks/{id}/deliveries/{deliveryId}` | One delivery in full, with the exact body that was sent and signed. |
 
@@ -65,10 +66,61 @@ curl -X POST "https://pilotstatus.com.br/v1/workspace/webhooks" \
 </CodeGroup>
 
 <Warning>
-  **The `secret` comes only in this response** and has no rotation. Store it before anything else. Creating is not idempotent: a repeated `POST` creates a second webhook.
+  **The `secret` comes only in this response.** Store it before anything else; if you lose it, [rotate it](#rotate-the-signing-secret). Creating is not idempotent: a repeated `POST` creates a second webhook.
 
   Over an OAuth/MCP token, if the creation cannot be recorded in the audit trail the webhook is still created, but `secret` comes back `null` with `"secretWithheld": true`, `secretWithheldReason` and `"secretWithheldCode": "OAUTH_SECRET_AUDIT_UNAVAILABLE"` — delete it and create another.
 </Warning>
+
+### Use an account key
+
+An account key (`ps_account_`) works on every `/v1/workspace/webhooks` endpoint, as long as you name the workspace in the `x-workspace-id` header (a workspace `id` from `GET /v1/workspaces`). The user behind the key must be an active **Owner or Admin** of that workspace.
+
+```bash cURL
+curl "https://pilotstatus.com.br/v1/workspace/webhooks" \
+  -H "x-api-key: ps_account_your_key" \
+  -H "x-workspace-id: cmh2a9z8y0002ws8example1q"
+```
+
+| Status | `code` | When |
+| --- | --- | --- |
+| `400` | `WORKSPACE_ID_REQUIRED` | Account key without `x-workspace-id`. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | The key's user is not an active member of that workspace. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | The member is restricted to some numbers, or the key is a number key. |
+| `403` | `PERMISSION_DENIED` | The member is not an Owner or Admin. |
+
+### Rotate the signing secret
+
+`POST /v1/workspace/webhooks/{id}/rotate-secret` mints a new `plwh_` secret and returns it **once**. No request body.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://pilotstatus.com.br/v1/workspace/webhooks/cmh2c1d2e0001wh8example4f/rotate-secret" \
+  -H "x-api-key: ps_workspace_your_key"
+```
+
+```json Response (200)
+{
+  "id": "cmh2c1d2e0001wh8example4f",
+  "hasSecret": true,
+  "secret": "plwh_9f2c4e6a8b0d1f3a5c7e9b1d3f5a7c9e2b4d6f8a0c1e3b5d"
+}
+```
+
+</CodeGroup>
+
+<Warning>
+  **The old secret stops working immediately** — there is no overlap window. Update your receiver right after the call; deliveries already in flight may still carry the old signature. The new `secret` is never returned again.
+</Warning>
+
+| Status | `code` | When |
+| --- | --- | --- |
+| `400` | `WORKSPACE_ID_REQUIRED` | Account key without `x-workspace-id`. |
+| `403` | `WORKSPACE_MEMBERSHIP_REQUIRED` | Account key or OAuth user who is not an active member of the workspace. |
+| `403` | `NUMBER_SCOPE_NOT_ALLOWED` | Number key, per-number OAuth grant, or member restricted to some numbers. |
+| `403` | `PERMISSION_DENIED` | User who is not an Owner or Admin. |
+| `404` | `WEBHOOK_NOT_FOUND` | No such webhook in this workspace (a webhook of another workspace reads the same). |
+| `500` | `OAUTH_SECRET_AUDIT_UNAVAILABLE` | OAuth/MCP only: the rotation could not be audited, so nothing changed and the old secret stays valid. |
 
 ### `"*"` and wallet events
 
