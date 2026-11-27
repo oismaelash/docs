@@ -28,7 +28,7 @@ Webhooks entregam eventos em tempo real para a URL do seu sistema. Esta página 
 
 Quatro coisas são iguais em todos os vocabulários:
 
-- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.disconnected`, `number.removed` e `number.restored` são assináveis em qualquer número, seja qual for o provedor. (O `number.disconnected` só *dispara* em número web nativo — veja [`number.disconnected`](#number-disconnected).)
+- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.disconnected`, `number.removed` e `number.restored` são assináveis em qualquer número, seja qual for o provedor. (O `number.disconnected` dispara em número web nativo e, quando o acesso na Meta é perdido, em número Meta — veja [`number.disconnected`](#number-disconnected).)
 - **Eventos normalizados de chamada** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` em qualquer número com voz habilitada.
 - **Meta Lead Ads** — `lead.received`, no envelope canônico `{ event, data }`, em qualquer número com uma Página do Facebook vinculada. Ele é **opt-in**: cite-o pelo nome, porque o `"*"` não o inclui. Veja [Payload de `lead.*`](#payload-de-lead).
 - **`events` nunca é opcional.** Um webhook gravado com `events` vazio entrega **nada**, em qualquer vocabulário, e não avisa: é um `201` silencioso. Assine os nomes que você quer, ou o curinga `"*"`.
@@ -88,7 +88,7 @@ Para receber mesmo assim, ligue `settings.webhookHistoricalMessages` por número
 
 - `number.created` — número criado no Pilot Status
 - `number.connected` — conectado ao WhatsApp (estado OPEN)
-- `number.disconnected` — queda de conexão confirmada pela transição de saúde do número, em números **web nativos (não oficiais)** (um evento por queda confirmada, não um por oscilação de conectividade).
+- `number.disconnected` — queda de conexão confirmada pela transição de saúde do número, em números **web nativos (não oficiais)** (um evento por queda confirmada, não um por oscilação de conectividade), e em números da **Meta Cloud API** quando a Pilot Status perde o acesso a eles na Meta (app removido da WABA ou WABA desvinculada).
 - `number.removed` — número removido
 - `number.restored` — um número excluído foi restaurado dentro da janela de 30 dias; ele volta desconectado (veja [`number.restored`](#number-restored))
 - `number.recovered` — número recuperado de um estado degradado/bloqueado
@@ -554,7 +554,7 @@ Campos para `number.created` / `number.connected` / `number.disconnected` / `num
 Emitido a partir da **transição de saúde do número**, que é quem controla a janela anti-oscilação e a deduplicação de um alerta por transição: você recebe **um** evento por queda confirmada, não um por oscilação do socket.
 
 - Números **web nativos (não oficiais)**: o evento dispara em uma queda de conexão confirmada. Antes, um número não oficial que caía não produzia nenhum evento assinável — apenas os eventos de saúde, exclusivos do curinga `"*"`.
-- Números da **Meta Cloud API**: nunca emitem `number.disconnected`. Uma transição de qualidade/status da Meta emite apenas o evento de saúde correspondente (`number.health_blocked` / `number.health_degraded` / `number.health_shadowban`), que chega aos webhooks que o assinam pelo nome ou com `"*"`.
+- Números da **Meta Cloud API**: desde 27/11/2026 o evento também é enviado quando a Pilot Status perde o acesso ao número na Meta — nosso app foi removido da WABA ou a WABA foi desvinculada (offboarding). Sai **na hora** em que a Meta avisa (`account_update` `PARTNER_REMOVED` / `ACCOUNT_OFFBOARDED`, `errorCode` `meta_partner_removed` / `meta_account_offboarded`), um evento por número ativo daquela WABA (números provisórios/pendentes são ignorados), ou quando o health check **confirma** a perda de acesso (`errorCode: "meta_access_revoked"`) — o que vier primeiro; nunca dois eventos para a mesma queda. Ele não altera o status de saúde do número. Quando o acesso volta (health check ou **Atualizar** no painel), sai exatamente um `number.connected`. Limitação conhecida: um número já bloqueado por outro motivo não recebe esse evento. Uma transição de qualidade/status da Meta continua emitindo apenas o evento de saúde correspondente (`number.health_blocked` / `number.health_degraded` / `number.health_shadowban`), que chega aos webhooks que o assinam pelo nome ou com `"*"`.
 
 `error` e `errorCode` vêm incluídos quando a transição de saúde carrega um motivo.
 
@@ -1002,7 +1002,7 @@ Mais as famílias que **não** são o envelope da Meta:
 
 - **Respostas de Flow** — `flow.response_received`, só em números Meta, no formato canônico `{ event, data }`. Veja [Payload de `flow.*`](#payload-de-flow).
 - **Eventos normalizados de chamada** — `call.ringing`, `call.connected`, `call.ended`, `call.missed` e `call.permission_updated` (só Meta). Esses são eventos planos do Pilot Status, não o envelope da Meta — veja [Payload de `call.*`](#payload-de-call).
-- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.removed`, `number.restored`. O `number.disconnected` é assinável mas **nunca dispara em número Meta**: uma transição de qualidade/status da Meta emite um evento de saúde do número, e esses só chegam em assinaturas `"*"`.
+- **Ciclo de vida do número** — `number.created`, `number.connected`, `number.removed`, `number.restored`. O `number.disconnected` só dispara em número Meta quando o acesso a ele é perdido (app removido da WABA ou WABA desvinculada — `errorCode` `meta_partner_removed` / `meta_account_offboarded` / `meta_access_revoked`); uma transição de qualidade/status da Meta emite um evento de saúde do número. Veja [`number.disconnected`](#number-disconnected).
 
 <Note>
   **Nove campos da Meta nunca são entregues**, nem para uma assinatura `"*"`: `account_alerts`, `automatic_events`, `history`, `messaging_handovers`, `partner_solutions`, `security`, `smb_app_state_sync`, `standby` e `tracking_events`. São internos (backfill de histórico em massa, sincronia de estado da coexistência) ou tráfego administrativo/de segurança, e também não aparecem no seletor de eventos. Todo o resto que a Meta manda de um campo assinado é encaminhado.
@@ -1014,7 +1014,7 @@ Mais as famílias que **não** são o envelope da Meta:
 
 ### Saúde do número — assinável desde 15/09/2026
 
-Um número Meta nunca emite `number.disconnected`. O que ele emite é a **família de saúde do número**, e esses nomes estão agora no seletor de eventos — assine-os pelo nome, como qualquer outro:
+Um número Meta só emite `number.disconnected` quando o acesso a ele é perdido. Para qualidade e status, o que ele emite é a **família de saúde do número**, e esses nomes estão agora no seletor de eventos — assine-os pelo nome, como qualquer outro:
 
 | Evento | Dispara quando |
 | --- | --- |
@@ -1170,6 +1170,6 @@ Os dois também carregam as famílias normalizadas `call.*` e `number.*` descrit
 - **`message.newsletter`:** `newsletterName` é o nome de exibição do canal quando disponível; caso contrário, pode ser omitido. O identificador do canal é `newsletterId` (JID completo `...@newsletter`). `participantName` é o autor da mensagem no canal.
 - **Mídia:** em eventos de entrada com mídia, `mediaLink` é uma URL pública e durável para a mídia re-hospedada — para **todos** os provedores (Evolution GO, Evolution v2, Meta Cloud API), incluindo mídia criptografada de ponta a ponta descriptografada no servidor. `mediaType` é a categoria (`image`/`video`/`audio`/`document`/`sticker`), `mediaCaption` o texto que acompanha, `mediaFilename` o nome do arquivo original (documentos). Os quatro são omitidos em mensagens somente-texto e quando a redação de PII do número apaga o conteúdo.
 - Eventos `number.*` não são correlacionados a `POST /v1/messages/send`; use-os para provisionamento/monitoramento. Em todos eles, `data.numberId` é sempre o ID do número de WhatsApp — veja a [mudança incompatível](#payload-de-number).
-- `number.disconnected` é emitido a partir da transição de saúde do número (um evento por queda confirmada, não um por oscilação de conexão), e somente para números web nativos (não oficiais); números da Meta Cloud API sinalizam problemas pelos eventos de saúde.
+- `number.disconnected` é emitido a partir da transição de saúde do número (um evento por queda confirmada, não um por oscilação de conexão), para números web nativos (não oficiais); números da Meta Cloud API só o emitem quando o acesso é perdido (app removido da WABA ou WABA desvinculada) e, fora isso, sinalizam problemas pelos eventos de saúde.
 - A entrega de campos sensíveis pode depender da configuração de retenção. Com a retenção desligada, campos condicionais como `content` podem ficar vazios; IDs e timestamps continuam existindo.
 - O evento `message.read` (e o status **Read** na API/Logs) só ocorre quando o destinatário tem os **recibos de leitura do WhatsApp** ativados.
