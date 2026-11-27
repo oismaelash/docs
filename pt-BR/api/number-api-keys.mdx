@@ -1,0 +1,93 @@
+---
+title: "Chaves de número com nome — listar, criar, revogar"
+sidebarTitle: "Chaves de número com nome"
+description: "Dê a um número de WhatsApp várias API keys, uma por integração, com /v1/numbers/{numberId}/api-keys — e troque a chave de um número sem queda."
+mode: "wide"
+---
+
+# Chaves de número com nome
+
+Um número de WhatsApp tem uma chave **padrão** (`ps_number_`), a que o painel mostra e que `POST /v1/api-keys/regenerate` rotaciona. Ao lado dela você pode criar chaves **com nome**: cada uma age no número exatamente como a padrão, leva um nome que diz qual integração a guarda e é revogada sozinha.
+
+| Método | Endpoint | O que faz |
+| --- | --- | --- |
+| `GET` | `/v1/numbers/{numberId}/api-keys` | Lista as chaves ativas do número, mascaradas, a padrão primeiro |
+| `POST` | `/v1/numbers/{numberId}/api-keys` | Cria uma chave com nome; a chave bruta volta uma vez |
+| `DELETE` | `/v1/numbers/{numberId}/api-keys/{keyId}` | Revoga uma chave com nome |
+
+**Autenticação:** uma chave de workspace (`ps_workspace_`) ou uma chave de conta (`ps_account_`) com `x-workspace-id`. Uma chave de número recebe **403 `NUMBER_SCOPE_NOT_ALLOWED`**. `{numberId}` aceita o id do número ou o id da sua instância principal, como em `GET /v1/numbers`; um desconhecido → **404 `NUMBER_NOT_FOUND`**. Os erros trazem um `error` bilíngue (`English | Português`) e um `code`, por exemplo `{ "error": "WhatsApp number not found in this workspace | Número de WhatsApp não encontrado neste workspace", "code": "NUMBER_NOT_FOUND" }`. A exceção é o 403 de uma chave de número, só em inglês: `{ "error": "This endpoint requires a tenant-scoped API key", "code": "NUMBER_SCOPE_NOT_ALLOWED" }`.
+
+`GET /v1/api-keys` e `POST /v1/api-keys/regenerate` mantêm o formato da resposta e agem só na chave **padrão** do número ([Chaves de API](/pt-BR/api/api-keys)).
+
+## GET /v1/numbers/{numberId}/api-keys — Listar as chaves de um número
+
+Só as chaves ativas (não revogadas), mascaradas — nunca a chave bruta. A padrão (`isPrimary: true`) vem primeiro. Com chave de conta, exige **Proprietário ou Admin** (`apikeys:read`).
+
+```bash
+curl "https://pilotstatus.com.br/v1/numbers/wn_1/api-keys" \
+  -H "x-api-key: ps_workspace_sua_chave"
+```
+
+```json Resposta (200)
+{
+  "data": [
+    { "id": "k_default", "name": "Default API Key", "prefix": "ps_number_", "last4": "3b5d", "isPrimary": true, "createdAt": "2026-10-28T09:15:00.000Z", "lastUsedAt": "2026-11-26T09:20:11.000Z" },
+    { "id": "k_cobranca", "name": "Integração de cobrança", "prefix": "ps_number_", "last4": "a1c0", "isPrimary": false, "createdAt": "2026-11-26T09:15:00.000Z", "lastUsedAt": null }
+  ]
+}
+```
+
+## POST /v1/numbers/{numberId}/api-keys — Criar uma chave com nome
+
+Corpo: `{ "name": string }`, de 1 a 60 caracteres depois de remover os espaços das pontas. Qualquer outro campo → **400 `UNKNOWN_FIELDS`**. A `key` bruta volta **só nesta resposta**, com status `201`. Com chave de conta, exige **Proprietário ou Admin** (`apikeys:rotate`); via OAuth/MCP, só o **Proprietário** atual.
+
+```bash
+curl -X POST "https://pilotstatus.com.br/v1/numbers/wn_1/api-keys" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ps_workspace_sua_chave" \
+  -d '{ "name": "Integração de cobrança" }'
+```
+
+```json Resposta (201)
+{
+  "apiKey": {
+    "id": "k_cobranca",
+    "name": "Integração de cobrança",
+    "key": "ps_number_...novareal...a1c0",
+    "prefix": "ps_number_",
+    "last4": "a1c0",
+    "isPrimary": false,
+    "createdAt": "2026-11-26T09:15:00.000Z"
+  }
+}
+```
+
+| Status | `code` | Quando |
+| --- | --- | --- |
+| 400 | `NAME_REQUIRED` / `NAME_TOO_LONG` | `name` ausente, vazio ou com mais de 60 caracteres (`NAME_TOO_LONG` traz `"maxLength": 60`) |
+| 400 | `UNKNOWN_FIELDS` | Um campo além de `name`; o corpo traz também `unknownFields` |
+| 400 | `INVALID_BODY` | O corpo não é um JSON válido, ou não é um objeto JSON |
+| 404 | `NUMBER_NOT_FOUND` | Número inexistente no workspace |
+| 409 | `NUMBER_KEY_LIMIT_REACHED` | O número já tem **20** chaves ativas, contando a padrão (`"limit": 20`) |
+
+## DELETE /v1/numbers/{numberId}/api-keys/{keyId} — Revogar uma chave com nome
+
+Responde `200 { "revoked": true, "id": "k_cobranca" }`. A próxima requisição com essa chave é recusada com **401** (revogada). É idempotente: revogar de novo também responde `200`.
+
+```bash
+curl -X DELETE "https://pilotstatus.com.br/v1/numbers/wn_1/api-keys/k_cobranca" \
+  -H "x-api-key: ps_workspace_sua_chave"
+```
+
+| Status | `code` | Quando |
+| --- | --- | --- |
+| 404 | `NUMBER_NOT_FOUND` / `API_KEY_NOT_FOUND` | Número desconhecido, ou nenhuma chave com esse id neste número (inclusive a de outro número) |
+| 409 | `PRIMARY_KEY_USE_REGENERATE` | O id é o da chave padrão — rotacione-a com `POST /v1/api-keys/regenerate` |
+
+## Trocar a chave de um número sem queda
+
+1. **Crie** uma chave com nome: `POST /v1/numbers/{numberId}/api-keys`.
+2. **Troque** a integração para a chave nova e confirme que funciona (o `lastUsedAt` aparece no `GET`).
+3. **Revogue** a antiga: `DELETE .../api-keys/{keyId}` se for uma chave com nome, ou — se a antiga for a padrão — `POST /v1/api-keys/regenerate` quando nada mais a usar.
+
+As duas chaves funcionam no meio do caminho, então nenhuma requisição falha durante a troca.
